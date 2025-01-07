@@ -17,7 +17,7 @@ const DonutChart = ({ data }) => {
 export default Doughnut
 ```
 
-Since the underlying `Doughnut` component uses React hooks, we add the `'use client'` directive to specify that it is a client side component. Also, there is an existing issue which prevents named components from being used, so we need to export the component as the default export.
+Since the un derlying `Doughnut` component uses React hooks, we add the `'use client'` directive to specify that it is a client side component. Also, there is an existing issue which prevents named components from being used, so we need to export the component as the default export.
 
 Next, add the component to `MDXComponents.tsx`:
 
