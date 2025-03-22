@@ -1,0 +1,478 @@
+---
+title: "Client-Side React Is Dead: Why Server Components Are the Future You Can't Ignore"
+summary: 'An in-depth guide for advanced frontend developers on applying DRY, KISS, and SOLID principles in JavaScript, TypeScript, React, and Vue.'
+date: '2025-03-21'
+tags:
+  [
+    'Clean Code',
+    'Software Architecture',
+    'Code Maintainability',
+    'Web Development',
+    'Best Practices',
+    'Software Engineering',
+    'Scalable Code',
+    'Reusable Components',
+    'Custom Hooks',
+    'Vue Composables',
+    'Code Optimization',
+  ]
+draft: true
+---
+
+## Introduction
+
+**What are Server Components?** React Server Components (RSC) are a new type of React components that are rendered on the server _before_ the bundling stage and outside the browser. In other words, the code of such components **never reaches the client** - a component is executed exclusively on the server, and only the generated result (HTML/JSON) is sent to the browser. This means that for the first time in React's history, components can operate entirely on the server, instead of in the browser.
+
+**Why does React 19 introduce a new rendering model?** Over the past few years, the React team has been looking for ways to improve application performance and user experience by limiting the amount of JavaScript executed on the client side. Server Components are the result of this work - one of the most significant architectural improvements since Hooks were introduced a few years ago. Many developers consider RSC to be **the most dramatic change** in how React works in years. The main motivation was to achieve "zero-bundle-size" for parts of the application - components rendered on the server add nothing to the JS bundle sent to the browser. With this, React 19 emphasizes server capabilities, opening a new chapter in web application development.
+
+**Main goals and advantages of the Server Components approach:** The new model aims to solve several key problems encountered in traditional SPA and SSR applications:
+
+- **Less JavaScript transmitted and better performance:** Server components generate ready content on the server, so the browser doesn't have to receive or run their JS code. Eliminating the hydration process for these components means that the client doesn't need to rebuild the application state based on JS after the page loads. As a result, the first page rendering is faster, and time to interactivity is shorter.
+- **Direct access to backend data and resources:** Since Server Components operate in a server environment, they can directly communicate with databases, APIs, or files - straight from within the component. This allows avoiding additional layers (e.g., unnecessary requests from the browser to the API), simplifying the architecture. A server component can, for example, execute a database query **during JSX rendering** and immediately return the ready interface result.
+- **Better security:** Sensitive code (e.g., API keys, business logic) remains on the server, so there's no risk of exposing it on the frontend. The end user only receives the generated result, without confidential code fragments.
+- **Greater application scalability:** Server rendering results can be easily cached and shared between users. This way, the cost of generating a view is incurred once (or less frequently), and many users can receive a response directly from the cache. This approach offloads the client and can reduce server load during high traffic.
+- **Simplified frontend-backend integration:** RSC effectively "componentized the backend" - data fetching logic and UI generation can be kept closer together. There are opinions that such an approach may in the future reduce the need for separate API layers (REST/GraphQL), as a React component will be able to independently handle the entire data flow from the database to the interface.
+
+In summary, Server Components aim to combine the best features of SSR and client-side React, while eliminating their weaknesses. In the following sections, we'll look at the technical details of the new model, how it works, and its impact on performance, SEO, and application development approach.
+
+## How the New Rendering Model Works
+
+**Technical description of Server Components:** Server Components are simply React components running in a server environment (e.g., Node.js) instead of the browser. In practice, they are most often asynchronous functions or functional components that can perform I/O operations during rendering (e.g., database queries, file reading) and return JSX elements. The key is that **a server component renders only once - on the server - and never "comes alive" on the client side**. The result of its rendering (UI structure) is treated as _immutable_ once it reaches the browser. This means certain limitations: in Server Components, you can't use React state or effects (Hooks like `useState` or `useEffect`), because the state will have nowhere to persist, and effects will never be triggered in the browser. On the other hand, the absence of multiple renders gives some freedom - for example, you can perform side effects directly during rendering (e.g., logging something, reading data), since the component will only run once anyway.
+
+**Architecture diagram of React Server Components:** The diagram below shows a React component tree divided into those rendered on the server side (blue color) and on the client side (purple color). Server components (blue) operate exclusively on the server, **their code is not included** in the frontend application. Client components (purple) are those traditional React components that can respond to interactions - they run in the browser (although they can also be pre-rendered on the server as part of SSR). Green color marks shared components, which are rendered on both sides (e.g., client components that were HTML-generated on the server and then hydrated in the browser). With this architecture, an application can consist of a mix of components - part of the UI logic is handled on the server, and part (interactivity) on the client, but everything is coherently assembled into a single tree rendered by React.
+
+The new rendering model is based on the idea that **all components are server components by default**, and components requiring interactivity must be specially marked as client components. In practice, this is done by adding a `'use client'` declaration at the beginning of the component file. The absence of such a declaration tells the bundler and React: "this is a server component - execute it on the server, and omit its code in the frontend bundle". Below, let's see a simple example comparing a server component and a client component:
+
+```jsx
+// Example.server.jsx - Server component
+import db from './db' // server-only module (e.g., for database communication)
+
+export default async function ProductsList() {
+  const products = await db.fetchAllProducts() // direct database query
+  return (
+    <ul>
+      {products.map((p) => (
+        <li key={p.id}>{p.name}</li>
+      ))}
+    </ul>
+  )
+}
+```
+
+```jsx
+// Counter.jsx - Client component
+'use client' // this directive marks a client component
+import { useState } from 'react'
+
+export default function Counter() {
+  const [count, setCount] = useState(0)
+  return <button onClick={() => setCount(count + 1)}>Clicked {count} times</button>
+}
+```
+
+In the above example, `ProductsList` is a **Server Component** - it can use the `db` module to fetch data (which wouldn't be possible in the browser) and returns a list of products. It doesn't use any state or user interactions, so it's perfectly suited to run on the server. On the other hand, `Counter` is a classic **Client Component** - it contains `useState` and handles the `onClick` event, so it must be executed in the browser. Thanks to `'use client'`, its code will be included in the bundle sent to the client, and the component will be hydrated and interactive.
+
+**Differences from classic SSR and CSR:** It's important to understand that React Server Components **don't replace** traditional Server-Side Rendering - rather, they complement it. In standard SSR, the entire HTML of the page is generated on the server with each request, after which the application's JS code is attached, which hydrates this content on the client. With Server Components, we can move part of this logic to server components, which **allows skipping sending their JS code to the browser**. In practice, **both techniques are often used together** - e.g., Next.js generates a page using SSR (providing the base HTML), but internally uses RSC to render parts of the interface. RSCs "build upon" SSR, allowing the bypass of hydration for purely presentational components or data, which offloads the browser. Moreover, the RSC model supports **HTML streaming** - the server can send successive UI fragments to the client as soon as they're rendered, instead of waiting for the entire page to be generated. This allows showing content to the user gradually, improving the perceived speed of the application.
+
+**New rendering flow:** In classic SSR, there was often a "waterfall" effect - first the server generated the entire HTML of the page, then the browser had to fetch JS, execute it, possibly make additional data requests, etc. In React 19 with RSC, it looks different: each server component can **fetch data independently and in parallel**, and the server can stream the generated HTML as soon as a given component is ready. There's no need for multiple queries to wait for each other in series - server components **decouple data fetching**, eliminating the cascade of delays. In practice, the flow looks like this: when a user requests a page, the server starts rendering the component tree: each branch with a server component can render in parallel (e.g., one component fetches a product list from the database, another simultaneously fetches configuration from a file). When the first one finishes, the server starts sending its HTML to the client, while the rest of the components can still be rendering in the background. This way, the user sees **the first fragments of content** sooner (e.g., page outline, headers), instead of waiting for all data to fully load. This streaming model, combined with the use of `Suspense` at component boundaries, allows marking places where spinners/placeholders should appear until the proper content is sent. In summary: **React's new rendering model combines SSR with client-side React at the component level**, providing more responsive loading and less JavaScript overhead on the browser side.
+
+## Comparison with Earlier Rendering Methods
+
+Traditionally, React applications used two main rendering models: **client-side rendering (CSR)** and **server-side rendering (SSR)**. With the emergence of React Server Components, a new hybrid model is introduced. Below, we compare these approaches, discussing their advantages and disadvantages, as well as reference to frameworks like Next.js.
+
+**Client-Side Rendering (CSR):** In client-side rendering, all work is done in the user's browser. The server initially returns minimal HTML, usually just the page skeleton with an empty container (`<div id="root"></div>`) and links to JS/CSS files. Then the browser has to download the entire **JavaScript bundle** of the application (containing React code, our component code, and dependencies), execute it, and only then does React create the DOM structure in the browser based on the component code. Only after the JS is loaded and executed does the user see the actual content of the page. The disadvantage of this approach is **slower initial loading times** - the user sees an empty page or loader for a longer moment before the UI renders. The larger the application (more code and more data to fetch), the longer the wait. Additionally, purely client-side rendering is less SEO-friendly - the initial HTML is almost empty, so search engine bots may not read the page content (not all bots execute JavaScript). The advantage of CSR is simpler infrastructure (all logic in the browser) and the ability to build highly interactive SPAs, but this comes at the cost of first-render performance and content indexability.
+
+**Server-Side Rendering (SSR):** Server-side rendering was adapted to solve CSR's problems with initial loading and SEO. In SSR, each page request goes to the server (e.g., Node/Express or a framework like Next.js), which **generates complete HTML for that page on the fly** and sends it back to the browser. This way, the user immediately gets ready content in HTML - **time to first contentful paint** is much better because there's no need to wait for all JS to load. However, such a page is not interactive at the start - the HTML has no assigned logic until React code is attached. After receiving the HTML, the browser loads the application's JS bundle in the background and executes it, **hydrating** the existing markup. Hydration is the process of "attaching" React logic to statically rendered HTML - React recreates the component tree on the client side, adds event handlers, state, etc., bringing the application to full interactivity. SSR thus ensures **faster first rendering and better SEO** (bots get content in HTML), but at the cost of additional work on the server side with each request and still the necessity to deliver all JS to the client. In large applications, SSR can burden the server (continuous HTML generation) and can be complicated (e.g., having to move some code to data-fetching methods, dealing with differences between Node and browser environments). Despite this, SSR has become the standard in many scenarios requiring SEO and fast TTFB (Time to First Byte).
+
+**Server Components (React 19) vs SSR/CSR:** React Server Components can be treated as an extension of SSR capabilities, but operating at a **more granular level (component level)** instead of entire pages. In the RSC approach, the developer decides which interface fragments to render on the server and which on the client, instead of choosing all-client or all-server for a given page. RSCs **complement SSR, not replace it** - both techniques can be used simultaneously within one application. For example, a page can be pre-rendered with SSR (providing the general page skeleton), and inside it, components can perform additional data fetching in the RSC model (avoiding further requests from the browser). The main differences of RSC compared to SSR/CSR are:
+
+- **Granularity:** SSR generates all HTML at once (per page), while RSC allows generating **UI parts independently** (per component or component tree). This gives more flexibility - e.g., you can render only heavy data lists or non-interactive elements on the server, and leave the rest on the client.
+- **No need for hydration for server components:** HTML generated by Server Components is treated as ready and **doesn't require recreating the logic on the client side**, as long as these components don't contain an interactive part. In practice, this means less JS code to download and run - **a server component doesn't appear in the JavaScript bundle**. In comparison, with classic SSR, even if some part of the UI is static, its JS code is still sent to the browser as part of the general bundle and is hydrated. RSCs skip this part, dramatically reducing the size and number of scripts run on the client.
+- **Streaming and concurrency:** As mentioned, RSCs support HTML streaming and parallel data fetching by components. Traditional SSR often performed a single query (e.g., to a database or API) per request - RSCs can perform multiple queries simultaneously during one request, because different components can do this independently. From a web architecture perspective, RSCs **minimize the "waterfall" delays** typical for SSR.
+- **Limitations in component capabilities:** Server components have a limited range of applications - they're great for generating views that depend on data, but not for handling user interactions (clicks, text input, etc.). The latter must remain in client components. In RSC, the **division of responsibilities** is clear: client components are responsible for interactivity and access to browser APIs, and server components for preparing content and accessing data sources on the server. This forces a somewhat different way of thinking about application architecture than traditional SSR, where practically every component becomes interactive after hydration.
+
+**Comparison with Next.js and other frameworks:** In the React world, the most popular SSR solution is Next.js. In older versions of Next.js (up to v12), the developer wrote pages that could use functions like `getServerSideProps` (SSR on demand) or `getStaticProps` (SSG - static generation during application build). Then Next would render the entire page on the server and serve it. **Next.js 13** (introducing the so-called App Router) changed the approach: it started natively using React Server Components. By default, **every component in the new `app/` folder of Next.js is treated as a Server Component**, unless we mark it with `'use client'`. This means that Next.js has become a hybrid of SSR + RSC - it provides infrastructure for streaming SSR and at the same time allows using the advantages of RSC inside pages. In practice, Next breaks rendering into stages: first it builds the RSC tree for a given page (routing segment) on the server, then streams HTML to the client, and simultaneously attaches a bundle with necessary client components. This approach gives better performance than the previous getServerSideProps mechanism, because it eliminates one layer - we don't need to fetch data in a separate function and pass it to the component, **the component itself can fetch data** during rendering.
+
+Other frameworks are also experimenting with similar ideas. Remix, although based on traditional SSR (with a "loaders" mechanism), tries to maximize streaming and may adapt RSC in the future. Astro went in the direction of **"islands"** - it renders most HTML on the server, and selected interactive sections as separate bundles - conceptually this is similar to the RSC idea (de facto Astro supports React and could use RSC to implement islands). So it can be said that React Server Components are part of a broader trend in web development - striving to reduce the client's role in initial rendering and shifting the burden to the server, so that applications are faster and more optimal.
+
+**Advantages and disadvantages of each approach - summary:** Each method (CSR, SSR, RSC) has its place:
+
+- **CSR:** Provides the greatest interactivity and independence from the server after the initial load. Disadvantages: slow first render, poor SEO without additional tricks (like prerendering), large JS bundle.
+- **SSR:** Improves initial load and SEO because the user immediately gets HTML. Disadvantages: still requires a large JS bundle for hydration (so performance problems return with interactivity), burdens the server, can be complex to implement (need to take care of server vs. browser environment).
+- **RSC (React 19):** Combines the advantages of SSR (fast first content, good SEO) with lower cost on the client side (less JS to run). Enables writing data fetching logic directly in components, which simplifies code. Disadvantages: requires a new way of thinking and tools - it's not easy to implement everywhere (you need a framework or bundler supporting RSC), and debugging can be more difficult (code runs on the server). RSCs also won't replace SSR or CSR 100% - **interactive components still need the client**, so some part of the application still has to work classically. Nevertheless, **the balance of RSC benefits is very attractive**, and many indications suggest it will be the preferred rendering model in future React applications.
+
+## Impact on Performance and SEO
+
+The introduction of Server Components significantly impacts web application performance - especially in metrics of **initial loading** and **size of transmitted resources**. It also has positive consequences for SEO, as ready content is served. Let's look at the details:
+
+**Less JavaScript on the frontend - what does it mean?** A traditional React application (CSR or even SSR) must deliver the entire component code to the browser for them to work on the client side. In the RSC model, a significant part of components never reaches the bundle - **the browser gets their result in HTML, but not the code**. The result is a **smaller JS package size** that the user has to download. Less JavaScript means faster resource downloading and shorter script execution time, which translates to better performance indicators. For example, metrics such as **Largest Contentful Paint (LCP)** or **Time to Interactive (TTI)** improve because the browser displays large content elements faster (already delivered in HTML), and at the same time has fewer scripts to process before the page becomes interactive. By moving the rendering burden to the server, RSCs make the **resulting interface more predictable in terms of performance** - generation time occurs on the server (where we have control over the environment), and the user's device is less burdened. This is particularly beneficial for users on weaker devices or slower networks.
+
+**Faster first rendering:** Thanks to rendering components on the server and the ability to stream HTML, the user sees the first elements of the page faster than in a purely client-side approach or even classic SSR. As already described, RSCs can reduce the waterfall effect - e.g., **fetching multiple data in parallel** - which shortens the waiting time for the most important content. The user experiences this as more responsive loading: instead of a long silence and sudden appearance of the entire page, elements can appear gradually, giving a sense of progress. Importantly, because RSCs generate HTML on the server, **First Contentful Paint (FCP)** happens quickly (the browser immediately gets something to display), and interactivity can be achieved faster because less code needs to be initialized on the client. The impact on performance is confirmed by tests and simulations - moving even some components to RSC can reduce TTFB and TTI time compared to pure SSR+hydration approach.
+
+**Lower client load = better UX:** Offloading the user's browser (by limiting hydration and amount of JS) is particularly important for mobile devices and less powerful ones. Less JavaScript means **smoother operation** - the user can interact with the page faster, experiences fewer stutters caused by "heavy" JavaScript. Moreover, this improves the page's **Core Web Vitals** (especially Largest Contentful Paint and First Input Delay), which not only affects user experience but is also taken into account by Google's search engine when assessing page quality.
+
+**Optimization for SEO:** Applications built using Server Components generate proper HTML with content on the server side, which is **very beneficial from an SEO perspective**. A search engine bot immediately receives the content structure (texts, headings, links) in the HTML code, without needing to execute scripts. This means **indexing such a page is comparable to classic static pages or SSR**, and much better than pure SPA, where the bot would only see `<div id="root"></div>`. We can say that RSCs allow you to "have your cake and eat it too" - a dynamic React application that nevertheless looks like statically generated content to a search engine. It's worth adding that page speed (the mentioned performance metrics) also indirectly affects SEO, as Google rewards fast-loading pages. Thus, improving FCP/LCP thanks to RSCs can positively impact the page's ranking in search results.
+
+In summary, **Server Components significantly improve the initial performance of applications** - they reduce the time to display content and interactivity, reduce the size and number of scripts on the client side - which ultimately gives users faster and more responsive applications. Additionally, they provide **content-rich HTML for SEO**, without overburdening the client like classic SSR. Of course, to fully utilize these advantages, the application must be properly designed (e.g., key content as server components, intelligent use of `Suspense` for fallbacks, etc.), but React 19 provides the tools for this in the form of RSCs.
+
+## Working with Server Components in Practice
+
+Let's now move on to the practical aspects of using Server Components in React 19. We'll discuss how to write your own server components, best practices for their use, and how this approach is integrated within popular tools like Next.js.
+
+**How to write Server Components?** Creating a server component from a syntax perspective resembles a regular React functional component - it can return JSX, can accept props. The difference lies in the environment in which it will be executed. In practice, server components are most often written as asynchronous functions (because they usually perform asynchronous data fetching inside). Such a component can be placed in any `.jsx`/`.tsx` file without special annotations - **by default, React 19 treats every component as a server component** until we mark it as a client component. There's a convention (originating from RSC demos and sometimes used for readability) to name server component files with a `.server.jsx` suffix and client ones with `.client.jsx`, but this isn't mandatory - bundlers rather rely on `'use client'` than on the file name. More importantly, **avoid using things in Server Component code that are only available in the browser** - e.g., `window`, `document`, `localStorage`, etc. - because the component won't have access to them (it will be running, for example, in Node.js). If we accidentally try to import a browser-intended module in a server component, the bundler may report an error. The rule is also that **a client component cannot import a server component** (because it would try to load its code in the browser). Dependency in the other direction is allowed: a server component can import and render a client component in its JSX - then that client fragment will be treated as a boundary to which the server renders, and beyond which it will leave space for future hydration of the client component in the browser.
+
+**Best practices for writing RSCs:** From an architectural perspective for React applications with RSCs, a "server by default, client exceptions" approach is recommended. According to React documentation and suggestions from Next.js creators, we should try to **maximize the use of server components**, and leave client components only for those tasks that cannot be done otherwise. What are these tasks? Mainly:
+
+- **User interactions and UI state** - wherever we need to handle clicks, form input, browser animations - we must use a client component (because we need `useState`, `useEffect`, or direct browser APIs).
+- **Using browser APIs** - if a component needs to read from `localStorage`, use geolocation `navigator.geolocation`, directly manipulate DOM (e.g., canvas), etc., it must be client-side. Server components **have no access to any browser APIs**.
+- **Persistent application state** - e.g., a context that stores state between renders will also only exist on the client side. You can of course generate part of the context on the server (e.g., initial state), but further updates require a client component.
+
+In a model React 19 application, it is therefore assumed that a large part of components (especially those responsible for structural rendering of data, layout, lists, tables, articles, etc.) will be server-side, and **client components constitute a minority - mainly as "interactive islands"** such as buttons, forms, control elements. In server components, we can directly fetch data, connect to a database, read files - that is, do what we previously did in methods like `getServerSideProps` or `useEffect` after component loading. Now we can place it _within_ the component itself, which simplifies data flow.
+
+**Implementation example:** Let's say we're building a dashboard with a user list and a refresh button. We can write a server component `UserList.server.jsx` that fetches the user list from the database and renders `<ul><li>...</li></ul>`. Next to it, we have a client component `RefreshButton.jsx` that listens for clicks and triggers a refresh action (more on Server Actions in a moment). The server-side `UserList` can import `RefreshButton` and place it in its JSX structure. As a result, the UI will be composed so that the user list is rendered on the server (with current data), and the button will be part of the sent HTML, but it will be marked for hydration - React on the client will attach logic to it after loading the bundle with `RefreshButton`. For the user, it all looks coherent - they see a list and a working button, but under the hood, React has divided the work between the server (list) and client (button). **Best practice**: keep server components clean, without dependencies on state/effects, and treat them as functions generating a view from data. Client components, on the other hand, should be small and focused on interaction. Such a division minimizes the need for JavaScript on the client side while maintaining the separation of roles.
+
+Here's a more comprehensive example of a dashboard implementation using Server Components:
+
+```jsx
+// UserList.server.jsx - Server Component
+import db from './db' // Server-only database module
+import RefreshButton from './RefreshButton'
+import UserDetails from './UserDetails'
+
+export default async function UserList() {
+  // Data fetching happens directly in the component
+  const users = await db.query('SELECT * FROM users ORDER BY last_login DESC')
+
+  return (
+    <div className="dashboard-container">
+      <header className="dashboard-header">
+        <h1>User Dashboard</h1>
+        <RefreshButton /> {/* Client component for interaction */}
+      </header>
+
+      <div className="user-grid">
+        {users.map((user) => (
+          <div key={user.id} className="user-card">
+            <img src={`/avatars/${user.avatar || 'default.png'}`} alt={`${user.name}'s avatar`} />
+            <h3>{user.name}</h3>
+            <p>Last active: {new Date(user.last_login).toLocaleDateString()}</p>
+
+            {/* Nested server component - no client JS needed */}
+            <UserStatistics userId={user.id} />
+
+            {/* Client component for interaction */}
+            <UserDetails userId={user.id} />
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// UserStatistics.server.jsx - Another Server Component
+async function UserStatistics({ userId }) {
+  // More data fetching - happens on server, no waterfall effect
+  const stats = await db.query(
+    'SELECT COUNT(*) as post_count, SUM(likes) as total_likes FROM posts WHERE user_id = ?',
+    [userId]
+  )
+
+  return (
+    <div className="user-stats">
+      <div>Posts: {stats.post_count}</div>
+      <div>Total Likes: {stats.total_likes}</div>
+    </div>
+  )
+}
+```
+
+```jsx
+// RefreshButton.jsx - Client Component
+'use client'
+
+import { useState } from 'react'
+import { refreshUsers } from './actions' // Server Action import
+
+export default function RefreshButton() {
+  const [isRefreshing, setIsRefreshing] = useState(false)
+
+  async function handleRefresh() {
+    setIsRefreshing(true)
+
+    try {
+      // Call a Server Action to refresh data
+      await refreshUsers()
+    } finally {
+      setIsRefreshing(false)
+    }
+  }
+
+  return (
+    <button onClick={handleRefresh} disabled={isRefreshing} className="refresh-button">
+      {isRefreshing ? 'Refreshing...' : 'Refresh Data'}
+    </button>
+  )
+}
+```
+
+```jsx
+// UserDetails.jsx - Client Component
+'use client'
+
+import { useState } from 'react'
+
+export default function UserDetails({ userId }) {
+  const [isExpanded, setIsExpanded] = useState(false)
+
+  return (
+    <div className="user-details">
+      <button onClick={() => setIsExpanded(!isExpanded)}>
+        {isExpanded ? 'Show Less' : 'Show More'}
+      </button>
+
+      {isExpanded && (
+        <div className="details-panel">
+          {/* Content shown when expanded */}
+          <a href={`/users/${userId}`}>View Full Profile</a>
+        </div>
+      )}
+    </div>
+  )
+}
+```
+
+```jsx
+// actions.js - Server Actions
+'use server'
+
+import { revalidatePath } from 'next/cache'
+import db from './db'
+
+export async function refreshUsers() {
+  // Server-side logic to refresh data
+  await db.runProcedure('update_user_statistics')
+
+  // Tell Next.js to revalidate the current path
+  revalidatePath('/dashboard')
+}
+```
+
+The key points in this example:
+
+1. The main `UserList` component is a server component that fetches data directly
+2. It includes both other server components (`UserStatistics`) and client components (`RefreshButton`, `UserDetails`)
+3. The client components are minimal and focused only on interactive parts
+4. Server Actions are used to perform data mutations from client components
+
+**Integration with Next.js:** Next.js 13+ (App Router) natively supports Server Components. Writing an application in Next 13, we're essentially using RSC unconsciously - files in the `app` folder are treated as server components by default (even if they use Next's data hooks like `fetch` or directly query a database). If we need interaction, we must add `'use client'` at the top of the file, which signals to Next that this module and all its components should be included in the frontend package. Next.js imposes certain rules - e.g., page files (`page.jsx`) in `app` **cannot** be client-side (which is logical, because a page must be at least partially rendered on the server), but inside you can mix client and server components freely. Next takes care of generating two separate bundles during build: one server-side (Node.js) containing all the code including server components, and another frontend one containing only client components. This happens automatically. In daily work with Next, this means we **must keep track of 'use client' directives** - for example, if we create a form component and forget to mark it as client-side, Next will report an error (because it will detect the use of `useState` in a server component).
+
+In other tools, integration with RSC is still in its infancy. Webpack has support for server modules (the `browser: false` flag in package.json dependencies can indicate that a given package should be excluded from the client bundle). Vite is also experimenting with RSC support - there are plugins and forks that allow running React 18+ with RSC in a development environment outside of Next.js. For now, Next.js is the most mature solution that offers out-of-the-box everything needed to use Server Components (routing, bundling, streaming, etc.). React developers have announced that support for RSC will also appear in other frameworks (the React.dev site listed several "bleeding-edge" integrations in progress), but at the time of React 19's release, Next.js was the natural choice for using this technology.
+
+Let's briefly mention **Server Actions**, as they are closely related to RSCs and React 19. Server Actions are a mechanism for performing actions (e.g., form handling, data mutation) on the server side, invoked directly from a client component through function calls. In practice, it works so that a client component imports a function marked with `'use server'` (that's the action) and can call it, for example, in a form's onSubmit - React will then send a package with data to the server, call that function, and then can update the application state. Server Actions complement RSCs because they handle event processing on the server side. For example, in Next.js 13.4, we can build a contact form that doesn't call any REST API - instead, a server action will directly save the data to the database. However, that's a topic for a separate article; we mention it to show the bigger picture - React 19 is moving towards having both rendering and data mutations happen on the server in a unified way, while maintaining the declarative style of writing components.
+
+## Challenges and Potential Problems
+
+Despite numerous advantages, the introduction of Server Components also comes with certain challenges. Adapting existing applications and developer habits to the new model can be difficult. Here are the main potential problems and issues to watch out for:
+
+- **Integration in existing projects:** While React 19 supports RSCs, to use them in practice, you need appropriate **tooling** (bundler, server). In a typical CRA (Create React App) application using pure webpack without customization, using RSC is not simple - it would require deep configuration changes (or migration to Next.js). Today, if we have a large React 18 application in CSR architecture and want to migrate to RSC, the easiest path is to consider migrating to Next.js App Router. However, this may mean a major rebuild. Also problematic is the **incompatibility with certain libraries** - many libraries assume browser availability (e.g., they manipulate the DOM in `useEffect`). Such libraries can't be used in Server Components. So we need to identify which parts of the application can work on the server and which must remain client-side. For teams with a lot of code, this can be a significant undertaking.
+- **Logic separation and new abstractions:** The introduction of division into server and client components means that sometimes code that was previously together now needs to be **split into two places**. For example, a user registration form component in traditional React contained validation logic, API calls, and error display - all in one place. In the RSC approach, part of this (form UI) can be server-side, while interaction handling (input validation, submit handling) is client-side, and the actual database write is a server action. As a result, the developer must **manage multiple files/components for a single functionality**, which can initially be disorienting. For example, when progressively enhancing a form, it may turn out that an additional client component needs to be extracted just to use a certain hook (e.g., `useFormStatus`). Such fragmentation can be somewhat cumbersome. As one early adopter noted, "juggling the 'use client' directive becomes tedious as application complexity grows". A good practice here is organizing code in subtrees: e.g., having a directory of purely server components, and within it possibly a `client/` subdirectory with accompanying client components. Next.js partially imposes a structure (e.g., in `app/` you can create subdirectories like `componentName/page.jsx`, `componentName/Component.jsx`, etc.), but the developer still needs to ensure that related parts of logic are clearly organized.
+- **Debugging and monitoring:** The new model executes React code on the server side, which means that runtime error debugging and log analysis shifts partially to the backend. An error in a server component will manifest as a stack trace in the server console, not in the browser devtools. For programmers accustomed to debugging React exclusively in the browser, this is a change - sometimes you need to run a development server with Node.js debugger, or analyze why a component didn't stream content. Tools like React DevTools in their current form also poorly support RSC - DevTools runs in the browser and will show us the component tree on the client side (so we'll see client components and "walled-off" results of server components). To profile RSC performance, you need to use server-side tools (e.g., Node profiler). All this means a certain **learning curve** - the ecosystem of tools will need to catch up with the new model. We can expect improvements in the future (e.g., extended DevTools showing both server and client trees, tools for testing RSC, etc.), but in the initial adoption phase, developers must be prepared for new diagnostic challenges.
+- **Backward compatibility:** React 19 maintains full compatibility with old applications - if we don't use RSC, our code behaves as before. However, if we try to implement RSC gradually, certain subtleties may arise. For example, **context (Context API)** - if we have a context provider as a client component, then server components cannot use it directly while generating HTML (because the context is established only in client runtime). React has anticipated this and supports so-called server-only read context, but not all patterns from the client translate 1:1. Another example is global state management libraries (Redux, MobX) - their integration with RSC requires consideration, as the server generates the view state, and then the client takes over. In short: existing architectures may require modifications to fully benefit from RSC.
+- **Developer experience:** Learning a new approach always takes time. Paradoxically, React, which for years taught "think in terms of components, not pages," now encourages thinking additionally about "which components are server-side and which are client-side." The developer must consciously plan the division. This can initially lead to errors - e.g., someone forgets to add `'use client'` and wonders why clicking doesn't work, or imports a Node module in a client component and gets a bundler error. New habits need to be formed. This is definitely **additional complexity** compared to the previous React model, where all components worked the same way. However, the React team tried to minimize this barrier through a very simple interface (these two directives `'use client'` / `'use server'` and the rest "happens automagically"). After a few projects with RSC, it probably becomes second nature - just as programmers got used to dividing code into front/back, here we divide into server components and the rest.
+
+It's also worth noting that React 19 defines RSC as conceptually stable, **but work on the infrastructure is still ongoing**. The creators warn that low-level API for bundlers/frameworks may change in subsequent minor versions 19.x. For an application developer, this isn't very significant (it's a problem for tool creators, such as the Next.js team), but it shows that the ecosystem is still maturing. This may result in, for example, the need to update the React version together with the bundler if changes appear. Fortunately, Next.js Canary and React Canary go hand in hand, so by following Next updates, we'll have current RSC.
+
+In summary, **the main difficulties in adapting Server Components** are: the need for a modern stack (framework) supporting RSC, separating code into server/client parts which affects organization and readability, potential debugging problems, and the necessity to change the way we think about building components. Despite these challenges, many teams have successfully started using RSC (especially in Next.js), suggesting that the benefits outweigh the migration costs in applications with high performance requirements.
+
+## Summary and the Future of Server Components
+
+React Server Components in React 19 are likely **the future of rendering in React** - or at least a very significant step in that direction. With RSCs, React combines the features of traditional server applications with modern SPAs, allowing for the building of fast, responsive applications that are simultaneously simpler to maintain (thanks to better separation of data concerns from interactivity). Although the technology is still young, it's already clear that it can become a fundamental part of the React ecosystem.
+
+Will Server Components become the standard? Many signs point to this. Looking historically - React has introduced major changes before (e.g., functional components + Hooks replacing classes, Context API, Suspense, etc.) and over time the community adopted them, with old patterns fading into the background. Similarly, RSCs have a chance to change our default approach to creating applications. In a few years, writing components that immediately communicate with a database or API during rendering may be as ordinary as using `useEffect` is today.
+
+**Possible further development directions:** In the near future, we can expect greater stabilization and tool support for RSC. Next.js will continue developing its App Router (already Next 14 and 15 Beta bring performance improvements for RSC, such as better caching or integration with other parts of the ecosystem). Other frameworks, like Remix or even Meta-frameworks outside the React world, will be watching this approach. It's possible that dedicated **libraries supporting RSC** will appear - e.g., improved state managers that can work on the server side and synchronize with the client. We might also see RSC support in React Native (though this is a more distant perspective - the question arises how RSCs could work in mobile applications without a traditional HTTP server).
+
+Another area is the development of **Server Actions** and their connection with RSC. If Server Components deal with view generation, and Server Actions handle events/mutations, then React becomes a full-fledged full-stack framework. Perhaps future React versions will provide even more convenient abstractions for cooperation between client components and server actions (work is already underway to improve the API, e.g., the `useActionState` hook combining the functionality of useFormStatus and useFormState to simplify form handling).
+
+**Impact on the community and ecosystem:** RSC adoption will likely force updates in many popular libraries. For example, data fetching libraries (React Query, SWR) may offer versions adapted to RSC (although in RSC we'll often simply use regular fetch/axios on the server). CSS-in-JS frameworks may need to handle style rendering on the server in the RSC context. Monitoring tools will need to learn to track the "React part" running on the server as well. All this will happen gradually as React 19 becomes more popular.
+
+Finally, it's worth emphasizing that although RSCs sound revolutionary, **programming with them is still programming in React**. Many concepts remain the same - we still have components, props, declarative JSX. React hides most of the complicated mechanics from us (streaming, synchronization, etc.), so we can focus on application logic. Developers starting a new project on React 19 using Server Components will likely quickly appreciate the benefits: less glue code (connecting front with back), less worry about first render efficiency, simpler data management.
+
+So are Server Components the future of rendering in React? **Very likely, yes.** Many experts believe that RSCs will change the game permanently, analogous to how Hooks changed best practices for writing components. Of course, classic SPAs won't disappear overnight - there are cases where logic entirely on the client side suffices. However, for large, rich web applications requiring both interactivity and fast loading, the hybrid approach offered by React 19 becomes extremely attractive.
+
+**Future:** React 19 opens the door to even tighter integration of the view layer with the server. Perhaps in future versions, we'll see even more "magic" - e.g., automatic state synchronization between server and client, or tools for easy fallback to static rendering. It's possible that RSC concepts will inspire other libraries and similar solutions will emerge outside React (already in the PHP/Laravel world there's talk of integrating frontend components with the server, and in the JavaScript world beyond React - Astro, Qwik, etc. - also emphasize limiting JS in the browser).
+
+One thing is certain: **Server Components are here to stay** and worth looking into more closely. React 19 provides working foundations for this technology, and the coming months and years will bring further development and optimizations. For React developers, this is an exciting time - once again we can "rearrange" the way we think about web applications, while maintaining our favorite React abstractions. Server Components are a big step forward in creating faster, more efficient, and SEO-friendly applications, and also a step towards simplifying the full technology stack needed to build a modern internet application. It can be stated with high probability that **the future of React will be significantly server-side** - and we, as programmers, can already start utilizing this future by learning Server Components and experimenting with them in practice.
+
+Here's an example of how you might build a blog with Server Components:
+
+```jsx
+// app/blog/page.jsx - Server Component (root page)
+import { getAllPosts } from '@/lib/blog-api'
+import PostList from '@/components/PostList'
+import SearchBox from '@/components/SearchBox'
+
+export default async function BlogPage() {
+  // Data fetching at request time directly in the component
+  const posts = await getAllPosts()
+
+  return (
+    <main className="blog-container">
+      <h1>Our Blog</h1>
+      <p>Welcome to our blog, sharing insights about modern web development</p>
+
+      {/* Client component for interactivity */}
+      <SearchBox initialPosts={posts} />
+
+      {/* Server component for static content */}
+      <PostList posts={posts} />
+    </main>
+  )
+}
+```
+
+```jsx
+// components/PostList.jsx - Server Component
+import Image from 'next/image'
+import Link from 'next/link'
+import { formatDate } from '@/lib/utils'
+
+export default function PostList({ posts }) {
+  return (
+    <section className="post-grid">
+      {posts.map((post) => (
+        <article key={post.id} className="post-card">
+          <div className="post-image">
+            <Image
+              src={post.coverImage}
+              alt={post.title}
+              width={300}
+              height={200}
+              priority={false}
+            />
+          </div>
+
+          <div className="post-content">
+            <h2>
+              <Link href={`/blog/${post.slug}`}>{post.title}</Link>
+            </h2>
+            <div className="post-meta">
+              <time>{formatDate(post.publishedAt)}</time>
+              <span className="author">By {post.author.name}</span>
+            </div>
+            <p className="excerpt">{post.excerpt}</p>
+          </div>
+        </article>
+      ))}
+    </section>
+  )
+}
+```
+
+```jsx
+// components/SearchBox.jsx - Client Component
+'use client'
+
+import { useState, useTransition } from 'react'
+import { searchPosts } from '@/lib/actions'
+
+export default function SearchBox({ initialPosts }) {
+  const [query, setQuery] = useState('')
+  const [searchResults, setSearchResults] = useState(initialPosts)
+  const [isPending, startTransition] = useTransition()
+
+  async function handleSearch(e) {
+    const value = e.target.value
+    setQuery(value)
+
+    // Use React's useTransition to keep the UI responsive
+    startTransition(async () => {
+      if (value.trim().length > 2) {
+        // Call a server action to perform the search
+        const results = await searchPosts(value)
+        setSearchResults(results)
+      } else {
+        setSearchResults(initialPosts)
+      }
+    })
+  }
+
+  return (
+    <div className="search-container">
+      <input
+        type="text"
+        placeholder="Search posts..."
+        value={query}
+        onChange={handleSearch}
+        className="search-input"
+      />
+
+      {isPending && <span className="loading-indicator">Searching...</span>}
+
+      <div className="search-stats">Found {searchResults.length} posts</div>
+
+      {query.length > 0 && searchResults.length > 0 && (
+        <div className="search-results">
+          {searchResults.map((post) => (
+            <div key={post.id} className="search-result-item">
+              <a href={`/blog/${post.slug}`}>{post.title}</a>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+```
+
+```jsx
+// lib/actions.js - Server Actions
+'use server'
+
+import { revalidatePath } from 'next/cache'
+import db from './db-connection'
+
+export async function searchPosts(query) {
+  // Server-side search logic
+  const posts = await db.post.findMany({
+    where: {
+      OR: [
+        { title: { contains: query, mode: 'insensitive' } },
+        { content: { contains: query, mode: 'insensitive' } },
+      ],
+    },
+    include: {
+      author: true,
+      categories: true,
+    },
+    orderBy: {
+      publishedAt: 'desc',
+    },
+  })
+
+  return posts
+}
+
+export async function likePost(postId) {
+  await db.post.update({
+    where: { id: postId },
+    data: { likes: { increment: 1 } },
+  })
+
+  revalidatePath(`/blog/[slug]`)
+}
+```
+
+**Bibliography:**
+
+- [Making Sense of React Server Components](https://www.joshwcomeau.com/react/server-components/)
+- [Server Components and Server Actions in React 19](https://medium.com/@erickzanetti/server-components-and-server-actions-in-react-19-a-revolution-in-react-architecture-85c75b3531c6)
+- [React Server Components: A comprehensive guide](https://blog.logrocket.com/react-server-components-comprehensive-guide)
+- [The Forensics of React Server Components](https://www.smashingmagazine.com/2024/05/forensics-react-server-components)
+- [React Server Components: The Future of React Development](https://www.dreamhost.com/blog/react-server-components)
+- [React Server Components: The Future of UI](https://www.epicreact.dev/react-server-components-the-future-of-ui)
+- [Server Components vs. SSR in Next.js](https://www.webscope.io/blog/server-components-vs-ssr)
+- [React Server Components: the Good, the Bad, and the Ugly
+  ](https://mayank.co/blog/react-server-components/)
+- React 19 Documentation (React Server Components)
+- Next.js 13 Documentation (App Router and RSC)
