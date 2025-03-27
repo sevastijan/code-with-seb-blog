@@ -1,0 +1,311 @@
+---
+title: "BFF – The Frontend's Best Friend in the Microservices World"
+summary: 'Discover how effective mentorship transforms junior developers into productive, confident team members—and why success relies on the collaborative effort of your entire team, not just senior developers'
+date: '2025-03-28'
+tags:
+  [
+    'Microservices',
+    'Architecture',
+    'Backend-for-frontend',
+    'Frontend',
+    'System-design',
+    'Bff-pattern',
+  ]
+draft: false
+---
+
+Imagine building a modern application based on **microservices**. The frontend (whether a web or mobile app) needs to fetch data from multiple independent services: users, products, orders, cart, reviews... the list grows with system complexity. Each of these services exposes its own API, often returning more data than the UI needs. As a result, the frontend ends up making several separate requests and stitching the results together on the client side—extra complexity in the browser, and more room for bugs.
+
+Now, consider a case where you have **multiple client applications** (web + mobile), each with different data requirements. This is where a smart architectural pattern comes to the rescue: **Backend-for-Frontend (BFF)**.
+
+# What is Backend-for-Frontend (BFF)?
+
+**BFF** is an architectural pattern where each frontend has its own dedicated backend layer. Rather than exposing a single universal API for all clients, you build specialized services tailored to each frontend—like one BFF for the web app, another for mobile.
+
+Each BFF:
+
+- **Aggregates data** from various microservices,
+- **Transforms it** to match the exact needs of the UI,
+- **Reduces the number of requests** from the client,
+- **Hides backend complexity** from the frontend.
+
+Think of a BFF as a translator between frontend and microservices: it handles requests from the UI, fetches relevant data from backend services, reshapes it, and sends it back in a UI-friendly format.
+
+# Why Does This Pattern Work So Well?
+
+## Simpler Frontend Integration
+
+To better understand the concept, let’s consider a concrete example from an e-commerce application. Suppose we want to display a “My Account” page to the user, where profile data, a list of recent orders, and recommended products are all shown at once.
+
+In a traditional approach, the frontend would need to make three separate requests from the browser: one to the User Service (for profile data), one to the Order Service (for purchase history), and one to the Product Service (e.g., for recommendations). Each request means a separate HTTP connection and wait time for a response—before the page can be rendered, the browser has to synchronize the results of all three calls.
+
+[![](https://mermaid.ink/img/pako:eNp9UMtugzAQ_BVrT61EUEiCIT70UEykHhoqSnqouFixA6ixHblGfVj8ew2JovbSvezOaGZWGgd7zQUQOBz1x75lxqKK1gr5ub_ZlMW2yrf09kKg2ewOZW73nJfoTPnr5SHLh98C6p7Kgu6y6h_NxhUlzcu_AgigMR0HcmDHdxGAFEayEYMbhTXYVkhRA_EnZ-athlqNphNTr1pLINb03mZ037TXkP7EmRW0Y41h8soaobgwme6VBRIleAoB4uDTw3Uc4miepDiKln7jRQBfQDAOcZqscIxXMV6u08UQwPf0dh6mSRyA4J3V5vFc59Tq8AOvvGUr?type=png)](https://mermaid.live/edit#pako:eNp9UMtugzAQ_BVrT61EUEiCIT70UEykHhoqSnqouFixA6ixHblGfVj8ew2JovbSvezOaGZWGgd7zQUQOBz1x75lxqKK1gr5ub_ZlMW2yrf09kKg2ewOZW73nJfoTPnr5SHLh98C6p7Kgu6y6h_NxhUlzcu_AgigMR0HcmDHdxGAFEayEYMbhTXYVkhRA_EnZ-athlqNphNTr1pLINb03mZ037TXkP7EmRW0Y41h8soaobgwme6VBRIleAoB4uDTw3Uc4miepDiKln7jRQBfQDAOcZqscIxXMV6u08UQwPf0dh6mSRyA4J3V5vFc59Tq8AOvvGUr)
+
+On top of that, the browser must also contain logic to merge those datasets (e.g., matching product IDs from recommendations with product details).
+
+That’s where BFF comes in. We can design a single endpoint in the BFF layer—e.g., GET /api/dashboard—which immediately returns all the data required for the “My Account” screen.
+
+[![](https://mermaid.ink/img/pako:eNp9kU1vgzAMhv8K8qmVaEUFBJbDpEGg22FlYnSHiUvUpIBWSJUF7SPivy-Fqau0aT7Zj9_XtmQNO8E4YNgfxNuuplJZBSk7y8TNLM2zTZFsyHyxuI5mUZrOp05kGWDFevuY5NaETPZ0FyfDpYDohzwj27j4R5PqLCdJ_pcgHgVrbfZ-E_KLpBO5uG09ktuf28GGSjYM8J4eXrkNLZctPdWgT44SVM1bXgI2KaPypYSyG4zpSLtnIVrASvbGJkVf1ech_ZFRxUlDK0nbM5W8Y1zGou8UYDcIxiGANbwDDv0lWjlB6AWeE_pO6NrwAdhHSxQG_gpdOa6HkD_Y8DkudZYG28BZo4S8n140fmr4AhrseNc?type=png)](https://mermaid.live/edit#pako:eNp9kU1vgzAMhv8K8qmVaEUFBJbDpEGg22FlYnSHiUvUpIBWSJUF7SPivy-Fqau0aT7Zj9_XtmQNO8E4YNgfxNuuplJZBSk7y8TNLM2zTZFsyHyxuI5mUZrOp05kGWDFevuY5NaETPZ0FyfDpYDohzwj27j4R5PqLCdJ_pcgHgVrbfZ-E_KLpBO5uG09ktuf28GGSjYM8J4eXrkNLZctPdWgT44SVM1bXgI2KaPypYSyG4zpSLtnIVrASvbGJkVf1ech_ZFRxUlDK0nbM5W8Y1zGou8UYDcIxiGANbwDDv0lWjlB6AWeE_pO6NrwAdhHSxQG_gpdOa6HkD_Y8DkudZYG28BZo4S8n140fmr4AhrseNc)
+
+Upon receiving the request from the frontend, the BFF internally performs parallel requests to three microservices: users, orders, and products. It then aggregates the results into a single cohesive response (e.g., nesting profile data, recent orders, and recommended products into one JSON object) and sends it back to the frontend.
+
+From the browser’s perspective, this behaves like a single, simple request—it receives a ready-to-render data package from the BFF and can focus on presenting it in the UI.
+
+## Tailored API Responses
+
+BFFs return only what the UI needs. No more over-fetching or juggling huge payloads in the browser. They can also merge, sort, or transform data on the server—so the client can focus on rendering, not data wrangling.
+
+Here’s a simplified Node.js example:
+
+```js
+app.get('/api/dashboard', async (req, res) => {
+  const userId = req.user.id
+  const [user, orders, recommendations] = await Promise.all([
+    fetch(`https://user-service/api/users/${userId}`).then((res) => res.json()),
+    fetch(`https://order-service/api/users/${userId}/orders`).then((res) => res.json()),
+    fetch(`https://product-service/api/users/${userId}/recommendations`).then((res) => res.json()),
+  ])
+
+  res.json({
+    user: { id: user.id, name: user.name, email: user.email },
+    recentOrders: orders.slice(0, 5),
+    recommendedProducts: recommendations.items,
+  })
+})
+```
+
+## Separate BFFs for Different Applications (Web vs Mobile)
+
+The advantages of the BFF pattern become especially clear when your system supports more than one frontend. Modern applications often deliver multiple user experiences—for example, a web app (running in the browser) and a mobile app (on Android/iOS). These interfaces often have different requirements: the web app can display more detailed information on a large screen and can make several dynamic requests, whereas on a mobile device, efficiency and minimizing data transfer are key.
+
+Because of that, it's common practice to create a separate BFF for each type of client io).
+The rule of thumb? “One experience = One BFF.”
+
+**So you might have:**
+
+- A Web BFF serving the browser-based frontend,
+- A Mobile BFF for the native mobile app.
+
+Each BFF exposes an API tailored to its specific frontend and communicates with the backend microservices independently. This allows the business logic of each platform to evolve and be optimized separately, without the risk that a change made for the mobile app breaks the desktop version—or vice versa.
+
+This separation protects against backend bloat—the kind that happens when a single backend is stretched to satisfy conflicting needs of multiple clients. Instead, you get lean, focused BFFs, each designed specifically for its frontend, with no leftover code branches meant for other platforms.
+
+### Example: Split BFF Architecture
+
+A mobile app (on the left) has its own backend layer (Mobile Client BFF), while the web or desktop app (on the right) uses a completely separate layer (Desktop Client BFF).
+Both BFFs talk to the same internal microservices (shown below in the diagram), but they do it independently.
+
+This setup lets you shape the API and logic of each BFF specifically for its device—mobile or desktop—without forcing a compromise by trying to use one universal backend for all clients.
+
+[![](https://mermaid.ink/img/pako:eNp1kV9vgjAUxb9Kc59cgoZ_pdKHJYPiZqbDKO5h4EMjFc2Emg6yOeN3H0K2zESatLn3nPPrfbgnWMtUAIXNXn6ut1yVKGJJgerzEE9DbzwJkD8ZBy_RCvX798jrXYnIG43u2rgfs2DxHIWzqzzrXav_ANYERvFyEcxRfV_HfrBqLa_baqnHeDYP2dKPboJdbss-xeGcdYy87SUFaJCpXQq0VJXQIBcq55cWTpdEAuVW5CIBWpcpV-8JJMW5Zg68eJMy_8WUrLIt0A3ff9RddUh5KdiOZ4rnf6oSRSqUL6uiBGo7bvMJ0BN8ATVMY2BbNjYdV8dO_VgaHIESfeAMCdYxNrBlEBefNfhuxuoDQgzTNm3LJbYzxA7RQKS7Uqppu_Vm-ecfGYOO3w?type=png)](https://mermaid.live/edit#pako:eNp1kV9vgjAUxb9Kc59cgoZ_pdKHJYPiZqbDKO5h4EMjFc2Emg6yOeN3H0K2zESatLn3nPPrfbgnWMtUAIXNXn6ut1yVKGJJgerzEE9DbzwJkD8ZBy_RCvX798jrXYnIG43u2rgfs2DxHIWzqzzrXav_ANYERvFyEcxRfV_HfrBqLa_baqnHeDYP2dKPboJdbss-xeGcdYy87SUFaJCpXQq0VJXQIBcq55cWTpdEAuVW5CIBWpcpV-8JJMW5Zg68eJMy_8WUrLIt0A3ff9RddUh5KdiOZ4rnf6oSRSqUL6uiBGo7bvMJ0BN8ATVMY2BbNjYdV8dO_VgaHIESfeAMCdYxNrBlEBefNfhuxuoDQgzTNm3LJbYzxA7RQKS7Uqppu_Vm-ecfGYOO3w)
+
+### Why Frontend-Specific BFFs Work
+
+Splitting BFFs per frontend brings tangible benefits:
+
+#### Independent release cycles
+
+Each team can iterate on their app's BFF at their own pace. If tomorrow the mobile team needs a new API field or logic change, they can implement it in the Mobile BFF without touching the Web BFF.
+
+#### Platform-specific optimization
+
+The Mobile BFF can avoid sending high-res images or large result sets to phones. It trims the data down to what's necessary—saving bandwidth and battery life (it-solve.pl).
+The Web BFF, meanwhile, can afford to send richer, heavier payloads, leveraging the faster connection and processing power of desktop devices.
+
+It’s like this:
+
+- The Mobile BFF serves “lightweight portions,”
+- The Web BFF delivers the “full meal.”
+- Each device gets what suits its capabilities best.
+
+#### Real-World Patterns
+
+There are multiple ways companies approach the number of BFFs. Sometimes, if two frontends are very similar (e.g., Android and iOS apps that only differ in details), teams opt to share a single BFF for both platforms. That was the case at SoundCloud—initially, both iOS and Android apps shared the same BFF. Eventually, they split them due to growing differences in API structure and platform needs.
+
+## Introducing BFF Changes More Than Just Architecture – It Changes Team Dynamics
+
+Adding a BFF layer doesn’t just reshape system architecture—it also transforms how development teams collaborate.
+
+In traditional setups, frontend developers are heavily dependent on backend teams. They have to wait for shared APIs to be exposed or updated, often coordinated across multiple clients. But when each frontend has its own dedicated backend, the boundary between frontend and backend becomes more flexible. Often, the same team that builds the frontend is also responsible for its BFF.
+
+This gives frontend developers more control over “their” part of the server-side stack. They can define what the ideal API should look like—either together with backend developers or even independently if they have the skills—and ship changes faster. That autonomy leads to faster delivery of product features.
+
+For example, when the mobile team is building a new feature, they can implement support for it in the Mobile BFF without involving other microservice teams—assuming the necessary data is already available or accessible elsewhere.
+
+The BFF evolves in sync with the frontend, removing the all-too-familiar scenario where the frontend is stuck waiting on backend API changes—or worse, forced to hack around missing data. As Sam Newman puts it, a BFF “owned by the same team that owns the UI” makes it easier to design an API that matches the frontend’s needs, and ensures both layers ship together.
+
+In other words: the frontend and its BFF become a tightly coupled delivery unit, almost like the server-side extension of the UI.
+
+## Fewer Dependencies, Cleaner Collaboration
+
+From an organizational perspective, BFFs reduce cross-team dependencies. Frontend teams no longer need to coordinate every API change with backend teams responsible for other clients. The mobile team doesn’t block the web team—and vice versa.
+
+Each team can prioritize and iterate based on their own product’s needs.
+
+This setup naturally supports cross-functional teams, where frontend and backend devs work side by side on a single “slice” of the system—a single product experience. Instead of siloed “frontend” and “backend” teams trying to deliver everything, you have smaller vertical teams owning both the frontend and its BFF—like one team for the mobile app + Mobile BFF, another for web + Web BFF.
+
+This model increases end-to-end ownership and eliminates friction between frontend and backend in larger organizations.
+
+## Freedom of Tech Choice = Faster Delivery
+
+Another benefit: owning a BFF gives frontend teams freedom to choose their backend tech stack. Since a BFF only serves one app and is owned by its dev team, they’re free to write it in Node.js, Python, or whatever’s most productive—regardless of the language used by deeper business-layer microservices.
+
+## Best Practices for BFF Ownership
+
+That said, this freedom comes with responsibility. Good BFF architecture keeps UI-specific logic inside the BFF, but avoids duplicating core domain logic, which should stay in microservices.
+
+**A BFF should focus on:**
+
+- orchestrating data from services,
+- shaping and transforming responses,
+- performing lightweight validation,
+
+But not implementing business rules like pricing logic, order processing, or authentication policies—those belong to domain services.
+
+This clean separation lets backend teams focus on stable, reusable business logic, while BFF teams compose and adapt those services to serve the UI.
+
+**It’s important for teams to define a clear contract:**
+
+- Microservices expose consistent APIs,
+- BFFs consume them and build their own APIs for the frontend.
+
+If a change requires updating domain logic—it goes to the microservice.
+If it’s about UX-specific data shape or aggregation—it belongs in the BFF.
+
+This way, you keep your architecture clean and avoid turning your BFF into a dumping ground for random business logic.
+
+Also: if a specific function is used across multiple frontends, maybe it belongs deeper in the stack—in an API gateway or core service—not duplicated in each BFF. These decisions require team alignment, but BFF gives you the flexibility to choose consciously, not patch things chaotically in the UI.
+
+## Advanced: When Is BFF Overkill vs. a Lifesaver?
+
+After all this praise, it’s important to note that BFF is not a silver bullet. Like any pattern, it works best in the right context—and can introduce unnecessary complexity in others. Below is a breakdown of scenarios where BFF shines, and where it may be overengineering.
+
+### When BFF Might Be Overhead:
+
+#### You have a monolithic backend and only one frontend.
+
+If your entire backend logic is already consolidated into a single application and there’s just one client interface, then adding a separate BFF layer might be pointless. In that case, the frontend already talks to a single API that provides everything. A BFF would only be an extra network hop.
+
+Even Sam Newman admits that in apps serving only a traditional web UI, BFF makes sense only when there’s a strong need for data aggregation on the server—otherwise, it’s often better to keep the architecture simple.
+
+#### Client interfaces have nearly identical requirements.
+
+If your mobile app uses the same data as your web app—just rendered differently—creating a separate BFF per platform might be overkill. In extreme cases, multiple BFFs would end up duplicating logic and calling the same services in nearly the same way.
+
+In such a case, a shared API (possibly optimized for a superset of client needs) or a dynamic response shaping layer might be more appropriate.
+
+As many have noted, BFF loses value when interfaces make identical requests to the backend—maintaining multiple services doing the same thing is just extra cost.
+
+#### Operational costs outweigh the benefits.
+
+Each BFF is a separate application that needs to be deployed, monitored, tested—it adds ops overhead. For small teams or simple projects, the team might lack the bandwidth to maintain yet another layer.
+
+If your tech stack is already lean and deploying backend updates isn’t a bottleneck, BFF might bring more complexity than it solves.
+
+In that case, it’s better to optimize existing API communication or use lighter patterns like an API Gateway with custom paths per client.
+
+#### You're already using solutions that solve the same problem.
+
+Modern GraphQL implementations allow frontends to query exactly the data they need, using flexible and declarative query structures.
+
+If your org uses GraphQL with tailored resolvers per interface, then BFF may become redundant GraphQL effectively acts as a “runtime BFF,” aggregating microservice data based on the client’s query.
+Similarly, if you already have an advanced API Gateway that distinguishes client types (e.g., separate paths or versions for mobile vs web) and handles data transformation, a BFF could duplicate this work.
+
+Of course, these technologies can coexist—e.g., your BFF might use GraphQL under the hood—but ask yourself: does this abstraction truly add value?
+
+Bottom line: don’t add a BFF just because it’s trendy—add it when you have a real problem it can solve.
+
+### When BFF Is a Lifesaver:
+
+#### You have a large microservice architecture, and frontend logic requires aggregation.
+
+In this case, a BFF acts as a composer, relieving the frontend from managing dozens of microservice calls.
+For organizations with many small services exposing granular data, BFF is a natural place to consolidate those fragments into cohesive responses for specific frontend views.
+
+Without it, the frontend might need to fire a barrage of requests—or you'd end up building one massive "aggregation API", which comes with its own downsides.
+
+Dedicated, focused BFFs are a much better fit.
+
+#### You serve multiple types of clients (web, mobile, IoT, partners).
+
+Each client has unique requirements, and one-size-fits-all APIs just don’t scale well.
+BFF lets you build client-specific APIs without bloating your core backend.
+
+If you're about to launch a new client (e.g., a mobile app), consider spinning up a dedicated BFF from the start.
+
+This avoids the awkward situation where the mobile frontend tries to “bend” an API built for web—either forcing backend changes that break the web app, or requiring workarounds on the mobile side. A separate BFF gives you a clean slate, isolated from existing clients.
+
+#### Your domain is complex, and users engage with different slices on different platforms.
+
+BFF helps hide domain complexity behind a tailored interface. For instance, your web e-commerce app might expose a full product catalog with filters and deep navigation, while the mobile app only shows featured products and basic browsing.
+
+In that case, the Mobile BFF can expose a simplified API—like a single /featured-products call—while the Web BFF serves a more detailed, paginated catalog. Each BFF “translates” business logic into the language of its client, making the frontend much simpler to build and maintain.
+
+This approach shines in large systems (e.g., banking, e-commerce, enterprise SaaS), where each module might have its own frontend and BFF, all orchestrating hundreds of services in the background.
+
+#### There's a separation between frontend and backend teams (or companies).
+
+If frontend and backend are built by different departments or vendors, each collaboration becomes a potential delay.BFF acts as a buffer layer—frontend teams can respond to product needs faster by adapting data in their BFFs, while backend teams continue evolving their services independently.
+
+For example: if a backend returns data in an imperfect format, the frontend team can temporarily reshape it in the BFF—merge fields, restructure arrays—without waiting for backend changes. It’s not an excuse to avoid proper collaboration, but it provides the flexibility to move fast, and that translates to quicker delivery.
+
+#### You want to evolve the UI quickly without touching the entire system.
+
+BFF loosens architectural coupling: changes in BFF (as long as the frontend contract remains intact) don’t affect the rest of the system.You can refactor how the BFF fetches data—swap out three service calls for one new aggregator microservice—without touching the frontend.
+
+Or vice versa: change the UI completely while keeping backend untouched, as long as the BFF adapts accordingly.
+This freedom is invaluable during refactors and migrations. For example, when breaking down a monolith into microservices, BFF helps maintain continuity, you first redirect the frontend to talk to a BFF instead of the monolith, and then incrementally rewire the BFF to talk to new microservices as they come online.
+
+From the frontend’s perspective, nothing changes—it still talks to the same BFF, which switches behavior under the hood.This is known as the strangler pattern—BFF “strangles” the old monolith by gradually replacing its functionality. It’s an advanced use case, but it shows how strategic a BFF can be in managing system evolution.
+
+Naturally, this list isn’t exhaustive. Whether to adopt a BFF depends on your architecture, team structure, and product velocity.
+
+**Ask yourself:**
+
+- Is your frontend slowed down by integration complexity?
+- Are your backend services too low-level for a usable UI?
+- Do multiple frontends need tailored APIs?
+
+**If so, BFF might be your answer.**
+
+But if your architecture is simple and your team is happy, don’t add complexity just because you can. Keep it clean, and scale only when it makes sense.
+
+## TL;DR – Your Frontend’s Best Friend in the Microservices World
+
+Backend-for-Frontend (BFF) is like an architectural best friend for the frontend—someone who’s got its back and handles all the behind-the-scenes complexity “like a bro.” It simplifies communication with backend services by giving each client application its own “waiter,” who collects data from various kitchens (microservices) and serves it in a neat, digestible format.
+
+As a result, the frontend can focus on what it does best: delivering user interaction, not juggling requests across a dozen services.
+
+**Implementing BFF brings a bunch of tangible benefits:**
+
+- Improved performance – fewer requests, smaller payloads, faster response times,
+- Cleaner frontend code – no more stitching responses or transforming raw data in the UI,
+- Greater team autonomy – frontend teams have influence over “their” piece of the backend stack,
+
+No wonder many companies use this pattern not just for mobile apps (where it started historically), but also for modern web apps and any project where a single backend can’t keep up with the diverse needs of multiple clients.
+
+Of course, BFF is an extra layer—it should be added thoughtfully, only when it actually solves problems instead of creating new ones. But in today’s distributed systems, full of microservices and multi-platform frontends, BFF often turns out to be the missing link that ties everything together.
+
+### In short:
+
+In the world of microservices, it’s a good idea to give your frontend a "best friend forever.”
+A well-implemented BFF can make your architecture more developer-friendly and user-friendly.
+After all, isn't that the goal—to make frontend and backend live in harmony?
+
+Thanks to BFF, they can—each playing by its own rules, but working toward a shared goal.
+
+So if you’re wondering whether your frontend could use a friend who helps it talk to the rest of the microservices family... chances are, the answer is yes.
+
+Good luck implementing your BFF—and trust me, your frontend will thank you.
+
+## References
+
+- [Sam Newman – Building Microservices & samnewman.io](https://samnewman.io)
+- [ThoughtWorks Technology Radar](https://www.thoughtworks.com/radar)
+- [Microsoft Learn – Backend-for-Frontend Pattern](https://learn.microsoft.com/en-us/azure/architecture/patterns/backends-for-frontends)
+- [IT-SOLVE Blog – Architektura BFF w praktyce](https://it-solve.pl/blog/backend-for-frontend)
+- [Alci.dev – Microservices, Frontend and the BFF Pattern](https://alci.dev/posts/bff-pattern)
+- [SoundCloud Engineering Blog – Scaling BFF for Mobile](https://developers.soundcloud.com/blog/scaling-our-mobile-backend)
+- [REA Group Engineering Blog – Our BFF Architecture](https://dev.to/realestateau)
+
+_~Seb_
