@@ -1,0 +1,274 @@
+---
+title: 'How HTTPS Works (Under the Hood of Secure Web Communication)'
+summary: 'HTTPS extends the HTTP protocol by encrypting and verifying data through TLS, ensuring that transmitted information remains confidential and tamper-proof. By combining strong encryption, digital certificates, and integrity checks, HTTPS protects user data from eavesdropping and malicious interference.'
+date: '2025-04-16'
+tags: ['HTTPS', 'TLS', 'WebSecurity', 'Encryption', 'Certificates', 'NetworkSecurity']
+draft: false
+---
+
+HTTPS stands for HyperText Transfer Protocol Secure. It is the secure version of HTTP, the protocol that your web browser uses to communicate with websites. HTTPS leverages encryption (via TLS, Transport Layer Security) to ensure that data passed between a client (like a web browser) and a server is kept confidential and intact. In this article, we’ll explain what HTTPS is, why it’s important, and how it works under the hood – including the role of TLS, public/private keys, digital certificates, and the step-by-step TLS handshake process. We’ll also see how HTTPS guarantees confidentiality, integrity, and authentication for web communications.
+
+# What is HTTPS and Why Is It Important?
+
+HTTPS (HyperText Transfer Protocol Secure) is essentially the familiar HTTP protocol layered with encryption. In practice, HTTPS is just HTTP traffic sent over a secure TLS (formerly SSL) connection​. This means that all HTTP requests and responses (HTML pages, API calls, etc.) are encrypted before being transported, making them unreadable to eavesdroppers. HTTPS is incredibly important because without it, data is sent in plain text over the network. Any intermediary on the route (for example, someone snooping on public Wi-Fi or a compromised router) could intercept or modify unsecured HTTP traffic with ease​.
+
+For a quick example, consider what an attacker might see when intercepting traffic:
+Without HTTPS (HTTP): An intercepted message might reveal sensitive info in plain text, e.g. `username=alice&password=Wonderland123`. This is obviously readable and not secure.
+With HTTPS: The same message in transit would look like a random string of gibberish (ciphertext) instead of the actual credentials. Even if intercepted, it’s nonsensical without the decryption key​.
+
+In addition to protecting sensitive data like login credentials, HTTPS also prevents malicious tampering. Without HTTPS, attackers or even internet service providers could inject content into a website (such as unwanted ads or malicious scripts) as the data travels to your browser​.
+
+HTTPS encryption thwarts this by ensuring that what arrives in the browser is exactly what the server sent (otherwise the browser will detect the tampering). Modern web browsers flag HTTP sites as “Not Secure” and display a padlock icon for HTTPS sites to indicate a secure connection. In short, switching from HTTP to HTTPS is essential for privacy, data integrity, and user trust on the web.
+
+---
+
+# HTTP vs. HTTPS: What’s the Difference?
+
+Although both protocols facilitate data transfer between a client and server, HTTP sends information in plain text, making it easily readable by potential attackers. By contrast, HTTPS encrypts this data and uses digital certificates for authentication, ensuring a secure and tamper-proof connection.
+
+## Transport Security
+
+HTTP by itself provides no encryption or verification. This means that any data sent over HTTP—such as URLs, headers, cookies, or form inputs—travels as readable text across the network. Interceptors can view, record, and even modify traffic, posing a significant risk when handling sensitive information like passwords or personal data.
+
+HTTPS, on the other hand, means HTTP over an encrypted TLS channel. By wrapping HTTP requests and responses in TLS, HTTPS ensures that all application data—including headers, body, and cookies—is encrypted before leaving the client and only decrypted by the server. This encryption layer not only preserves confidentiality against eavesdroppers but also provides verification through digital certificates, establishing trust that users are interacting with the legitimate server they intended to visit.
+
+## Default Port
+
+By convention, HTTP uses port `80`, while HTTPS uses port `443`. This standardization ensures that web browsers and servers know which port to communicate on for unencrypted (HTTP) versus encrypted (HTTPS) traffic, enabling clear segmentation of secure and non-secure transmissions.
+
+This is why web URLs often include `http://` or `https://`. The protocol scheme indicates which port and security layer should be used, instructing browsers to either initiate a plain-text connection over port 80 or an encrypted TLS session over port 443.
+
+## Certificates
+
+HTTPS requires a digital certificate to be installed on the server. This certificate, typically issued by a trusted Certificate Authority, is shared during the TLS handshake to authenticate the server’s identity. By verifying that the certificate is valid and matches the domain, the client knows it is talking to the genuine server rather than an impostor.
+
+HTTP, in contrast, has no such requirement. Because there is no certificate-based authentication, the client cannot verify that the server is who it claims to be, leaving the connection vulnerable to man-in-the-middle attacks and impersonation.
+
+## URL and Indicators
+
+URLs starting with `https://` trigger the browser’s security UI (like the padlock icon), and the traffic is encrypted. URLs with `http://` are not encrypted, and browsers may even warn users before loading these pages.
+
+In summary, HTTPS is not a completely separate protocol but rather HTTP sent over a secure TLS connection​
+
+From a developer’s perspective, an HTTPS request is handled much like an HTTP request in code – you still issue GET/POST requests and receive responses – but the transport layer beneath is doing extra work to keep the data secure.
+
+---
+
+# What is TLS (Transport Layer Security)?
+
+TLS (Transport Layer Security) is the security protocol that powers HTTPS. It provides encryption, integrity checks, and authentication mechanisms for communications. TLS is the successor to the older SSL protocol (in fact, many people still refer to TLS as “SSL”). Whenever you see references to SSL/TLS, they are talking about the same fundamental idea of securing data in transit. At a high level, TLS ensures that data exchanged between a client and server remains private and unmodified​. It does this by using a combination of cryptographic techniques:
+
+## Encryption
+
+TLS uses strong encryption algorithms to scramble data before sending it across the network, ensuring only the intended recipient—who has the matching decryption key—can translate the ciphertext back into readable form. This symmetric encryption process significantly reduces the risk of intercepted data being compromised, as any captured messages appear as gibberish to unauthorized parties.
+
+In doing so, TLS prevents eavesdropping by blocking attackers from viewing or capturing sensitive information while it's in transit. Whether it’s login credentials, financial records, or private user data, the encryption layer ensures prying eyes cannot decipher the content, reinforcing the overall security of modern web communications.
+
+## Integrity
+
+TLS uses cryptographic hash functions and message authentication codes (MACs) to protect data against tampering. These cryptographic tools generate unique “fingerprints” of each piece of data, which the recipient verifies upon arrival. If even a single bit is altered during transit, the derived fingerprint will no longer match, signaling that the data has been corrupted or maliciously modified.
+
+In this way, if a bit is flipped or tampered with, the recipient will know. Because both the sender and recipient rely on a shared secret established during the TLS handshake, only legitimate parties can create or validate these cryptographic signatures. This prevents attackers from modifying HTTPS traffic unnoticed, preserving the reliability and authenticity of transmitted information.
+
+## Authentication
+
+TLS requires the server (and optionally the client) to prove its identity using cryptographic certificates. This prevents “man-in-the-middle” impersonation.
+
+TLS is typically implemented in libraries (such as OpenSSL, NSS, or the built-in platform libraries) so as a developer you usually don’t need to write TLS code from scratch. You just configure your server or client to use HTTPS and the library handles the TLS handshake and encryption for you. The latest version at time of writing is TLS 1.3, which offers improved security and performance over earlier versions. Regardless of the version, the core goal is the same: establish a secure channel that both client and server trust.
+
+> (Note: Historically, the term “SSL” was used – for example, we still say “SSL certificates”. But SSL 3.0 was replaced by TLS 1.0 in the late 1990s. Today’s “SSL certificates” are actually based on TLS. TLS 1.2 and TLS 1.3 are the most widely used versions now.)
+
+---
+
+# Public Key vs. Private Key Cryptography in HTTPS
+
+One of the fundamental technologies that makes HTTPS possible is public key cryptography (also known as asymmetric cryptography). Unlike symmetric encryption (where the same key is used to encrypt and decrypt), asymmetric cryptography uses a key pair: one key is public and one is private​.
+
+- **Public Key**: This key can be shared with everyone. It is typically embedded in the server’s digital certificate and sent to any client that connects. As the name implies, it’s not secret.
+
+- **Private Key**: This key must be kept secret by the owner (the server). The private key is mathematically linked to the public key, but cannot be feasibly derived from the public key.
+
+How they work together: Data encrypted with the public key can only be decrypted with the private key, and vice versa​. This has two important implications for HTTPS:
+
+## Secure Key Exchange
+
+When a client wants to establish a secure session, it can generate a random secret (to be used as a symmetric key later) and encrypt it using the server’s public key. Only the server that has the corresponding private key can decrypt this message and retrieve the secret. This ensures that an eavesdropper cannot steal the secret key needed to decrypt the rest of the session.
+
+**Analogy**: Imagine a padlock and key. You send an open padlock to someone (public key) and they put their secret message in a box and lock it with that padlock. Now only you (who have the private key that opens the padlock) can unlock the box and read the secret inside.
+
+## Authentication via Digital Signatures:
+
+Public/private keys can also be used in reverse to verify identity. For example, the server can digitally sign some data (like part of the handshake messages) using its private key. The client can then verify that signature using the server’s public key (from the certificate). If the signature is valid, it proves the data could only have come from the owner of the private key (i.e. the legitimate server). This helps prevent impersonation.
+
+**Analogy**: It’s like the server has a wax seal stamp (private key) that can mark documents. Anyone with the server’s public key can verify the seal’s imprint. If it matches, the document is authentic and unaltered.
+
+## Symmetric Encryption in HTTPS
+
+Once the initial handshake is done using public key cryptography, the client and server switch to symmetric encryption for the bulk of the data exchange. Symmetric algorithms (like AES) use a single shared secret key (which the client and server agreed upon during the handshake). This is much faster computationally, which is why HTTPS doesn’t encrypt everything asymmetrically – it only uses asymmetric crypto to establish the shared secret securely, then uses that shared secret for efficient symmetric encryption of the actual web traffic.
+
+---
+
+# Digital Certificates and Certificate Authorities (CAs)
+
+When you visit an HTTPS website, your browser doesn’t just start exchanging encrypted data blindly – it first needs to verify that the server is who it claims to be. This is where digital certificates and Certificate Authorities (CAs) come into play. A digital certificate (in this context, an SSL/TLS certificate) is essentially an electronic ID card for a website. It contains important information including:
+
+- The website’s domain name (and possibly subdomains) that the certificate is valid for.
+- The organization or individual to whom the certificate was issued (the site owner).
+- The public key of the website (which browsers will use for encryption and signature verification).
+- The name of the Certificate Authority that issued the certificate.
+- A digital signature from the Certificate Authority, which vouches for the authenticity of the certificate​.
+- Validity dates (issue and expiration date of the certificate).
+
+This certificate is typically installed on the web server. When a client connects over HTTPS, the server sends this certificate to the client as part of the TLS handshake. The client (e.g. your browser) will then do a few checks:
+
+## Validity and Domain Match
+
+The browser checks that the certificate is not expired and that the domain name on the certificate matches the domain it’s trying to reach (to prevent someone using a certificate for example.com on another site).
+
+## Chain of Trust Verification:
+
+The browser verifies the certificate’s digital signature. The certificate is signed by a Certificate Authority (CA) that the browser trusts, either directly or via an intermediate. Browsers and operating systems come with a pre-installed trust store of root CA certificates (from companies like DigiCert, Let’s Encrypt, Comodo, etc.). If the certificate provided by the server is signed by one of these trusted roots (or by an intermediate certificate that leads to a trusted root), then the certificate is considered valid. The browser essentially tries to chain the server’s certificate back to a trusted root CA​.
+
+If it can establish this chain of trust, the certificate is accepted as genuine. If not (for example, if the certificate is self-signed or signed by an unknown authority), the browser will warn the user that the connection is not trusted.
+
+In simpler terms, the certificate tells the client “Here is the public key for example.com, and I, the Certificate Authority, vouch that this is authentic.” The browser uses the CA’s public key (from its trust store) to verify the CA’s signature on the certificate, thereby confirming the certificate hasn’t been forged or tampered with. Once verified, the browser can confidently use the website’s public key (from the cert) to encrypt secrets, knowing it’s talking to the real site and not an impostor​
+
+## Certificate Authorities (CAs)
+
+CAs are trusted organizations that issue certificates. To get a certificate for your website, you typically generate a key pair (keeping the private key secret) and a Certificate Signing Request (CSR) which includes the public key and your domain/organization info. You send the CSR to a CA (like Let’s Encrypt, DigiCert, etc.), and they will verify your control over the domain (and possibly your identity for higher-validation certs). Then they will issue a signed certificate. Because browsers trust the root certificates of these CAs, any certificate signed by them will be trusted by browsers (as long as the chain is intact).
+
+The chain of trust often involves a root CA signing an intermediate CA’s certificate, which in turn signs your server certificate. This is done for security and scalability of the PKI (Public Key Infrastructure). The browser is sent the server certificate (and usually the intermediate’s certificate), and it uses the chain to verify trust up to the root.
+
+### Practical example
+
+As a developer, you might obtain a TLS certificate from a CA for your website. When configuring your web server, you provide the server with two key files: the certificate (public key) and the private key. For instance, in Node.js you might do something like:
+
+```javascript
+const https = require('https')
+const fs = require('fs')
+
+const options = {
+  key: fs.readFileSync('server-key.pem'), // Your server's private key
+  cert: fs.readFileSync('server-cert.pem'), // Your server's certificate (public key + identity)
+}
+
+https
+  .createServer(options, (req, res) => {
+    res.writeHead(200)
+    res.end('Hello, HTTPS!')
+  })
+  .listen(443)
+```
+
+In this snippet, the options object provides the private key and certificate to the HTTPS server. The server will use these during the TLS handshake: it will send the certificate to clients (so they get the public key and can verify identity), and it will use the private key internally to decrypt secrets and/or sign messages as needed. As a developer, you don’t need to handle the low-level crypto – the TLS library does it when you provide the key and cert.
+
+---
+
+# The TLS Handshake: Step by Step
+
+Before any secure data can be exchanged, the client and server must perform a TLS handshake. The handshake is a series of steps that accomplishes a few things: the client and server agree on encryption protocols, the server proves its identity, and they securely establish a shared secret key to encrypt the actual data. Here’s a step-by-step breakdown of a typical TLS handshake (simplified for clarity):
+
+![TLS](/static/images/61080ef1-a00a-4677-a4c4-ff3bb6025d4e.png)
+
+Source: https://www.cloudflare.com/pl-pl/learning/ssl/what-happens-in-a-tls-handshake/
+
+> Simplified TLS handshake sequence (including the initial TCP handshake). The client and server exchange several messages (ClientHello, ServerHello, Certificates, Key Exchange, etc.) before any application data is sent. This process negotiates security parameters and establishes shared keys over an otherwise insecure network.
+
+## TCP Handshake
+
+First, the client and server establish a basic TCP connection (the foundation for any TCP/IP communication). This involves the three-way handshake: the client sends a SYN packet, server replies with SYN-ACK, and client responds with ACK to establish the connection. (TCP ensures reliable delivery; TLS will ride on top of this connection.)
+
+## Client Hello
+
+Once the TCP connection is up, the client initiates the TLS handshake by sending a ClientHello message​. This message includes: The highest TLS version the client supports. A list of cipher suites (encryption algorithms and protocols) that the client is capable of using. A random number (client random), which will be used in key generation.
+(And some other details like supported compression or extensions, but those aren’t critical for basic understanding.)
+
+## Server Hello
+
+The server responds with a ServerHello message​. In this message, the server: Confirms the TLS version to use (picking the highest version supported by both, typically). Selects one of the cipher suites proposed by the client (and it will use this for the session). Sends its own random number (server random).
+
+## Server’s Certificate
+
+Immediately after the ServerHello, the server sends its digital certificate to the client​. This certificate contains the server’s public key and is signed by a CA, as discussed earlier. The client receives the certificate and will later verify it to authenticate the server. (In some cipher suites, the server might also send a separate Server Key Exchange message with additional key information, especially if using Diffie-Hellman, but for a basic RSA-based handshake this step is not used. We’ll keep it simple here.)
+
+## Server Hello Done
+
+The server signals it’s done with its part of the handshake for now. At this point, the client has the server’s public key (from the certificate) and the chosen cipher suite details.
+
+## Certificate Verification
+
+Now it’s the client’s turn to act. Before proceeding, the client verifies the server’s certificate – it checks the chain of trust and the certificate validity as described in the previous section. This step is crucial for authentication: it ensures the client is really talking to the legitimate server and not an impostor. If the certificate verification fails, the handshake is aborted here (and the browser would show a security warning). If it succeeds, the client trusts that the public key indeed belongs to the server.
+
+## Client Key Exchange
+
+Next, the client needs to set up a shared secret for symmetric encryption. The exact method differs based on the cipher suite:
+
+- In a classic RSA handshake (TLS 1.2 and earlier): The client generates a random pre-master secret (basically a random byte string) and encrypts it with the server’s public key, then sends this to the server​. Only the server’s private key can decrypt this message to recover the pre-master secret.
+
+- In an ephemeral Diffie-Hellman (DHE/ECDHE) handshake (commonly used for Perfect Forward Secrecy and in TLS 1.3): The client and server perform a Diffie-Hellman key exchange. For example, the server’s Server Key Exchange would have included DH parameters or an EC public key; the client then sends its own DH parameter. Together, they mathematically derive a shared secret over the exchange. (In TLS 1.3, the handshake is streamlined: both sides exchange key shares earlier and derive the secret.)
+
+- (The specifics can vary, but the end result is the same: both parties arrive at a common pre-master secret that nobody else can obtain.)
+
+## Deriving the Session Keys
+
+Both client and server now have the pre-master secret (either sent via RSA-encrypted message or via DH calculation), as well as the two random values from hello messages. They combine these inputs to compute the session keys​.
+
+This typically involves running the values through a pseudorandom function to generate a set of keys: one for encryption, one for decryption (from the opposite perspective), and keys for integrity (MAC). In modern TLS (especially 1.3), key derivation is handled with advanced algorithms but conceptually, both sides end up with the same symmetric key for encryption going forward.
+
+## Change Cipher Spec
+
+The client now sends a ChangeCipherSpec message to the server to indicate **“from now on, let’s encrypt our messages with the agreed-upon keys/cipher.”** Immediately after, the client sends a Finished message encrypted using the new session key. The Finished message contains a hash of the handshake messages that both sides verify to ensure nothing was tampered with. The server then responds with its own ChangeCipherSpec and an encrypted Finished message. This exchange confirms that both client and server were able to derive the same keys and that the handshake data wasn’t altered in transit​.
+
+## Secure Connection Established
+
+At this point, the TLS handshake is complete. The client and server have a mutual agreement on a cipher suite, have authenticated the server (and client, if client certs are used, though that’s rare for typical HTTPS), and share symmetric encryption keys. Now they proceed to exchange application data (HTTP requests and responses), but now every byte is encrypted and integrity-protected using the session keys. If an attacker were to sniff the connection now, all they would see is ciphertext that they can’t decrypt.
+
+Throughout this process, the goals of TLS are achieved: the communication is confidential (encrypted), integral (any tampering is detected), and the parties are authenticated (at least the server’s identity is verified). The handshake may seem complex, but it actually happens very quickly (often in a few milliseconds). Moreover, TLS 1.3 has simplified the handshake to require fewer round trips between client and server, making the setup even faster.
+
+---
+
+# How HTTPS Ensures Confidentiality, Integrity, and Authentication
+
+By now, you’ve seen these terms multiple times. HTTPS (via TLS) ensures three fundamental security properties for web traffic—confidentiality, integrity, and authentication—by encrypting data, detecting and preventing any unauthorized alterations, and verifying that the client is connected to the legitimate server. This combination of encryption, checksums, and digital certificates underpins the trust users and browsers place in HTTPS as the standard for secure online communication.
+
+## Confidentiality
+
+This means that the data is kept secret from anyone who might be listening. HTTPS achieves confidentiality through encryption. Only the client and server know the symmetric keys used to encrypt and decrypt the data, so an eavesdropper cannot read the content. For example, if you send credit card details over an HTTPS connection, encryption prevents an attacker on the same Wi-Fi from stealing your info. Even if they intercept the encrypted packets, they can’t decipher them. In summary, HTTPS guarantees that exchanged data is encrypted and protected from eavesdroppers.
+
+## Integrity
+
+Integrity ensures that the data hasn’t been altered or corrupted during transit. HTTPS uses cryptographic hashes and MACs (or AEAD ciphers in TLS1.3) to achieve this. Each encrypted message includes a sort of fingerprint (or the encryption scheme inherently ensures integrity) so that the receiver can detect if any byte has been tampered with. If an attacker tries a “man-in-the-middle” attack to modify the content (for instance, changing a transaction amount or injecting malware into a download), the modification will be detected and the connection will be dropped. Thus, HTTPS ensures that any modification of data in transit will be detected – the data you receive is exactly what the server sent
+
+## Authentication
+
+In the context of HTTPS, authentication mainly refers to authenticating the server’s identity (and optionally the client’s). Through the use of certificates and the TLS handshake, the client can be confident about who it's talking to. When you see the padlock in your browser, it means the website presented a valid certificate and proved it owns the corresponding private key, so you know you’re actually connected to (for example) example.com and not an impostor. This prevents impersonation and man-in-the-middle attacks where someone might otherwise trick you into thinking their server is your bank’s server, for example:
+
+Client authentication can also be done with HTTPS using client certificates, but this is less common on public websites – it’s used in some APIs or internal systems for mutual TLS authentication.
+
+To put it all together: **HTTPS = HTTP + TLS**, which provides encryption (for confidentiality), certificates + digital signatures (for authentication), and integrity checks. When configured and used properly, HTTPS ensures that when a junior developer (or any user) makes a request to a website, they can trust that they are talking to the legitimate site, that no one can eavesdrop on the conversation, and that the data will arrive without interference​
+
+---
+
+# Conclusion
+
+HTTPS has become a cornerstone of modern web development and security. As a junior developer, understanding how HTTPS works will help you appreciate why we set up certificates, why certain errors like **“certificate not trusted”** or **“invalid certificate”** appear, and how data remains secure over the wire. In practice, using HTTPS is as simple as configuring your web server with a certificate and using `https://` URLs. But under the hood, as we’ve explored, there’s a sophisticated dance of cryptographic exchanges – the TLS handshake – that establishes a secure channel.
+
+By ensuring confidentiality, integrity, and authentication, HTTPS allows users to confidently engage in online banking, shopping, and communication without fear of someone snooping or tampering with their data. As a developer, always aim to use HTTPS for any sensitive or public-facing web application. It’s not just about encryption – it’s about establishing trust on the internet. With this overview, you should now have a solid understanding of how HTTPS works and why it’s critical.
+
+---
+
+# References:
+
+- [Cloudflare, What is HTTPS?](https://www.cloudflare.com/pl-pl/learning/ssl/what-is-https/)
+
+- [Cloudflare, What is an SSL certificate?](https://www.cloudflare.com/pl-pl/learning/ssl/what-is-an-ssl-certificate/)
+
+- [Cloudflare, What happens in a TLS handshake?](https://www.cloudflare.com/pl-pl/learning/ssl/what-happens-in-a-tls-handshake/)
+
+- [Dev.to, HTTPS: How HTTPS Works – Handshake](https://dev.to/zeeshanali0704/https-how-https-works-handshake-1mjo)
+
+- [SSL Store, Explaining the Chain of Trust](https://www.thesslstore.com/knowledgebase/ssl-support/explaining-the-chain-of-trust/)
+
+Happy (secure) coding!
+
+_~Seb_

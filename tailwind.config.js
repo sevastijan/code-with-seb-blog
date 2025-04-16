@@ -72,5 +72,15 @@ module.exports = {
       }),
     },
   },
-  plugins: [require('@tailwindcss/forms'), require('@tailwindcss/typography')],
+  plugins: [
+    require('@tailwindcss/forms'),
+    require('@tailwindcss/typography'),
+    function ({ addBase }) {
+      addBase({
+        html: {
+          fontSize: '112.5%',
+        },
+      })
+    },
+  ],
 }
