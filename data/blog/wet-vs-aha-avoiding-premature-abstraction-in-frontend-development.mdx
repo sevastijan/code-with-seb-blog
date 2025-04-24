@@ -1,0 +1,271 @@
+---
+title: 'WET vs AHA: Avoiding Premature Abstraction in Frontend Development'
+summary: 'WET (Write Everything Twice) and AHA (Avoid Hasty Abstractions) challenge overzealous DRY by embracing mindful duplication to avoid premature, fragile abstractions. This article offers a technical and philosophical comparison of both principles, helping developers decide when abstraction truly adds value.'
+date: '2025-04-25'
+tags:
+  [
+    'abstraction',
+    'frontend',
+    'code-quality',
+    'refactoring',
+    'Clean Code',
+    'Software Architecture',
+    'Best Practices',
+    'Scalable Code',
+    'Reusable Components',
+  ]
+draft: false
+---
+
+Experienced frontend developers are familiar with the maxim DRY (Don't Repeat Yourself), which urges us to eliminate duplicate code. However, overzealous DRY can backfire – it can lead to premature abstractions that make code more complex, not less. In recent years, two countering principles have gained traction: WET (Write Everything Twice) and AHA (Avoid Hasty Abstractions). Both encourage judicious duplication in code to avoid the pitfalls of wrong abstractions.
+
+This article provides a technical comparison of WET and AHA, with side-by-side analysis, code examples in React, and guidance on maintainability, scaling, and refactoring. By the end, we'll derive best practices for when to choose WET or AHA in a frontend codebase.
+
+# Understanding WET (Write Everything Twice)
+
+WET is an acronym for "Write Everything Twice." It’s essentially a reaction against the dogma of DRY. The WET principle says that some code duplication is acceptable – even encouraged – if it helps prevent premature abstraction. In practice, WET suggests you can write the same (or similar) code twice without guilt; only on the third instance should you consider extracting an abstraction. As one formulation puts it: "You can ask yourself 'Haven't I written this before?' two times, but never three."​. The reasoning is that writing something twice has a low cost (minimal impact on bundle size and a small overhead to maintain), whereas abstracting too early can have a high cost in complexity.
+
+In a WET approach, you hold off creating a shared function or component until you truly see a repeating pattern. Until code is used in at least three places, there’s no pressing need to abstract it​. If a change is required, you simply make that change in two places. By waiting for a third usage, you gain concrete insight into what parts of the code are common and what parts are special to each case​. This guards against guessing an abstraction that might not fit future requirements. In short, WET encourages duplication now to enable better abstraction later.
+
+## Benefits and Rationale of WET
+
+### Avoiding premature abstraction
+
+WET directly tackles the issue of abstracting too early. By allowing repetition, it prevents the creation of "bloated abstractions, full of flags and conditions" that attempt to handle every case​. Such bloated code often arises when developers are *"hell-bent on DRYing up the code ... before we know for sure what parts of our code are truly shared."*​ WET codebases, in contrast, have simpler, more focused functions or components, each tailored to a specific use case initially.
+
+### Clarity and maintainability
+
+Duplication can lead to clearer, more readable code in the short term. Each piece of code is self-contained for its use case, without being tangled in a generic abstraction. This can make a codebase easier to navigate for newcomers. As the author of WET code notes, writing WET might take more thought and effort, but it results in smaller abstractions that are easier to reason about and maintain in the long run.
+
+### Rule of Three
+
+WET often aligns with the "rule of three" in refactoring – don't abstract until you've seen something at least three times. This provides a concrete heuristic. For example, "until I have three usages for a piece of code – there's really no pressing need to abstract it. With three examples, the common pattern usually becomes obvious and the abstraction will be appropriately scoped.
+
+## Potential Drawbacks of WET
+
+### Temporary duplication
+
+By definition, WET means you will have duplicate code for a while. This can introduce a small maintenance burden – if a bug is found in one place, the developer must remember to fix it in the parallel implementations as well. In extreme cases, if one truly never abstracts, you could end up maintaining many copies of similar code. (WET proponents would argue that in practice, once a pattern clearly emerges, you will refactor, so long-term excessive duplication is avoided.)
+
+### Discipline required
+
+Following WET is not an excuse to never refactor. It requires discipline to periodically revisit duplicated code and abstract it when the time is right. The principle "avoid premature abstraction, but abstract when repetition patterns become clear and you find yourself writing the same code again for the third time" is a good guideline​. Teams must ensure that "write it twice" eventually leads to "refactor when thrice."
+
+---
+
+# Understanding AHA (Avoid Hasty Abstractions)
+
+AHA stands for "Avoid Hasty Abstractions" (pronounced "aha!" as in a moment of discovery). This principle was popularized by Kent C. Dodds in 2020​ and echoes earlier wisdom from Sandi Metz and others. AHA is a call to resist the urge to abstract code before you truly understand the problem domain and variability. In essence, it says: _don't create an abstraction just to remove duplication; create it to simplify the system when you have evidence it's the right design._
+
+One of the best summaries of AHA comes from Sandi Metz's advice: "_prefer duplication over the wrong abstraction_" This captures AHA's core philosophy — it is better to have two pieces of similar code than to have one abstraction that incorrectly tries to handle both and ends up causing more trouble. The "wrong abstraction" is considered more harmful than duplicated code. Abstractions that are hastily conceived can become leaky, complex, or rigid, making changes harder than if you'd kept code duplicated and simple.
+
+Instead of a fixed rule, AHA asks developers to use judgment. Delay abstraction until the moment it provides clear benefit and you are confident in the abstraction. Kent Dodds describes being "fine with code duplication until you feel pretty confident that you know the use cases for that duplicate code. At that point, the commonalities will “scream at you for abstraction”​ – meaning the abstraction will be obvious and natural. This aligns with the idea of waiting for the design to emerge from usage, rather than speculating in advance.
+
+AHA also introduces the idea "optimize for change first. Since in software we "don't really know what requirements will be placed upon our code in the future, AHA encourages writing code that is easy to change (even if that means some duplication) rather than code that is "optimized" via abstraction for a future that may never come. By avoiding hasty abstractions, we keep the code flexible. If requirements change, it's easier to modify two or three straightforward implementations than to untangle a deeply-entrenched abstraction built on assumptions that turned out wrong.
+
+## Benefits and Rationale of AHA
+
+### Emphasis on correct abstractions
+
+AHA helps ensure that when you do create an abstraction, it is the right one. By waiting and gathering more information (additional use cases, confirmed patterns), the abstraction you eventually implement is more likely to accurately represent common behavior and truly reduce overall complexity.
+
+### Flexibility and change tolerance
+
+Because AHA encourages leaving code duplicated until necessary, each piece can evolve independently as requirements evolve. You're not forced to fit a new requirement into an existing abstraction that wasn't designed for it. In practice, this often means you avoid the scenario of contorting a generic function with a bunch of if/else branches to handle new cases​. When the abstraction is finally introduced, it’s done with knowledge of multiple real use cases, so it's resilient to change.
+
+### Pragmatic, not dogmatic
+
+Unlike some interpretations of DRY or even WET, AHA is explicitly non-dogmatic about when to abstract. It's all about timing. _"AHA Programming... doesn't give hard-fast rules for when it is or isn't ok to abstract"_. This flexibility means developers can apply intuition and experience. If two pieces of code are duplicated but clearly will always follow the same logic, you might abstract even on the second occurrence.
+
+Conversely, if you've duplicated code three or four times but each case still has divergent needs, you might continue to hold off. The guiding question is: _am I abstracting hastily? If yes, wait a bit longer._
+
+## Potential Drawbacks of AHA
+
+### Lack of a clear trigger point
+
+Because AHA is more of a principle than a rule, less experienced developers might wonder _"how do I know if I'm abstracting too hastily or waiting too long?"_ The answer comes with experience and team norms. The lack of a numeric rule (like WET's "three times") means it requires good judgment. Teams adopting AHA need to communicate and review code to ensure the principle is being applied consistently and not misused as an excuse to avoid necessary refactoring.
+
+### Interim duplication
+
+Similar to WET, AHA tolerates interim code duplication. This means the same cons of duplicated code apply: potential extra effort to maintain multiple places, risk of inconsistencies, etc. AHA acknowledges this trade-off, essentially saying that this extra effort is the lesser evil compared to a premature abstraction that could pervade the codebase. Still, if not managed, duplication can lead to slightly higher short-term maintenance work.
+
+---
+
+# WET vs AHA: Key Comparison
+
+Both WET and AHA arose to address the shortcomings of rigid DRY adherence. In fact, they agree on far more than they disagree – both favor delaying abstraction and tolerating duplication to achieve better design. However, there are nuanced differences in their approach and usage. The comparison table below summarizes the two principles side-by-side:
+
+| **Aspect**                  | **WET (Write Everything Twice)**                                                                      | **AHA (Avoid Hasty Abstractions)**                                                                      |
+| --------------------------- | ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| **Core idea**               | Encourage duplication at least twice. Abstract only on the third instance, when patterns are clearer. | Avoid premature abstractions. Abstract only when confident that the pattern is stable and beneficial.   |
+| **Guidance vs flexibility** | Provides a concrete “rule of three” — abstract only after the third use.                              | Provides a flexible mindset — abstract when the time feels right, based on real use cases.              |
+| **Philosophical origin**    | Reaction to overzealous DRY. Rooted in the Rule of Three and small, well-reasoned abstractions.       | Coined by Kent C. Dodds. Inspired by Sandi Metz’s “prefer duplication over the wrong abstraction” idea. |
+| **Handling duplication**    | Encourages code duplication early on, to allow patterns to emerge naturally.                          | Accepts duplication as a temporary state. Avoids the cost of untangling wrong abstractions later.       |
+| **When to abstract**        | On the third occurrence of a pattern.                                                                 | When abstraction is no longer hasty — usually obvious from usage.                                       |
+| **Dogmatism**               | Slightly more prescriptive due to the “three times” rule.                                             | Intentionally non-dogmatic; prioritizes thoughtfulness over strict rules.                               |
+| **Ultimate goal**           | Arrive at clean, minimal abstractions based on real-world needs.                                      | Maintain flexibility and simplicity until the right abstraction becomes apparent.                       |
+
+### In summary
+
+WET and AHA both champion a pragmatic approach to code reuse. WET gives a simpler rule ("write it twice, third time abstract") which can be a convenient team standard. AHA provides a broader philosophy ("avoid hasty abstraction") that encompasses WET's advice but allows more leeway. Many developers actually see them as reinforcing each other – WET is one way to practice avoiding hasty abstractions.
+
+In fact, Kent C. Dodds remarks that a measured and pragmatic approach is important and notes he prefers AHA over DRY or WET as it keeps one mindful of abstractions without hard rules​. Nonetheless, both WET and AHA ultimately seek to balance out DRY: **they remind us that removing duplication is not the highest virtue in code – removing unnecessary complexity is.**
+
+---
+
+# Example: Preventing Premature Abstraction in a React Component
+
+To illustrate the differences, let's consider a frontend scenario. Imagine our application needs to display various modal dialogs: an error alert and a confirmation prompt (and maybe later, a form dialog). A developer strictly following DRY might be tempted to make a single generic `<Modal>` component to handle all these cases via props and conditional logic. In contrast, a WET/AHA approach would start by writing separate components for each type of modal, even if that means duplicating some structure, and only later abstract common parts.
+
+## DRY Approach (Premature Abstraction)
+
+A single component tries to handle both Error and Confirm modals. This leads to a lot of conditional code to accommodate different behaviors:
+
+```jsx
+// Generic modal component that handles multiple types (error, confirm, etc.)
+function Modal({ type, message, onConfirm, onClose, onSubmit, isForm }) {
+  return (
+    <div className={`modal ${type}`}>
+      {/* Conditional rendering based on type */}
+      {type === 'error' && <ErrorIcon />}
+      {type === 'confirm' && <QuestionMarkIcon />}
+
+      {/* If it's a form-type modal, show a form */}
+      {isForm ? (
+        <form onSubmit={onSubmit}>
+          <p>{message}</p>
+          {/* ... form fields ... */}
+          <button type="submit">Submit</button>
+          <button type="button" onClick={onClose}>
+            Cancel
+          </button>
+        </form>
+      ) : (
+        <div>
+          <p>{message}</p>
+          {/* In a confirm modal, user must confirm; in error, just close */}
+          {type === 'confirm' ? (
+            <button onClick={onConfirm}>Confirm</button>
+          ) : (
+            <button onClick={onClose}>OK</button>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+```
+
+### What's happening in the above code?
+
+The `Modal` component is trying to cover all cases. It has branches for `type === 'error'` vs `type === 'confirm'`, a prop `isForm` to toggle form behavior, and different buttons/actions depending on context. As more modal types are added (say, an info modal, a complex form modal, etc.), this component would grow more props and `if`/`else` logic.
+
+It wouldn't be surprising to see flags like `isSecondLevel` or `hasTwoButtons` being added over time to cover new requirements. Soon, the component could become a maze of conditional rendering – much like the _"monolithic modal"_ example in the WET story, which had _"conditional statements for each of these parameters, to create an almost infinite number of combinations (and bugs). It was a monstrosity"._ This is a textbook case of a **hasty abstraction**: an attempt to force different needs into one abstraction too early.
+
+## WET/AHA Approach (Delayed Abstraction)
+
+Start with two separate components, one for each modal type, even if they share some similar structure. Duplicating the basic modal markup and logic is fine initially:
+
+```jsx
+// Specific Error Modal component (handles only error messages)
+function ErrorModal({ message, onClose }) {
+  return (
+    <div className="modal error">
+      <ErrorIcon />
+      <p>{message}</p>
+      <button onClick={onClose}>OK</button>
+    </div>
+  )
+}
+
+// Specific Confirm Modal component (handles only confirmation prompts)
+function ConfirmModal({ message, onConfirm, onCancel }) {
+  return (
+    <div className="modal confirm">
+      <QuestionMarkIcon />
+      <p>{message}</p>
+      <button onClick={onConfirm}>Confirm</button>
+      <button onClick={onCancel}>Cancel</button>
+    </div>
+  )
+}
+```
+
+In the WET approach, each component is focused on its own purpose. There are two `div` containers with class `modal`, two `<p>` tags for messages, etc. – yes, this is duplicate code in places, but each component is simple and easy to understand in isolation. There's no conditional logic contorting one component to serve multiple masters.
+
+Now, suppose a third modal requirement comes along, like a form dialog (`FormModal`). We might initially create a third component `FormModal` similarly. At that point, we have three implementations of modal-like dialogs. We would then examine them to see what pattern emerges (per WET's rule-of-three). Perhaps we notice that all modals share a common structure: a container with a message and some buttons. We might decide to refactor, but how we refactor is informed by real data:
+
+- We might abstract a `ModalFrame` or `BaseModal` component that handles the generic layout/styling, and keep the specific logic (error vs confirm vs form) in the individual components.
+
+- Or we might simply factor out a small helper for something common (like a styled title or a particular button layout), without merging everything into one component.
+
+Crucially, we would not prematurely lump everything into a single Modal component. Instead, we create abstractions that make sense: for example, an `ErrorModal` and `ConfirmModal` might both use a shared `<ModalContainer>` component for the outer markup, but have their own content inside. The result is a more modular design. Each abstraction (like `ModalContainer`) is smaller and well-defined, instead of one gigantic abstraction with endless flags.
+
+This approach mirrors what the WET principle advocates: _"share as much as is actually needed"_ rather than as much as possible. It also aligns with AHA: we did not introduce an abstraction until we understood the requirements of three different modals, avoiding a potentially wrong abstraction. The difference in outcomes is clear: the DRY approach yielded one complex component with many code paths, while the WET/AHA approach yielded multiple simple components with a possibility to refactor common parts cleanly.
+
+---
+
+# Trade-offs and Implications
+
+Choosing between immediate abstraction vs. controlled duplication (WET/AHA style) involves trade-offs. Let's analyze how these principles impact maintainability, scaling, and refactoring in a frontend codebase:
+
+## Maintainability
+
+Code that strictly follows DRY by using a single abstraction everywhere can become difficult to maintain if that abstraction wasn’t designed with all future scenarios in mind. As we saw, a highly generic component can become _impossible_ to understand or maintain for newcomers. On the other hand, WET/AHA code may be easier for a developer to pick up because each piece serves a clear purpose without hidden couplings.
+
+The trade-off is that the developer must be aware of parallel implementations – if there's a bug in one modal, they should check if the other modal has a similar bug. In practice, well-named, focused components/functions (a byproduct of WET/AHA) can actually reduce cognitive load. Maintenance is improved because each unit of code is simpler, even if there are a few more units.
+
+## Scaling (Codebase Growth)
+
+As a project grows, having the right abstractions in place is crucial to scaling development. Premature abstractions can become bottlenecks – every time someone needs to do something slightly new, they must wade through or modify the one-size-fits-all module, risking regressions in unrelated areas. WET and AHA propose a more scalable approach: let abstractions evolve naturally. By avoiding binding everything together too soon, the codebase can grow with features added in parallel (different developers can work on `ErrorModal` and `ConfirmModal` independently, for example).
+
+When the abstractions are finally introduced, they tend to be smaller and more composable, which scales better than monoliths. That said, in terms of sheer lines of code, WET will initially have more code (due to duplication). But experienced teams often favor explicit duplication over implicit abstraction when scaling, because it yields more predictable and decoupled code.
+
+## Refactoring
+
+There's a saying that any fool can write code that a computer can understand; good programmers write code that humans can understand. WET and AHA help you write the latter, deferring the melding of code until you're sure it's beneficial for humans. When it's time to refactor duplicated code, the process is straightforward – you identify the common parts and extract them.
+
+Compare this to refactoring a bad abstraction: you might have to untangle a lot of conditional logic or even rewrite from scratch. In the popup example earlier, the team eventually had to throw away the monstrous modal and rebuild it properly because it was too far gone.
+
+Following WET/AHA means refactoring happens in smaller batches and at the "last responsible moment." There is a risk that if one procrastinates forever, the refactoring might never happen. But in a professional setting, code review and awareness of these principles usually prompts the team to consolidate code when the time comes. The key insight is that refactoring a well-understood duplication is easier and safer than refactoring a poorly implemented abstraction.
+
+## Performance
+
+In frontend (especially React), one might wonder if duplication vs abstraction has performance implications. Generally, writing things twice has negligible impact on runtime. Bundle size impact is usually minor (two small components vs one slightly larger component often nets out similarly). In fact, sometimes overly generic code can be less performant or bundle-splittable than specific code, because generic code may include code for all cases. So performance shouldn't be a deciding factor here; maintainability should.
+
+## Philosophical (Team Culture)
+
+Embracing WET or AHA influences how a team thinks about code. It encourages developers to deeply reason about the code and what makes it complex, rather than blindly applying a rule to eliminate duplication. It fosters a culture where the team asks "is this abstraction truly warranted?" in code reviews. Over time, this leads to a collective intuition about the "right" moment to abstract. It also can reduce fear of adding new code – developers don't have to hunt for the perfect existing abstraction to squeeze their feature into; they can create a new implementation safely, knowing that if later someone sees overlap, it can be merged then. This is quite liberating and can speed up development with confidence that you're not incurring permanent tech debt by writing similar code twice. The tech debt, if any, is short-lived and intentional.
+
+---
+
+# Conclusion and Best Practices
+
+Both WET and AHA guide us towards one fundamental lesson: Don't abstract code until you're sure that abstraction is a net positive. In frontend development, where requirements change and edge-cases abound, this lesson is especially valuable. A component or utility that was DRY and perfect for two instances can become a nightmare when forced to handle a third scenario it wasn't designed for. By following WET/AHA, we favor clarity and adaptability over premature elegance.
+
+Here are some best practices and guidelines for when to choose WET or AHA approaches in a frontend codebase:
+
+- If you find yourself writing a helper or component just to avoid copying code once, pause and reconsider. It's often better to duplicate the code and wait. As AHA advises, "optimize for change" by not committing to an abstraction too soon. Only abstract when you have confidence in the pattern (e.g., after seeing it in at least two or three places).
+
+- A practical rule from WET – allow yourself to write the same code (or very similar code) twice. When a third instance appears, that's your trigger to evaluate. At the third occurrence, ask: what is truly common in all three cases, and what differs? This helps you design a cleaner abstraction. If you're a less experienced dev, this rule can be a safe default to follow.
+
+- Ask "Is this abstraction hasty?" When considering refactoring duplicated code into one module, honestly assess if you understand the problem fully. Do the use cases have stable, consistent commonality? Or are you guessing about how they'll generalize? If there's any doubt, it's a sign to hold off. Remember the mantra: "prefer duplication over the wrong abstraction. It's better to live with a little repeated code than to introduce a wrong abstraction that affects the whole codebase.
+
+- Adopting WET/AHA doesn't mean never abstracting. It means delaying abstraction. Keep an eye on duplicate code with an eye to eventual refactor. For instance, during code reviews or refactoring sprints, search for similar code patterns. Tools (like static analyzers or even grep) can help spot when you've hit that "third time." Kent Dodds mentions using a tool to find copy-pasted code to identify abstraction opportunities once the time was right The goal is to eventually remove needless duplication once you're confident in how to do it right.
+
+- Favor composition over complex inheritance is a more general React/UI tip that aligns with WET/AHA. Instead of making one base component with lots of variations (which is essentially an abstraction by inheritance or configuration), consider composing smaller components. For example, rather than a single Modal with type flags, have multiple specific modals that perhaps share a smaller ModalLayout component. This way, the "abstracted" part is minimal (just the layout), and each modal handles its unique logic. Composition allows reuse without the rigidity of one giant abstraction, fitting well with the idea of sharing only what needs to be shared.
+
+- If you deliberately choose to duplicate code because of WET/AHA, it can be helpful to leave a comment or note in the code or pull request. Something like: "Duplicating intentionally per AHA – will refactor when use-case stabilizes." This signals to others that the duplication is intentional, not an oversight. It sets the expectation that a future refactor might happen, and why it hasn't been done yet. Communication ensures the whole team is on board with these principles.
+
+In conclusion, WET and AHA are two sides of the same coin – both encourage us to write simpler code now and defer abstraction until it's truly beneficial. In a large frontend codebase, following these principles can lead to components and modules that are easier to understand, test, and modify. You avoid the trap of one-size-fits-all solutions that actually fit nobody well.
+
+Embrace WET by writing it twice when needed, and embrace AHA by avoiding those hasty abstractions that feel "clever" today but become tomorrow's technical debt. Your codebase (and your teammates who maintain that code) will thank you in the long run for the mindful approach.
+
+---
+
+# References
+
+- [Netta Bondy, "We Should All Be Writing WET Code," Dev.to](https://dev.to/nettab/we-should-all-be-writing-wet-code-3d95#:~:text=This%20fixation%20on%20DRYness%20is,case%20while%20still%20avoiding%20repetition)
+- [Kent C. Dodds, "AHA Programming (Avoid Hasty Abstractions)"](https://kentcdodds.com/blog/aha-programming)
+
+_~Seb_ 👊
