@@ -21,6 +21,13 @@ The application provides a ready-to-deploy blogging solution for developers and 
 
 # Recent Changes
 
+**October 17, 2025 - Consulting Landing Page**
+- Created strategic consulting landing page at /consulting for B2B tech recruitment & product consulting
+- Added 8 comprehensive sections: Hero, Why Consulting Matters, Consulting Packages, Common Problems We Solve, Our Approach, Engagement Models, Why Work With Us, Final CTA
+- Integrated contact information (email, LinkedIn, Calendly) for strategy call bookings
+- Added Consulting navigation link to header
+- Clean, modern SaaS-style design with proper SEO structure and responsive layout
+
 **October 17, 2025 - Interview Services Landing Page**
 - Created professional interview services landing page at /services
 - Added comprehensive sections: Hero with CTA, Why Work With Us, Service Models, How It Works, Tech Stacks, Why Companies Choose Us
