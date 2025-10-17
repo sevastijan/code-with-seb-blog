@@ -21,6 +21,13 @@ The application provides a ready-to-deploy blogging solution for developers and 
 
 # Recent Changes
 
+**October 17, 2025 - Interview Services Landing Page**
+- Created professional interview services landing page at /services
+- Added comprehensive sections: Hero with CTA, Why Work With Us, Service Models, How It Works, Tech Stacks, Why Companies Choose Us
+- Integrated Calendly booking links for lead generation
+- Added Services navigation link to header
+- Page follows existing Tailwind CSS design patterns and is fully responsive
+
 **October 17, 2025 - Vercel to Replit Migration**
 - Migrated project from Vercel to Replit environment
 - Updated package.json scripts to bind to port 5000 and host 0.0.0.0 for Replit compatibility
