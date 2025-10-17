@@ -17,7 +17,7 @@ export default function ConsultingPage() {
           </p>
           <div className="mt-8 flex justify-center">
             <a
-              href="https://calendly.com"
+              href="https://calendly.com/codewithseb/30min"
               target="_blank"
               rel="noopener noreferrer"
               className="rounded-md bg-primary-500 px-8 py-3 text-base font-medium text-white hover:bg-primary-600 dark:hover:bg-primary-400"
@@ -50,9 +50,7 @@ export default function ConsultingPage() {
                 <h3 className="mb-1 text-lg font-semibold text-gray-900 dark:text-gray-100">
                   Right people at the right time
                 </h3>
-                <p className="text-gray-600 dark:text-gray-400">
-                  Build your team strategically
-                </p>
+                <p className="text-gray-600 dark:text-gray-400">Build your team strategically</p>
               </div>
             </div>
             <div className="flex items-start gap-3 rounded-lg border border-gray-200 p-6 dark:border-gray-700">
@@ -284,7 +282,7 @@ export default function ConsultingPage() {
       <div className="py-12">
         <div className="mx-auto max-w-4xl">
           <h2 className="mb-8 text-center text-3xl font-bold leading-9 tracking-tight text-gray-900 dark:text-gray-100">
-            Why Work With Us
+            Why Work With Me?
           </h2>
           <div className="grid gap-6 sm:grid-cols-2">
             <div className="flex items-start gap-3">
@@ -352,7 +350,7 @@ export default function ConsultingPage() {
               className="flex items-center gap-2 text-gray-700 hover:text-primary-500 dark:text-gray-300 dark:hover:text-primary-400"
             >
               <span>📧</span>
-              <span>ss3303708@gmail.com</span>
+              <span>me@sevastijan.com</span>
             </a>
             <a
               href="https://www.linkedin.com/in/sebastiansleczka/"
@@ -364,7 +362,7 @@ export default function ConsultingPage() {
               <span>LinkedIn</span>
             </a>
             <a
-              href="https://calendly.com"
+              href="https://calendly.com/codewithseb/30min"
               target="_blank"
               rel="noopener noreferrer"
               className="flex items-center gap-2 text-gray-700 hover:text-primary-500 dark:text-gray-300 dark:hover:text-primary-400"
@@ -377,7 +375,7 @@ export default function ConsultingPage() {
           {/* CTA Button */}
           <div className="flex justify-center">
             <a
-              href="https://calendly.com"
+              href="https://calendly.com/codewithseb/30min"
               target="_blank"
               rel="noopener noreferrer"
               className="rounded-md bg-primary-500 px-8 py-3 text-base font-medium text-white hover:bg-primary-600 dark:hover:bg-primary-400"

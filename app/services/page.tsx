@@ -10,7 +10,7 @@ export default function ServicesPage() {
       <div className="space-y-2 pb-8 pt-6 md:space-y-5">
         <div className="mx-auto max-w-4xl text-center">
           <h1 className="text-3xl font-extrabold leading-9 tracking-tight text-gray-900 dark:text-gray-100 sm:text-4xl sm:leading-10 md:text-5xl md:leading-14">
-            Hire top developers in 7 days — without endless CVs or HR overhead
+            No random CVs. Just the right developer — vetted by someone who’s led real teams
           </h1>
           <p className="mt-4 text-lg leading-7 text-gray-500 dark:text-gray-400">
             Technical recruitment run by engineers — not recruiters.
@@ -19,7 +19,7 @@ export default function ServicesPage() {
           </p>
           <div className="mt-8 flex justify-center gap-4">
             <a
-              href="https://calendly.com"
+              href="https://calendly.com/codewithseb/30min"
               target="_blank"
               rel="noopener noreferrer"
               className="rounded-md bg-primary-500 px-6 py-3 text-base font-medium text-white hover:bg-primary-600 dark:hover:bg-primary-400"
@@ -28,7 +28,7 @@ export default function ServicesPage() {
             </a>
           </div>
           <p className="mt-6 text-sm text-gray-600 dark:text-gray-400">
-            92% of clients hire from the first shortlist
+            {/* 92% of clients hire from the first shortlist */}
           </p>
         </div>
       </div>
@@ -37,7 +37,7 @@ export default function ServicesPage() {
       <div className="py-12">
         <div className="mx-auto max-w-4xl">
           <h2 className="mb-8 text-center text-3xl font-bold leading-9 tracking-tight text-gray-900 dark:text-gray-100">
-            Why Work With Us
+            Why Work With Me?
           </h2>
           <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
             <div className="rounded-lg border border-gray-200 p-6 dark:border-gray-700">
@@ -45,36 +45,28 @@ export default function ServicesPage() {
               <h3 className="mb-2 text-lg font-semibold text-gray-900 dark:text-gray-100">
                 Faster time-to-hire
               </h3>
-              <p className="text-gray-600 dark:text-gray-400">
-                Candidates delivered in 7 days
-              </p>
+              <p className="text-gray-600 dark:text-gray-400">Candidates delivered in 7 days</p>
             </div>
             <div className="rounded-lg border border-gray-200 p-6 dark:border-gray-700">
               <div className="mb-3 text-3xl">🧑‍💻</div>
               <h3 className="mb-2 text-lg font-semibold text-gray-900 dark:text-gray-100">
                 Technical screening
               </h3>
-              <p className="text-gray-600 dark:text-gray-400">
-                Vetted by senior engineers
-              </p>
+              <p className="text-gray-600 dark:text-gray-400">Vetted by senior engineers</p>
             </div>
             <div className="rounded-lg border border-gray-200 p-6 dark:border-gray-700">
               <div className="mb-3 text-3xl">🪜</div>
               <h3 className="mb-2 text-lg font-semibold text-gray-900 dark:text-gray-100">
                 Only shortlisted talent
               </h3>
-              <p className="text-gray-600 dark:text-gray-400">
-                No random CV dumps
-              </p>
+              <p className="text-gray-600 dark:text-gray-400">No random CV dumps</p>
             </div>
             <div className="rounded-lg border border-gray-200 p-6 dark:border-gray-700">
               <div className="mb-3 text-3xl">🌍</div>
               <h3 className="mb-2 text-lg font-semibold text-gray-900 dark:text-gray-100">
                 European talent pool
               </h3>
-              <p className="text-gray-600 dark:text-gray-400">
-                Access to developers across Europe
-              </p>
+              <p className="text-gray-600 dark:text-gray-400">Access to developers across Europe</p>
             </div>
             <div className="rounded-lg border border-gray-200 p-6 dark:border-gray-700">
               <div className="mb-3 text-3xl">💬</div>
@@ -101,9 +93,7 @@ export default function ServicesPage() {
               <h3 className="mb-2 text-xl font-bold text-gray-900 dark:text-gray-100">
                 Success Fee
               </h3>
-              <p className="mb-4 text-gray-600 dark:text-gray-400">
-                Pay only when you hire.
-              </p>
+              <p className="mb-4 text-gray-600 dark:text-gray-400">Pay only when you hire.</p>
               <p className="text-sm text-gray-500 dark:text-gray-500">
                 Perfect for: Startups, software houses
               </p>
@@ -215,14 +205,10 @@ export default function ServicesPage() {
               'Next.js',
               'TypeScript',
               'Node.js',
-              'Nest.js',
               'Python',
-              'Go',
               'Java',
               'React Native',
-              'Flutter',
               'DevOps / Cloud',
-              'AI / ML (select projects)',
             ].map((tech) => (
               <span
                 key={tech}
@@ -285,7 +271,7 @@ export default function ServicesPage() {
           </p>
           <div className="mt-10 flex justify-center">
             <a
-              href="https://calendly.com"
+              href="https://calendly.com/codewithseb/30min"
               target="_blank"
               rel="noopener noreferrer"
               className="rounded-md bg-primary-500 px-6 py-3 text-base font-medium text-white hover:bg-primary-600 dark:hover:bg-primary-400"
