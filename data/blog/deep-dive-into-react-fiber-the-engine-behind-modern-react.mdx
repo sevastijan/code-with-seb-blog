@@ -1,0 +1,279 @@
+---
+title: 'A Deep Dive into React Fiber — The Engine Behind Modern React'
+summary: 'React Fiber is React’s core rendering engine enabling interruptible, prioritized updates. It powers features like Concurrent Mode, Suspense, and streaming SSR through a linked tree of fibers and a lane-based scheduler.'
+date: '2025-10-25'
+tags: ['react', 'fiber', 'concurrent-rendering', 'suspense', 'scheduler']
+draft: false
+---
+
+React Fiber is a complete re-architecture of React’s core reconciliation algorithm designed to overcome the limitations of the old “stack reconciler.” Under the original approach (pre-React 16), updates were processed synchronously in a single depth-first pass through the component tree. Every state change would cause React to walk the entire affected subtree in one go, compute the diff, and update the DOM before returning control. This meant no ability to pause mid-render or change priorities: a heavy update (e.g. filtering a large list) would block the main thread, causing janky animations and unresponsive input. As one blogger explains, “React couldn’t pause mid-render…Browser main thread got blocked…Laggy inputs, janky scroll, and UI freezes”. All updates were treated equally urgent, so user interactions (like typing) could get stuck behind expensive renders. These limitations motivated Fiber: React Fiber “rewrites the reconciliation algorithm…to take advantage of scheduling” so that work can be paused, prioritized, and spread over multiple frames.
+
+In Fiber, the component tree is reimplemented as a linked list of “fiber” nodes, each representing a unit of work (like a stack frame). Unlike the old stack-based approach, Fiber can interrupt a render, yield control back to the browser, and resume later. In essence, Fiber allows React to “[pause] work and come back to it later,” “[assign] priority to different types of work,” “[reuse] previously completed work,” and even “abort work if it’s no longer needed”
+
+In summary, the Stack reconciler was synchronous and could not break work into chunks or handle new priorities, whereas Fiber’s linked-list structure and scheduler enable incremental, interruptible updates and advanced features. As one source notes, “React doesn’t currently take advantage of scheduling in a significant way… Overhauling React’s core algorithm to take advantage of scheduling is the driving idea behind Fiber”. Fiber effectively reimplements the call stack: you can think of each fiber as a “virtual stack frame” that React keeps in memory and can execute “however (and whenever) you want”. This change in architecture is crucial for supporting modern features like Concurrent React, Suspense, and automatic batching.
+
+---
+
+# Fiber Node Structure
+
+Under the hood, each fiber is a JavaScript object containing all information about one component and its place in the tree. Key fields in a fiber include its component type and key (copied from the React element), child/sibling/return pointers, and various props/state fields. Concretely:
+
+- `type` and `key`: Describe the component type (function or class for composites, string for host elements) and reconciliation key.
+- `child` and `sibling`: Pointers forming a linked-list structure for the tree. The `child` field points to the first child fiber (i.e. the element returned by this component’s render), and each child’s sibling points to the next child. (This left-child/right-sibling representation makes the fiber tree easy to traverse one node at a time.) For example, given `Parent` with children `<Child1/>` and `<Child2/>`, the Parent fiber’s `child` points to `Child1`, and `Child1.sibling` points to `Child2`.
+- `return`: Points to the parent fiber (the “return address” of this stack frame). When a component finishes rendering its subtree, React uses `return` to go back to the parent.
+- `stateNode`: References the local instance (for class components) or the DOM node (for host components). This links the fiber to the actual UI elements.
+- `pendingProps` and `memoizedProps`: The new props being applied (`pendingProps`) versus the last rendered props (`memoizedProps`). When they match, React can skip re-rendering that subtree.
+- `pendingWorkPriority`: A numeric priority indicating how urgent this update is. Higher numeric values mean lower priority (0 means no work). React’s scheduler uses this field to decide which fibers to work on first.
+- `alternate`: A pointer to the alternate fiber (the other “version” of this component). React keeps two copies of each fiber (current and work-in-progress) and swaps them at commit. The `alternate` field links these two. At most two fibers exist per component: the current, flushed fiber and the work-in-progress fiber. The alternate of the current is the work-in-progress, and vice versa. This double-buffering allows React to build a new tree without clobbering the committed one.
+
+All together, a fiber holds its identity (type, key), tree structure (child, sibling, return), input props, state, output (e.g. DOM node), and scheduling metadata. One author summarizes: “A Fiber is a plain JS object, a unit of work representing one component in the tree. Each fiber contains:
+
+- Component type
+- Props and state
+- Links to child/parent/sibling fibers
+
+A pointer to its DOM node; Effects queued for commit”. Compared to the old stack reconciler’s opaque call stack, this explicit object graph lets React pause in the middle of work, inspect or rewind it, and resume later.
+
+# Render & Commit Phases
+
+React’s update process splits into two distinct phases: the render (reconciliation) phase and the commit phase. In the render phase, React traverses the fiber tree without touching the DOM, computing changes. In the commit phase, React applies those changes to the DOM (and runs lifecycle hooks) synchronously.
+
+## Render Phase
+
+React builds a new “work-in-progress” fiber tree. In this phase no DOM is mutated. React can pause, resume, or even abandon work during this phase. It walks the fiber tree, calling component render functions (in `beginWork`) and comparing to previous values. The render phase is interruptible and non-blocking. Because of Fiber, React can yield control periodically to handle events. As one guide notes, “Render phase = non-blocking; Commit phase = immediate DOM update”. If a long-running render starts to exhaust the 16ms frame budget, Fiber will pause, yielding to the browser, and continue in the next frame.
+
+## Commit Phase
+
+Once the render phase completes (the entire new tree is ready), React enters the commit phase. It swaps the root pointers: the work-in-progress tree becomes the current tree. React then applies all side-effects: updates DOM nodes, sets refs, and invokes lifecycle methods (`useLayoutEffect`, `componentDidMount`, etc.) in a single, fast pass. The commit is always synchronous and uninterruptible. As a result, React guarantees the UI remains consistent: even if an update was paused or thrown away in the render phase, React will only mutate the DOM once the final result is ready. One explanation summarizes this: once rendering finishes, “React moves on to the commit phase, where it swaps the root pointers of the current tree and workInProgress tree, thereby effectively replacing the current tree with the draft tree”. Only then are browser DOM changes flushed, and after DOM mutations, React runs passive effects (`useEffect`).
+
+Because of Fiber’s design, multiple render passes may occur before a commit. In Concurrent React (React 18+), a component might be rendered, paused, resumed, or even discarded if newer updates arrive, all before any DOM changes. React will wait until the end to commit to ensure a consistent UI. In short, Fiber decouples “preparing” the UI (render phase) from “showing” the UI (commit phase), enabling work to be interrupted in between.
+
+# Scheduling, Priority Lanes, and Concurrency
+
+A core innovation of Fiber is **fine-grained scheduling**. React assigns each update a priority (a lane), and the Fiber reconciler works on updates in priority order, splitting them into units of work. This scheduling system ensures urgent updates (like user input) happen before less critical ones (like data loading). Early React had only a handful of discrete priorities (e.g. `Synchronous`, `Animation`, etc.), but Fiber introduces a bitmask-based lane system. Each bit in a 31-bit mask is a lane. An update gets exactly one lane bit. React maintains a set of pending lanes, and the scheduler processes the highest-priority lanes first
+
+## Priority Levels (Lanes)
+
+There are many lanes corresponding to priority classes. For example, all synchronous updates use the same SyncLane bit. If multiple sync updates are pending, they batch together and render in one go. For transition updates (marked by `startTransition`), React assigns different lanes so they don’t block each other. In practice, this means two independent transitions can proceed in parallel, whereas all sync work stays in one atomic batch. Mathematically, React uses bitwise operations to manage lanes (the source code uses `renderLanes` masks). The important point is: “Each bit in a bitmask is called a Lane. Every React render is associated with one or more lanes…” and “every update in React is assigned exactly one lane. If two updates have the same lane, they will always render in the same batch”. By grouping updates into lanes, React can delay or merge low-priority work without blocking high-priority tasks
+
+## Scheduling Goals
+
+Fiber’s scheduler is guided by these principles: it pauses and resumes units of work as needed, prioritizes urgent tasks, reuses work already done, and aborts obsolete work. In the acdlite docs, these requirements are summarized as “we need to be able to pause work and come back to it later, assign priority to different types of work, reuse previously completed work, and abort work if it's no longer needed”. In practice, React will start reconciling the highest-priority fibers first; if during a render a higher-priority update arrives (e.g. user types in an input), React can suspend the current work and handle the new input first.
+
+## Time-Slicing
+
+React tracks elapsed time while performing work. If a render pass runs past the 16ms frame budget, React yields. It essentially breaks reconciliation into many “microtasks” (each fiber is a unit). When time is up, Fiber pauses (`shouldYield`), flushes what’s done, and retries in the next frame. This time-slicing is what makes rendering interruptible. The old stack reconciler had no concept of yielding – it would complete one entire update before anything else – but Fiber can break an update into multiple frames.
+
+## Automatic Batching
+
+Because Fiber groups updates by lane, it can automatically batch multiple setState calls into one render even outside of event handlers. React 18’s new default batching is a direct outcome of Fiber’s scheduler. For example, multiple state updates inside a `setTimeout` (or promise) used to trigger separate renders; now they are batched because they share the same lane (once the new root API is used). In short, the fiber scheduler ensures that any sequence of updates within one task are combined into one reconciliation whenever possible, reducing needless work.
+
+In summary, Fiber’s scheduling system makes React “think like a multitasker.” It maintains a priority queue (lanes) for tasks and pulls from it, instead of blindly pushing updates as they come. Important updates (e.g. animation frames, input events) get higher priority; offscreen or data-fetching updates get deferred. This design smooths out performance: React “prioritizes work coming from user interactions (such as animations) over less important background work”
+
+# Features Enabled by Fiber
+
+Thanks to React Fiber’s interruptible, incremental rendering and fine-grained scheduling system, the React ecosystem has unlocked a suite of advanced capabilities that were previously unattainable with the legacy stack-based reconciler. These innovations improve responsiveness, scalability, and developer ergonomics, and form the foundation for many of React's most powerful features today — including concurrent rendering, Suspense boundaries, streaming server rendering, automatic batching, and more.
+
+## Concurrent Rendering (React 18+)
+
+By default React 18 uses the Fiber reconciler and offers concurrent features. Concurrent rendering means React may pause, abort, or restart renders to optimize user experience. The React team explains that “rendering is interruptible” – React can start rendering an update, pause it, and resume later, always waiting to commit until the end. This enables highly responsive UIs. For example, using `startTransition`, you can mark a state update as non-urgent so React will yield to other updates. Code illustrates this:
+
+```jsx
+import { startTransition, useState } from 'react'
+
+function App() {
+  const [tab, setTab] = useState('home')
+  // Switch tab without blocking the UI
+  function selectTab(nextTab) {
+    startTransition(() => {
+      setTab(nextTab)
+    })
+  }
+  // ...
+}
+```
+
+In this example, clicking different tabs wraps the state update in `startTransition`. React will treat the tab change as a lower-priority “transition” update. If the user quickly switches tabs again, React will interrupt the previous transition work and prioritize the latest click (Fiber restarts the render after handling input). In other words, urgent user input isn’t blocked by a slower render. This ability comes from Fiber’s scheduler: it assigns these updates to deferred lanes and can pause them mid-render.
+
+## Suspense
+
+Fiber’s concurrency underlies Suspense for data and code. Suspense lets components throw Promises and React will show a fallback UI (spinner) while waiting, without blocking the whole UI. Thanks to Fiber, React can pause rendering a subtree on a suspense boundary and continue later. React 18 even supports Suspense on the server with streaming SSR. For example:
+
+```jsx
+import { Suspense } from 'react'
+function Profile({ userId }) {
+  return (
+    <Suspense fallback={<div>Loading profile…</div>}>
+      <ProfileDetails userId={userId} />
+    </Suspense>
+  )
+}
+```
+
+Here, if `<ProfileDetails>` fetches data (throwing a Promise), React will not freeze the UI; it will display the fallback and continue once data is ready. The React team notes that “Suspense in React 18 works best when combined with concurrent features”. On the server side, Fiber enables streaming Suspense: React’s new `renderToPipeableStream` API can send HTML down a socket incrementally as components resolve, thanks to Fiber’s ability to pause and resume work. In short, Suspense is practical only because Fiber can coordinate async data without locking up rendering.
+
+## Automatic Batching
+
+As mentioned, React 18 (with Fiber) automatically batches state updates by default. Before Fiber, only state updates inside React event handlers were batched. Now “starting in React 18 with `createRoot`, all updates will be automatically batched, no matter where they originate”.
+
+For example, two `setState` calls inside a `setTimeout` used to cause two renders; now they produce just one render. This optimization reduces unnecessary reflows and improves performance, and it’s possible because the Fiber scheduler groups updates by lane.
+
+## Server-Side Rendering (Streaming)
+
+Fiber redesigns SSR with Suspense support. React 18 introduces new server APIs (`renderToPipeableStream`, `renderToReadableStream`) for streaming SSR. These work hand-in-hand with Suspense. On the server, React can begin streaming HTML to the client as soon as some parts are ready, and fill in suspense boundaries later. This streaming model relies on Fiber’s incremental rendering under the hood. The React team describes it as “streaming server rendering with support for Suspense”, made possible by the new concurrent renderer. In practice, one would use the new APIs like so:
+
+```jsx
+import { renderToPipeableStream } from 'react-dom/server'
+
+const { pipe } = renderToPipeableStream(<App />, {
+  onAllReady() {
+    pipe(response) // stream HTML chunks to the client
+  },
+})
+```
+
+This contrasts with the old renderToString (which waited for all data) – Fiber-based SSR can flush partial content as each Suspense boundary resolves.
+
+Overall, Fiber powers React’s modern features. React’s official blog emphasizes: “Many of the features in React 18 are built on top of our new concurrent renderer”, and that includes Suspense, transitions, and streaming SSR. Without Fiber’s interruptible reconciliation, none of these would be feasible.
+
+# Code Examples: Fiber in Action
+
+Below are some code snippets illustrating Fiber’s effects on rendering and scheduling.
+
+## Interruptible Updates
+
+Interruptible Updates with `startTransition`: Without concurrency, even a small user input can get stuck behind a heavy update. In this example, updating text and doing a heavy calculation synchronously can lag the UI:
+
+```jsx
+function App() {
+  const [text, setText] = useState('')
+  const [result, setResult] = useState('')
+
+  function handleChange(e) {
+    setText(e.target.value) // urgent: update input text
+    // expensive calculation (simulated)
+    const out = heavyCalculation(e.target.value)
+    setResult(out) // slower: update result list
+  }
+
+  return (
+    <>
+      <input value={text} onChange={handleChange} />
+      <div>{result}</div>
+    </>
+  )
+}
+```
+
+Here, each keystroke triggers `heavyCalculation`, which blocks typing. React processes both updates at once (same priority). If instead we mark the slow update as non-urgent, the UI stays responsive:
+
+```jsx
+import { startTransition } from 'react'
+
+function App() {
+  const [text, setText] = useState('')
+  const [result, setResult] = useState('')
+
+  function handleChange(e) {
+    setText(e.target.value) // urgent update
+    startTransition(() => {
+      // mark as low-priority
+      const out = heavyCalculation(e.target.value)
+      setResult(out) // non-blocking update
+    })
+  }
+
+  return (
+    <>
+      <input value={text} onChange={handleChange} />
+      <div>{result}</div>
+    </>
+  )
+}
+```
+
+With `startTransition`, React will prioritize the input update (updating `text`) immediately. The expensive `setResult` update is deferred; if the user types again quickly, React can interrupt the ongoing calculation and restart it for the latest input. This works because Fiber’s scheduler assigns these to different lanes and can pause/restart as needed.
+
+## Automatic Batching of State Updates
+
+Fiber also batches updates automatically. Before Fiber, updates outside React events weren’t batched. For example:
+
+```jsx
+// Before React 18 (no automatic batching):
+function handleClick() {
+  setCount((c) => c + 1)
+  setFlag((f) => !f)
+  // Only one re-render at the end of this click (React event) – batched!
+}
+setTimeout(() => {
+  setCount((c) => c + 1)
+  setFlag((f) => !f)
+  // Without Fiber: this triggers *two* renders.
+}, 1000)
+```
+
+In React 17 or earlier, the two setState calls inside setTimeout cause separate renders. With Fiber/React 18:
+
+```jsx
+// After React 18 (automatic batching everywhere):
+setTimeout(() => {
+  setCount((c) => c + 1)
+  setFlag((f) => !f)
+  // React will *batch* these and re-render only once:contentReference[oaicite:39]{index=39}:contentReference[oaicite:40]{index=40}.
+}, 1000)
+```
+
+Now both updates are grouped in the same render, because Fiber’s new scheduler treats them as one batch. This reduces work and improves performance by avoiding duplicate renders.
+
+## Server Streaming with Suspense
+
+Using the new SSR API is as simple as invoking it. For example, in a Node server:\
+
+```jsx
+import { renderToPipeableStream } from 'react-dom/server'
+import App from './App'
+
+const { pipe } = renderToPipeableStream(<App />, {
+  onAllReady() {
+    pipe(res) // stream the rendered HTML to the client
+  },
+})
+```
+
+Here, Fiber will stream `<App />`’s HTML to the client piece by piece, handling any Suspense boundaries along the way. This incremental streaming is possible only because Fiber can render parts of the tree before others and commit them sequentially
+
+# References
+
+- [React Fiber Architecture (GitHub issue #7942)](https://github.com/facebook/react/issues/7942) – In-depth explanation by Andrew Clark on why Fiber was built and what it enables under the hood.
+
+- [React Reconciliation – Official React Docs](https://reactjs.org/docs/reconciliation.html) – Describes how React compares trees and the role of `type` and `key` in component identity.
+
+- [React 18 Release Blog](https://reactjs.org/blog/2022/03/29/react-v18.html) – Describes concurrent features, transitions, automatic batching, and how Fiber enables them.
+
+- [React DOM Server API](https://reactjs.org/docs/react-dom-server.html) – Official documentation for `renderToPipeableStream`, used in streaming server rendering with Suspense.
+
+- [React Developer Docs – `startTransition`](https://react.dev/reference/react/startTransition) – Official API for marking state updates as non-urgent, powered by Fiber scheduling.
+
+- [React Developer Docs – Transitions](https://react.dev/learn/start-a-transition) – Conceptual guide on using transitions with concurrent rendering.
+
+- [React Developer Docs – `createRoot`](https://react.dev/reference/react-dom/client/createRoot) – Explains how the new root API enables concurrent features.
+
+- [RFC #214 – Automatic Batching](https://github.com/reactjs/rfcs/blob/main/text/0214-batching.md) – Technical RFC introducing automatic batching and its reliance on the Fiber scheduler.
+
+- [React PR #18720 – Lane Priority Scheduling](https://github.com/facebook/react/pull/18720) – Introduction of lane-based priority scheduling in React Fiber using bitmasks.
+
+- [Frontend at Scale – React Internals: A Deep Dive into Fiber](https://frontendatscale.com/react-internals-fiber) – A technical blog post detailing the `FiberNode` structure and internal reconciliation flow.
+
+- [Overreacted.io – Inside Fiber: In-depth Overview of the New Reconciliation Engine](https://overreacted.io/inside-fiber-in-depth-overview-of-the-new-reconciliation-engine/) – Dan Abramov’s detailed and approachable breakdown of Fiber’s internals.
+
+- [LogRocket – Understanding React Fiber Internals](https://blog.logrocket.com/understanding-react-fiber-internals/) – Explains key concepts like `beginWork`, `completeWork`, `alternate`, and render phases.
+
+- [Vercel Blog – React Suspense and Streaming Server Rendering](https://vercel.com/blog/react-suspense-streaming-server-rendering) – High-level overview of how Fiber enables streaming SSR with Suspense boundaries.
+
+- [ReactElement.js (GitHub)](https://github.com/facebook/react/blob/main/packages/react/src/ReactElement.js) – Source code that defines `type` and `key` on React elements.
+
+- [ReactFiber.js (GitHub)](https://github.com/facebook/react/blob/main/packages/react-reconciler/src/ReactFiber.js) – Defines the internal `FiberNode` structure with fields like `type`, `key`, `child`, `return`, and `alternate`.
+
+- [ReactFiberReconciler.js (GitHub)](https://github.com/facebook/react/blob/main/packages/react-reconciler/src/ReactFiberReconciler.js) – Reconciler logic and render phase coordination across the Fiber tree.
+
+_~Seb_ 👊
