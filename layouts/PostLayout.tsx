@@ -170,7 +170,13 @@ export default function PostLayout({
               </div>
             </aside>
 
-            <div className="divide-y divide-gray-200 dark:divide-gray-700 xl:col-span-3 xl:pb-0">
+            <div className=" divide-gray-200 dark:divide-gray-700 xl:col-span-3 xl:pb-0">
+              {content.summary && (
+                <p className="mx-auto mb-4 max-w-3xl text-gray-600 dark:text-gray-400">
+                  {content.summary}
+                </p>
+              )}
+
               <div className="prose max-w-none pb-8 pt-10 dark:prose-invert xl:pt-0">
                 {toc.length > 0 && <TableOfContents toc={toc} />}
                 {children}
