@@ -1,12 +1,17 @@
+'use client'
+
 import Link from '@/components/Link'
 import Tag from '@/components/Tag'
 import siteMetadata from '@/data/siteMetadata'
 import { formatDate } from 'pliny/utils/formatDate'
 import NewsletterForm from 'pliny/ui/NewsletterForm'
+import { useLikedPosts } from 'hooks/useLikedPosts'
+import { Flame } from 'lucide-react'
 
 const MAX_DISPLAY = 5
 
 export default function Home({ posts }) {
+  const likedPosts = useLikedPosts(posts.map((p) => p.slug))
   return (
     <>
       <div className="divide-y divide-gray-200 dark:divide-gray-700">
@@ -35,12 +40,17 @@ export default function Home({ posts }) {
                     <div className="space-y-5 xl:col-span-3">
                       <div className="space-y-6">
                         <div>
-                          <h2 className="text-2xl font-bold leading-8 tracking-tight">
+                          <h2 className=" text-2xl font-bold leading-8 tracking-tight">
                             <Link
                               href={`/blog/${slug}`}
-                              className="text-gray-900 dark:text-gray-100"
+                              className="flex text-gray-900 dark:text-gray-100"
                             >
-                              {title}
+                              <>
+                                {likedPosts.has(post.slug) && (
+                                  <Flame className="mr-2 mt-1 h-5 w-5 fill-red-500 text-red-500" />
+                                )}
+                                {title}
+                              </>
                             </Link>
                           </h2>
                           <div className="flex flex-wrap">
@@ -81,11 +91,6 @@ export default function Home({ posts }) {
           </Link>
         </div>
       )}
-      {/* {siteMetadata.newsletter?.provider && (
-        <div className="flex items-center justify-center pt-4">
-          <NewsletterForm />
-        </div>
-      )} */}
     </>
   )
 }

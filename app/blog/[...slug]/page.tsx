@@ -13,6 +13,7 @@ import PostBanner from '@/layouts/PostBanner'
 import { Metadata } from 'next'
 import siteMetadata from '@/data/siteMetadata'
 import { notFound } from 'next/navigation'
+import { calculateReadingTime } from 'lib/readingTime'
 
 const defaultLayout = 'PostLayout'
 const layouts = {
@@ -74,7 +75,9 @@ export async function generateMetadata(props: {
 }
 
 export const generateStaticParams = async () => {
-  return allBlogs.map((p) => ({ slug: p.slug.split('/').map((name) => decodeURI(name)) }))
+  return allBlogs.map((p) => ({
+    slug: p.slug.split('/').map((name) => decodeURI(name)),
+  }))
 }
 
 export default async function Page(props: { params: Promise<{ slug: string[] }> }) {
@@ -96,13 +99,14 @@ export default async function Page(props: { params: Promise<{ slug: string[] }> 
     return coreContent(authorResults as Authors)
   })
   const mainContent = coreContent(post)
+
+  const readingTime = calculateReadingTime(post.body.raw)
+
   const jsonLd = post.structuredData
-  jsonLd['author'] = authorDetails.map((author) => {
-    return {
-      '@type': 'Person',
-      name: author.name,
-    }
-  })
+  jsonLd['author'] = authorDetails.map((author) => ({
+    '@type': 'Person',
+    name: author.name,
+  }))
 
   const Layout = layouts[post.layout || defaultLayout]
 
@@ -112,7 +116,14 @@ export default async function Page(props: { params: Promise<{ slug: string[] }> 
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
       />
-      <Layout content={mainContent} authorDetails={authorDetails} next={next} prev={prev}>
+      <Layout
+        content={mainContent}
+        authorDetails={authorDetails}
+        next={next}
+        prev={prev}
+        toc={post.toc}
+        readingTime={readingTime}
+      >
         <MDXLayoutRenderer code={post.body.code} components={components} toc={post.toc} />
       </Layout>
     </>

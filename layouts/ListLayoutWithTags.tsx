@@ -9,6 +9,8 @@ import Link from '@/components/Link'
 import Tag from '@/components/Tag'
 import siteMetadata from '@/data/siteMetadata'
 import tagData from 'app/tag-data.json'
+import { useLikedPosts } from 'hooks/useLikedPosts'
+import { Flame } from 'lucide-react'
 
 interface PaginationProps {
   totalPages: number
@@ -73,6 +75,7 @@ export default function ListLayoutWithTags({
   const sortedTags = tagKeys.sort((a, b) => tagCounts[b] - tagCounts[a])
 
   const displayPosts = initialDisplayPosts.length > 0 ? initialDisplayPosts : posts
+  const likedPosts = useLikedPosts(posts.map((p) => p.slug))
 
   return (
     <>
@@ -135,7 +138,10 @@ export default function ListLayoutWithTags({
                       </dl>
                       <div className="space-y-3">
                         <div>
-                          <h2 className="text-2xl font-bold leading-8 tracking-tight">
+                          <h2 className="flex items-start gap-2 text-2xl font-bold leading-8 tracking-tight">
+                            {likedPosts.has(post.slug) && (
+                              <Flame className="mt-1 h-5 w-5 fill-red-500 text-red-500" />
+                            )}
                             <Link href={`/${path}`} className="text-gray-900 dark:text-gray-100">
                               {title}
                             </Link>
