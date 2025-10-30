@@ -1,0 +1,282 @@
+---
+title: 'React Suspense Tutorial: Lazy Loading, Async Rendering & Data Fetching (React 18/19)'
+summary: 'Master React Suspense — from lazy loading components and data fetching with the use() hook to seamless integration with React Router and Next.js. A practical, TypeScript-based tutorial with real-world examples and common pitfalls.'
+date: '2025-10-30'
+tags:
+  [
+    'react',
+    'react suspense',
+    'react tutorial',
+    'async rendering',
+    'lazy loading',
+    'react lazy',
+    'typescript',
+    'react 19',
+    'nextjs',
+    'react router',
+  ]
+draft: false
+---
+
+# What is Suspense
+
+`<Suspense>` is a React component that “displays a fallback until its children have finished loading”. In other words, any child component that suspends (due to lazy-loaded code or pending data) will cause React to pause rendering of that tree and show the fallback UI instead. This enables asynchronous rendering patterns without manual loading state logic. Under the hood, React 18+ runs in concurrent mode so it can delay (suspend) rendering parts of the component tree.
+
+- Fallback UI: A lightweight placeholder (spinner, skeleton, etc.) shown when children suspend. Suspense-enabled sources: Only Suspense-enabled operations trigger this.
+- Examples include code-splitting (`React.lazy`), data frameworks (Relay, SWR, Next.js), or the new `use()` hook for Promises. Fetching data inside a `useEffect` or event handler will not trigger Suspense.
+
+```tsx
+import React, { Suspense } from 'react'
+
+function App() {
+  return (
+    <div>
+      <h1>My App</h1>
+      {/* Any component inside Suspense can “suspend” */}
+      <Suspense fallback={<div>Loading...</div>}>
+        <SomeComponent /> {/* might be lazy-loaded or fetch data */}
+      </Suspense>
+    </div>
+  )
+}
+```
+
+Here, `SomeComponent` could be lazily loaded or await a data promise. React will automatically render the `<div>Loading...</div>` fallback until `SomeComponent` is ready. Note that Suspense only works if the suspended component uses a supported async source (e.g. a dynamic `import`, a Promise via `use()`, or a Suspense-enabled library).
+
+# Lazy Loading (Code Splitting)
+
+React’s `lazy()` API and Suspense enable route- and component-level code splitting. Use `React.lazy()` to dynamically import a component only when it’s needed. For example:
+
+```tsx
+import React, { Suspense, lazy } from 'react'
+
+// Lazy import (component loads in a separate chunk when rendered)
+const HeavyComponent = lazy(() => import('./HeavyComponent'))
+
+function App() {
+  return (
+    <div>
+      <h1>Main App</h1>
+      {/* Suspense shows fallback while HeavyComponent is fetched */}
+      <Suspense fallback={<div>Loading heavy component...</div>}>
+        <HeavyComponent /> {/* Only loads on first render */}
+      </Suspense>
+    </div>
+  )
+}
+```
+
+In this example, `HeavyComponent` is not part of the initial bundle. It will load only when React renders it inside `<Suspense>`. This reduces initial load size and improves performance. Remember to always include a `fallback`; without it, the lazy-loaded component would throw an error. Lazy loading can be applied to any component (not just routes), but it’s most common for pages or rarely used parts of the app.
+
+# Example: Lazy Loading with React Router
+
+React Router works seamlessly with `React.lazy` and Suspense to lazy-load pages. For example, in React Router v6+:
+
+```tsx
+import { BrowserRouter, Routes, Route } from 'react-router-dom'
+const Home = React.lazy(() => import('./Home'))
+const About = React.lazy(() => import('./About'))
+
+function App() {
+  return (
+    <BrowserRouter>
+      {/* Wrap Routes with Suspense for route-level code splitting */}
+      <Suspense fallback={<p>Loading page...</p>}>
+        <Routes>
+          <Route path="/" element={<Home />} />
+          <Route path="/about" element={<About />} />
+        </Routes>
+      </Suspense>
+    </BrowserRouter>
+  )
+}
+```
+
+Here, each route component (`Home` and `About`) is loaded only when the user navigates to that path. As Partha Roy notes, “React Router works well with lazy and suspense. You can use these together to load route-based components”. The fallback `<p>Loading page...</p>` is shown until the lazy route component finishes downloading. This approach keeps the initial JS bundle small and loads pages on-demand.
+
+# Data Fetching with Suspense
+
+Beyond code splitting, Suspense can manage asynchronous data as well. With React 18 it was experimental, but React 19 introduces the new `use()` hook to suspend on Promises natively. Instead of useEffect and manual loading flags, you can simply pass a Promise to `use()` inside a Suspense boundary. For example:
+
+```tsx
+import React, { use, Suspense } from 'react'
+
+async function fetchTodo(id: number) {
+  const res = await fetch(`https://jsonplaceholder.typicode.com/todos/${id}`)
+  return res.json()
+}
+
+// Parent component (no async/await here – we create a promise)
+function App() {
+  const todoPromise = fetchTodo(1) // create promise once
+  return (
+    <Suspense fallback={<div>Loading data...</div>}>
+      <Todo titlePromise={todoPromise} />
+    </Suspense>
+  )
+}
+
+// Client component with use()
+function Todo({ titlePromise }: { titlePromise: Promise<{ title: string }> }) {
+  const data = use(titlePromise)
+  return <h1>{data.title}</h1> // Renders when promise resolves
+}
+```
+
+In this pattern, `<Todo>` suspends on the `titlePromise`. While it’s pending, React shows the loading fallback. Once resolved, `use()` returns the data and `<h1>` is rendered. If the promise rejects, the nearest Error Boundary will catch it (see next section).
+
+## Key points
+
+Do not create the Promise inside the component body every render. For example, do not write `const data = use(fetchTodo(id));` directly inside `Todo` as that creates a new Promise on each render and causes infinite loops. Always create the Promise once (e.g. in a parent or before render) and pass it in. This makes the promise stable and prevents unnecessary re-renders.
+
+Use of `use()` has a few caveats:
+
+- It must be called in a React component or hook (not in event handlers or class methods)
+- Unlike other hooks, `use()` can be inside loops or conditionals within a component
+  react.dev
+- In Server Components (e.g. Next.js), you often prefer `async/await` instead of `use()`, or create the Promise in the server and pass it to a client component with `'use client'` (so that re-renders don’t recreate the Promise).
+
+# Example: use() vs useEffect
+
+Contrast the old `useEffect` approach with `use()` (React 19):
+
+```tsx
+// Old pattern (React 18):
+function TodoOld() {
+  const [todo, setTodo] = useState<{ title: string } | null>(null)
+  useEffect(() => {
+    fetch(`.../todos/1`)
+      .then((res) => res.json())
+      .then(setTodo)
+  }, [])
+  if (!todo) return <div>Loading...</div>
+  return <h1>{todo.title}</h1>
+}
+
+// New pattern (React 19+):
+function TodoNew() {
+  const titlePromise = fetchTodo(1) // created outside or above
+  const todo = use(titlePromise)
+  return <h1>{todo.title}</h1> // Suspends automatically
+}
+```
+
+The `use()` approach requires less boilerplate: no state or effect. The component simply suspends until the promise resolves. This reduces “loading state” management overhead. (If you do need to handle the loading yourself, you can also use `useTransition` or show a manual spinner.)
+
+# Error Boundaries
+
+Since Suspense handles loading states, you still need Error Boundaries for handling errors (rejected Promises or other thrown errors). In React, an Error Boundary is a component that catches errors in its subtree and renders a fallback UI. For Suspense and `use()`, a rejected promise is treated like an error: it will bubble up to the nearest Error Boundary.
+
+**Best practice: Wrap your Suspense boundaries inside an error boundary. For example:**
+
+```tsx
+import { use, Suspense } from 'react'
+import { ErrorBoundary } from 'react-error-boundary'
+
+// Wrap Suspense in an ErrorBoundary
+function MessageContainer({ messagePromise }: { messagePromise: Promise<string> }) {
+  return (
+    <ErrorBoundary fallback={<p>⚠️ Something went wrong</p>}>
+      <Suspense fallback={<p>⌛ Loading message...</p>}>
+        <Message messagePromise={messagePromise} />
+      </Suspense>
+    </ErrorBoundary>
+  )
+}
+
+function Message({ messagePromise }: { messagePromise: Promise<string> }) {
+  const content = use(messagePromise) // may throw if promise rejects
+  return <p>Message: {content}</p>
+}
+```
+
+In this snippet, if messagePromise rejects, the `<ErrorBoundary>` will display its fallback. React’s docs show this exact pattern: an error boundary wraps the `<Suspense>` boundary to handle promise rejection. Without an error boundary, an unhandled rejection would bubble up and crash the app. You can also catch errors manually on the promise (e.g. `fetch().then().catch()`) to transform them into default values, but using an Error Boundary is often cleaner.
+
+# Integration with React Router and Data Routers
+
+Modern routing libraries have built-in Suspense support for loading data and components. In React Router v7 (and even v6+), you typically use Suspense for component lazy-loading (as shown above). Additionally, React Router’s data APIs can work with Suspense by throwing promises in loader functions, but that is framework-specific. The general advice is: for code splitting with React Router, wrap lazy route components in Suspense (see above example). This ensures each route loads its bundle on demand.
+
+For example, wrapping routes at the top level:
+
+```tsx
+<Suspense fallback={<p>Loading page...</p>}>
+  <Routes>
+    <Route path="/" element={<Home />} />
+    <Route path="/about" element={<About />} />
+    {/* ... */}
+  </Routes>
+</Suspense>
+```
+
+This way, navigating to each route lazy-loads just that code. As noted, “Each route is loaded only when the user navigates to it,” making this approach clean and efficient.
+
+# Integration with Next.js Server Components
+
+Next.js (v13/14/15 with the App router) fully leverages Suspense and `use() ` for streaming server data. The typical pattern is to fetch data in a Server Component, do not await it, and pass the unresolved promise to a Client Component wrapped in `<Suspense>`. The Client Component (marked `'use client'`) then calls `use(promise)` to suspend until the data arrives. For example:
+
+```tsx
+// app/post/page.tsx (Server Component)
+import { Suspense } from 'react'
+import PostList from './PostList'
+
+export default function Page() {
+  const postsPromise = fetch('https://api.example.com/posts').then((r) => r.json())
+  return (
+    <Suspense fallback={<div>Loading posts...</div>}>
+      <PostList postsPromise={postsPromise} />
+    </Suspense>
+  )
+}
+
+// app/post/PostList.tsx (Client Component)
+;('use client')
+import { use } from 'react'
+
+export default function PostList({ postsPromise }: { postsPromise: Promise<Post[]> }) {
+  const posts = use(postsPromise) // Suspends here until postsPromise resolves
+  return (
+    <ul>
+      {posts.map((post) => (
+        <li key={post.id}>{post.title}</li>
+      ))}
+    </ul>
+  )
+}
+```
+
+Next.js documentation shows this pattern: the server component initiates `const posts = getPosts()` without awaiting, and a Suspense boundary `<Posts posts={posts}/>` is shown with a loading indicator until ready. The client component then does `const allPosts = use(posts)` to read the data. Important: the client component must have `'use client'` at the top to use the `use()` hook.
+
+Beyond manual Suspense, Next.js also offers `loading.js` files for route segments and built-in streaming. But under the hood, Suspense is used. In practice, using `use()` in a client component like above provides efficient streaming of data from server to client.
+
+# Common Mistakes and Pitfalls
+
+- Missing `fallback`: Always provide a fallback UI in `<Suspense>`. Without it, a lazy component or suspended data fetch will error. The fallback should be lightweight (a spinner or skeleton).
+- Creating Promises in Render: Do not create a new Promise on every render. For example, avoid `use(fetchData())` inside the component. This recreates the promise each render and causes an endless render loop. Instead, create the Promise outside (or in a parent) so it’s stable across renders.
+- Incorrect use of `use()` hook: The `use()` hook must be called within a React component or custom hook body. Do not call it in event handlers, effects, or outside React’s render flow. Also, remember `use()` works only with Promises or Context; it won’t magically await anything else.
+- Not using Error Boundaries: If you omit an Error Boundary around Suspense, any data-fetch rejection will crash the app. Wrap your Suspense boundaries so errors render a fallback UI.
+- Premature or Wrong Data Fetching: Suspense does not detect data loaded in `useEffect` or callbacks. If you fetch data there, Suspense won’t help you – you’d need manual loading states. To use Suspense for data, ensure the promise is thrown (via `use()` or a library) during render.
+
+- Scope of Suspense Boundaries: Don’t make boundaries more granular than necessary. If you put Suspense around every tiny component, you’ll show many isolated spinners. Instead, group components that should load together in one boundary. Conversely, you can nest Suspense boundaries for progressive loading sequences. Align with your UI design: decide which parts should appear together and which can load independently.
+
+By following these best practices – always include a `fallback`, lift promise creation out of render, and use Error Boundaries – you can avoid most pitfalls. Additionally, be mindful of React version: `use()` and Suspense for data are official in React 19 and Next.js; in pure React 18 you'd rely on libraries like React Query or the older “throw-promise” pattern.
+
+# Summary
+
+React Suspense is a powerful concurrency feature for asynchronous rendering. It simplifies lazy loading and data fetching by automatically managing loading states. With React.lazy, you can code-split your app so components load on demand. With the new React 19 `use()` hook, you can suspend on Promises in components, integrating data fetching into the render cycle. Together with Error Boundaries, Suspense provides a clean pattern: loading placeholders while assets or data load, and fallback errors on failures.
+
+In practice, using Suspense and `use()` leads to more maintainable code. You avoid juggling `useEffect` and useState for every async case – instead, write UI as if data were synchronous. Large frameworks leverage this: Next.js streaming and React Router’s future data APIs depend on Suspense. As React’s concurrent features mature, Suspense will become even more central. By mastering Suspense (and watching out for common mistakes) you’ll be ready to write fast, resilient React apps with smoother async behavior.
+
+# References
+
+- [Introducing React Suspense](https://reactjs.org/docs/concurrent-mode-suspense.html) — React Docs
+- [React.lazy() Documentation](https://reactjs.org/docs/code-splitting.html#reactlazy) — React Docs
+- [React 19 `use()` Hook Proposal](https://github.com/reactjs/rfcs/pull/229) — React RFCs
+- [React 18 Working with Concurrent Features](https://react.dev/learn/suspense) — React.dev Docs
+- [Streaming with Suspense in Next.js](https://nextjs.org/docs/app/building-your-application/routing/loading-ui) — Next.js Team
+- [Error Boundaries](https://reactjs.org/docs/error-boundaries.html) — React Docs
+- [React Router Lazy Loading](https://reactrouter.com/en/main/start/tutorial) — React Router Docs
+- [Using Suspense with React Query](https://tanstack.com/query/v4/docs/react/guides/suspense) — TanStack Query Docs
+- [Data Fetching with `use()` in Client Components](https://nextjs.org/docs/app/building-your-application/data-fetching/client-components#using-use-in-client-components) — Next.js Team
+- [React Suspense for Data Fetching (Kent C. Dodds)](https://kentcdodds.com/blog/react-suspense) — Kent C. Dodds
+
+_~Seb_ 👊
