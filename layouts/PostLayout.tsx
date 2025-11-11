@@ -13,6 +13,7 @@ import Card from '@/components/Card'
 import TableOfContents from '@/components/TableOfContents'
 import ReadingProgress from '@/components/ReadingProgress'
 import LikeButton from '@/components/LikeButton'
+import CommentSection from '@/components/CommentSection'
 
 const postDateTemplate: Intl.DateTimeFormatOptions = {
   weekday: 'long',
@@ -201,6 +202,11 @@ export default function PostLayout({
                   </div>
                 </div>
               )}
+
+              {/* Comment Section */}
+              <div className="mt-12 border-t border-gray-200 pt-8 dark:border-gray-700">
+                <CommentSection slug={slug} />
+              </div>
             </div>
           </div>
         </div>
