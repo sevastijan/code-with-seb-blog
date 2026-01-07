@@ -1,0 +1,493 @@
+---
+title: "TanStack in 2026: From Query to Full-Stack - A Developer's Decision Guide"
+date: '2026-01-07'
+tags: ['tanstack', 'react', 'tanstack-query', 'frontend-architecture', 'state-management']
+draft: true
+summary: "TanStack has grown from a data-fetching library into a complete frontend ecosystem. But with Query, Router, Table, Form, Store, DB, AI, and Start - how do you know which tools you actually need? Here's my practical guide to building with TanStack in 2026."
+authors: ['Sebastian Sleczka']
+---
+
+Two years ago, I knew TanStack as "that React Query thing." Today, I'm looking at eight interconnected libraries that could replace half my frontend stack. The explosion happened fast, and if you blinked, you might have missed it.
+
+Here's the thing though: **you don't need all of TanStack**. That's the contrarian take nobody's telling you. What you need is a clear understanding of which tools solve which problems, and a framework for deciding what belongs in your project.
+
+Let me break it down.
+
+## The TanStack Ecosystem Map
+
+Before diving into each tool, let's get the lay of the land. TanStack in 2026 consists of:
+
+| Library     | Purpose                  | Maturity         |
+| ----------- | ------------------------ | ---------------- |
+| **Query**   | Server state management  | Battle-tested    |
+| **Router**  | Type-safe routing        | Production-ready |
+| **Table**   | Headless data tables     | Battle-tested    |
+| **Form**    | Form state management    | Stable           |
+| **Virtual** | Virtualized lists        | Battle-tested    |
+| **Store**   | Client state management  | Newer            |
+| **DB**      | Reactive client database | Alpha            |
+| **AI**      | AI toolkit               | Alpha            |
+| **Start**   | Full-stack framework     | RC/1.0           |
+
+The key insight? These aren't random libraries thrown together. They're designed to work as a cohesive system, but each one is also completely standalone. You can use Query without Router, Table without Form, or just Start by itself.
+
+## TanStack Query: The Foundation
+
+If you're going to use one TanStack library, make it Query. It handles server state—the data that lives on your backend—with automatic caching, background updates, and stale-while-revalidate patterns.
+
+Here's what replacing Redux with TanStack Query looks like in practice:
+
+```typescript
+// Before: Redux + Redux Toolkit + RTK Query
+// ~200 lines of boilerplate
+
+// After: TanStack Query
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+
+function useUsers() {
+  return useQuery({
+    queryKey: ['users'],
+    queryFn: () => fetch('/api/users').then((res) => res.json()),
+    staleTime: 5 * 60 * 1000, // 5 minutes
+  })
+}
+
+function useCreateUser() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: (newUser: User) =>
+      fetch('/api/users', {
+        method: 'POST',
+        body: JSON.stringify(newUser),
+      }).then((res) => res.json()),
+    onSuccess: () => {
+      // Invalidate and refetch
+      queryClient.invalidateQueries({ queryKey: ['users'] })
+    },
+  })
+}
+```
+
+The magic is in what you don't write: no reducers, no action creators, no normalization logic, no loading state management. Query handles all of it.
+
+**When to use Query:**
+
+- Any app that fetches data from an API
+- When you're tired of managing loading/error/success states manually
+- When you need caching without building it yourself
+- As a replacement for 80% of what you're using Redux for
+
+**When to skip it:**
+
+- Static sites with no dynamic data
+- Apps with purely local state
+
+## TanStack Router: Type-Safe Routing That Actually Works
+
+React Router has been the default for years, but TanStack Router brings something different: **full type safety from route definition to component**.
+
+```typescript
+import { createFileRoute } from '@tanstack/react-router'
+
+// Route params are fully typed
+export const Route = createFileRoute('/users/$userId')({
+  // Loader runs before render, data is typed
+  loader: async ({ params }) => {
+    // params.userId is string, automatically typed
+    return fetchUser(params.userId)
+  },
+  component: UserPage,
+})
+
+function UserPage() {
+  // useLoaderData returns the exact type from loader
+  const user = Route.useLoaderData()
+  // user is fully typed, no casting needed
+
+  return <div>{user.name}</div>
+}
+```
+
+The killer feature is **search params as typed state**:
+
+```typescript
+// Define search params schema
+const searchSchema = z.object({
+  page: z.number().default(1),
+  filter: z.enum(['all', 'active', 'inactive']).default('all'),
+})
+
+export const Route = createFileRoute('/users')({
+  validateSearch: searchSchema,
+})
+
+function UsersPage() {
+  const { page, filter } = Route.useSearch()
+  // Both are fully typed!
+
+  const navigate = Route.useNavigate()
+
+  // Type error if you pass wrong values
+  navigate({ search: { page: 2, filter: 'active' } })
+}
+```
+
+**When to use Router:**
+
+- New projects where you want type safety throughout
+- When search params are a core part of your state
+- If you're already using other TanStack tools
+- When React Router's API feels clunky
+
+**When to skip it:**
+
+- Existing large codebases on React Router (migration cost is high)
+- Simple apps with few routes
+
+## TanStack Table: When You Need Serious Data Display
+
+Table is the oldest library in the ecosystem, and it's headless by design. You bring your own UI, it handles the logic for sorting, filtering, pagination, and virtualization.
+
+```typescript
+import {
+  useReactTable,
+  getCoreRowModel,
+  getSortedRowModel,
+  getFilteredRowModel,
+  flexRender,
+} from '@tanstack/react-table'
+
+const columns = [
+  {
+    accessorKey: 'name',
+    header: 'Name',
+    cell: info => info.getValue(),
+  },
+  {
+    accessorKey: 'email',
+    header: 'Email',
+  },
+  {
+    accessorKey: 'status',
+    header: 'Status',
+    cell: info => <StatusBadge status={info.getValue()} />,
+  },
+]
+
+function UsersTable({ data }) {
+  const [sorting, setSorting] = useState([])
+  const [globalFilter, setGlobalFilter] = useState('')
+
+  const table = useReactTable({
+    data,
+    columns,
+    state: { sorting, globalFilter },
+    onSortingChange: setSorting,
+    onGlobalFilterChange: setGlobalFilter,
+    getCoreRowModel: getCoreRowModel(),
+    getSortedRowModel: getSortedRowModel(),
+    getFilteredRowModel: getFilteredRowModel(),
+  })
+
+  return (
+    <table>
+      <thead>
+        {table.getHeaderGroups().map(headerGroup => (
+          <tr key={headerGroup.id}>
+            {headerGroup.headers.map(header => (
+              <th
+                key={header.id}
+                onClick={header.column.getToggleSortingHandler()}
+              >
+                {flexRender(header.column.columnDef.header, header.getContext())}
+                {header.column.getIsSorted() ? (
+                  header.column.getIsSorted() === 'asc' ? ' ↑' : ' ↓'
+                ) : null}
+              </th>
+            ))}
+          </tr>
+        ))}
+      </thead>
+      <tbody>
+        {table.getRowModel().rows.map(row => (
+          <tr key={row.id}>
+            {row.getVisibleCells().map(cell => (
+              <td key={cell.id}>
+                {flexRender(cell.column.columnDef.cell, cell.getContext())}
+              </td>
+            ))}
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  )
+}
+```
+
+**When to use Table:**
+
+- Dashboards and admin panels
+- Any data-heavy application
+- When you need sorting, filtering, pagination, or column resizing
+- When off-the-shelf table components don't cut it
+
+**When to skip it:**
+
+- Simple lists without complex interactions
+- When a basic `map()` over data is enough
+
+## TanStack Form: The New Kid Worth Watching
+
+Form state management has always been a pain point. React Hook Form dominated, but TanStack Form offers tighter integration with the ecosystem and first-class TypeScript support.
+
+```typescript
+import { useForm } from '@tanstack/react-form'
+import { zodValidator } from '@tanstack/zod-form-adapter'
+import { z } from 'zod'
+
+const userSchema = z.object({
+  name: z.string().min(2, 'Name must be at least 2 characters'),
+  email: z.string().email('Invalid email address'),
+})
+
+function UserForm() {
+  const form = useForm({
+    defaultValues: {
+      name: '',
+      email: '',
+    },
+    onSubmit: async ({ value }) => {
+      await createUser(value)
+    },
+    validatorAdapter: zodValidator(),
+    validators: {
+      onChange: userSchema,
+    },
+  })
+
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault()
+        form.handleSubmit()
+      }}
+    >
+      <form.Field
+        name="name"
+        children={(field) => (
+          <div>
+            <input
+              value={field.state.value}
+              onChange={(e) => field.handleChange(e.target.value)}
+            />
+            {field.state.meta.errors.length > 0 && (
+              <span>{field.state.meta.errors.join(', ')}</span>
+            )}
+          </div>
+        )}
+      />
+
+      <form.Field
+        name="email"
+        children={(field) => (
+          <div>
+            <input
+              type="email"
+              value={field.state.value}
+              onChange={(e) => field.handleChange(e.target.value)}
+            />
+            {field.state.meta.errors.length > 0 && (
+              <span>{field.state.meta.errors.join(', ')}</span>
+            )}
+          </div>
+        )}
+      />
+
+      <button type="submit">Submit</button>
+    </form>
+  )
+}
+```
+
+**When to use Form:**
+
+- New projects where you want ecosystem consistency
+- Complex forms with dynamic fields
+- When you need async validation
+
+**When to skip it:**
+
+- If React Hook Form is working well for you
+- Simple forms where controlled inputs are fine
+
+## TanStack Start: Full-Stack Without the Next.js Baggage
+
+Start is TanStack's answer to Next.js and Remix. It's built on Vite and TanStack Router, with SSR, server functions, and streaming built in.
+
+The philosophy is different: **client-first with server capabilities**, not server-first with client hydration.
+
+```typescript
+// app/routes/users.tsx
+import { createFileRoute } from '@tanstack/react-router'
+import { createServerFn } from '@tanstack/start'
+
+const getUsers = createServerFn('GET', async () => {
+  // This runs on the server
+  const users = await db.users.findMany()
+  return users
+})
+
+export const Route = createFileRoute('/users')({
+  loader: () => getUsers(),
+  component: UsersPage,
+})
+
+function UsersPage() {
+  const users = Route.useLoaderData()
+  return (
+    <ul>
+      {users.map(user => (
+        <li key={user.id}>{user.name}</li>
+      ))}
+    </ul>
+  )
+}
+```
+
+**When to use Start:**
+
+- New full-stack React projects
+- When you want Vite's speed
+- If Next.js feels too opinionated or Vercel-locked
+- When you're already invested in TanStack Router
+
+**When to skip it:**
+
+- Existing Next.js/Remix projects (migration cost)
+- When you need the Next.js ecosystem (image optimization, etc.)
+- Production apps that need battle-tested stability (Start just hit RC)
+
+## The Newest Additions: Store, DB, and AI
+
+### TanStack Store
+
+A minimal client state manager. Think Zustand, but designed to integrate with the rest of TanStack.
+
+```typescript
+import { Store } from '@tanstack/store'
+
+const counterStore = new Store({
+  count: 0,
+})
+
+// Update
+counterStore.setState((state) => ({
+  count: state.count + 1,
+}))
+
+// Subscribe
+counterStore.subscribe((state) => {
+  console.log('Count:', state.count)
+})
+```
+
+### TanStack DB
+
+A reactive client database using differential dataflow. It's in alpha, but the promise is compelling: real-time sync with sub-millisecond queries.
+
+### TanStack AI
+
+A framework-agnostic AI toolkit. Also alpha, but supports streaming, tool calling, and works across JavaScript, Python, and PHP.
+
+**My take:** These are exciting but not production-ready. Watch them, experiment with them, but don't build critical features on them yet.
+
+## Decision Framework: Which Tools for Which Project?
+
+Here's how I think about it:
+
+### Small App (personal project, prototype)
+
+- **Must have:** Query
+- **Nice to have:** Router if you have complex navigation
+- **Skip:** Everything else
+
+### Medium App (SaaS, internal tool)
+
+- **Must have:** Query, Router
+- **Consider:** Table (if data-heavy), Form (if form-heavy)
+- **Maybe:** Start (if greenfield full-stack)
+
+### Large App (enterprise, complex domain)
+
+- **Must have:** Query, Router, Table
+- **Consider:** Form, Store
+- **Evaluate:** Start vs Next.js based on team experience
+
+### The Universal Rule
+
+Start with Query. Add Router if you're starting fresh. Add others only when you hit a specific pain point they solve.
+
+## Real Architecture: How These Tools Fit Together
+
+Here's a real-world architecture using TanStack Start with Query, Router, and Table:
+
+```
+app/
+├── routes/
+│   ├── __root.tsx          # Root layout with QueryClientProvider
+│   ├── index.tsx           # Home page
+│   └── users/
+│       ├── index.tsx       # Users list with Table
+│       └── $userId.tsx     # User detail page
+├── components/
+│   ├── UsersTable.tsx      # TanStack Table implementation
+│   └── UserForm.tsx        # TanStack Form implementation
+├── api/
+│   └── users.ts            # Server functions for user CRUD
+└── lib/
+    └── query-client.ts     # QueryClient configuration
+```
+
+The data flow:
+
+1. **Router** handles navigation and loaders
+2. **Query** manages server state and caching
+3. **Table** renders data with sorting/filtering
+4. **Form** handles user input with validation
+
+They share types, invalidate each other's caches, and provide a consistent developer experience.
+
+## Migration Strategy: From Redux/React Router to TanStack
+
+If you're migrating an existing app, here's my recommended order:
+
+1. **Add Query alongside Redux** - Start using Query for new features. Let Redux handle existing state.
+2. **Migrate server state to Query** - One slice at a time, move API data from Redux to Query.
+3. **Evaluate remaining Redux** - What's left is probably client state. Consider if you still need Redux or if Query + Store is enough.
+4. **Router is optional** - Only migrate routing if you're doing a major refactor anyway.
+
+The key: **incremental migration**. TanStack tools are designed to coexist with existing solutions.
+
+## When NOT to Use TanStack
+
+I'll be honest about the tradeoffs:
+
+- **Learning curve** - If your team knows Redux and React Router well, the productivity hit of learning new tools might not be worth it.
+- **Ecosystem maturity** - Next.js has years of production battle-testing. Start is new.
+- **Hiring** - More developers know Redux than TanStack. This matters for team scaling.
+- **Stability needs** - If you need boring, predictable technology, stick with the defaults.
+
+TanStack is excellent, but it's not always the right choice. Use it when its strengths align with your needs.
+
+## What's Next
+
+TanStack is clearly heading toward being a complete frontend platform. With Start reaching 1.0 and new tools like DB and AI in development, 2026 will be interesting.
+
+My recommendation: **start with Query today**. It's the most mature, most immediately useful, and the gateway to understanding the ecosystem's philosophy. Once you see how TanStack thinks about state management, the other tools will make sense.
+
+The days of needing five different libraries from five different philosophies are ending. Whether that's a good thing depends on how much you value consistency over choice. For me, after migrating several projects, the consistency wins.
+
+Pick your tools deliberately. Start small. Expand as needed.
+
+Have questions about TanStack or want to share your migration experience? I'd love to hear about it.
