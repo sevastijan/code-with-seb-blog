@@ -11,7 +11,6 @@ Gdy użytkownik wyda komendę, **wykonuj wszystkie kroki automatycznie bez pytan
 ```
 Project dir: /Users/sebastiansleczka/Code/code-with-seb-blog
 Blog posts:  /Users/sebastiansleczka/Code/code-with-seb-blog/data/blog
-Autor:       Sebastian Sleczka
 Język:       English
 ```
 
@@ -323,7 +322,6 @@ date: '2026-01-07'
 tags: ['tag1', 'tag2']
 draft: true
 summary: 'Opis'
-authors: ['Sebastian Sleczka']
 ---
 
 Treść artykułu...
