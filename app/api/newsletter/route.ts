@@ -4,7 +4,7 @@ import siteMetadata from '@/data/siteMetadata'
 export const dynamic = 'force-static'
 
 const handler = NewsletterAPI({
-  // @ts-ignore
+  // @ts-expect-error pliny types mismatch
   provider: siteMetadata.newsletter.provider,
 })
 

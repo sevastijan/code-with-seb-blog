@@ -62,11 +62,16 @@ export default function PostLayout({
     if (related.length >= 2) return related.slice(0, 2).map((p) => ({ ...p, label: 'Related' }))
     const remainingNeeded = 2 - related.length
     const pool = allBlogs.filter((p) => p.slug !== slug && !related.some((r) => r.slug === p.slug))
-    const randomExtra = pool
-      .sort(() => Math.random() - 0.5)
+    // Use deterministic selection based on slug hash instead of Math.random
+    const seededPool = pool
+      .map((p) => ({
+        ...p,
+        sortKey: slug.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0) + p.slug.charCodeAt(0),
+      }))
+      .sort((a, b) => a.sortKey - b.sortKey)
       .slice(0, remainingNeeded)
       .map((p) => ({ ...p, label: 'Discover more' }))
-    return [...related.map((p) => ({ ...p, label: 'Related' })), ...randomExtra]
+    return [...related.map((p) => ({ ...p, label: 'Related' })), ...seededPool]
   }, [slug, tags])
 
   return (
