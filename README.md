@@ -6,29 +6,29 @@
 # Extract
 tar -xzf blog-agents.tar.gz
 
-# Move to Agents directory
-mv blog-agents /Users/sebastiansleczka/Agents/
+# Copy contents to blog repo
+cp -r blog-agents/* /Users/sebastiansleczka/Code/code-with-seb-blog/
 ```
 
-**Structure:**
+**Structure after setup:**
 
 ```
-/Users/sebastiansleczka/Agents/blog-agents/
+/Users/sebastiansleczka/Code/code-with-seb-blog/
 ├── CLAUDE.md           # Instructions for Claude Code
 ├── prompts/            # Agent prompts
 ├── topics/             # Research, queue, archive
-└── scripts/            # Templates
-
-Articles are saved to:
-/Users/sebastiansleczka/Code/code-with-seb-blog/data/blog/
+├── scripts/            # Templates
+├── data/
+│   └── blog/           # ← Articles are saved here
+└── ... (rest of blog)
 ```
 
 ## Usage
 
-Open Claude Code **in agents directory**:
+Open Claude Code **in blog directory**:
 
 ```bash
-cd /Users/sebastiansleczka/Agents/blog-agents
+cd /Users/sebastiansleczka/Code/code-with-seb-blog
 claude
 ```
 

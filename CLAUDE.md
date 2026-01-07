@@ -9,11 +9,10 @@ Gdy użytkownik wyda komendę, **wykonuj wszystkie kroki automatycznie bez pytan
 ## Konfiguracja
 
 ```
-Agents dir: /Users/sebastiansleczka/Agents/blog-agents
-Blog repo:  /Users/sebastiansleczka/Code/code-with-seb-blog
-Blog posts: /Users/sebastiansleczka/Code/code-with-seb-blog/data/blog
-Autor:      Sebastian Sleczka
-Język:      English
+Project dir: /Users/sebastiansleczka/Code/code-with-seb-blog
+Blog posts:  /Users/sebastiansleczka/Code/code-with-seb-blog/data/blog
+Autor:       Sebastian Sleczka
+Język:       English
 ```
 
 ---
@@ -153,7 +152,6 @@ Wyświetl wyniki:
   - `[primaryKeyword] RFC proposal`
   - `[primaryKeyword] best practices 2025`
   - `[primaryKeyword] common mistakes`
-- Użyj danych z Deep Research do lepszych hooks i angles
   - `[primaryKeyword] production experience`
   - `[primaryKeyword] performance benchmark`
   - `site:github.com [primaryKeyword] issues`
@@ -164,14 +162,12 @@ Wyświetl wyniki:
 
 **KROK 4/9: Strategy**
 
-- Użyj danych z Deep Research jako źródło faktów
-
 ```
-- Dodaj References section z prawdziwymi URL z Deep Research
 [4/9] 🎯 Creating Strategy...
 ```
 
 - Przeczytaj `prompts/strategy.md`
+- Użyj danych z Deep Research do lepszych hooks i angles
 - Wygeneruj: angle, title, excerpt, hooks, outline, tags
 - Zapisz do topic.strategy
 - Zaktualizuj status: "strategy"
@@ -183,7 +179,9 @@ Wyświetl wyniki:
 ```
 
 - Przeczytaj `prompts/writer.md`
+- Użyj danych z Deep Research jako źródło faktów
 - Napisz PEŁNY artykuł według outline
+- Dodaj References section z prawdziwymi URL z Deep Research
 - Zapisz draft do `/Users/sebastiansleczka/Code/code-with-seb-blog/data/blog/[slug].mdx`
 - Zaktualizuj status: "writing"
 
@@ -196,18 +194,6 @@ Wyświetl wyniki:
 - Przeczytaj `prompts/editor.md`
 - Popraw gramatykę, flow, czytelność
 - Nadpisz draft
-- Zaktualizuj status: "seo_check"
-
-**KROK 9/9: Build Verification**
-
-```
-[9/9] 🏗️ Verifying build...
-```
-
-- Przeczytaj `prompts/build-verify.md`
-- Uruchom `cd /Users/sebastiansleczka/Code/code-with-seb-blog && npm run build`
-- Jeśli błąd → napraw i ponów build
-- Sprawdź czy brak warnings
 - Zaktualizuj status: "editing"
 
 **KROK 7/9: Validation**
@@ -230,6 +216,18 @@ Wyświetl wyniki:
 - Przeczytaj `prompts/seo-checker.md`
 - Sprawdź SEO score
 - Zastosuj poprawki frontmatter jeśli potrzeba
+- Zaktualizuj status: "seo_check"
+
+**KROK 9/9: Build Verification**
+
+```
+[9/9] 🏗️ Verifying build...
+```
+
+- Przeczytaj `prompts/build-verify.md`
+- Uruchom `cd /Users/sebastiansleczka/Code/code-with-seb-blog && npm run build`
+- Jeśli błąd → napraw i ponów build
+- Sprawdź czy brak warnings
 - Zaktualizuj status: "ready"
 
 **ZAKOŃCZENIE:**
@@ -285,7 +283,6 @@ Artykuł przeniesiony do archive/
 Wyświetl:
 
 - Ostatni research z `topics/research/`
-  "deepResearch": null,
 - Tematy w kolejce z `topics/queue/`
 - Status każdego tematu
 
@@ -311,6 +308,7 @@ Wyświetl:
   },
   "seo": null,
   "competitors": null,
+  "deepResearch": null,
   "strategy": null,
   "content": null
 }
