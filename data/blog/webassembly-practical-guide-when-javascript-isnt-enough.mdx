@@ -1,0 +1,440 @@
+---
+title: "WebAssembly in Practice: When JavaScript Isn't Enough"
+date: '2026-01-07'
+tags: ['webassembly', 'wasm', 'performance', 'rust', 'javascript']
+draft: false
+summary: "WebAssembly promises near-native performance in the browser. But when does it actually deliver? Here's a practical guide with real benchmarks, integration patterns, and a decision framework for when Wasm is worth the complexity."
+authors: ['Sebastian Sleczka']
+---
+
+"WebAssembly is 100x faster than JavaScript!" You've probably seen this claim. It's not true. In real-world scenarios, you're looking at **2-3x speedups**, and only for specific workloads. Sometimes JavaScript is actually faster.
+
+That's not a knock on WebAssembly—it's incredibly useful for the right problems. But after a decade of hype, it's time for a practical guide: when does Wasm actually make sense, and when should you stick with JavaScript?
+
+## What WebAssembly Actually Is
+
+WebAssembly (Wasm) is a binary instruction format that runs in your browser alongside JavaScript. Think of it as a compilation target: you write code in Rust, C++, or other languages, compile it to `.wasm`, and run it in the browser.
+
+The key points:
+
+- **It's not a replacement for JavaScript**—Wasm can't access the DOM directly
+- **It runs in the same sandbox**—same security model as JS
+- **It's portable**—the same `.wasm` file runs in any modern browser
+- **It's typed and low-level**—closer to machine code than JavaScript
+
+Here's the mental model: JavaScript handles the UI and orchestration, Wasm handles computation-heavy work.
+
+## When WebAssembly Wins
+
+Wasm shines when you need to do heavy lifting that JavaScript struggles with:
+
+### Image and Video Processing
+
+```typescript
+// Processing a 4K image pixel by pixel
+// JavaScript: ~800ms
+// WebAssembly: ~200ms
+
+const processImage = async (imageData: ImageData) => {
+  // Load the Wasm module
+  const wasm = await import('./image-processor.wasm')
+
+  // Pass the pixel data to Wasm
+  const result = wasm.applyFilter(imageData.data, imageData.width, imageData.height)
+
+  return new ImageData(result, imageData.width, imageData.height)
+}
+```
+
+Tools like Figma, Photopea, and FFMPEG.wasm use this pattern. When you're manipulating millions of pixels, the overhead of JavaScript's dynamic typing adds up.
+
+### Gaming and Physics Engines
+
+Game engines need predictable, consistent performance. Unity and Unreal Engine compile to WebAssembly for browser games. The key advantages:
+
+- Predictable frame times (no GC pauses)
+- Efficient memory layout for entity systems
+- Reuse of existing C++ codebases
+
+### Cryptography and Compression
+
+```typescript
+// Hashing with WebAssembly
+import init, { hash_password } from './argon2-wasm'
+
+await init()
+
+// Wasm: ~50ms for Argon2 hash
+// Pure JS: ~150ms (and less secure implementations)
+const hashed = hash_password('user-password', salt)
+```
+
+Security-critical code benefits from using battle-tested C/Rust libraries compiled to Wasm rather than JavaScript reimplementations.
+
+### CAD and 3D Modeling
+
+AutoCAD Web and Google Earth use Wasm for complex geometric calculations. When you're doing matrix operations on thousands of vertices, Wasm's SIMD instructions make a real difference.
+
+### Data Processing and Analytics
+
+Parsing large datasets, running statistical calculations, or processing scientific data—these are classic Wasm use cases.
+
+## When JavaScript Is Better
+
+Don't reach for WebAssembly when:
+
+### DOM Manipulation
+
+Wasm can't touch the DOM directly. Every DOM operation requires a call back to JavaScript. If your bottleneck is rendering, Wasm won't help.
+
+```typescript
+// This won't be faster with Wasm
+// The bottleneck is DOM updates, not computation
+items.forEach((item) => {
+  const element = document.createElement('div')
+  element.textContent = item.name
+  container.appendChild(element)
+})
+```
+
+### Simple Data Transformations
+
+```typescript
+// Just use JavaScript for this
+const filtered = users.filter((u) => u.active).map((u) => ({ id: u.id, name: u.name }))
+
+// The overhead of JS-to-Wasm calls would make this slower
+```
+
+### Network-Bound Operations
+
+If you're waiting on API responses, Wasm won't help. The bottleneck isn't computation.
+
+### When You Don't Have Performance Problems
+
+This is the biggest one. If your JavaScript is fast enough, adding Wasm introduces complexity without benefit. Profile first, optimize second.
+
+## The Performance Truth
+
+Let's set realistic expectations with actual numbers:
+
+| Operation                | JavaScript | WebAssembly | Speedup            |
+| ------------------------ | ---------- | ----------- | ------------------ |
+| Image filter (4K)        | 800ms      | 200ms       | 4x                 |
+| Argon2 hash              | 150ms      | 50ms        | 3x                 |
+| JSON parsing             | 10ms       | 15ms        | **0.7x** (JS wins) |
+| Fibonacci(45)            | 12s        | 4s          | 3x                 |
+| Array sort (1M items)    | 450ms      | 400ms       | 1.1x               |
+| DOM updates (1000 nodes) | 50ms       | 55ms        | **0.9x** (JS wins) |
+
+Key takeaways:
+
+- **Computation-heavy work**: 2-4x speedup typical
+- **Memory-intensive algorithms**: Wasm wins due to linear memory
+- **String operations**: JavaScript often wins (optimized engines)
+- **DOM anything**: JavaScript wins (no bridge overhead)
+- **Small operations**: Overhead makes Wasm slower
+
+## Getting Started: Rust to Wasm in 5 Minutes
+
+Rust is the most popular language for WebAssembly due to excellent tooling and no garbage collector. Here's the minimal setup:
+
+### 1. Install the toolchain
+
+```bash
+# Install Rust if you haven't
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
+# Add the WebAssembly target
+rustup target add wasm32-unknown-unknown
+
+# Install wasm-pack (the build tool)
+cargo install wasm-pack
+```
+
+### 2. Create a new project
+
+```bash
+cargo new --lib my-wasm-lib
+cd my-wasm-lib
+```
+
+### 3. Configure Cargo.toml
+
+```toml
+[package]
+name = "my-wasm-lib"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wasm-bindgen = "0.2"
+```
+
+### 4. Write your Rust code
+
+```rust
+// src/lib.rs
+use wasm_bindgen::prelude::*;
+
+#[wasm_bindgen]
+pub fn fibonacci(n: u32) -> u32 {
+    match n {
+        0 => 0,
+        1 => 1,
+        _ => fibonacci(n - 1) + fibonacci(n - 2),
+    }
+}
+
+#[wasm_bindgen]
+pub fn process_data(data: &[u8]) -> Vec<u8> {
+    // Your heavy computation here
+    data.iter().map(|x| x.wrapping_mul(2)).collect()
+}
+```
+
+### 5. Build it
+
+```bash
+wasm-pack build --target web
+```
+
+This generates a `pkg/` directory with your `.wasm` file and JavaScript bindings.
+
+## JavaScript Integration
+
+Using your Wasm module in a JavaScript/TypeScript project:
+
+```typescript
+// Import the generated bindings
+import init, { fibonacci, process_data } from './pkg/my_wasm_lib.js'
+
+async function main() {
+  // Initialize the Wasm module (required once)
+  await init()
+
+  // Now you can call Wasm functions like regular JS
+  console.log(fibonacci(40)) // Fast!
+
+  // Working with binary data
+  const input = new Uint8Array([1, 2, 3, 4, 5])
+  const output = process_data(input)
+  console.log(output) // Uint8Array [2, 4, 6, 8, 10]
+}
+
+main()
+```
+
+### With bundlers (Vite, webpack)
+
+```typescript
+// vite.config.ts
+import { defineConfig } from 'vite'
+import wasm from 'vite-plugin-wasm'
+
+export default defineConfig({
+  plugins: [wasm()],
+})
+```
+
+Then import directly:
+
+```typescript
+import { fibonacci } from './pkg/my_wasm_lib.js'
+
+// Works with hot module replacement
+const result = fibonacci(30)
+```
+
+## Passing Data Efficiently
+
+The biggest performance trap is unnecessary copying between JavaScript and Wasm memory.
+
+### Bad: Copying on every call
+
+```typescript
+// Slow: data is copied each time
+function processFrames(frames: Uint8Array[]) {
+  return frames.map((frame) => wasm.processFrame(frame))
+}
+```
+
+### Good: Shared memory buffer
+
+```typescript
+// Fast: allocate once, reuse the buffer
+const buffer = new Uint8Array(wasm.memory.buffer, offset, size)
+
+function processFrames(frames: Uint8Array[]) {
+  return frames.map((frame) => {
+    // Copy into shared buffer
+    buffer.set(frame)
+    // Process in place
+    wasm.processFrameInPlace(offset, frame.length)
+    // Read result from same buffer
+    return new Uint8Array(buffer)
+  })
+}
+```
+
+### Best: Keep data in Wasm
+
+```rust
+// Rust side: manage the buffer in Wasm memory
+#[wasm_bindgen]
+pub struct ImageProcessor {
+    buffer: Vec<u8>,
+}
+
+#[wasm_bindgen]
+impl ImageProcessor {
+    #[wasm_bindgen(constructor)]
+    pub fn new(size: usize) -> Self {
+        Self { buffer: vec![0; size] }
+    }
+
+    pub fn get_buffer_ptr(&self) -> *const u8 {
+        self.buffer.as_ptr()
+    }
+
+    pub fn process(&mut self) {
+        // Modify self.buffer in place
+        for pixel in &mut self.buffer {
+            *pixel = pixel.saturating_add(10);
+        }
+    }
+}
+```
+
+```typescript
+// JavaScript side
+const processor = new ImageProcessor(width * height * 4)
+const ptr = processor.get_buffer_ptr()
+
+// Write directly to Wasm memory
+const view = new Uint8Array(wasm.memory.buffer, ptr, size)
+view.set(imageData.data)
+
+// Process without copying
+processor.process()
+
+// Read the result (still zero-copy)
+imageData.data.set(view)
+```
+
+## Debugging WebAssembly
+
+Modern browsers have good Wasm debugging support:
+
+### Chrome DevTools
+
+1. Build with debug info: `wasm-pack build --debug`
+2. Open DevTools → Sources
+3. Find your `.wasm` file in the file tree
+4. Set breakpoints in the disassembly view
+5. For source maps, use `--debug` flag with wasm-pack
+
+### Console logging from Rust
+
+```rust
+use wasm_bindgen::prelude::*;
+
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = console)]
+    fn log(s: &str);
+}
+
+#[wasm_bindgen]
+pub fn debug_function(value: i32) {
+    log(&format!("Debug: value is {}", value));
+}
+```
+
+### Performance profiling
+
+```typescript
+// Use the Performance API
+performance.mark('wasm-start')
+const result = wasm.heavyComputation(data)
+performance.mark('wasm-end')
+performance.measure('wasm-computation', 'wasm-start', 'wasm-end')
+```
+
+## The Decision Framework
+
+Use this checklist to decide if WebAssembly makes sense for your project:
+
+### Use WebAssembly when:
+
+- [ ] You have **CPU-bound computation** that takes >100ms
+- [ ] You're processing **large binary data** (images, audio, video)
+- [ ] You need **predictable performance** (games, real-time audio)
+- [ ] You're porting an **existing C/C++/Rust library**
+- [ ] You need **cryptographic operations** with security guarantees
+- [ ] JavaScript profiling shows computation as the bottleneck
+
+### Stick with JavaScript when:
+
+- [ ] The bottleneck is **DOM updates** or **network I/O**
+- [ ] Operations take **<50ms** in JavaScript
+- [ ] You're doing **string manipulation** (V8 is highly optimized)
+- [ ] Your team **doesn't know Rust/C++** (learning curve is real)
+- [ ] Bundle size is critical (Wasm adds ~20-100KB minimum)
+- [ ] You haven't **profiled** to confirm the bottleneck
+
+### The hybrid approach (recommended)
+
+Most successful Wasm projects use both:
+
+```
+┌─────────────────────────────────────────┐
+│              JavaScript                  │
+│  • UI rendering                         │
+│  • Event handling                       │
+│  • API calls                            │
+│  • State management                     │
+└────────────────┬────────────────────────┘
+                 │ Call for heavy work
+                 ▼
+┌─────────────────────────────────────────┐
+│             WebAssembly                  │
+│  • Image processing                     │
+│  • Physics calculations                 │
+│  • Compression/encryption               │
+│  • Complex algorithms                   │
+└─────────────────────────────────────────┘
+```
+
+## What's Next: The Component Model
+
+The WebAssembly Component Model (shipping in 2026) changes the game:
+
+- **Language interop**: Combine Rust, Python, and JavaScript modules seamlessly
+- **Better tooling**: Standardized interfaces between components
+- **Smaller bundles**: Share common code between components
+
+This means you'll be able to use a Python ML library, a Rust image processor, and JavaScript glue code—all compiled to composable Wasm components.
+
+## Wrapping Up
+
+WebAssembly isn't magic pixie dust that makes everything faster. It's a powerful tool for specific problems: heavy computation, binary data processing, and porting existing codebases.
+
+The practical approach:
+
+1. **Profile first**—identify where your actual bottleneck is
+2. **Try JavaScript optimization**—V8 is remarkably fast
+3. **If computation is the bottleneck**, consider Wasm
+4. **Start small**—extract one hot function, benchmark it
+5. **Measure the result**—did it actually help?
+
+The best Wasm projects I've seen started with a clear performance problem, proved Wasm solved it with benchmarks, and kept the boundary between JS and Wasm clean.
+
+Don't add complexity for complexity's sake. But when JavaScript genuinely isn't enough, WebAssembly is ready.
+
+Want to dive deeper? The [Rust and WebAssembly book](https://rustwasm.github.io/book/) is excellent, and the MDN docs cover the JavaScript API thoroughly.
+
+Have you used WebAssembly in production? I'd love to hear about your experience—what worked, what didn't, and what you'd do differently.
