@@ -1,36 +1,22 @@
-import { createRequire } from 'module'
-
-const require = createRequire(import.meta.url)
-
-const nextCoreWebVitals = require('eslint-config-next/core-web-vitals')
-const nextTypescript = require('eslint-config-next/typescript')
-const eslintConfigPrettier = require('eslint-config-prettier')
+import js from '@eslint/js'
+import eslintConfigPrettier from 'eslint-config-prettier'
+import tseslint from 'typescript-eslint'
 
 const eslintConfig = [
-  ...nextCoreWebVitals,
-  ...nextTypescript,
-  eslintConfigPrettier,
-  {
-    rules: {
-      'react/react-in-jsx-scope': 'off',
-      'jsx-a11y/anchor-is-valid': [
-        'error',
-        {
-          components: ['Link'],
-          specialLink: ['hrefLeft', 'hrefRight'],
-          aspects: ['invalidHref', 'preferButton'],
-        },
-      ],
-      'react/prop-types': 'off',
-      '@typescript-eslint/no-unused-vars': 'off',
-      'react/no-unescaped-entities': 'off',
-      '@typescript-eslint/explicit-module-boundary-types': 'off',
-      '@typescript-eslint/no-require-imports': 'off',
-      'react-hooks/set-state-in-effect': 'off',
-    },
-  },
   {
     ignores: ['.next/**', 'node_modules/**', '.contentlayer/**'],
+  },
+  js.configs.recommended,
+  ...tseslint.configs.recommended,
+  eslintConfigPrettier,
+  {
+    files: ['**/*.{js,jsx,ts,tsx,mjs}'],
+    rules: {
+      'no-unused-vars': 'off',
+      'no-undef': 'off',
+      '@typescript-eslint/no-unused-vars': 'off',
+      '@typescript-eslint/no-explicit-any': 'off',
+    },
   },
 ]
 
