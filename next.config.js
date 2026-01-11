@@ -1,3 +1,4 @@
+const path = require('path')
 const { withContentlayer } = require('next-contentlayer2')
 
 const withBundleAnalyzer = require('@next/bundle-analyzer')({
@@ -92,12 +93,21 @@ module.exports = () => {
           as: '*.js',
         },
       },
+      resolveAlias: {
+        'contentlayer/generated': './.contentlayer/generated',
+      },
     },
     webpack: (config, options) => {
       config.module.rules.push({
         test: /\.svg$/,
         use: ['@svgr/webpack'],
       })
+
+      // Alias dla contentlayer
+      config.resolve.alias = {
+        ...config.resolve.alias,
+        'contentlayer/generated': path.join(process.cwd(), '.contentlayer/generated'),
+      }
 
       return config
     },
