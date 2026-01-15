@@ -1,0 +1,568 @@
+---
+title: 'Claude Code Skills: The 98% Token Savings Architecture Nobody Explains'
+date: '2026-01-15'
+tags: ['claude-code', 'ai-agents', 'developer-tools', 'productivity', 'ai-automation']
+draft: false
+summary: "Skills, slash commands, subagents, MCP - Claude Code has four ways to extend capabilities. Most developers use the wrong one. Here's the decision framework that cuts research time from weeks to days."
+---
+
+Skills, slash commands, subagents, MCP servers. Claude Code now has four different ways to extend its capabilities, and if you're confused about which one to use, you're not alone.
+
+I spent hours reading documentation only to realize the guides don't answer the fundamental question: **when should I use each one?** Worse, most tutorials completely ignore the progressive disclosure architecture—the design that gives skills a 98% token reduction when they're present but not activated.
+
+Let me clear up the confusion and show you what nobody else explains.
+
+## The Claude Code Extension Landscape
+
+Before diving deep, here's the mental map you need:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    CLAUDE CODE EXTENSIONS                       │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  SLASH COMMANDS          SKILLS             SUBAGENTS           │
+│  ┌─────────────┐      ┌─────────────┐     ┌─────────────┐       │
+│  │ /command    │      │ Auto-invoked│     │ Isolated    │       │
+│  │ Manual      │      │ by Claude   │     │ context     │       │
+│  │ Single file │      │ Directory   │     │ Workers     │       │
+│  └─────────────┘      └─────────────┘     └─────────────┘       │
+│         │                    │                   │              │
+│         └────────────────────┼───────────────────┘              │
+│                              │                                  │
+│                     ┌────────┴────────┐                         │
+│                     │   MCP SERVERS   │                         │
+│                     │   (Tools layer) │                         │
+│                     └─────────────────┘                         │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+The key insight: **MCP provides the tools; Skills teach how to use them.** They're complementary, not competing.
+
+## Skills vs Slash Commands vs Subagents vs MCP: Decision Framework
+
+Here's the decision tree I wish existed when I started:
+
+| Need                                          | Use This       | Why                                                    |
+| --------------------------------------------- | -------------- | ------------------------------------------------------ |
+| **Explicit control over when something runs** | Slash Commands | You type `/command`, it runs. Predictable.             |
+| **Claude should decide when to invoke**       | Skills         | Claude matches task to skill description automatically |
+| **Isolated context for focused work**         | Subagents      | Fresh 200K context window, returns summary             |
+| **Connect to external services/data**         | MCP            | Protocol for databases, APIs, file systems             |
+| **Teach Claude how to use tools effectively** | Skills + MCP   | Skills provide procedural knowledge for MCP tools      |
+
+### The Merged Reality (Claude Code 2.1+)
+
+Here's something most guides miss: **Claude Code 2.1 merged skills and slash commands.** Skills now appear in the slash command menu by default, giving you explicit invocation via `/skill-name`.
+
+This means the "skills vs slash commands" distinction is largely obsolete for invocation. The real difference is:
+
+- **Slash commands:** Single markdown file, simple prompts
+- **Skills:** Directory with multiple files, progressive disclosure, bundled resources
+
+### When to Use Each
+
+**Use Slash Commands when:**
+
+- Task is simple and repeatable
+- You always want explicit control
+- Single prompt is sufficient
+- No supporting files needed
+
+**Use Skills when:**
+
+- Task requires context Claude should load on-demand
+- You have templates, scripts, or reference materials
+- Multiple team members need consistent behavior
+- Cross-platform compatibility matters (Skills are an open standard)
+
+**Use Subagents when:**
+
+- Task needs isolated context (research, exploration)
+- You want parallel execution
+- Task shouldn't pollute main conversation
+- Results can be summarized back
+
+**Use MCP when:**
+
+- Connecting to external services
+- Database access
+- API integrations
+- File system operations beyond local project
+
+## How Progressive Disclosure Actually Works
+
+This is the architecture that delivers 98% token savings—and almost nobody explains it properly.
+
+Skills load in three stages:
+
+### Stage 1: Metadata Scanning (~100 tokens)
+
+At startup, Claude only loads the `name` and `description` from each skill's YAML frontmatter. That's it.
+
+```yaml
+---
+name: code-reviewing
+description: Reviews code for bugs, security issues, and style violations
+---
+```
+
+With 10 skills installed, you're paying ~1,000 tokens total—not the 50,000+ you'd pay if everything loaded upfront.
+
+### Stage 2: Full Instructions (Under 5K tokens)
+
+When Claude determines a skill applies to the current task (via semantic matching on the description), it loads the full `SKILL.md` content.
+
+**This is why descriptions matter so much.** Vague descriptions = skill never triggers. Trigger-rich descriptions = Claude knows exactly when to activate.
+
+```yaml
+# ❌ Too vague - won't trigger reliably
+description: Helps with code
+
+# ✅ Trigger-rich - clear activation conditions
+description: Reviews TypeScript and JavaScript code for security vulnerabilities, performance issues, and adherence to team coding standards when user asks for code review or mentions reviewing changes
+```
+
+### Stage 3: Bundled Resources (On-demand)
+
+Supporting files (templates, scripts, reference docs) only load when the skill explicitly references them and the task requires them.
+
+```markdown
+# In SKILL.md
+
+When reviewing authentication code, consult `./security-checklist.md` for the full OWASP verification list.
+```
+
+The `security-checklist.md` file sits at zero tokens until Claude actually needs it.
+
+**The math:** You can include 10+ skills in your setup, but only pay for the ones Claude activates on each request.
+
+## Anatomy of a Well-Structured SKILL.md
+
+Every skill needs at minimum a `SKILL.md` file in a dedicated folder:
+
+```
+.claude/skills/
+└── code-reviewing/
+    ├── SKILL.md           # Required
+    ├── security-checklist.md   # Optional reference
+    ├── style-guide.md     # Optional reference
+    └── templates/         # Optional templates
+        └── review-report.md
+```
+
+### The Essential Structure
+
+```markdown
+---
+name: code-reviewing
+description: Reviews code for security vulnerabilities, performance issues, and coding standard violations when user requests code review
+---
+
+# Code Reviewing
+
+## When to Use This Skill
+
+Activate when the user:
+
+- Explicitly asks for code review
+- Mentions "review these changes"
+- Asks about security or performance of specific code
+
+## Review Process
+
+### Step 1: Security Analysis
+
+Check for:
+
+- SQL injection vectors
+- XSS vulnerabilities
+- Authentication bypasses
+- Exposed secrets
+
+### Step 2: Performance Review
+
+Look for:
+
+- N+1 query patterns
+- Unnecessary re-renders
+- Memory leaks
+- Blocking operations
+
+### Step 3: Style Compliance
+
+Verify against team standards in `./style-guide.md`
+
+## Output Format
+
+Present findings as:
+
+1. **Critical** - Must fix before merge
+2. **Warning** - Should address
+3. **Suggestion** - Nice to have
+
+## References
+
+- Security details: `./security-checklist.md`
+- Style guide: `./style-guide.md`
+```
+
+### Best Practices
+
+1. **Keep SKILL.md under 500 lines** - Split detailed content into referenced files
+2. **Use gerund naming** - `code-reviewing` not `code-reviewer`
+3. **Write trigger-rich descriptions** - Include specific keywords Claude matches against
+4. **Structure for scanning** - Clear headings, numbered steps, bullet points
+5. **Reference don't embed** - Put large content in separate files
+
+## Building Your First Skill
+
+Let's build a practical skill: a PR description generator that follows your team's template.
+
+### Step 1: Create the Directory Structure
+
+```bash
+mkdir -p .claude/skills/pr-describing
+```
+
+### Step 2: Create SKILL.md
+
+```markdown
+---
+name: pr-describing
+description: Generates pull request descriptions following team template when user creates PR or asks for PR description
+---
+
+# PR Description Generator
+
+## Activation Triggers
+
+Use this skill when user:
+
+- Says "create PR" or "open PR"
+- Asks for "PR description"
+- Mentions "pull request" with intent to create
+
+## Process
+
+### Step 1: Analyze Changes
+
+Use git diff to understand:
+
+- Files modified
+- Nature of changes (feature, fix, refactor)
+- Breaking changes
+
+### Step 2: Generate Description
+
+Follow the template in `./pr-template.md`
+
+### Step 3: Add Context
+
+- Link related issues
+- Tag reviewers if mentioned
+- Add appropriate labels
+
+## Template Reference
+
+See `./pr-template.md` for the exact format.
+```
+
+### Step 3: Create Supporting Template
+
+```markdown
+<!-- .claude/skills/pr-describing/pr-template.md -->
+
+## Summary
+
+[2-3 sentences describing what this PR does]
+
+## Changes
+
+- [ ] Change 1
+- [ ] Change 2
+
+## Testing
+
+- [ ] Unit tests added/updated
+- [ ] Manual testing performed
+
+## Screenshots
+
+[If UI changes]
+
+## Related Issues
+
+Closes #[issue-number]
+```
+
+### Step 4: Test It
+
+```bash
+# In Claude Code
+"Create a PR for my current changes"
+```
+
+Claude will automatically load the skill based on the description match.
+
+## MCP + Skills Integration Pattern
+
+Here's the pattern most developers miss: using Skills to teach Claude how to effectively use MCP tools.
+
+### The Problem
+
+MCP gives Claude access to tools (database queries, API calls), but Claude doesn't know your specific:
+
+- Data models
+- Query patterns
+- API conventions
+- Error handling preferences
+
+### The Solution
+
+Create skills that provide procedural knowledge for MCP tools:
+
+````markdown
+---
+name: database-querying
+description: Executes database queries using the postgres MCP server following team conventions
+---
+
+# Database Query Skill
+
+## Prerequisites
+
+Requires `postgres` MCP server connection.
+
+## Data Model Reference
+
+Our main tables:
+
+- `users` - id, email, created_at, subscription_tier
+- `orders` - id, user_id, amount, status, created_at
+- `products` - id, name, price, category
+
+## Query Conventions
+
+### Always Use
+
+- Parameterized queries (never string concatenation)
+- LIMIT clauses (default 100, max 1000)
+- Created_at DESC for time-series data
+
+### Never Use
+
+- SELECT \* (always specify columns)
+- DELETE without WHERE
+- UPDATE without transaction
+
+## Common Patterns
+
+### User lookup
+
+```sql
+SELECT id, email, subscription_tier
+FROM users
+WHERE email = $1
+```
+````
+
+### Order history
+
+```sql
+SELECT o.id, o.amount, o.status, o.created_at
+FROM orders o
+WHERE o.user_id = $1
+ORDER BY o.created_at DESC
+LIMIT 50
+```
+
+````
+
+Now when Claude uses the postgres MCP server, it has context about your specific data model and conventions.
+
+## When Skills Fail to Trigger: Debugging Guide
+
+Skills not activating is the most common frustration. Here's the systematic debugging approach.
+
+### Check 1: Description Match
+
+Claude uses semantic matching on descriptions. If your skill isn't triggering:
+
+```yaml
+# Test with explicit keywords
+description: >
+  Handles code review, PR review, merge request review,
+  reviewing changes, checking code quality, security audit
+````
+
+Add synonyms and variations of how users might phrase the request.
+
+### Check 2: Skill Location
+
+Skills must be in the correct directory:
+
+| Location            | Scope                     |
+| ------------------- | ------------------------- |
+| `~/.claude/skills/` | All projects (user-level) |
+| `.claude/skills/`   | Current project only      |
+
+Verify with:
+
+```bash
+ls -la .claude/skills/
+ls -la ~/.claude/skills/
+```
+
+### Check 3: YAML Syntax
+
+YAML errors fail silently. Validate your frontmatter:
+
+```yaml
+# ❌ Missing quotes around special characters
+description: Reviews "code" for issues
+
+# ✅ Properly quoted
+description: 'Reviews "code" for issues'
+```
+
+### Check 4: Skill vs Command Conflict
+
+If a slash command has the same name as a skill, the command takes precedence. Rename one.
+
+### Check 5: Test Explicit Invocation
+
+Since skills appear in slash command menu:
+
+```bash
+/pr-describing
+```
+
+If explicit invocation works but auto-triggering doesn't, the issue is your description.
+
+## Team Workflows: Versioning and Sharing Skills
+
+### Version Control Strategy
+
+Commit skills to your repository:
+
+```
+project/
+├── .claude/
+│   └── skills/
+│       ├── code-reviewing/
+│       ├── pr-describing/
+│       └── testing/
+├── src/
+└── ...
+```
+
+This ensures all team members work with consistent standards.
+
+### Sharing Across Projects
+
+For organization-wide skills, use the global directory with symlinks:
+
+```bash
+# Create shared skills repo
+git clone git@github.com:your-org/claude-skills.git ~/shared-claude-skills
+
+# Symlink to global location
+ln -s ~/shared-claude-skills/* ~/.claude/skills/
+```
+
+### Publishing to Community
+
+Anthropic's official marketplace:
+
+1. Fork `github.com/anthropics/skills`
+2. Add your skill following their structure
+3. Submit PR
+
+Or contribute to community collections like `awesome-claude-skills`.
+
+## Real-World: Hugging Face's 1,000 Experiments/Day Setup
+
+This isn't hypothetical—Hugging Face's ML teams use Claude Code skills to run over 1,000 experiments daily.
+
+### Their Architecture
+
+```
+skills/
+├── model-training/
+│   ├── SKILL.md
+│   ├── sft-config.yaml
+│   ├── dpo-config.yaml
+│   └── rlhf-config.yaml
+├── experiment-tracking/
+│   ├── SKILL.md
+│   └── wandb-templates/
+└── deployment/
+    ├── SKILL.md
+    └── gguf-conversion.py
+```
+
+### Key Features
+
+1. **Skills registry** - Single source of truth for experimental knowledge
+2. **Multi-stage pipelines** - SFT → DPO → RLHF in one conversation
+3. **Parameter ranges** - 0.5B to 70B models
+4. **Automated reporting** - PPTX generation for findings
+
+### Results
+
+What took 2-3 weeks of setup now takes 2 days. The skills capture institutional knowledge that would otherwise live only in senior engineers' heads.
+
+## The Open Standard Advantage
+
+On December 18, 2025, Anthropic published Agent Skills as an open standard at agentskills.io.
+
+### Cross-Platform Compatibility
+
+Skills you write for Claude Code work in:
+
+- OpenCode
+- Cursor
+- Amp
+- Letta
+- goose
+- GitHub Copilot
+- VS Code
+
+This isn't vendor lock-in—it's portable expertise.
+
+### Industry Adoption
+
+The homepage already lists integrations from OpenAI Codex, Google's Gemini CLI, and the Hugging Face ecosystem. Write once, use everywhere.
+
+### Enterprise Features
+
+Anthropic released organization-wide management tools alongside partner-built skills from:
+
+- Atlassian
+- Figma
+- Canva
+- Stripe
+- Notion
+- Zapier
+
+These aren't toys—they're production-grade workflow automations.
+
+## References
+
+### Sources
+
+- [Claude Code Skills Documentation](https://code.claude.com/docs/en/skills) - Official reference for SKILL.md structure and progressive disclosure
+- [Equipping agents for the real world with Agent Skills](https://www.anthropic.com/engineering/equipping-agents-for-the-real-world-with-agent-skills) - Anthropic's engineering deep-dive on the open standard
+- [Claude Code Slash Commands](https://code.claude.com/docs/en/slash-commands) - Official comparison with skills
+- [How We Use Claude Code Skills to Run 1,000+ ML Experiments a Day](https://huggingface.co/blog/sionic-ai/claude-code-skills-training) - Hugging Face production case study
+
+### Further Reading
+
+- [anthropics/skills](https://github.com/anthropics/skills) - Official skills repository with production examples
+- [awesome-claude-skills](https://github.com/travisvn/awesome-claude-skills) - Community curated skills collection
+- [Skill authoring best practices](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices) - Official optimization guide
+
+---
+
+~Seb 👊
