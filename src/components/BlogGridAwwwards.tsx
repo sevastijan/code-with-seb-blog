@@ -2,7 +2,7 @@
 
 import { useRef, useEffect, useState, useCallback } from 'react';
 import Link from 'next/link';
-import { ArrowUpRight } from 'lucide-react';
+import { ArrowUpRight, ChevronLeft, ChevronRight } from 'lucide-react';
 
 interface Post {
   slug: string;
@@ -17,29 +17,33 @@ interface BlogGridAwwwardsProps {
   posts: Post[];
 }
 
-export function BlogGridAwwwards({ posts }: BlogGridAwwwardsProps) {
+function useIsMobile() {
+  const [isMobile, setIsMobile] = useState(false);
+  useEffect(() => {
+    const check = () => setIsMobile(window.innerWidth <= 1024);
+    check();
+    window.addEventListener('resize', check, { passive: true });
+    return () => window.removeEventListener('resize', check);
+  }, []);
+  return isMobile;
+}
+
+// Desktop: scroll-hijacked horizontal slider (original behavior)
+function DesktopSlider({ posts }: { posts: Post[] }) {
   const sectionRef = useRef<HTMLElement>(null);
   const trackRef = useRef<HTMLDivElement>(null);
   const [scrollProgress, setScrollProgress] = useState(0);
   const cardRefs = useRef<(HTMLAnchorElement | null)[]>([]);
 
-  // 3D tilt effect handler
   const handleMouseMove = useCallback((e: React.MouseEvent<HTMLAnchorElement>, index: number) => {
     const card = cardRefs.current[index];
     if (!card) return;
-
     const rect = card.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
-    const centerX = rect.width / 2;
-    const centerY = rect.height / 2;
-
-    const rotateX = (y - centerY) / 10;
-    const rotateY = (centerX - x) / 10;
-
+    const rotateX = (y - rect.height / 2) / 10;
+    const rotateY = (rect.width / 2 - x) / 10;
     card.style.transform = `perspective(1000px) rotateX(${rotateX}deg) rotateY(${rotateY}deg) scale3d(1.02, 1.02, 1.02)`;
-
-    // Update glow position
     const glow = card.querySelector('.blog-horizontal-card-glow') as HTMLElement;
     if (glow) {
       glow.style.background = `radial-gradient(circle at ${x}px ${y}px, rgba(0, 255, 136, 0.3) 0%, transparent 50%)`;
@@ -50,13 +54,9 @@ export function BlogGridAwwwards({ posts }: BlogGridAwwwardsProps) {
   const handleMouseLeave = useCallback((index: number) => {
     const card = cardRefs.current[index];
     if (!card) return;
-
     card.style.transform = 'perspective(1000px) rotateX(0) rotateY(0) scale3d(1, 1, 1)';
-
     const glow = card.querySelector('.blog-horizontal-card-glow') as HTMLElement;
-    if (glow) {
-      glow.style.opacity = '0';
-    }
+    if (glow) glow.style.opacity = '0';
   }, []);
 
   useEffect(() => {
@@ -64,64 +64,55 @@ export function BlogGridAwwwards({ posts }: BlogGridAwwwardsProps) {
     const track = trackRef.current;
     if (!section || !track) return;
 
+    let isVisible = true;
+    const observer = new IntersectionObserver(
+      ([entry]) => { isVisible = entry.isIntersecting; },
+      { threshold: 0 }
+    );
+    observer.observe(section);
+
     const handleScroll = () => {
+      if (!isVisible) return;
       const rect = section.getBoundingClientRect();
       const windowHeight = window.innerHeight;
       const sectionHeight = section.offsetHeight;
-
-      // Calculate progress: 0 when section enters, 1 when section leaves
-      // The "scroll zone" is from when sticky pins to when we exit
-      const scrollStart = 0; // When section top hits viewport top
-      const scrollEnd = sectionHeight - windowHeight; // When section bottom hits viewport bottom
+      const scrollEnd = sectionHeight - windowHeight;
 
       if (rect.top <= 0 && rect.bottom >= windowHeight) {
-        // We're in the sticky zone
         const scrolled = -rect.top;
         const progress = Math.min(1, Math.max(0, scrolled / scrollEnd));
         setScrollProgress(progress);
-
-        // Calculate track position
         const trackWidth = track.scrollWidth;
-        const startOffset = 60; // First card visible with padding
-        const endMargin = window.innerWidth * 0.3; // 30% margin on the right for last card
+        const startOffset = 60;
+        const endMargin = window.innerWidth * 0.3;
         const endPosition = -(trackWidth - window.innerWidth + endMargin);
-
-        const translateX = startOffset + (endPosition - startOffset) * progress;
-        track.style.transform = `translate3d(${translateX}px, 0, 0)`;
+        track.style.transform = `translate3d(${startOffset + (endPosition - startOffset) * progress}px, 0, 0)`;
       } else if (rect.top > 0) {
-        // Before section
         setScrollProgress(0);
         track.style.transform = 'translate3d(60px, 0, 0)';
       } else {
-        // After section
         setScrollProgress(1);
       }
     };
 
-    // Initial position
-    track.style.transform = `translate3d(60px, 0, 0)`;
-
+    track.style.transform = 'translate3d(60px, 0, 0)';
     window.addEventListener('scroll', handleScroll, { passive: true });
     handleScroll();
 
     return () => {
       window.removeEventListener('scroll', handleScroll);
+      observer.disconnect();
     };
   }, []);
 
   return (
     <section ref={sectionRef} className="blog-horizontal-section">
-      {/* Green gradient background */}
       <div className="blog-horizontal-bg" />
-
-      {/* Sticky container */}
       <div className="blog-horizontal-sticky">
-        {/* Giant 02 number - inside sticky so it stays visible */}
         <div className="blog-horizontal-giant-num">
           <span className="blog-horizontal-num-outline">0</span>
           <span className="blog-horizontal-num-solid">2</span>
         </div>
-        {/* Header */}
         <div className="blog-horizontal-header">
           <div className="blog-horizontal-glitch-label">
             <span className="blog-horizontal-glitch-text">Latest Articles</span>
@@ -133,7 +124,6 @@ export function BlogGridAwwwards({ posts }: BlogGridAwwwardsProps) {
           </Link>
         </div>
 
-        {/* Horizontal track */}
         <div className="blog-horizontal-track-wrapper">
           <div ref={trackRef} className="blog-horizontal-track">
             {posts.map((post, index) => (
@@ -146,36 +136,21 @@ export function BlogGridAwwwards({ posts }: BlogGridAwwwardsProps) {
                 onMouseMove={(e) => handleMouseMove(e, index)}
                 onMouseLeave={() => handleMouseLeave(index)}
               >
-                {/* Glow effect that follows cursor */}
                 <div className="blog-horizontal-card-glow" />
-
-                {/* Shine effect */}
                 <div className="blog-horizontal-card-shine" />
-
-                {/* Category tag */}
                 <div className="blog-horizontal-card-tag">{post.category}</div>
-
-                {/* Title */}
                 <h3 className="blog-horizontal-card-title">{post.title}</h3>
-
-                {/* Excerpt */}
                 <p className="blog-horizontal-card-excerpt">{post.excerpt}</p>
-
-                {/* Footer */}
                 <div className="blog-horizontal-card-footer">
                   <span>{post.date}</span>
                   <span className="blog-horizontal-card-dot">·</span>
                   <span>{post.readTime}</span>
                 </div>
-
-                {/* Hover arrow */}
                 <div className="blog-horizontal-card-arrow">
                   <ArrowUpRight />
                 </div>
               </Link>
             ))}
-
-            {/* View all card with glitch effect */}
             <Link href="/blog" className="blog-horizontal-card blog-horizontal-card-cta">
               <div className="blog-horizontal-cta-glitch">
                 <span className="blog-horizontal-cta-text" data-text="See all articles">See all articles</span>
@@ -186,7 +161,6 @@ export function BlogGridAwwwards({ posts }: BlogGridAwwwardsProps) {
           </div>
         </div>
 
-        {/* Progress counter */}
         <div className="blog-horizontal-counter">
           <div className="blog-horizontal-counter-glitch">
             <span className="blog-horizontal-counter-text">
@@ -200,4 +174,110 @@ export function BlogGridAwwwards({ posts }: BlogGridAwwwardsProps) {
       </div>
     </section>
   );
+}
+
+// Mobile: native swipeable slider with navigation dots
+function MobileSlider({ posts }: { posts: Post[] }) {
+  const trackRef = useRef<HTMLDivElement>(null);
+  const [activeIndex, setActiveIndex] = useState(0);
+
+  const scrollToIndex = (index: number) => {
+    const track = trackRef.current;
+    if (!track) return;
+    const card = track.children[index] as HTMLElement;
+    if (card) {
+      track.scrollTo({ left: card.offsetLeft - 20, behavior: 'smooth' });
+    }
+  };
+
+  useEffect(() => {
+    const track = trackRef.current;
+    if (!track) return;
+
+    const handleScroll = () => {
+      const scrollLeft = track.scrollLeft;
+      const cardWidth = track.children[0]?.clientWidth || 300;
+      const index = Math.round(scrollLeft / (cardWidth + 16));
+      setActiveIndex(Math.min(index, posts.length));
+    };
+
+    track.addEventListener('scroll', handleScroll, { passive: true });
+    return () => track.removeEventListener('scroll', handleScroll);
+  }, [posts.length]);
+
+  const allItems = [...posts, { slug: '__cta', title: '', excerpt: '', category: '', date: '', readTime: '' }];
+
+  return (
+    <section className="blog-mobile-section">
+      <div className="blog-mobile-header">
+        <div>
+          <span className="label" style={{ color: 'var(--c-accent)' }}>Latest Articles</span>
+        </div>
+        <Link href="/blog" className="blog-horizontal-view-all">
+          <span>View all</span>
+          <ArrowUpRight className="w-4 h-4" />
+        </Link>
+      </div>
+
+      <div ref={trackRef} className="blog-mobile-track">
+        {posts.map((post) => (
+          <Link
+            key={post.slug}
+            href={`/blog/${post.slug}`}
+            className="blog-mobile-card"
+          >
+            <div className="blog-horizontal-card-tag">{post.category}</div>
+            <h3 className="blog-mobile-card-title">{post.title}</h3>
+            <p className="blog-mobile-card-excerpt">{post.excerpt}</p>
+            <div className="blog-horizontal-card-footer">
+              <span>{post.date}</span>
+              <span className="blog-horizontal-card-dot">·</span>
+              <span>{post.readTime}</span>
+            </div>
+          </Link>
+        ))}
+        <Link href="/blog" className="blog-mobile-card blog-mobile-card-cta">
+          <span className="blog-mobile-cta-text">See all articles</span>
+          <ArrowUpRight className="w-6 h-6" />
+        </Link>
+      </div>
+
+      {/* Navigation */}
+      <div className="blog-mobile-nav">
+        <button
+          className="blog-mobile-nav-btn"
+          onClick={() => scrollToIndex(Math.max(0, activeIndex - 1))}
+          disabled={activeIndex === 0}
+        >
+          <ChevronLeft className="w-5 h-5" />
+        </button>
+        <div className="blog-mobile-dots">
+          {allItems.map((_, i) => (
+            <button
+              key={i}
+              className={`blog-mobile-dot ${i === activeIndex ? 'active' : ''}`}
+              onClick={() => scrollToIndex(i)}
+            />
+          ))}
+        </div>
+        <button
+          className="blog-mobile-nav-btn"
+          onClick={() => scrollToIndex(Math.min(allItems.length - 1, activeIndex + 1))}
+          disabled={activeIndex === allItems.length - 1}
+        >
+          <ChevronRight className="w-5 h-5" />
+        </button>
+      </div>
+    </section>
+  );
+}
+
+export function BlogGridAwwwards({ posts }: BlogGridAwwwardsProps) {
+  const isMobile = useIsMobile();
+
+  if (isMobile) {
+    return <MobileSlider posts={posts} />;
+  }
+
+  return <DesktopSlider posts={posts} />;
 }
