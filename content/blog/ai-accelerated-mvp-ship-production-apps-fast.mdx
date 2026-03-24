@@ -1,0 +1,390 @@
+---
+title: 'AI-Accelerated MVP: How I Ship Production Apps in Days, Not Months'
+date: '2026-03-23'
+category: 'Development'
+tags: ['development', 'ai', 'productivity', 'nextjs', 'best-practices']
+draft: true
+featured: false
+author: 'Sebastian'
+excerpt: 'I went from 3-month timelines to shipping production apps in days. Here is the exact AI-powered workflow, tools, and mindset shift that changed everything.'
+---
+
+My last client expected a 3-month timeline. I delivered a production app in 8 days. When I sent the invoice, they genuinely thought I was lying about when I started — they assumed I must have been working on it before they signed the contract.
+
+I wasn't. I just stopped writing boilerplate by hand.
+
+Two years ago, I was skeptical about AI coding tools. I tried Copilot, got frustrated with hallucinated APIs, and went back to typing everything myself. "AI is a toy," I told my team. Then a colleague showed me his workflow — not the tool itself, but *how* he used it. He wasn't asking AI to build his app. He was using AI to eliminate the 80% of development work that isn't actually problem-solving.
+
+That distinction changed everything.
+
+## Why AI Changes the Timeline, Not the Quality
+
+Let me be clear about something: AI doesn't make you a better architect. It doesn't magically understand your business domain. It doesn't know your users.
+
+What it does is compress the mechanical parts of development. The parts where you already know *what* to build but spend hours on the *how*:
+
+- Writing CRUD endpoints you've written a hundred times
+- Setting up auth flows with the same OAuth patterns
+- Creating form validation schemas that mirror your database models
+- Writing test boilerplate for predictable input/output functions
+- Scaffolding components with proper TypeScript types
+
+Before AI, a typical MVP timeline looked like this: 2 weeks of setup and scaffolding, 4 weeks of core features, 2 weeks of edge cases and testing, 2 weeks of polish and deployment. That's 10 weeks if everything goes smoothly — and it never does.
+
+With AI pair programming, the same project compresses to: 1 day of architecture and scaffolding, 2-3 days of core features, 2 days of edge cases and testing, 1-2 days of polish and deployment. That's 6-8 days. Not because I'm cutting corners, but because I'm not hand-typing boilerplate anymore.
+
+The architecture decisions, the data modeling, the UX considerations — those still take exactly as long as they should. AI doesn't speed up thinking. It speeds up typing.
+
+## My AI-Accelerated Development Stack
+
+Here's the exact toolset I use for every project in 2026:
+
+**Core AI tools:**
+- **Claude Code** — my primary AI pair programmer, lives in the terminal
+- **Cursor** — for complex refactoring sessions where I need visual context
+- **Claude (chat)** — for architecture brainstorming before I write a single line
+
+**Framework and infrastructure:**
+- **Next.js 14/15** — the meta-framework that gives you the most for free
+- **TypeScript** — non-negotiable; AI output without type safety is chaos
+- **Tailwind CSS** — AI generates Tailwind markup extremely well
+- **Prisma / Drizzle** — type-safe database layer that AI can reason about
+- **Vercel** — deploy pipeline that just works
+
+**The non-obvious tools:**
+- **Linear** — I break every feature into tasks before touching code
+- **Excalidraw** — architecture diagrams that I reference during AI sessions
+- **A decision log** — a simple markdown file where I document *why* I chose X over Y
+
+That last one matters more than you think. When you're moving at 5x speed, you need to remember why you made decisions. Otherwise you'll AI-generate yourself into a corner and not remember the way out.
+
+## The Workflow: Day by Day
+
+Let me walk you through exactly how I shipped a full-stack SaaS dashboard — user auth, team management, data visualization, Stripe billing — in 8 days.
+
+### Day 1 — Architecture and Scaffolding
+
+Day 1 is the most important day, and it's the day where I use AI the *least*.
+
+I start with a blank notebook (physical, not digital) and sketch:
+- Data models and their relationships
+- User flows for the core use case
+- API boundaries — what's a server action, what's an API route, what's a webhook
+- Auth model — who can see what
+
+Only after I have a clear architecture do I touch the terminal:
+
+```bash
+npx create-next-app@latest client-dashboard --typescript --tailwind --app --src-dir
+cd client-dashboard
+```
+
+Then I set up the project structure with Claude Code:
+
+```bash
+claude "Set up the project structure for a SaaS dashboard with these domains:
+- auth (NextAuth.js with Google + email magic links)
+- teams (CRUD, invitations, roles)
+- dashboard (data visualization with recharts)
+- billing (Stripe subscription management)
+
+Create the folder structure under src/ with placeholder files.
+Use the App Router with route groups. Add a shared lib/ for utils,
+db/ for Prisma schema, and types/ for shared TypeScript interfaces."
+```
+
+Claude Code generates the full folder structure, the Prisma schema based on my description, and the NextAuth configuration. What used to take half a day takes 20 minutes.
+
+But here's the critical part — I review every file. I adjust the Prisma schema because AI doesn't know my specific cardinality requirements. I modify the auth config because I need custom session fields. The scaffolding is a starting point, not a finished product.
+
+By end of Day 1, I have:
+- Working Next.js app with proper folder structure
+- Prisma schema with all models defined
+- Auth configured and tested with a real Google OAuth flow
+- Database migrations run against a local Postgres
+- CI pipeline set up (GitHub Actions)
+
+### Day 2-3 — Core Features with AI Pair Programming
+
+This is where AI pair programming truly shines. I have the architecture locked. I know the data models. Now I need to build features.
+
+My workflow for each feature:
+
+1. Write the type definition first (by hand)
+2. Let AI generate the implementation
+3. Review, adjust, test
+
+Here's a real example. I need a team invitation system. I start by defining what I want:
+
+```typescript
+// src/types/teams.ts
+export interface TeamInvitation {
+  id: string;
+  teamId: string;
+  email: string;
+  role: 'admin' | 'member' | 'viewer';
+  status: 'pending' | 'accepted' | 'expired';
+  invitedBy: string;
+  expiresAt: Date;
+  createdAt: Date;
+}
+
+export interface InviteTeamMemberInput {
+  teamId: string;
+  email: string;
+  role: TeamInvitation['role'];
+}
+```
+
+Then I hand it to Claude Code:
+
+```bash
+claude "Given the TeamInvitation type in src/types/teams.ts and the Prisma schema,
+build the complete invitation flow:
+1. Server action to create invitation (validate team ownership, check duplicates,
+   send email via Resend)
+2. API route for accepting invitation via token
+3. React component for the invitation form with proper error handling
+4. React component for pending invitations list with resend/revoke actions
+
+Use server actions for mutations, proper error boundaries,
+and optimistic updates with useOptimistic."
+```
+
+AI generates 4-5 files. I spend 15 minutes reviewing instead of 3 hours writing. The code is solid because the types constrain what AI can generate — it can't hallucinate a field that doesn't exist on the type.
+
+This is why TypeScript isn't optional in AI-accelerated development. Types are your guardrails. Without them, AI generates plausible-looking code that breaks at runtime in subtle ways.
+
+For the data visualization dashboard, I take a similar approach:
+
+```bash
+claude "Create a dashboard page at src/app/(dashboard)/page.tsx that displays:
+- KPI cards (total users, active teams, MRR, churn rate) using server components
+- A line chart showing user growth over last 12 months using recharts
+- A table of recent team activity with pagination
+
+Fetch data using server components with direct Prisma queries.
+Use Suspense boundaries for each section with skeleton loaders.
+Make the charts client components, everything else server components."
+```
+
+By end of Day 3, all core features work. Users can sign up, create teams, invite members, view dashboards, and the billing integration handles subscription creation.
+
+### Day 4-5 — Edge Cases, Error Handling, Testing
+
+This is where most "vibe coded" projects fall apart. The happy path works, but what about:
+
+- What if a user accepts an invitation but their email doesn't match?
+- What happens when a Stripe webhook fires twice?
+- How does the dashboard render with zero data?
+- What if a team admin removes themselves?
+
+I maintain a checklist of edge cases and work through them systematically. AI is helpful here too, but differently:
+
+```bash
+claude "Review the team invitation flow in src/actions/teams/ and identify
+edge cases I might have missed. For each edge case, suggest the fix.
+Consider: race conditions, permission boundaries, email edge cases,
+and expired token handling."
+```
+
+AI catches things I miss — like what happens if two admins send an invitation to the same email simultaneously. But it also suggests edge cases that don't apply to my specific use case. You need judgment to know which suggestions matter.
+
+For testing, AI generates the boilerplate, and I focus on the assertions:
+
+```typescript
+// src/__tests__/teams/invitation.test.ts
+import { createInvitation } from '@/actions/teams';
+import { prismaMock } from '@/test/prisma-mock';
+
+describe('Team Invitations', () => {
+  it('should reject invitation if user is not team admin', async () => {
+    prismaMock.teamMember.findFirst.mockResolvedValue({
+      role: 'viewer', // not admin
+      // ... other fields
+    });
+
+    const result = await createInvitation({
+      teamId: 'team-1',
+      email: 'new@member.com',
+      role: 'member',
+    });
+
+    expect(result.error).toBe('INSUFFICIENT_PERMISSIONS');
+  });
+
+  it('should prevent duplicate pending invitations', async () => {
+    prismaMock.teamInvitation.findFirst.mockResolvedValue({
+      status: 'pending',
+      email: 'existing@member.com',
+      // ... existing invitation
+    });
+
+    const result = await createInvitation({
+      teamId: 'team-1',
+      email: 'existing@member.com',
+      role: 'member',
+    });
+
+    expect(result.error).toBe('INVITATION_EXISTS');
+  });
+
+  it('should set expiration to 7 days from creation', async () => {
+    prismaMock.teamMember.findFirst.mockResolvedValue({ role: 'admin' });
+    prismaMock.teamInvitation.findFirst.mockResolvedValue(null);
+    prismaMock.teamInvitation.create.mockImplementation(({ data }) => data);
+
+    const result = await createInvitation({
+      teamId: 'team-1',
+      email: 'new@member.com',
+      role: 'member',
+    });
+
+    const daysDiff = Math.round(
+      (result.data.expiresAt.getTime() - Date.now()) / (1000 * 60 * 60 * 24)
+    );
+    expect(daysDiff).toBe(7);
+  });
+});
+```
+
+I write the test descriptions and key assertions. AI fills in the mock setup and boilerplate. This is exactly the kind of mechanical work where AI saves hours.
+
+### Day 6-7 — Polish, Performance, Deployment
+
+Performance optimization is where your experience matters more than AI's suggestions. AI can tell you to add `React.memo()` everywhere, but you need to know *where it actually matters*.
+
+My performance checklist:
+- Run Lighthouse, fix anything below 90
+- Check bundle size with `@next/bundle-analyzer`
+- Add proper caching headers for static assets
+- Verify server components aren't accidentally becoming client components
+- Test with throttled network in DevTools
+
+For deployment, I use a straightforward Vercel setup:
+
+```bash
+# Environment variables configured in Vercel dashboard
+# Preview deployments on every PR
+# Production deploys from main branch
+
+# vercel.json for any custom config
+claude "Generate a vercel.json with:
+- Security headers (CSP, HSTS, X-Frame-Options)
+- Caching rules for static assets (1 year) and API routes (no-cache)
+- Redirect from www to non-www"
+```
+
+### Day 8 — Launch Day Checklist
+
+Launch day is about verification, not development:
+
+```markdown
+## Launch Checklist
+- [ ] All environment variables set in production
+- [ ] Database migrations run on production DB
+- [ ] Stripe webhooks pointed to production URL
+- [ ] Error monitoring active (Sentry)
+- [ ] Analytics tracking verified (PostHog)
+- [ ] DNS configured, SSL certificate active
+- [ ] Smoke test: sign up, create team, invite member, view dashboard
+- [ ] Load test: can it handle 100 concurrent users?
+- [ ] Backup strategy documented
+- [ ] On-call alerts configured
+```
+
+Ship it.
+
+## What AI Is Great At (and What It's Terrible At)
+
+After shipping dozens of projects with AI assistance, here's my honest assessment:
+
+**AI excels at:**
+- Generating CRUD operations and REST/GraphQL endpoints
+- Writing utility functions with clear input/output contracts
+- Creating UI components from descriptions (especially with Tailwind)
+- Translating types into implementations
+- Writing test boilerplate and mock setups
+- Generating database queries from natural language
+- Regex patterns (seriously, never write regex by hand again)
+
+**AI is terrible at:**
+- System architecture and service boundaries
+- Understanding business context and user psychology
+- Performance optimization (it over-optimizes and under-optimizes in the wrong places)
+- Security beyond the obvious (it'll add CSRF tokens but miss business logic vulnerabilities)
+- Debugging production issues with incomplete context
+- Knowing when NOT to build something
+
+That last point is crucial. AI will happily generate 500 lines of code for a feature you don't need. The most valuable skill in AI-accelerated development is knowing what to build — and what to skip.
+
+## The Skills That Matter MORE in the AI Era
+
+Here's what I've noticed: the developers who struggle with AI tools are the ones who never developed strong fundamentals. If you can't read the code AI generates and spot the problems, you're not using a tool — you're gambling.
+
+Skills that are now more valuable than ever:
+
+**Architecture thinking.** When you can ship 5x faster, making the wrong architectural choice costs 5x more. You'll build the wrong thing five times as fast. Understanding system design, data modeling, and service boundaries matters more, not less.
+
+**Code reading.** You'll read 10x more code than you write in an AI workflow. If you can't quickly scan a 200-line file and spot the bug, AI pair programming will slow you down.
+
+**Debugging production systems.** AI can't SSH into your server at 3am and figure out why the connection pool is exhausted. Understanding infrastructure, observability, and system behavior under stress is irreplaceable.
+
+**Domain expertise.** The developer who understands healthcare compliance will outperform a generic 10x developer using AI every single time. Domain knowledge is the moat.
+
+**Communication.** Shipping fast means stakeholder management matters more. "I can build this in a week" creates different expectations than "this is a 3-month project." You need to manage scope, set expectations, and communicate tradeoffs clearly.
+
+## Real Numbers: Before AI vs After AI
+
+Here are actual metrics from my last six projects, three before adopting AI-first workflow and three after:
+
+| Metric | Before AI | With AI | Change |
+|---|---|---|---|
+| Time to MVP | 6-10 weeks | 5-8 days | ~7x faster |
+| Lines of code (personal) | ~8,000 | ~12,000 | 1.5x more output |
+| Lines of code (reviewed) | ~8,000 | ~35,000 | 4x more review |
+| Test coverage | 45-60% | 75-85% | Significantly higher |
+| Bugs in first week | 12-20 | 8-15 | Roughly similar |
+| Architecture changes post-launch | 1-2 major | 0-1 major | Slightly fewer |
+
+A few things stand out. First, I write *more* code with AI, not less. The difference is I spend my time on the interesting parts. Second, test coverage jumped because writing tests is no longer tedious — AI handles the setup, I focus on what to test. Third, bug count didn't drop as dramatically as you might expect. Speed introduces its own category of bugs: integration issues from moving fast, missed edge cases from not sitting with the code long enough.
+
+The honest truth: AI-accelerated development is not about writing perfect code faster. It's about shipping working products faster, then iterating with real user feedback instead of guessing in a vacuum for three months.
+
+## Getting Started: Your First AI-Accelerated Project
+
+If you're still on the fence, here's how to start without going all-in:
+
+1. **Pick one tool and learn it deeply.** I recommend Claude Code if you live in the terminal, Cursor if you prefer a visual editor. Don't try everything at once.
+
+2. **Start with a side project, not client work.** Build something small — a personal dashboard, a tool for your team — and develop your AI workflow without deadline pressure.
+
+3. **Always type the types first.** This is the single biggest productivity hack. Define your interfaces, then let AI implement them. The types are your spec.
+
+4. **Review everything.** Not line by line at first — pattern by pattern. Learn what AI gets right consistently (CRUD operations, utility functions) and what it fumbles (complex state management, security boundaries).
+
+5. **Keep a "lessons learned" log.** Every time AI generates something wrong and you catch it, write down what to watch for. After a month, you'll have a personal checklist that makes you much faster at reviewing.
+
+The developers who will thrive in 2026 and beyond aren't the ones who type the fastest. They're the ones who think the clearest, review the sharpest, and ship the most value. AI just removes the bottleneck between having a solution in your head and having it running in production.
+
+Stop typing boilerplate. Start shipping products.
+
+## References
+
+### Sources
+
+- [Next.js Documentation — App Router](https://nextjs.org/docs/app) — Official docs for the framework patterns used throughout this workflow
+- [Claude Code — Anthropic](https://docs.anthropic.com/en/docs/claude-code) — Terminal-based AI pair programming tool
+- [Cursor — The AI Code Editor](https://cursor.sh/) — AI-native IDE for visual development workflows
+- [Prisma Documentation](https://www.prisma.io/docs) — Type-safe database toolkit referenced in the stack
+- [Vercel Deployment Docs](https://vercel.com/docs) — Deployment platform and configuration
+
+### Further Reading
+
+- [The Pragmatic Programmer (Hunt & Thomas)](https://pragprog.com/titles/tpp20/) — Foundational thinking on developer productivity and automation
+- [Designing Data-Intensive Applications (Kleppmann)](https://dataintensive.net/) — Essential reading for architecture decisions that AI cannot make for you
+- [Shape Up (Basecamp)](https://basecamp.com/shapeup) — Methodology for shipping meaningful work in short cycles
+
+---
+
+~Seb

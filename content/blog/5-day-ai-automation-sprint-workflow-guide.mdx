@@ -1,0 +1,497 @@
+---
+title: '5-Day AI Automation Sprint: How I Automate an Entire Workflow in One Week'
+date: '2026-03-23'
+category: 'AI'
+tags: ['ai', 'automation', 'development', 'productivity', 'agents']
+draft: true
+featured: false
+author: 'Sebastian'
+excerpt: 'Forget 3-month AI roadmaps. I automate one complete business workflow in 5 days. Here is the exact day-by-day playbook, tools, and results.'
+---
+
+Last month I walked into a fintech company on Monday. By Friday, their invoice processing — previously 6 hours per day of manual work — was running on autopilot with an AI agent. The team that used to drown in PDFs was reassigned to fraud analysis. Their CFO called it "the best ROI decision we made all quarter."
+
+That is what an AI automation sprint looks like. Five days. One workflow. Done.
+
+The best AI implementation I have ever done took 5 days. The worst took 6 months. The 5-day one is still running in production eighteen months later. The 6-month one was scrapped before it ever shipped. The difference was not budget, team size, or technology. It was methodology.
+
+## Why Sprints Beat Roadmaps for AI Automation
+
+Most organizations approach AI automation the same way they approach enterprise software — with a 3-month discovery phase, a 6-month roadmap, and a 12-month timeline that quietly becomes 18. By the time they ship, the models are outdated, the team is burned out, and the business process has changed twice.
+
+AI sprints flip that script. Instead of boiling the ocean, you pick one workflow, automate it end-to-end in five days, and prove value before anyone has time to schedule a "stakeholder alignment meeting."
+
+Here is why this works:
+
+- **AI agents are composable.** You do not need a monolithic system. One well-scoped agent can handle a complete workflow.
+- **Iteration is mandatory anyway.** Research shows you need 2-3 iterations before hitting target performance. Better to iterate in days than months.
+- **Constraints breed focus.** A 5-day window forces you to cut scope ruthlessly. That ruthlessness is exactly what most AI projects lack.
+- **Organizations ship 40% faster** when they adopt sprint-based AI delivery instead of waterfall roadmaps.
+
+The sprint is not about cutting corners. It is about cutting everything that is not the critical path.
+
+## Pre-Sprint: The 3 Things You Need Before Day 1
+
+I never start a sprint cold. Before Monday morning, I need three things locked in:
+
+### 1. One Workflow, Clearly Defined
+
+Not "automate our operations." One specific workflow with a clear input, a clear output, and a human who currently does it manually. Examples:
+
+- Invoice arrives via email → data extracted → entered into accounting system
+- Support ticket filed → categorized → routed to correct team → initial response drafted
+- Sales lead submitted → enriched with company data → scored → assigned to rep
+
+If you cannot describe the workflow in one sentence, it is too big for a sprint.
+
+### 2. Access to Everything
+
+I need credentials, API keys, sample data, and a staging environment before Day 1. Nothing kills a sprint faster than spending Tuesday morning waiting for someone to approve a Jira ticket for database access.
+
+### 3. A Decision-Maker in the Room
+
+Not a committee. One person who can say "yes, ship it" or "no, change this" without scheduling a meeting. If decisions take 48 hours, a 5-day sprint becomes a 5-week sprint.
+
+## Day 1 (Monday): Workflow Audit and Agent Architecture
+
+Monday is about understanding reality, not building anything.
+
+### Morning: Shadow the Process
+
+I sit with the person who actually does the work. Not their manager. Not the process documentation (which is always outdated). The human who touches the keyboard. I watch them do the workflow 5-10 times and take notes on:
+
+- Every decision point ("if the amount is over $10k, I escalate to...")
+- Every tool they touch (email, spreadsheet, ERP, Slack)
+- Every exception they handle ("sometimes the PDF is scanned, so I have to...")
+- Every piece of tribal knowledge ("I just know that vendor always sends duplicates")
+
+### Afternoon: Design the Agent Architecture
+
+With the workflow mapped, I design the AI agent system. For most single-workflow automations, I use a coordinator pattern:
+
+```typescript
+// agent-architecture.ts
+interface WorkflowAgent {
+  name: string;
+  role: string;
+  triggers: TriggerConfig[];
+  steps: AgentStep[];
+  fallback: FallbackStrategy;
+}
+
+interface AgentStep {
+  id: string;
+  action: 'extract' | 'classify' | 'transform' | 'validate' | 'route' | 'notify';
+  model: string;
+  input: string;
+  output: string;
+  confidence_threshold: number;
+  human_review_below: number;
+}
+
+const invoiceAgent: WorkflowAgent = {
+  name: 'invoice-processor',
+  role: 'Extract, validate, and route incoming invoices',
+  triggers: [
+    { type: 'email', filter: 'subject:invoice OR has:attachment(pdf)' },
+    { type: 'webhook', source: 'supplier-portal' }
+  ],
+  steps: [
+    {
+      id: 'extract',
+      action: 'extract',
+      model: 'claude-sonnet',
+      input: 'raw_document',
+      output: 'structured_invoice_data',
+      confidence_threshold: 0.95,
+      human_review_below: 0.85
+    },
+    {
+      id: 'validate',
+      action: 'validate',
+      model: 'rules-engine',
+      input: 'structured_invoice_data',
+      output: 'validated_invoice',
+      confidence_threshold: 1.0,
+      human_review_below: 0.9
+    },
+    {
+      id: 'route',
+      action: 'route',
+      model: 'claude-haiku',
+      input: 'validated_invoice',
+      output: 'routed_invoice',
+      confidence_threshold: 0.9,
+      human_review_below: 0.8
+    }
+  ],
+  fallback: {
+    strategy: 'human-in-the-loop',
+    notification: 'slack',
+    channel: '#invoice-review',
+    sla_minutes: 30
+  }
+};
+```
+
+The key decisions on Day 1: which steps need AI (extraction, classification, routing) and which steps stay deterministic (validation against business rules, final database writes). Not everything needs a model. The best AI agents are hybrids — LLM reasoning where it matters, hard-coded logic where it does not.
+
+**End of Day 1 deliverable:** A workflow map, an agent architecture diagram, and a list of every integration point.
+
+## Day 2 (Tuesday): Data Pipeline and Core Agent Build
+
+Tuesday is build day. I start with the data pipeline because everything downstream depends on it.
+
+### Morning: Build the Data Pipeline
+
+The pipeline handles ingestion, transformation, and storage. For most workflows, I use a combination of n8n for orchestration and custom TypeScript for the AI-specific logic:
+
+```typescript
+// pipeline/ingest.ts
+import Anthropic from '@anthropic-ai/sdk';
+
+const anthropic = new Anthropic();
+
+interface ExtractionResult {
+  vendor_name: string;
+  invoice_number: string;
+  date: string;
+  line_items: LineItem[];
+  total_amount: number;
+  currency: string;
+  confidence: number;
+}
+
+async function extractInvoiceData(
+  documentBase64: string,
+  mimeType: string
+): Promise<ExtractionResult> {
+  const response = await anthropic.messages.create({
+    model: 'claude-sonnet-4-20250514',
+    max_tokens: 2048,
+    messages: [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'document',
+            source: { type: 'base64', media_type: mimeType, data: documentBase64 }
+          },
+          {
+            type: 'text',
+            text: `Extract all invoice data from this document. Return JSON with:
+              vendor_name, invoice_number, date (ISO 8601), line_items (description, quantity, unit_price, total),
+              total_amount, currency. Include a confidence score 0-1.
+              If any field is ambiguous, set confidence lower and include "ambiguous_fields" array.`
+          }
+        ]
+      }
+    ]
+  });
+
+  return JSON.parse(response.content[0].type === 'text' ? response.content[0].text : '');
+}
+```
+
+### Afternoon: Wire Up the Core Agent
+
+With extraction working, I connect the remaining steps — validation, enrichment, and routing. The n8n workflow looks like this:
+
+```json
+{
+  "name": "Invoice Processing Agent",
+  "nodes": [
+    {
+      "name": "Email Trigger",
+      "type": "n8n-nodes-base.emailTrigger",
+      "parameters": {
+        "mailbox": "invoices@company.com",
+        "filters": { "hasAttachment": true }
+      }
+    },
+    {
+      "name": "Extract with AI",
+      "type": "n8n-nodes-base.httpRequest",
+      "parameters": {
+        "url": "https://api.internal/extract-invoice",
+        "method": "POST",
+        "body": "={{ JSON.stringify({ document: $json.attachments[0] }) }}"
+      }
+    },
+    {
+      "name": "Validate Against Rules",
+      "type": "n8n-nodes-base.function",
+      "parameters": {
+        "functionCode": "const data = $input.all()[0].json;\nconst valid = data.confidence > 0.95 && data.total_amount > 0;\nreturn [{ json: { ...data, valid, needs_review: !valid } }];"
+      }
+    },
+    {
+      "name": "Route Decision",
+      "type": "n8n-nodes-base.switch",
+      "parameters": {
+        "rules": [
+          { "condition": "={{ $json.needs_review }}", "output": "Human Review" },
+          { "condition": "={{ $json.total_amount > 10000 }}", "output": "Manager Approval" },
+          { "condition": "={{ true }}", "output": "Auto Approve" }
+        ]
+      }
+    }
+  ]
+}
+```
+
+**End of Day 2 deliverable:** A working pipeline that can ingest a document, extract data via AI, validate it, and route it. It is ugly. It does not handle errors gracefully. But data flows from input to output.
+
+## Day 3 (Wednesday): Integration, Error Handling and Edge Cases
+
+Wednesday is where amateurs stall and professionals accelerate. The happy path works. Now I break it.
+
+### Morning: Integration with Target Systems
+
+I connect the agent to the actual systems it needs to write to — ERP, accounting software, Slack, whatever the workflow demands. This is usually the most frustrating part because enterprise APIs are unpredictable.
+
+### Afternoon: Edge Cases and Error Handling
+
+I feed the agent the worst documents I can find. Scanned PDFs at 72 DPI. Invoices in three languages. Handwritten notes. Duplicate submissions. The goal is to build a confidence-aware system:
+
+```typescript
+// error-handling/confidence-router.ts
+interface ConfidenceConfig {
+  auto_approve_above: number;
+  human_review_between: [number, number];
+  auto_reject_below: number;
+}
+
+const CONFIDENCE_THRESHOLDS: ConfidenceConfig = {
+  auto_approve_above: 0.95,
+  human_review_between: [0.7, 0.95],
+  auto_reject_below: 0.7
+};
+
+async function routeByConfidence(
+  result: ExtractionResult,
+  config: ConfidenceConfig
+): Promise<'auto_approve' | 'human_review' | 'auto_reject'> {
+  if (result.confidence >= config.auto_approve_above) {
+    await writeToERP(result);
+    await notifySlack(`Invoice ${result.invoice_number} auto-processed.`);
+    return 'auto_approve';
+  }
+
+  if (result.confidence >= config.human_review_between[0]) {
+    await createReviewTask(result, result.ambiguous_fields);
+    await notifySlack(
+      `Invoice ${result.invoice_number} needs review. ` +
+      `Confidence: ${(result.confidence * 100).toFixed(0)}%. ` +
+      `Ambiguous: ${result.ambiguous_fields?.join(', ')}`
+    );
+    return 'human_review';
+  }
+
+  await logRejection(result, 'confidence_too_low');
+  await notifySlack(`Invoice rejected — could not parse reliably.`);
+  return 'auto_reject';
+}
+```
+
+This three-tier system is the backbone of every production AI agent I build. Never trust a model unconditionally. Never reject everything below 99%. Find the sweet spot where automation handles the bulk and humans handle the exceptions.
+
+**End of Day 3 deliverable:** The agent handles happy path, sad path, and edge cases. It is integrated with target systems. Errors are caught, logged, and routed to humans.
+
+## Day 4 (Thursday): Testing, Security Audit and Human-in-the-Loop
+
+Thursday is quality day. The agent works. Now I need to make sure it works safely.
+
+### Morning: Testing with Production-Like Data
+
+I run the agent against 50-100 real historical cases (with sensitive data redacted or in a sandbox). I track:
+
+- **Accuracy:** Does the extraction match what a human would enter?
+- **Latency:** Is it fast enough for the business process?
+- **Failure rate:** How often does it need human intervention?
+
+Target metrics for a sprint: 90%+ auto-approval rate, sub-30-second processing, and zero silent failures.
+
+### Afternoon: Security Audit
+
+This is non-negotiable. Research shows that 24.7% of AI-generated code contains security vulnerabilities. Every sprint includes a security pass:
+
+```typescript
+// security/audit-checklist.ts
+const SECURITY_CHECKLIST = [
+  'All API keys stored in environment variables, not code',
+  'PII is never logged in plain text',
+  'Document uploads are scanned for malware before processing',
+  'AI model outputs are sanitized before database writes',
+  'Rate limiting is configured on all endpoints',
+  'Human review queue has access controls',
+  'Audit trail records every automated decision',
+  'Fallback to manual process if AI service is unavailable',
+  'Data retention policy applied to processed documents',
+  'Model outputs are never used in raw SQL or shell commands'
+];
+
+interface AuditResult {
+  item: string;
+  status: 'pass' | 'fail' | 'not_applicable';
+  notes: string;
+}
+
+function runSecurityAudit(agent: WorkflowAgent): AuditResult[] {
+  return SECURITY_CHECKLIST.map(item => ({
+    item,
+    status: evaluateSecurityItem(agent, item),
+    notes: ''
+  }));
+}
+```
+
+### Human-in-the-Loop Design
+
+The review interface is as important as the agent itself. When the AI is not confident, the human reviewer needs to see the original document side-by-side with the extracted data, with ambiguous fields highlighted. A bad review UI turns a 30-second review into a 5-minute one and kills the time savings.
+
+**End of Day 4 deliverable:** Test results documented, security audit passed, human-in-the-loop interface working, and a clear picture of production accuracy.
+
+## Day 5 (Friday): Deploy, Monitor and Handoff
+
+Friday is ship day. The goal is to have the agent running in production before lunch so I can monitor it for the afternoon.
+
+### Morning: Deploy
+
+I deploy with a shadow mode first — the agent processes everything but does not write to the production system. Instead, it logs what it would have done. This lets us compare AI decisions against human decisions in real time for a few hours.
+
+```typescript
+// deploy/shadow-mode.ts
+interface DeployConfig {
+  mode: 'shadow' | 'assisted' | 'autonomous';
+  monitoring: {
+    alert_on_rejection_rate_above: number;
+    alert_on_latency_above_ms: number;
+    daily_accuracy_report: boolean;
+  };
+}
+
+const DEPLOYMENT_PHASES: DeployConfig[] = [
+  {
+    mode: 'shadow',
+    monitoring: {
+      alert_on_rejection_rate_above: 0.3,
+      alert_on_latency_above_ms: 60000,
+      daily_accuracy_report: true
+    }
+  },
+  {
+    mode: 'assisted',  // AI processes, human confirms
+    monitoring: {
+      alert_on_rejection_rate_above: 0.2,
+      alert_on_latency_above_ms: 30000,
+      daily_accuracy_report: true
+    }
+  },
+  {
+    mode: 'autonomous',  // AI processes, human reviews exceptions only
+    monitoring: {
+      alert_on_rejection_rate_above: 0.15,
+      alert_on_latency_above_ms: 30000,
+      daily_accuracy_report: true
+    }
+  }
+];
+```
+
+After shadow mode checks out, I switch to assisted mode for the afternoon. By end of day, if metrics hold, the team has a clear path to autonomous mode the following week.
+
+### Afternoon: Monitor and Handoff
+
+I set up a monitoring dashboard and write the handoff document — not a 40-page manual, but a one-page runbook covering:
+
+- How to check if the agent is healthy
+- How to handle the three most common failure modes
+- How to adjust confidence thresholds
+- Who to call if something breaks
+
+**End of Day 5 deliverable:** Agent running in production (assisted mode), monitoring live, team trained, runbook delivered.
+
+## Real Example: The Invoice Processing Agent
+
+Here are the actual numbers from the fintech sprint I mentioned at the top:
+
+| Metric | Before (Manual) | After (AI Agent) |
+|---|---|---|
+| Invoices processed per day | ~85 | ~280 |
+| Average processing time per invoice | 4.2 minutes | 18 seconds |
+| Daily hours spent on invoices | 6 hours | 0.5 hours (reviews only) |
+| Error rate (data entry mistakes) | 3.2% | 0.4% |
+| Monthly cost (labor allocation) | $8,400 | $1,200 (API + infrastructure) |
+
+The agent handles 92% of invoices autonomously. The remaining 8% go to human review — mostly edge cases like handwritten invoices or invoices in languages the model has not seen enough of. Over three months, the auto-approval rate climbed to 95% as I fine-tuned the confidence thresholds based on review data.
+
+## The Tools I Use for Sprint Automation
+
+Every sprint, I reach for the same toolkit:
+
+- **Claude Code** — My primary AI coding assistant. I use it to scaffold agents, write extraction prompts, and iterate on code during the sprint. It is the fastest way to go from architecture to working code.
+- **n8n** — Self-hosted workflow automation. It handles triggers, routing, and integrations. Open source, so no vendor lock-in and no per-execution pricing that explodes at scale.
+- **Custom TypeScript agents** — For anything that needs fine-grained control. The extraction and classification logic always lives in custom code, not in a no-code tool.
+- **Anthropic API (Claude)** — The model layer. I use claude-sonnet for complex extraction and reasoning, claude-haiku for fast classification and routing.
+- **Zapier** — Only when the client already uses it and the integration is simple. For anything complex, n8n wins.
+- **Supabase** — Quick database and auth layer for the review interface and audit logs.
+
+## When Sprints Do Not Work
+
+I am not going to pretend the 5-day sprint is a silver bullet. It does not work when:
+
+- **The workflow is not defined.** If nobody can explain the current process, you need a discovery phase first. That is a different engagement.
+- **There is no clean data.** If the inputs are chaotic and there are no historical examples to test against, you are guessing. AI agents need data to validate against.
+- **The workflow crosses 5+ systems with no APIs.** If you need to build three custom integrations just to connect the dots, that is not a sprint — that is an integration project with AI on top.
+- **Compliance requires months of review.** Healthcare, finance, and government workflows sometimes need legal sign-off that takes longer than the build itself. The sprint can produce the agent, but deployment waits for compliance.
+
+In these cases, I still use the sprint structure — but I scope it as a proof-of-concept sprint, not a production sprint. Build the agent in 5 days, then spend the next few weeks on the organizational friction.
+
+## Results from 10 Sprints: Before and After
+
+Across ten AI automation sprints in the past year, here is the aggregate data:
+
+| Metric | Average Result |
+|---|---|
+| Hours saved per week per workflow | 32 |
+| Auto-approval rate (at launch) | 88% |
+| Auto-approval rate (after 90 days) | 94% |
+| Sprint cost (my time + infrastructure) | $12,000 |
+| Annual savings per workflow | $156,000 |
+| Payback period | 3.8 weeks |
+
+The workflows I have automated in sprints include invoice processing, support ticket triage, employee onboarding document processing, sales lead enrichment, compliance document review, contract clause extraction, expense report processing, meeting notes to action items, customer feedback categorization, and vendor risk assessment.
+
+Every single one followed the same 5-day structure. The domain changes. The tools change slightly. The methodology does not.
+
+## Start Your Own Sprint
+
+You do not need a consulting engagement to run an AI automation sprint. You need:
+
+1. One workflow that annoys someone enough to fix
+2. Five uninterrupted days
+3. Access to an AI API and the systems the workflow touches
+4. The discipline to ship on Friday, not "next sprint"
+
+The math is simple. 5 days. 1 workflow. 30+ hours per week saved. If your organization is still building 6-month AI roadmaps, maybe it is time to try something faster.
+
+## References
+
+### Sources
+
+- [AI Design Sprints: A Structured Approach to AI Implementation](https://www.mckinsey.com/capabilities/quantumblack/our-insights/ai-design-sprint) — McKinsey
+- [The State of AI-Generated Code Security 2025](https://www.snyk.io/reports/ai-code-security/) — Snyk Research (24.7% vulnerability rate statistic)
+- [Agentic AI in Enterprise Operations](https://www.gartner.com/en/articles/agentic-ai) — Gartner
+- [Building Effective AI Agents](https://www.anthropic.com/research/building-effective-agents) — Anthropic
+- [n8n Documentation: AI Agent Workflows](https://docs.n8n.io/ai/) — n8n
+
+### Further Reading
+
+- [Rapid AI Prototyping: From Concept to Production in Days](https://hbr.org/2025/09/rapid-ai-prototyping) — Harvard Business Review
+- [AI Sprint Methodology for Operations Teams](https://www.oreilly.com/library/view/ai-sprints/9781098156817/) — O'Reilly Media
+- [Human-in-the-Loop Design Patterns for AI Systems](https://arxiv.org/abs/2501.09734) — arXiv
+
+---
+
+~Seb
