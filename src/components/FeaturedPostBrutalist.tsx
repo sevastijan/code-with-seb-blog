@@ -209,19 +209,24 @@ export function FeaturedPostBrutalist({ slug, title, excerpt, category, date, re
     };
 
     const handleMouseMove = (e: MouseEvent) => {
-      // Normalize to -1 to 1 based on window center
       mouse.current.x = (e.clientX / window.innerWidth - 0.5) * 2;
       mouse.current.y = (e.clientY / window.innerHeight - 0.5) * 2;
     };
 
+    let sectionVisible = false;
+    const observer = new IntersectionObserver(
+      ([entry]) => { sectionVisible = entry.isIntersecting; },
+      { threshold: 0.05 }
+    );
+    if (section) observer.observe(section);
+
     const handleScroll = () => {
-      if (!section) return;
+      if (!section || !sectionVisible) return;
       const rect = section.getBoundingClientRect();
       const windowHeight = window.innerHeight;
 
-      // Progress: starts earlier for faster reveal
       const progress = 1 - Math.max(0, Math.min(1, (rect.top + windowHeight * 0.3) / windowHeight));
-      scrollProgress.current = Math.min(1, progress * 1.5); // Accelerate progress
+      scrollProgress.current = Math.min(1, progress * 1.5);
 
       if (progress > 0.1 && !isRevealed) {
         setIsRevealed(true);
@@ -229,7 +234,7 @@ export function FeaturedPostBrutalist({ slug, title, excerpt, category, date, re
     };
 
     animate();
-    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mousemove', handleMouseMove, { passive: true });
     window.addEventListener('scroll', handleScroll, { passive: true });
     handleScroll();
 
@@ -237,6 +242,7 @@ export function FeaturedPostBrutalist({ slug, title, excerpt, category, date, re
       cancelAnimationFrame(animationId);
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('scroll', handleScroll);
+      observer.disconnect();
     };
   }, [isRevealed]);
 

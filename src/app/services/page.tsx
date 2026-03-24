@@ -161,20 +161,25 @@ export default function ServicesPage() {
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
 
   useEffect(() => {
+    let rafId = 0;
     const handleMouseMove = (e: MouseEvent) => {
-      if (heroRef.current) {
-        const rect = heroRef.current.getBoundingClientRect();
-        setMousePos({
-          x: (e.clientX - rect.left - rect.width / 2) / rect.width,
-          y: (e.clientY - rect.top - rect.height / 2) / rect.height,
-        });
-      }
+      cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(() => {
+        if (heroRef.current) {
+          const rect = heroRef.current.getBoundingClientRect();
+          setMousePos({
+            x: (e.clientX - rect.left - rect.width / 2) / rect.width,
+            y: (e.clientY - rect.top - rect.height / 2) / rect.height,
+          });
+        }
+      });
     };
 
-    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mousemove', handleMouseMove, { passive: true });
 
     return () => {
       window.removeEventListener('mousemove', handleMouseMove);
+      cancelAnimationFrame(rafId);
     };
   }, []);
 

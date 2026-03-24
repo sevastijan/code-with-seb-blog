@@ -24,8 +24,17 @@ export function MarqueeAwwwards() {
     let scrollVelocity = 0;
     let lastScrollY = window.scrollY;
     let rafId: number;
+    let isVisible = true;
+
+    const sectionEl = track.closest('section');
+    const observer = new IntersectionObserver(
+      ([entry]) => { isVisible = entry.isIntersecting; },
+      { threshold: 0 }
+    );
+    if (sectionEl) observer.observe(sectionEl);
 
     const animate = () => {
+      if (!isVisible) { rafId = requestAnimationFrame(animate); return; }
       // Base speed
       offset += 0.8;
 
@@ -62,6 +71,7 @@ export function MarqueeAwwwards() {
     return () => {
       window.removeEventListener('scroll', handleScroll);
       cancelAnimationFrame(rafId);
+      observer.disconnect();
     };
   }, []);
 

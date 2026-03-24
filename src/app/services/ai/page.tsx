@@ -126,8 +126,16 @@ export default function AIServicePage() {
         });
       }
     };
-    window.addEventListener('mousemove', handleMouseMove);
-    return () => window.removeEventListener('mousemove', handleMouseMove);
+    let rafId = 0;
+    const throttledMouseMove = (e: MouseEvent) => {
+      cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(() => handleMouseMove(e));
+    };
+    window.addEventListener('mousemove', throttledMouseMove, { passive: true });
+    return () => {
+      window.removeEventListener('mousemove', throttledMouseMove);
+      cancelAnimationFrame(rafId);
+    };
   }, []);
 
   return (

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useCallback } from 'react';
 
 export function HeroCodeSymbol() {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -10,39 +10,50 @@ export function HeroCodeSymbol() {
   const mouseRef = useRef({ x: 0, y: 0 });
   const targetRef = useRef({ x: 0, y: 0 });
   const scrollRef = useRef(0);
+  const isVisible = useRef(true);
+  const rafId = useRef(0);
+
+  const animate = useCallback(() => {
+    if (!isVisible.current) {
+      rafId.current = requestAnimationFrame(animate);
+      return;
+    }
+
+    const glow = glowRef.current;
+    if (!glow) return;
+
+    mouseRef.current.x += (targetRef.current.x - mouseRef.current.x) * 0.08;
+    mouseRef.current.y += (targetRef.current.y - mouseRef.current.y) * 0.08;
+
+    glow.style.transform = `translate3d(${mouseRef.current.x}px, ${mouseRef.current.y}px, 0) translate(-50%, -50%)`;
+
+    rafId.current = requestAnimationFrame(animate);
+  }, []);
 
   useEffect(() => {
     const container = containerRef.current;
-    const glow = glowRef.current;
+    const wrapper = wrapperRef.current;
     const outline = outlineRef.current;
-    if (!container || !glow) return;
+    if (!container) return;
 
-    let animationId: number;
-
-    const lerp = (start: number, end: number, factor: number) => {
-      return start + (end - start) * factor;
-    };
-
-    const animate = () => {
-      mouseRef.current.x = lerp(mouseRef.current.x, targetRef.current.x, 0.08);
-      mouseRef.current.y = lerp(mouseRef.current.y, targetRef.current.y, 0.08);
-
-      glow.style.transform = `translate(${mouseRef.current.x}px, ${mouseRef.current.y}px) translate(-50%, -50%)`;
-
-      animationId = requestAnimationFrame(animate);
-    };
+    // Intersection Observer — pause when not visible
+    const observer = new IntersectionObserver(
+      ([entry]) => { isVisible.current = entry.isIntersecting; },
+      { threshold: 0.1 }
+    );
+    if (wrapper) observer.observe(wrapper);
 
     const handleMouseMove = (e: MouseEvent) => {
+      if (!isVisible.current) return;
+
       const centerX = window.innerWidth / 2;
       const centerY = window.innerHeight / 2;
-
       const rotateY = ((e.clientX - centerX) / window.innerWidth) * 15;
       const rotateX = ((centerY - e.clientY) / window.innerHeight) * 10;
-
       const scrollRotate = scrollRef.current * 20;
+
       container.style.transform = `rotateX(${rotateX + scrollRef.current * 15}deg) rotateY(${rotateY + scrollRotate}deg)`;
 
-      // Outline moves OPPOSITE to mouse
       if (outline) {
         const offsetX = ((centerX - e.clientX) / window.innerWidth) * 30;
         const offsetY = ((centerY - e.clientY) / window.innerHeight) * 20;
@@ -54,95 +65,61 @@ export function HeroCodeSymbol() {
     };
 
     const handleScroll = () => {
-      const scrollY = window.scrollY;
-      const windowHeight = window.innerHeight;
-      const progress = Math.min(scrollY / windowHeight, 1);
+      const progress = Math.min(window.scrollY / window.innerHeight, 1);
       scrollRef.current = progress;
 
-      if (wrapperRef.current) {
+      if (wrapper) {
         const scale = 1 + progress * 0.5;
         const opacity = 1 - progress * 0.8;
-        const translateY = progress * -100;
-        wrapperRef.current.style.transform = `translateY(${translateY}px) scale(${scale})`;
-        wrapperRef.current.style.opacity = `${opacity}`;
+        wrapper.style.transform = `translateY(${progress * -100}px) scale(${scale})`;
+        wrapper.style.opacity = `${opacity}`;
       }
     };
 
-    animate();
-    window.addEventListener('mousemove', handleMouseMove);
+    rafId.current = requestAnimationFrame(animate);
+    window.addEventListener('mousemove', handleMouseMove, { passive: true });
     window.addEventListener('scroll', handleScroll, { passive: true });
 
     return () => {
-      cancelAnimationFrame(animationId);
+      cancelAnimationFrame(rafId.current);
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('scroll', handleScroll);
+      observer.disconnect();
     };
-  }, []);
-
-  // Floating particles
-  const particles = Array.from({ length: 20 }, (_, i) => ({
-    id: i,
-    size: Math.random() * 4 + 1,
-    x: Math.random() * 100,
-    y: Math.random() * 100,
-    duration: Math.random() * 10 + 10,
-    delay: Math.random() * 5,
-  }));
+  }, [animate]);
 
   return (
-    <div ref={wrapperRef} className="hero-code-wrapper" style={{ transition: 'transform 0.1s ease-out, opacity 0.1s ease-out' }}>
-      {/* Scan lines overlay */}
+    <div ref={wrapperRef} className="hero-code-wrapper" style={{ willChange: 'transform, opacity' }}>
       <div className="scan-lines" />
 
-      {/* Floating particles */}
       <div className="particles-container">
-        {particles.map((p) => (
+        {Array.from({ length: 12 }, (_, i) => (
           <div
-            key={p.id}
+            key={i}
             className="particle"
             style={{
-              width: p.size,
-              height: p.size,
-              left: `${p.x}%`,
-              top: `${p.y}%`,
-              animationDuration: `${p.duration}s`,
-              animationDelay: `${p.delay}s`,
+              width: Math.random() * 4 + 1,
+              height: Math.random() * 4 + 1,
+              left: `${Math.random() * 100}%`,
+              top: `${Math.random() * 100}%`,
+              animationDuration: `${Math.random() * 10 + 10}s`,
+              animationDelay: `${Math.random() * 5}s`,
             }}
           />
         ))}
       </div>
 
-      {/* Glow that follows cursor */}
-      <div ref={glowRef} className="cursor-glow" />
+      <div ref={glowRef} className="cursor-glow" style={{ willChange: 'transform' }} />
 
-      {/* Main 3D symbol */}
-      <div ref={containerRef} className="hero-code-symbol">
-        {/* Deep shadow layer */}
-        <span className="hero-code-layer layer-shadow" style={{ transform: 'translateZ(-200px)', filter: 'blur(30px)' }}>
-          {'</>'}
-        </span>
-
-        {/* Chromatic layers with CSS glitch */}
+      <div ref={containerRef} className="hero-code-symbol" style={{ willChange: 'transform' }}>
+        <span className="hero-code-layer layer-shadow" style={{ transform: 'translateZ(-200px)', filter: 'blur(30px)' }}>{'</>'}</span>
         <span className="hero-code-layer layer-cyan glitch-1" style={{ transform: 'translateZ(-120px)', filter: 'blur(8px)' }}>{'</>'}</span>
         <span className="hero-code-layer layer-blue" style={{ transform: 'translateZ(-80px)', filter: 'blur(5px)' }}>{'</>'}</span>
         <span className="hero-code-layer layer-purple glitch-2" style={{ transform: 'translateZ(-40px)', filter: 'blur(2px)' }}>{'</>'}</span>
-
-        {/* Main gradient layer */}
-        <span className="hero-code-layer layer-main" style={{ transform: 'translateZ(0px)' }}>
-          {'</>'}
-        </span>
-
-        {/* Offset outline - moves opposite to mouse */}
-        <span
-          ref={outlineRef}
-          className="hero-code-layer layer-outline-offset"
-          style={{ transition: 'transform 0.15s ease-out' }}
-        >
-          {'</>'}
-        </span>
+        <span className="hero-code-layer layer-main" style={{ transform: 'translateZ(0px)' }}>{'</>'}</span>
+        <span ref={outlineRef} className="hero-code-layer layer-outline-offset" style={{ willChange: 'transform', transition: 'transform 0.15s ease-out' }}>{'</>'}</span>
       </div>
 
-      {/* Horizontal light beam */}
       <div className="light-beam" />
     </div>
   );

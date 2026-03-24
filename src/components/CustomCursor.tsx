@@ -1,79 +1,78 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useCallback } from 'react';
 
 export function CustomCursor() {
-  const [position, setPosition] = useState({ x: 0, y: 0 });
-  const [dotPosition, setDotPosition] = useState({ x: 0, y: 0 });
-  const [isHovering, setIsHovering] = useState(false);
-  const [isVisible, setIsVisible] = useState(false);
+  const cursorRef = useRef<HTMLDivElement>(null);
+  const dotRef = useRef<HTMLDivElement>(null);
+  const isHovering = useRef(false);
+  const rafId = useRef<number>(0);
+  const mousePos = useRef({ x: -100, y: -100 });
+  const currentPos = useRef({ x: -100, y: -100 });
 
-  useEffect(() => {
-    // Check if we're on mobile
-    if (typeof window !== 'undefined' && window.innerWidth <= 1024) {
-      return;
+  const animate = useCallback(() => {
+    // Lerp for smooth trailing effect
+    currentPos.current.x += (mousePos.current.x - currentPos.current.x) * 0.15;
+    currentPos.current.y += (mousePos.current.y - currentPos.current.y) * 0.15;
+
+    if (cursorRef.current) {
+      cursorRef.current.style.transform = `translate3d(${currentPos.current.x - 10}px, ${currentPos.current.y - 10}px, 0)`;
+    }
+    if (dotRef.current) {
+      dotRef.current.style.transform = `translate3d(${mousePos.current.x - 3}px, ${mousePos.current.y - 3}px, 0)`;
     }
 
-    const updateCursor = (e: MouseEvent) => {
-      setPosition({ x: e.clientX, y: e.clientY });
-      setDotPosition({ x: e.clientX, y: e.clientY });
-      if (!isVisible) setIsVisible(true);
+    rafId.current = requestAnimationFrame(animate);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || window.innerWidth <= 1024) return;
+
+    const onMouseMove = (e: MouseEvent) => {
+      mousePos.current.x = e.clientX;
+      mousePos.current.y = e.clientY;
     };
 
-    const handleMouseEnter = () => setIsVisible(true);
-    const handleMouseLeave = () => setIsVisible(false);
-
-    // Track hoverable elements
-    const addHoverListeners = () => {
-      const hoverables = document.querySelectorAll('a, button, [data-cursor-hover]');
-      hoverables.forEach((el) => {
-        el.addEventListener('mouseenter', () => setIsHovering(true));
-        el.addEventListener('mouseleave', () => setIsHovering(false));
-      });
+    const onMouseOver = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      const hoverable = target.closest('a, button, [data-cursor-hover]');
+      if (hoverable && !isHovering.current) {
+        isHovering.current = true;
+        cursorRef.current?.classList.add('cursor-hover');
+        if (dotRef.current) dotRef.current.style.opacity = '0';
+      }
     };
 
-    window.addEventListener('mousemove', updateCursor);
-    document.body.addEventListener('mouseenter', handleMouseEnter);
-    document.body.addEventListener('mouseleave', handleMouseLeave);
+    const onMouseOut = (e: MouseEvent) => {
+      const target = e.relatedTarget as HTMLElement | null;
+      if (!target?.closest('a, button, [data-cursor-hover]') && isHovering.current) {
+        isHovering.current = false;
+        cursorRef.current?.classList.remove('cursor-hover');
+        if (dotRef.current) dotRef.current.style.opacity = '1';
+      }
+    };
 
-    // Add hover listeners after a short delay to ensure DOM is ready
-    setTimeout(addHoverListeners, 100);
-
-    // Re-add listeners when new content is added
-    const observer = new MutationObserver(addHoverListeners);
-    observer.observe(document.body, { childList: true, subtree: true });
+    window.addEventListener('mousemove', onMouseMove, { passive: true });
+    document.addEventListener('mouseover', onMouseOver, { passive: true });
+    document.addEventListener('mouseout', onMouseOut, { passive: true });
+    rafId.current = requestAnimationFrame(animate);
 
     return () => {
-      window.removeEventListener('mousemove', updateCursor);
-      document.body.removeEventListener('mouseenter', handleMouseEnter);
-      document.body.removeEventListener('mouseleave', handleMouseLeave);
-      observer.disconnect();
+      window.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseover', onMouseOver);
+      document.removeEventListener('mouseout', onMouseOut);
+      cancelAnimationFrame(rafId.current);
     };
-  }, [isVisible]);
+  }, [animate]);
 
-  // Don't render on mobile
   if (typeof window !== 'undefined' && window.innerWidth <= 1024) {
     return null;
   }
 
   return (
     <>
-      <div
-        className={`cursor ${isHovering ? 'cursor-hover' : ''}`}
-        style={{
-          left: position.x - 10,
-          top: position.y - 10,
-          opacity: isVisible ? 1 : 0,
-        }}
-      />
-      <div
-        className="cursor-dot"
-        style={{
-          left: dotPosition.x - 3,
-          top: dotPosition.y - 3,
-          opacity: isVisible && !isHovering ? 1 : 0,
-        }}
-      />
+      <div ref={cursorRef} className="cursor" style={{ willChange: 'transform' }} />
+      <div ref={dotRef} className="cursor-dot" style={{ willChange: 'transform' }} />
     </>
   );
 }
