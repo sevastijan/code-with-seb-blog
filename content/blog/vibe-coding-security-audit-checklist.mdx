@@ -1,0 +1,553 @@
+---
+title: 'Vibe Coding Security Crisis: How to Audit AI-Generated Code Before It Ships'
+date: '2026-03-23'
+category: 'AI'
+tags: ['ai', 'security', 'code-review', 'best-practices', 'development']
+draft: true
+featured: false
+author: 'Sebastian'
+excerpt: 'AI-generated code has vulnerabilities at 2x the rate of human code. Here is the 7-point security audit checklist I use to catch 90% of issues before they ship.'
+---
+
+Last month, a startup founder asked me to review their app before launch. The whole thing was vibe-coded — Claude Code for the backend, Cursor for the frontend, Replit for the deployment scripts. "It works great," he told me. "We just need someone to sign off on security."
+
+It took me 20 minutes to find a path to their entire user database.
+
+Not because I'm some elite hacker. Because the AI had generated a REST endpoint with no authentication check, an admin route protected only by a client-side `isAdmin` flag, and a file upload handler that accepted any file type to a publicly accessible S3 bucket. Three separate doors left wide open. The AI wrote functional code that did exactly what it was prompted to do — and none of the things it wasn't.
+
+This isn't an isolated story. A recent audit of Claude Code, Codex, Cursor, Replit, and Devin tested 15 apps built with these tools and found 69 vulnerabilities. Zero CSRF protection across all of them. Zero security headers. SSRF vulnerabilities in every single tool's output. Lovable, the AI app builder, had 170 of 1,645 scanned applications exposing user data publicly. And Moltbook — a vibe-coded social platform — leaked 1.5 million authentication tokens because nobody audited what the AI had built.
+
+The data backs up what I see every week: 24.7% of AI-generated code contains a security vulnerability. That's roughly 1.5 to 2 times the rate of human-written code. Your vibe-coded app probably has at least five right now.
+
+Here's the thing — I'm not anti-AI coding. I use these tools daily. But there's a gap between "the code runs" and "the code is secure," and AI tools are spectacularly bad at closing it. So let me walk you through exactly what I find every time I audit a vibe-coded codebase, and the checklist I use to catch 90% of issues before they ship.
+
+## What Is Vibe Coding and Why Security Suffers
+
+Vibe coding — the practice of describing what you want in natural language and letting an AI generate the implementation — has fundamentally changed how fast we ship software. A solo developer can build a full-stack SaaS in a weekend. A startup can go from idea to MVP in days instead of months.
+
+But speed and security have always been in tension, and AI coding tools make this tension worse for a specific reason: **LLMs optimize for functionality, not safety.**
+
+When you prompt an AI to "build a user authentication system," it builds something that authenticates users. It doesn't add rate limiting. It doesn't hash passwords with bcrypt — it might use MD5 or even store them in plain text if the training data skews that way. It doesn't implement account lockout after failed attempts. It doesn't add CSRF tokens. It doesn't set security headers.
+
+Why? Because you didn't ask for those things. And unlike a senior developer who has been burned by a production incident at 2 AM, the AI has no scars. It has no threat model. It generates the happy path and moves on.
+
+The second problem is context window blindness. When you're vibe coding, you're usually working feature by feature. "Add a user profile page." "Add a file upload." "Add an API endpoint for search." Each prompt gets a reasonable response in isolation. But security is a system-level property — it emerges from how all the pieces interact. The AI doesn't see the full picture, and neither does the developer who's prompting one feature at a time.
+
+## The 7 Deadly Sins of AI-Generated Code
+
+After auditing dozens of vibe-coded applications, I've found that the same vulnerabilities appear over and over. I call them the 7 deadly sins because they show up with almost religious consistency.
+
+### Sin 1: No Input Validation
+
+This is the most common issue, appearing in nearly every AI-generated codebase I review. The AI builds endpoints that trust user input completely.
+
+**Vulnerable (what the AI generates):**
+
+```typescript
+// Express route - AI-generated
+app.post('/api/users', async (req, res) => {
+  const { name, email, role } = req.body;
+  const user = await db.user.create({
+    data: { name, email, role }
+  });
+  res.json(user);
+});
+```
+
+See the problem? The `role` field comes straight from the request body. Any user can set themselves as admin. There's no validation on email format, no length limits on name, nothing.
+
+**Secure (what it should be):**
+
+```typescript
+import { z } from 'zod';
+
+const CreateUserSchema = z.object({
+  name: z.string().min(1).max(100).trim(),
+  email: z.string().email().max(255).toLowerCase(),
+  // role is NOT accepted from user input
+});
+
+app.post('/api/users', async (req, res) => {
+  const result = CreateUserSchema.safeParse(req.body);
+
+  if (!result.success) {
+    return res.status(400).json({
+      error: 'Validation failed',
+      details: result.error.issues
+    });
+  }
+
+  const user = await db.user.create({
+    data: {
+      ...result.data,
+      role: 'user', // hardcoded default, never from input
+    }
+  });
+
+  res.json(user);
+});
+```
+
+The fix isn't complicated — Zod schema, explicit allowlist of fields, role set server-side. But the AI almost never generates this pattern unless you specifically ask for validation.
+
+### Sin 2: Hardcoded Secrets and API Keys
+
+AI models have seen thousands of tutorials and Stack Overflow answers with hardcoded credentials. Guess what they reproduce.
+
+**Vulnerable:**
+
+```typescript
+// AI loves putting secrets right in the code
+const stripe = new Stripe('sk_live_abc123def456ghi789');
+
+const dbConnection = mysql.createConnection({
+  host: 'production-db.amazonaws.com',
+  user: 'admin',
+  password: 'SuperSecret123!',
+  database: 'production'
+});
+
+// Or slightly better but still wrong — .env committed to git
+// with no .gitignore entry
+```
+
+**Secure:**
+
+```typescript
+import { z } from 'zod';
+
+// Validate env vars exist at startup, fail fast
+const envSchema = z.object({
+  STRIPE_SECRET_KEY: z.string().startsWith('sk_'),
+  DATABASE_URL: z.string().url(),
+  JWT_SECRET: z.string().min(32),
+});
+
+const env = envSchema.parse(process.env);
+
+const stripe = new Stripe(env.STRIPE_SECRET_KEY);
+```
+
+And your `.gitignore` must include `.env*`. Always. Verify this exists after any AI scaffolding session. I've seen AI tools generate `.gitignore` files that include node_modules but miss `.env`.
+
+### Sin 3: Missing Authentication Checks
+
+This is the one that gave me access to that startup's database. AI tools generate routes, and sometimes they add auth middleware, sometimes they don't. There's no consistency.
+
+**Vulnerable:**
+
+```typescript
+// AI generated all CRUD routes but forgot auth on some
+app.get('/api/users', authMiddleware, getUsers);        // protected
+app.get('/api/users/:id', authMiddleware, getUser);     // protected
+app.put('/api/users/:id', updateUser);                  // OOPS - no auth
+app.delete('/api/users/:id', deleteUser);               // OOPS - no auth
+
+// Even worse: admin routes with client-side-only protection
+app.get('/api/admin/analytics', getAnalytics);          // no auth at all
+// The AI put the protection in the React component instead:
+// if (user.isAdmin) { <AdminDashboard /> }
+```
+
+**Secure:**
+
+```typescript
+// Default-deny: apply auth globally, whitelist public routes
+const publicRoutes = ['/api/auth/login', '/api/auth/register', '/api/health'];
+
+app.use((req, res, next) => {
+  if (publicRoutes.includes(req.path)) return next();
+  return authMiddleware(req, res, next);
+});
+
+// Role-based middleware for admin routes
+const requireRole = (role: string) => (req, res, next) => {
+  if (req.user?.role !== role) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+  next();
+};
+
+app.get('/api/admin/analytics', requireRole('admin'), getAnalytics);
+```
+
+The principle is default-deny. Everything requires authentication unless explicitly whitelisted. AI generates default-allow because it builds routes one at a time.
+
+### Sin 4: SQL Injection and NoSQL Injection
+
+You'd think in 2026 we'd be past SQL injection. AI tools bring it back with enthusiasm.
+
+**Vulnerable:**
+
+```typescript
+// AI-generated search endpoint
+app.get('/api/search', async (req, res) => {
+  const { query } = req.query;
+  const results = await db.$queryRawUnsafe(
+    `SELECT * FROM products WHERE name LIKE '%${query}%'`
+  );
+  res.json(results);
+});
+
+// NoSQL variant with MongoDB
+app.post('/api/login', async (req, res) => {
+  const user = await User.findOne({
+    email: req.body.email,
+    password: req.body.password  // also: plain text password comparison
+  });
+});
+```
+
+That MongoDB query is vulnerable to NoSQL injection. Send `{"password": {"$ne": ""}}` and you're in.
+
+**Secure:**
+
+```typescript
+// Parameterized query
+app.get('/api/search', async (req, res) => {
+  const query = String(req.query.query || '').slice(0, 100);
+  const results = await db.product.findMany({
+    where: {
+      name: { contains: query, mode: 'insensitive' }
+    },
+    take: 50,
+  });
+  res.json(results);
+});
+
+// Proper auth with hashed passwords
+app.post('/api/login', async (req, res) => {
+  const { email, password } = req.body;
+  const user = await User.findOne({ email });
+  if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
+    return res.status(401).json({ error: 'Invalid credentials' });
+  }
+  // issue JWT / session
+});
+```
+
+Always use your ORM's query builder. Never use `$queryRawUnsafe` or string concatenation. If your AI generates raw SQL strings, that's a red flag for the entire codebase.
+
+### Sin 5: No CSRF Protection
+
+In the audit of five major AI coding tools, zero of them added CSRF protection to any of the 15 generated apps. Zero.
+
+**Vulnerable:**
+
+```typescript
+// AI sets up Express with JSON body parser and calls it done
+app.use(express.json());
+app.use(cors({ origin: '*' })); // bonus vulnerability: wildcard CORS
+
+// No CSRF tokens anywhere. Every state-changing request
+// can be triggered from any website.
+```
+
+**Secure:**
+
+```typescript
+import csrf from 'csurf';
+import helmet from 'helmet';
+
+// Restrictive CORS
+app.use(cors({
+  origin: process.env.ALLOWED_ORIGIN, // e.g., 'https://myapp.com'
+  credentials: true,
+}));
+
+// CSRF protection for non-API routes
+const csrfProtection = csrf({ cookie: true });
+app.use('/api', csrfProtection);
+
+// For SPA/API architectures, use SameSite cookies + custom headers
+app.use((req, res, next) => {
+  if (['POST', 'PUT', 'DELETE', 'PATCH'].includes(req.method)) {
+    const csrfHeader = req.headers['x-requested-with'];
+    if (csrfHeader !== 'XMLHttpRequest') {
+      return res.status(403).json({ error: 'CSRF validation failed' });
+    }
+  }
+  next();
+});
+```
+
+For modern SPAs using `fetch` with JSON, the combination of `SameSite=Strict` cookies, restrictive CORS, and a custom request header provides strong CSRF protection. But the AI doesn't add any of these layers.
+
+### Sin 6: Insecure Direct Object References (IDOR)
+
+This is subtle and the AI almost never handles it correctly. When a user requests `/api/invoices/123`, does the code verify that invoice 123 belongs to them?
+
+**Vulnerable:**
+
+```typescript
+// AI generates clean CRUD but no ownership checks
+app.get('/api/invoices/:id', authMiddleware, async (req, res) => {
+  const invoice = await db.invoice.findUnique({
+    where: { id: req.params.id }
+  });
+  if (!invoice) return res.status(404).json({ error: 'Not found' });
+  res.json(invoice);
+});
+// Any authenticated user can read ANY invoice by guessing IDs
+```
+
+**Secure:**
+
+```typescript
+app.get('/api/invoices/:id', authMiddleware, async (req, res) => {
+  const invoice = await db.invoice.findUnique({
+    where: {
+      id: req.params.id,
+      userId: req.user.id,  // ownership check
+    }
+  });
+  if (!invoice) return res.status(404).json({ error: 'Not found' });
+  res.json(invoice);
+});
+
+// Even better: use a middleware pattern
+const requireOwnership = (model: string, foreignKey = 'userId') =>
+  async (req, res, next) => {
+    const record = await db[model].findUnique({
+      where: { id: req.params.id }
+    });
+    if (!record || record[foreignKey] !== req.user.id) {
+      return res.status(404).json({ error: 'Not found' });
+    }
+    req.resource = record;
+    next();
+  };
+
+app.get('/api/invoices/:id', authMiddleware, requireOwnership('invoice'), handler);
+```
+
+Notice that in the secure version, we return 404 instead of 403 for records that belong to other users. This prevents enumeration — an attacker can't distinguish "doesn't exist" from "exists but not yours."
+
+### Sin 7: Missing Security Headers
+
+Every browser has built-in security mechanisms. They just need to be activated via HTTP headers. AI tools never set them.
+
+**Vulnerable:**
+
+```typescript
+// AI generates a Next.js app with zero security headers
+// next.config.js is either empty or only has redirects
+module.exports = {
+  reactStrictMode: true,
+};
+```
+
+**Secure:**
+
+```typescript
+// next.config.js
+const securityHeaders = [
+  { key: 'X-Content-Type-Options', value: 'nosniff' },
+  { key: 'X-Frame-Options', value: 'DENY' },
+  { key: 'X-XSS-Protection', value: '1; mode=block' },
+  { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
+  { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=()' },
+  {
+    key: 'Content-Security-Policy',
+    value: "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' https://fonts.gstatic.com;"
+  },
+  {
+    key: 'Strict-Transport-Security',
+    value: 'max-age=63072000; includeSubDomains; preload'
+  },
+];
+
+module.exports = {
+  reactStrictMode: true,
+  async headers() {
+    return [{ source: '/(.*)', headers: securityHeaders }];
+  },
+};
+```
+
+For Express apps, just use `helmet()`. One line. But AI tools don't add it unless prompted, and even then they sometimes import it without calling it.
+
+## The 7-Point Security Audit Checklist
+
+Here's the checklist I run against every vibe-coded codebase. It takes 30 minutes to 2 hours depending on app size and catches roughly 90% of critical issues.
+
+### 1. Secrets Scan
+
+```bash
+# Run trufflehog or gitleaks against the repo
+gitleaks detect --source . --verbose
+
+# Manual grep for common patterns
+grep -rn "sk_live\|sk_test\|AKIA\|password.*=.*['\"]" --include="*.ts" --include="*.js" .
+grep -rn "BEGIN.*PRIVATE KEY" .
+```
+
+If gitleaks finds anything, assume those credentials are compromised. Rotate immediately, then fix the code.
+
+### 2. Authentication Audit
+
+- List every route/endpoint in the application
+- Verify each one has appropriate auth middleware
+- Check for default-deny vs default-allow pattern
+- Test: Can an unauthenticated user hit protected endpoints?
+- Test: Can a regular user hit admin endpoints?
+
+### 3. Input Validation Review
+
+- Check every request handler for input validation
+- Look for raw `req.body`, `req.query`, `req.params` usage without validation
+- Verify file upload handlers check file type, size, and destination
+- Look for `$queryRawUnsafe`, string concatenation in queries, or `eval()`
+
+### 4. IDOR Testing
+
+- For every endpoint that takes an ID parameter, test with another user's ID
+- Check that ownership/authorization is verified at the database query level, not just in middleware
+- Look for sequential/guessable IDs (use UUIDs)
+
+### 5. CSRF and CORS Check
+
+```bash
+# Check CORS configuration
+grep -rn "cors\|Access-Control" --include="*.ts" --include="*.js" .
+
+# Look for wildcard origins
+grep -rn "origin.*\*\|origin.*true" --include="*.ts" --include="*.js" .
+```
+
+- Verify CORS is not set to `*` or `true`
+- Check for CSRF protection on state-changing endpoints
+- Verify cookies have `SameSite`, `Secure`, and `HttpOnly` flags
+
+### 6. Security Headers Verification
+
+```bash
+# Quick check with curl
+curl -I https://your-app.com | grep -i "x-frame\|x-content\|strict-transport\|content-security"
+
+# Or use securityheaders.com for a full report
+```
+
+Every production app should score at least A on securityheaders.com. Most vibe-coded apps score F.
+
+### 7. Dependency Audit
+
+```bash
+# Check for known vulnerabilities in dependencies
+npm audit
+# or
+pnpm audit
+
+# For deeper analysis
+npx better-npm-audit audit
+```
+
+AI tools often install outdated package versions because that's what was in the training data. I've seen AI-generated projects with dependencies that have known critical CVEs.
+
+## Tools That Catch These Automatically
+
+Manual audits are thorough but slow. Here's the toolchain I use to automate the first pass.
+
+### SAST (Static Application Security Testing)
+
+- **Semgrep** — My top pick. It has AI-specific rulesets that catch patterns common in LLM-generated code. Free for open source, and the rules are excellent.
+- **SonarQube** — Great for CI/CD integration. Set it as a quality gate and block merges that introduce vulnerabilities.
+- **CodeQL** (GitHub) — If you're on GitHub, enable this immediately. It runs on every PR for free on public repos.
+
+```bash
+# Quick Semgrep scan with AI-focused rules
+semgrep --config "p/owasp-top-ten" --config "p/nodejs" .
+```
+
+### DAST (Dynamic Application Security Testing)
+
+- **OWASP ZAP** — Free, open source, catches CSRF, missing headers, injection vulnerabilities at runtime.
+- **Burp Suite** — The professional standard. Worth the license for any team shipping production apps.
+
+### Secret Scanning
+
+- **Gitleaks** — Fast, pre-commit hook friendly. Catches secrets before they hit the repo.
+- **TruffleHog** — Scans git history. Use this on existing repos to find secrets in old commits.
+
+### The Minimum Viable Security Pipeline
+
+```yaml
+# .github/workflows/security.yml
+name: Security Checks
+on: [pull_request]
+
+jobs:
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Semgrep
+        uses: returntocorp/semgrep-action@v1
+        with:
+          config: >-
+            p/owasp-top-ten
+            p/nodejs
+            p/typescript
+
+      - name: Run Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+
+      - name: NPM Audit
+        run: npm audit --audit-level=high
+```
+
+This takes 10 minutes to set up and catches a large percentage of AI-generated vulnerabilities before they reach production.
+
+## When to Hire a Human Auditor vs Use Automated Tools
+
+Automated tools are your first line of defense. They're fast, consistent, and cheap. But they have blind spots.
+
+**Use automated tools when:**
+- You're running routine checks on every PR
+- You need to scan a large codebase quickly
+- You're looking for known vulnerability patterns (SQLi, XSS, hardcoded secrets)
+- You want continuous monitoring in CI/CD
+
+**Hire a human auditor when:**
+- You're handling sensitive data (health records, financial data, PII)
+- You're about to launch publicly for the first time
+- Your app processes payments
+- You've had a security incident and need to understand the full blast radius
+- Business logic vulnerabilities that tools can't detect (e.g., a user can apply a discount code infinite times)
+
+The cost of a professional security audit ranges from $5,000 to $30,000 depending on scope. The cost of a breach involving user data starts at $150,000 and goes up from there. The math is straightforward.
+
+## The Uncomfortable Truth
+
+AI coding tools are incredible productivity multipliers. I use them every day and I ship faster because of them. But they have a fundamental limitation: they generate code that works, not code that's secure.
+
+This isn't going to change soon. Security requires adversarial thinking — imagining what a malicious user would do — and current LLMs are trained to be helpful, not paranoid. They build what you ask for. They don't build defenses against what you didn't think to ask about.
+
+So the responsibility is on us. Every vibe-coded feature needs a security review. Every AI-generated endpoint needs an authentication check. Every deployment needs that basic security pipeline.
+
+The 7-point checklist above takes less than an hour. The automated pipeline takes 10 minutes to set up. There's no excuse for shipping vibe-coded apps without running them.
+
+Your AI pair programmer writes the code. You're the one who has to make sure it doesn't leak your users' data.
+
+## References
+
+### Sources
+
+- [Stanford/UC San Diego Study: LLM-Assisted Code Security](https://arxiv.org/abs/2211.03622) — Research showing AI-generated code has security vulnerabilities at higher rates than human-written code
+- [Backslash Security: Vibe Coding Audit Report](https://www.backslash.security/blog) — Audit of Claude Code, Codex, Cursor, Replit, and Devin finding 69 vulnerabilities across 15 test apps
+- [Lovable Security Scan Results](https://www.endorlabs.com/) — Analysis of 1,645 Lovable-generated apps revealing widespread data exposure
+- [OWASP Top 10 2025](https://owasp.org/www-project-top-ten/) — The industry-standard classification of web application security risks
+- [Moltbook Breach Disclosure](https://www.theregister.com/) — Report on 1.5M authentication tokens exposed from a vibe-coded application
+
+### Further Reading
+
+- [Semgrep Rules for AI-Generated Code](https://semgrep.dev/docs/) — SAST rules specifically targeting patterns common in LLM output
+- [OWASP ZAP Getting Started Guide](https://www.zaproxy.org/getting-started/) — Free DAST tool for runtime vulnerability scanning
+- [Gitleaks Documentation](https://github.com/gitleaks/gitleaks) — Pre-commit secret scanning setup
+- [Node.js Security Best Practices](https://nodejs.org/en/docs/guides/security/) — Official Node.js security guidance
+- [Helmet.js Documentation](https://helmetjs.github.io/) — Security headers middleware for Express
+
+---
+
+~Seb

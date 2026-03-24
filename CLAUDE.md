@@ -10,7 +10,7 @@ Gdy użytkownik wyda komendę, **wykonuj wszystkie kroki automatycznie bez pytan
 
 ```
 Project dir: /Users/sebastiansleczka/Code/code-with-seb-blog
-Blog posts:  /Users/sebastiansleczka/Code/code-with-seb-blog/data/blog
+Blog posts:  /Users/sebastiansleczka/Code/code-with-seb-blog/content/blog
 Język:       English
 ```
 
@@ -181,7 +181,7 @@ Wyświetl wyniki:
 - Użyj danych z Deep Research jako źródło faktów
 - Napisz PEŁNY artykuł według outline
 - Dodaj References section z prawdziwymi URL z Deep Research
-- Zapisz draft do `/Users/sebastiansleczka/Code/code-with-seb-blog/data/blog/[slug].mdx`
+- Zapisz draft do `/Users/sebastiansleczka/Code/code-with-seb-blog/content/blog/[slug].mdx`
 - Zaktualizuj status: "writing"
 
 **KROK 6/9: Editing**
@@ -235,7 +235,7 @@ Wyświetl wyniki:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ✅ GOTOWE: [tytuł]
 
-📄 Plik: data/blog/[slug].mdx
+📄 Plik: content/blog/[slug].mdx
 📊 Słów: 2,150 | Czas czytania: ~10 min
 🎯 SEO Score: 87/100
 
@@ -259,7 +259,7 @@ cd /Users/sebastiansleczka/Code/code-with-seb-blog
 git checkout main
 git pull origin main
 git checkout -b article/[slug]
-git add data/blog/[slug].mdx
+git add content/blog/[slug].mdx
 git commit -m "feat(blog): add [tytuł]"
 git push -u origin article/[slug]
 ```
@@ -319,9 +319,12 @@ Wyświetl:
 ---
 title: 'Tytuł'
 date: '2026-01-07'
+category: 'Development'
 tags: ['tag1', 'tag2']
 draft: true
-summary: 'Opis'
+featured: false
+author: 'Sebastian'
+excerpt: 'Opis'
 ---
 
 Treść artykułu...
