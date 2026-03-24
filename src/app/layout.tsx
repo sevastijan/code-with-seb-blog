@@ -81,12 +81,21 @@ export const metadata: Metadata = {
     title: "Code With Seb — Fractional CTO & AI Automation Expert",
     description:
       "I help startups and scale-ups ship faster with AI-powered development, custom agents, and strategic technical leadership.",
+    images: [
+      {
+        url: `/og?title=${encodeURIComponent("Code With Seb — Fractional CTO & AI Automation Expert")}`,
+        width: 1200,
+        height: 630,
+        alt: "Code With Seb",
+      },
+    ],
   },
   twitter: {
     card: "summary_large_image",
     title: "Code With Seb — Fractional CTO & AI Automation Expert",
     description:
       "I help startups and scale-ups ship faster with AI-powered development, custom agents, and strategic technical leadership.",
+    images: [`/og?title=${encodeURIComponent("Code With Seb — Fractional CTO & AI Automation Expert")}`],
   },
   robots: {
     index: true,

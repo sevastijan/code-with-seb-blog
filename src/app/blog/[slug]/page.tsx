@@ -51,11 +51,20 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
       authors: [post.author || 'Sebastian Sleczka'],
       tags: post.tags,
       siteName: 'Code With Seb',
+      images: [
+        {
+          url: `/og?title=${encodeURIComponent(post.title)}&category=${encodeURIComponent(post.category || '')}&date=${encodeURIComponent(post.date || '')}&readTime=${encodeURIComponent(post.readTime || '')}`,
+          width: 1200,
+          height: 630,
+          alt: post.title,
+        },
+      ],
     },
     twitter: {
       card: 'summary_large_image',
       title: post.title,
       description: post.excerpt,
+      images: [`/og?title=${encodeURIComponent(post.title)}&category=${encodeURIComponent(post.category || '')}&date=${encodeURIComponent(post.date || '')}&readTime=${encodeURIComponent(post.readTime || '')}`],
     },
   };
 }
