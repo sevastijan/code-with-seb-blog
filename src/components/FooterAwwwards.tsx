@@ -4,17 +4,17 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 
 const aiServices = [
-  { name: 'AI Strategy', href: '/services/ai-strategy' },
-  { name: 'AI Automation', href: '/services/ai-automation' },
-  { name: 'LLM Integration', href: '/services/llm-integration' },
-  { name: 'AI Agents', href: '/services/ai-agents' },
+  { name: 'AI Strategy', href: '/services/ai' },
+  { name: 'AI Automation', href: '/services/ai' },
+  { name: 'LLM Integration', href: '/services/ai' },
+  { name: 'AI Agents', href: '/services/ai' },
 ];
 
 const devServices = [
-  { name: 'Web Development', href: '/services/web-development' },
-  { name: 'Technical Architecture', href: '/services/architecture' },
-  { name: 'Fractional CTO', href: '/services/fractional-cto' },
-  { name: 'Code Review', href: '/services/code-review' },
+  { name: 'Web Development', href: '/services/development' },
+  { name: 'Technical Architecture', href: '/services/development' },
+  { name: 'Fractional CTO', href: '/services/consulting' },
+  { name: 'Code Review', href: '/services/development' },
 ];
 
 const socialLinks = [
