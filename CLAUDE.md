@@ -116,7 +116,7 @@ Wyświetl wyniki:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
-**KROK 1/11: SEO Analysis**
+**KROK 1/12: SEO Analysis**
 
 ```
 [1/10] 🔍 SEO Analysis...
@@ -127,7 +127,7 @@ Wyświetl wyniki:
 - Zapisz do topic.seo
 - Zaktualizuj status: "seo_analysis"
 
-**KROK 2/11: Competitor Analysis**
+**KROK 2/12: Competitor Analysis**
 
 ```
 [2/10] 🕵️ Competitor Analysis...
@@ -139,7 +139,7 @@ Wyświetl wyniki:
 - Zapisz do topic.competitors
 - Zaktualizuj status: "competitor_analysis"
 
-**KROK 3/11: Deep Research**
+**KROK 3/12: Deep Research**
 
 ```
 [3/10] 📚 Deep Research...
@@ -159,7 +159,7 @@ Wyświetl wyniki:
 - Zapisz do topic.deepResearch
 - Zaktualizuj status: "deep_research"
 
-**KROK 4/11: Strategy**
+**KROK 4/12: Strategy**
 
 ```
 [4/10] 🎯 Creating Strategy...
@@ -171,7 +171,7 @@ Wyświetl wyniki:
 - Zapisz do topic.strategy
 - Zaktualizuj status: "strategy"
 
-**KROK 5/11: Writing**
+**KROK 5/12: Writing**
 
 ```
 [5/10] ✍️ Writing article...
@@ -184,7 +184,7 @@ Wyświetl wyniki:
 - Zapisz draft do `/Users/sebastiansleczka/Code/code-with-seb-blog/content/blog/[slug].mdx`
 - Zaktualizuj status: "writing"
 
-**KROK 6/11: Editing**
+**KROK 6/12: Editing**
 
 ```
 [6/10] 📝 Editing...
@@ -195,7 +195,7 @@ Wyświetl wyniki:
 - Nadpisz draft
 - Zaktualizuj status: "editing"
 
-**KROK 7/11: Validation**
+**KROK 7/12: Validation**
 
 ```
 [7/10] ✅ Validating...
@@ -206,7 +206,7 @@ Wyświetl wyniki:
 - Jeśli critical issues → napraw automatycznie
 - Zaktualizuj status: "validation"
 
-**KROK 8/11: SEO Check**
+**KROK 8/12: SEO Check**
 
 ```
 [8/10] 🔎 Final SEO check...
@@ -217,7 +217,7 @@ Wyświetl wyniki:
 - Zastosuj poprawki frontmatter jeśli potrzeba
 - Zaktualizuj status: "seo_check"
 
-**KROK 9/11: Internal Linking**
+**KROK 9/12: Internal Linking**
 
 ```
 [9/10] 🔗 Internal linking...
@@ -234,10 +234,10 @@ Wyświetl wyniki:
 - Wyświetl podsumowanie: ile linków dodano, do/z których artykułów
 - Zaktualizuj status: "internal_linking"
 
-**KROK 10/11: Update Sitemap & llms.txt**
+**KROK 10/12: Update Sitemap & llms.txt**
 
 ```
-[10/11] 📡 Updating sitemap & llms.txt...
+[10/12] 📡 Updating sitemap & llms.txt...
 ```
 
 - **Sitemap** (`src/app/sitemap.ts`): jest dynamiczny — auto-generuje się przy buildzie z `content/blog/`, pomija drafty. Nie wymaga ręcznej edycji. Weryfikuj tylko że nowy artykuł pojawi się po zmianie `draft: false`.
@@ -255,10 +255,10 @@ Wyświetl wyniki:
   5. Nadpisz `public/llms.txt`
 - Zaktualizuj status: "sitemap_llms"
 
-**KROK 11/11: Build Verification**
+**KROK 11/12: Build Verification**
 
 ```
-[11/11] 🏗️ Verifying build...
+[11/12] 🏗️ Verifying build...
 ```
 
 - Przeczytaj `prompts/build-verify.md`
@@ -267,26 +267,44 @@ Wyświetl wyniki:
 - Sprawdź czy brak warnings
 - Zaktualizuj status: "ready"
 
+**KROK 12/12: Publish to Main**
+
+```
+[12/12] 🚀 Publishing to main...
+```
+
+- Ustaw `draft: false` w frontmatter artykułu (jeśli jeszcze nie zmieniony)
+- Wykonaj:
+  ```bash
+  cd /Users/sebastiansleczka/Code/code-with-seb-blog
+  git add content/blog/[slug].mdx
+  git add content/blog/  # existing articles modified by internal linking
+  git add public/llms.txt
+  git add prompts/ topics/ CLAUDE.md  # jeśli zmienione
+  git commit -m "feat(blog): add [tytuł]"
+  git push origin main
+  ```
+- Zaktualizuj status: "published"
+
 **ZAKOŃCZENIE:**
 
 ```
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-✅ GOTOWE: [tytuł]
+✅ OPUBLIKOWANO: [tytuł]
 
 📄 Plik: content/blog/[slug].mdx
 📊 Słów: 2,150 | Czas czytania: ~10 min
 🎯 SEO Score: 87/100
-
-💡 Następny krok: "publish" lub "pokaż artykuł"
+🌐 Live: https://codewithseb.com/blog/[slug]
 ```
 
 ---
 
-### 4. PUBLISH
+### 4. PUBLISH (ręczny)
 
 **Trigger:** "publish", "opublikuj", "publikuj [id]"
 
-**Wykonaj automatycznie:**
+Jeśli artykuł ma `draft: true` i trzeba go opublikować ręcznie:
 
 ```
 🚀 Publikuję: [tytuł]
@@ -296,21 +314,18 @@ Wyświetl wyniki:
 cd /Users/sebastiansleczka/Code/code-with-seb-blog
 git checkout main
 git pull origin main
-git checkout -b article/[slug]
+# zmień draft: true → draft: false
 git add content/blog/[slug].mdx
-git add content/blog/  # include existing articles modified by internal linking
-git add public/llms.txt  # include updated llms.txt
-git commit -m "feat(blog): add [tytuł]"
-git push -u origin article/[slug]
+git add content/blog/  # existing articles modified by internal linking
+git add public/llms.txt
+git commit -m "feat(blog): publish [tytuł]"
+git push origin main
 ```
 
 ```
-✅ Opublikowano!
+✅ Opublikowano na main!
 
-🔗 Branch: article/[slug]
-📝 Utwórz PR: https://github.com/[repo]/compare/article/[slug]
-
-Artykuł przeniesiony do archive/
+🌐 Live: https://codewithseb.com/blog/[slug]
 ```
 
 ---
@@ -361,7 +376,7 @@ title: 'Tytuł'
 date: '2026-01-07'
 category: 'Development'
 tags: ['tag1', 'tag2']
-draft: true
+draft: false
 featured: false
 author: 'Sebastian'
 excerpt: 'Opis'
@@ -378,6 +393,7 @@ Treść artykułu...
 2. **RAPORTUJ POSTĘP** - pokazuj który krok wykonujesz
 3. **ZAPISUJ NA BIEŻĄCO** - po każdym kroku aktualizuj JSON
 4. **JĘZYK:** English (artykuły i tytuły po angielsku)
-5. **DRAFT: true** - zawsze, użytkownik sam zmienia
+5. **DRAFT: false** - publikuj od razu, commit i push na main
 6. **ID:** 8 znaków lowercase alphanumeric
 7. **SLUG:** lowercase, hyphens, bez polskich znaków
+8. **GIT:** zawsze commituj i pushuj bezpośrednio na `main` (bez feature branchy)
