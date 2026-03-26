@@ -1,0 +1,441 @@
+---
+title: 'React Compiler Deep Dive: How Automatic Memoization Actually Works Under the Hood'
+date: '2026-03-26'
+category: 'Development'
+tags: ['react', 'react-compiler', 'performance', 'memoization', 'javascript']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: 'React Compiler 1.0 is stable and shipped at Meta. But "just remove useMemo" is dangerously oversimplified. Here''s what it does at build time, what it can''t fix, and the patterns that still need you.'
+---
+
+"Just enable React Compiler and delete all your useMemo calls." I've heard this advice at least a dozen times since the v1.0 release. And every time, I cringe — because it's only half true, and the other half can tank your performance.
+
+React Compiler 1.0 shipped in October 2025. It's stable, battle-tested at Meta (Instagram, Quest Store), and now enabled by default in Expo SDK 54. The headline is real: it automatically memoizes your components and hooks without you writing a single `useMemo` or `useCallback`.
+
+But here's what the headlines skip: in a real-world production app with 15,000 lines of code, the compiler successfully compiled 361 out of 363 components — and still only fully fixed 2 out of 9 identified performance issues. The other 7 needed manual intervention.
+
+The compiler is genuinely transformative. It's also not magic. Let me show you what's actually happening under the hood.
+
+## What React Compiler Actually Is (and Isn't)
+
+React Compiler is a **build-time optimizing compiler** that transforms your React code during the bundling step. It's not a runtime library. It doesn't ship extra JavaScript to the browser. It rewrites your components at compile time to include memoization that you'd otherwise write by hand.
+
+What it replaces:
+- `useMemo` for expensive calculations
+- `useCallback` for stable function references
+- `React.memo` for skipping re-renders
+
+What it **doesn't** replace:
+- Architectural decisions (component splitting, data normalization)
+- External library behavior (React Query, Redux, etc.)
+- Network optimization (lazy loading, code splitting)
+- DOM-level performance (virtualization, CSS containment)
+
+Think of it as an optimizer, not a fixer. It makes well-structured code faster. It can't fix poorly structured code. Understanding [how React Fiber handles reconciliation](/blog/deep-dive-into-react-fiber-the-engine-behind-modern-react) helps you see exactly where the compiler's memoization kicks in during the render cycle.
+
+## How It Works: The Compilation Pipeline
+
+Under the hood, React Compiler implements something remarkably sophisticated for a JavaScript tool: a proper compiler pipeline with intermediate representations, data-flow analysis, and multiple optimization passes.
+
+### Step 1: Parse to AST
+
+The compiler starts as a Babel plugin (with swc support coming in Next.js 15.3.1+). It takes your component source code and converts it to an Abstract Syntax Tree.
+
+### Step 2: Build Control Flow Graph (CFG)
+
+This is where it gets interesting. The compiler builds a **Control Flow Graph** — the same data structure used by optimizing compilers like LLVM and GCC. The CFG maps every possible execution path through your component.
+
+```
+// Your component:
+function Product({ item, onAdd }) {
+  if (!item) return null;
+  const price = formatPrice(item.price);
+  return <Card price={price} onClick={() => onAdd(item.id)} />;
+}
+
+// CFG sees two paths:
+// Path 1: item is falsy → return null
+// Path 2: item is truthy → compute price → render Card
+```
+
+### Step 3: Analyze with High-Level Intermediate Representation (HIR)
+
+The CFG feeds into a **High-Level IR** where the compiler performs data-flow analysis. It tracks:
+
+- **What values depend on what inputs** (props, state, context)
+- **Which operations are pure** (no side effects)
+- **What can be safely cached** between renders
+
+This is where React Compiler does something manual memoization can't: it memoizes **across conditional branches**. Consider:
+
+```javascript
+function ThemeProvider(props) {
+  if (!props.children) {
+    return null;  // early return
+  }
+
+  // Manual useMemo CANNOT be placed here (Rules of Hooks)
+  // But React Compiler CAN memoize this computation
+  const theme = mergeTheme(props.theme, use(ThemeContext));
+
+  return (
+    <ThemeContext value={theme}>
+      {props.children}
+    </ThemeContext>
+  );
+}
+```
+
+With `useMemo`, you'd have to restructure this component to avoid calling hooks after a conditional return. The compiler handles it automatically because it operates at the CFG level, not at the syntax level.
+
+### Step 4: Memoization Insertion
+
+Based on the analysis, the compiler inserts memoization at the granularity of individual values and JSX elements. It doesn't just wrap your whole component in `React.memo` — it figures out exactly which pieces can be cached and which need to re-compute.
+
+### Step 5: Code Generation
+
+The transformed code ships to the browser. It's still plain React — no special runtime needed. The memoization is expressed using React's existing primitives, just inserted automatically.
+
+## Before and After: What Compiled Code Looks Like
+
+Here's the practical difference. Before React Compiler, you'd write:
+
+```javascript
+import { useMemo, useCallback, memo } from 'react';
+
+const ExpensiveList = memo(function ExpensiveList({ items, onSelect }) {
+  const sorted = useMemo(
+    () => items.slice().sort((a, b) => b.score - a.score),
+    [items]
+  );
+
+  const handleSelect = useCallback(
+    (id) => onSelect(id),
+    [onSelect]
+  );
+
+  return (
+    <ul>
+      {sorted.map(item => (
+        <ListItem
+          key={item.id}
+          item={item}
+          onSelect={handleSelect}
+        />
+      ))}
+    </ul>
+  );
+});
+```
+
+After enabling React Compiler, the same logic becomes:
+
+```javascript
+function ExpensiveList({ items, onSelect }) {
+  const sorted = items.slice().sort((a, b) => b.score - a.score);
+
+  const handleSelect = (id) => onSelect(id);
+
+  return (
+    <ul>
+      {sorted.map(item => (
+        <ListItem
+          key={item.id}
+          item={item}
+          onSelect={handleSelect}
+        />
+      ))}
+    </ul>
+  );
+}
+```
+
+Same behavior. Same performance. Zero memoization boilerplate. The compiler figures out what needs caching and handles it at build time.
+
+**But notice what's different:** you don't see `memo()`, `useMemo()`, or `useCallback()` anymore. The code is cleaner and easier to reason about. The performance optimization is invisible — which is exactly the point.
+
+## The Rules of React: Why They Matter Now More Than Ever
+
+React Compiler relies on the **Rules of React** to perform its analysis. If your code breaks these rules, the compiler either skips the optimization (silent failure) or produces incorrect behavior.
+
+The three rules that matter most:
+
+### Rule 1: Components Must Be Pure
+
+Same inputs → same output. No side effects during render. The compiler assumes this to determine what can be cached.
+
+```javascript
+// ❌ Breaks compiler assumptions
+function BadComponent({ items }) {
+  analytics.track('render');  // Side effect in render!
+  return <List items={items} />;
+}
+
+// ✅ Compiler can optimize this
+function GoodComponent({ items }) {
+  useEffect(() => {
+    analytics.track('render');
+  });
+  return <List items={items} />;
+}
+```
+
+### Rule 2: Props and State Are Immutable
+
+Never mutate props or state directly. The compiler relies on reference identity to determine if values have changed.
+
+```javascript
+// ❌ Mutating state — compiler can't track this
+function BadForm() {
+  const [user, setUser] = useState({ name: '', email: '' });
+
+  const handleName = (e) => {
+    user.name = e.target.value;  // Direct mutation!
+    setUser(user);  // Same reference — compiler thinks nothing changed
+  };
+}
+
+// ✅ Immutable update — compiler can optimize
+function GoodForm() {
+  const [user, setUser] = useState({ name: '', email: '' });
+
+  const handleName = (e) => {
+    setUser({ ...user, name: e.target.value });
+  };
+}
+```
+
+### Rule 3: Hooks Must Be Called Unconditionally
+
+The compiler's static analysis depends on hooks being called in the same order every render. If you need a refresher on hook rules and advanced patterns, check out my [deep dive into React hooks best practices](/blog/advanced-react-hooks-best-practices-in-react-with-nextjs-and-remix).
+
+The good news: **React Compiler ships with ESLint rules** that catch these violations. Install `eslint-plugin-react-hooks` with the `recommended-latest` preset and you'll get warnings before the compiler silently skips your components.
+
+## 5 Patterns the Compiler Can't Fix
+
+This is the section every "React Compiler is amazing" article skips. Here are the performance patterns that still need your attention:
+
+### 1. Non-Primitive Props from External Libraries
+
+The most common issue in production. When libraries like React Query return new object references on every render, the compiler can't prevent downstream re-renders:
+
+```javascript
+// React Query returns a new 'data' object reference each render
+const { data } = useQuery({ queryKey: ['users'], queryFn: fetchUsers });
+
+// Compiler memoizes UserList, but 'data' is a new reference
+// every time — so UserList re-renders anyway
+return <UserList users={data} />;
+```
+
+**Fix:** Destructure to primitives or use `select` to extract stable values:
+
+```javascript
+const { data } = useQuery({
+  queryKey: ['users'],
+  queryFn: fetchUsers,
+  select: (data) => data.map(u => u.id)  // Stable primitive array
+});
+```
+
+### 2. Render-Phase Side Effects
+
+The compiler skips components with side effects during render. If your component reads from a global store, modifies a ref, or calls external APIs during render, it won't be compiled.
+
+### 3. Dynamic Context Consumers
+
+When a context value changes, **all consumers re-render** — regardless of whether they use the changed portion. The compiler can't split context reads.
+
+```javascript
+// Every component consuming AppContext re-renders
+// when ANY part of the context changes
+const { theme, user, locale } = useContext(AppContext);
+```
+
+**Fix:** Split contexts by change frequency, or use libraries like `use-context-selector`.
+
+### 4. Large Component Trees Mounted on Interaction
+
+The compiler optimizes *re-renders*, not *initial mounts*. If clicking a button mounts a 500-component tree, the compiler won't help — that's an architectural issue.
+
+**Fix:** Lazy loading, virtualization, progressive disclosure. I covered these patterns in depth in my [React Suspense tutorial](/blog/react-suspense-tutorial-lazy-loading-async-rendering-data-fetching-react-18-19).
+
+### 5. Expensive Operations Outside Components
+
+The compiler only memoizes React components and hooks. Utility functions, class methods, and module-level computations are untouched.
+
+```javascript
+// This is NOT memoized by the compiler
+const processedData = heavyTransform(rawData);
+
+function Dashboard() {
+  // The compiler can memoize inside here
+  return <Chart data={processedData} />;
+}
+```
+
+**Fix:** Move heavy computations inside components (where the compiler can reach them) or memoize manually at the module level.
+
+## Real Production Results: The Honest Numbers
+
+Let's look at actual data, not marketing slides:
+
+### Meta's Internal Results
+
+| Metric | Improvement |
+|--------|-------------|
+| Initial loads & navigation | Up to 12% faster |
+| Certain interactions | 2.5× faster |
+| Memory usage | Neutral |
+
+### Independent Production Results
+
+**Sanity Studio** (15,000-line app):
+- 1,231 out of 1,411 components compiled successfully
+- 20-30% overall reduction in render time
+- Biggest gains in deeply nested update patterns
+
+**Wakelet:**
+- LCP improved by 10%
+- INP improved by ~15% (30% for pure React elements)
+
+**Real-world audit** (developerway.com):
+- 361 out of 363 components compiled
+- Total blocking time on one page: 280ms → 0ms
+- Another page: only 130ms → 90ms improvement
+- **2 out of 9 performance issues fully fixed** by compiler alone
+
+The pattern is clear: the compiler delivers real gains, but it's not a silver bullet. The biggest wins come from components with deep prop chains and frequent re-renders. The smallest wins (or no wins) come from issues rooted in architecture or external libraries.
+
+## Migration Guide: Adding React Compiler to Your Project
+
+### Step 1: Install
+
+```bash
+npm install --save-dev --save-exact babel-plugin-react-compiler@latest
+```
+
+Pin the exact version — memoization changes between versions can subtly affect behavior.
+
+### Step 2: Configure
+
+**Next.js** (next.config.js):
+
+```javascript
+module.exports = {
+  experimental: {
+    reactCompiler: true,
+  },
+};
+```
+
+**Vite** (vite.config.ts):
+
+```typescript
+import { reactCompiler } from 'eslint-plugin-react-compiler';
+
+export default defineConfig({
+  plugins: [
+    react({
+      babel: {
+        plugins: ['babel-plugin-react-compiler'],
+      },
+    }),
+  ],
+});
+```
+
+### Step 3: Add ESLint Rules
+
+```javascript
+// eslint.config.js
+import reactHooks from 'eslint-plugin-react-hooks';
+export default [reactHooks.configs['flat/recommended-latest']];
+```
+
+This catches Rules of React violations before they cause silent compilation failures.
+
+### Step 4: Incremental Rollout
+
+Don't compile everything at once. Start with a subset:
+
+```javascript
+// babel-plugin-react-compiler config
+{
+  compilationMode: 'annotation',
+}
+```
+
+Then add `'use memo'` to components you want compiled:
+
+```javascript
+'use memo';
+function MyComponent() {
+  // This component will be compiled
+}
+```
+
+Once you're confident, switch to full compilation.
+
+### Step 5: Measure
+
+Use React DevTools Profiler to compare render times before and after. Focus on interaction latency (INP), not just initial load.
+
+## When to Keep useMemo and useCallback
+
+Despite the compiler, these hooks aren't dead. Keep them for:
+
+1. **Effect dependencies** — When a memoized value is used as an effect dependency, explicit `useMemo` ensures the effect doesn't fire repeatedly
+
+```javascript
+const config = useMemo(() => ({ threshold: 0.5, enabled }), [enabled]);
+
+useEffect(() => {
+  initializeSDK(config);  // Only re-runs when 'enabled' changes
+}, [config]);
+```
+
+2. **Library integration** — Some libraries rely on referential stability that the compiler might not guarantee across versions
+
+3. **Performance-critical hot paths** — When you've measured and identified a specific bottleneck that the compiler doesn't fully solve
+
+4. **Gradual migration** — During incremental adoption, keep existing memoization until you've verified the compiler handles each case
+
+**The rule of thumb:** For new code, don't add manual memoization. Let the compiler handle it. For existing code, don't rush to remove it — test first.
+
+## The Verdict
+
+React Compiler is the most impactful addition to the React ecosystem since Hooks — and combined with [React 19.2's Activity component and useEffectEvent](/blog/react-19-2-release-guide-activity-useeffectevent-ssr-batching-and-more-explained), it's reshaping how we think about React performance. It eliminates an entire category of performance bugs — the ones caused by forgetting to memoize, getting dependency arrays wrong, or breaking memoization with inline arrow functions.
+
+But it's an optimizer, not a magician. It makes good architecture faster. It doesn't fix bad architecture.
+
+**What changes:**
+- No more `useMemo`/`useCallback` boilerplate in new code
+- Fewer "why is this re-rendering?" debugging sessions
+- More focus on architecture, less on micro-optimizations
+
+**What doesn't change:**
+- You still need to think about component boundaries
+- You still need to handle external library references
+- You still need virtualization for large lists
+- You still need code splitting for large bundles — especially with [Next.js's edge runtime and Server Components](/blog/nextjs-2026-server-components-edge-runtime-guide)
+
+Enable it. Trust it for the common cases. But keep your performance profiling skills sharp — the compiler handles 80% of the work, and the remaining 20% is where your expertise still matters.
+
+## References
+
+### Sources
+- [React Compiler v1.0 Release Blog](https://react.dev/blog/2025/10/07/react-compiler-1) - official release notes with Meta production data and migration guide
+- [React Compiler Introduction](https://react.dev/learn/react-compiler/introduction) - official documentation on what it memoizes and how it works
+- [How React Compiler Performs on Real Code](https://www.developerway.com/posts/how-react-compiler-performs-on-real-code) - independent production benchmark showing 2/9 issues fully fixed
+- [React Compiler Silent Failures](https://acusti.ca/blog/2025/12/16/react-compiler-silent-failures-and-how-to-fix-them/) - debugging guide for when the compiler skips components
+
+### Further Reading
+- [Rules of React](https://react.dev/reference/rules) - the rules your code must follow for the compiler to optimize correctly
+- [React Compiler Incremental Adoption](https://react.dev/learn/react-compiler/incremental-adoption) - step-by-step guide for existing apps
+- [React Compiler Debugging](https://react.dev/learn/react-compiler/debugging) - official troubleshooting guide
+
+---
+
+~Seb 👊

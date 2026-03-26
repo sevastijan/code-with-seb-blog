@@ -116,10 +116,10 @@ Wyświetl wyniki:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
-**KROK 1/9: SEO Analysis**
+**KROK 1/11: SEO Analysis**
 
 ```
-[1/9] 🔍 SEO Analysis...
+[1/10] 🔍 SEO Analysis...
 ```
 
 - Przeczytaj `prompts/seo.md`
@@ -127,10 +127,10 @@ Wyświetl wyniki:
 - Zapisz do topic.seo
 - Zaktualizuj status: "seo_analysis"
 
-**KROK 2/9: Competitor Analysis**
+**KROK 2/11: Competitor Analysis**
 
 ```
-[2/9] 🕵️ Competitor Analysis...
+[2/10] 🕵️ Competitor Analysis...
 ```
 
 - Użyj web_search: `[primaryKeyword] tutorial`, `[primaryKeyword] guide`
@@ -139,10 +139,10 @@ Wyświetl wyniki:
 - Zapisz do topic.competitors
 - Zaktualizuj status: "competitor_analysis"
 
-**KROK 3/9: Deep Research**
+**KROK 3/11: Deep Research**
 
 ```
-[3/9] 📚 Deep Research...
+[3/10] 📚 Deep Research...
 ```
 
 - Przeczytaj `prompts/deep-research.md`
@@ -159,10 +159,10 @@ Wyświetl wyniki:
 - Zapisz do topic.deepResearch
 - Zaktualizuj status: "deep_research"
 
-**KROK 4/9: Strategy**
+**KROK 4/11: Strategy**
 
 ```
-[4/9] 🎯 Creating Strategy...
+[4/10] 🎯 Creating Strategy...
 ```
 
 - Przeczytaj `prompts/strategy.md`
@@ -171,10 +171,10 @@ Wyświetl wyniki:
 - Zapisz do topic.strategy
 - Zaktualizuj status: "strategy"
 
-**KROK 5/9: Writing**
+**KROK 5/11: Writing**
 
 ```
-[5/9] ✍️ Writing article...
+[5/10] ✍️ Writing article...
 ```
 
 - Przeczytaj `prompts/writer.md`
@@ -184,10 +184,10 @@ Wyświetl wyniki:
 - Zapisz draft do `/Users/sebastiansleczka/Code/code-with-seb-blog/content/blog/[slug].mdx`
 - Zaktualizuj status: "writing"
 
-**KROK 6/9: Editing**
+**KROK 6/11: Editing**
 
 ```
-[6/9] 📝 Editing...
+[6/10] 📝 Editing...
 ```
 
 - Przeczytaj `prompts/editor.md`
@@ -195,10 +195,10 @@ Wyświetl wyniki:
 - Nadpisz draft
 - Zaktualizuj status: "editing"
 
-**KROK 7/9: Validation**
+**KROK 7/11: Validation**
 
 ```
-[7/9] ✅ Validating...
+[7/10] ✅ Validating...
 ```
 
 - Przeczytaj `prompts/validator.md`
@@ -206,10 +206,10 @@ Wyświetl wyniki:
 - Jeśli critical issues → napraw automatycznie
 - Zaktualizuj status: "validation"
 
-**KROK 8/9: SEO Check**
+**KROK 8/11: SEO Check**
 
 ```
-[8/9] 🔎 Final SEO check...
+[8/10] 🔎 Final SEO check...
 ```
 
 - Przeczytaj `prompts/seo-checker.md`
@@ -217,10 +217,48 @@ Wyświetl wyniki:
 - Zastosuj poprawki frontmatter jeśli potrzeba
 - Zaktualizuj status: "seo_check"
 
-**KROK 9/9: Build Verification**
+**KROK 9/11: Internal Linking**
 
 ```
-[9/9] 🏗️ Verifying build...
+[9/10] 🔗 Internal linking...
+```
+
+- Przeczytaj `prompts/internal-linking.md`
+- Załaduj listę wszystkich opublikowanych artykułów z `content/blog/` (slug, title, tags, category, excerpt)
+- Pomiń artykuły z `draft: true`
+- **Linki DO nowego artykułu:** Znajdź 3-7 miejsc w nowym artykule gdzie naturalnie pasują linki do istniejących postów
+- **Linki Z istniejących artykułów:** Znajdź 2-5 istniejących artykułów gdzie temat nowego posta jest wspomniany i wstaw backlinki
+- Format linków: `[anchor text](/blog/slug)`
+- Linki muszą być inline w treści, NIE jako osobna sekcja
+- Nadpisz nowy artykuł i zmodyfikowane istniejące artykuły
+- Wyświetl podsumowanie: ile linków dodano, do/z których artykułów
+- Zaktualizuj status: "internal_linking"
+
+**KROK 10/11: Update Sitemap & llms.txt**
+
+```
+[10/11] 📡 Updating sitemap & llms.txt...
+```
+
+- **Sitemap** (`src/app/sitemap.ts`): jest dynamiczny — auto-generuje się przy buildzie z `content/blog/`, pomija drafty. Nie wymaga ręcznej edycji. Weryfikuj tylko że nowy artykuł pojawi się po zmianie `draft: false`.
+- **llms.txt** (`public/llms.txt`): jest statyczny — wymaga ręcznej aktualizacji:
+  1. Przeczytaj `public/llms.txt`
+  2. Dodaj nowy wpis w sekcji `## Published content` w odpowiednim miejscu (zachowaj kolejność tematyczną jak istniejące wpisy)
+  3. Format wpisu:
+     ```
+     ### [Tytuł artykułu]
+     Topic: [główny temat, drugi temat]
+     Summary: [1-2 zdania podsumowania z excerpt/strategy]
+     URL: https://codewithseb.com/blog/[slug]
+     ```
+  4. Jeśli artykuł dodaje nowe tematy, zaktualizuj sekcję `## Key topics and expertise`
+  5. Nadpisz `public/llms.txt`
+- Zaktualizuj status: "sitemap_llms"
+
+**KROK 11/11: Build Verification**
+
+```
+[11/11] 🏗️ Verifying build...
 ```
 
 - Przeczytaj `prompts/build-verify.md`
@@ -260,6 +298,8 @@ git checkout main
 git pull origin main
 git checkout -b article/[slug]
 git add content/blog/[slug].mdx
+git add content/blog/  # include existing articles modified by internal linking
+git add public/llms.txt  # include updated llms.txt
 git commit -m "feat(blog): add [tytuł]"
 git push -u origin article/[slug]
 ```
