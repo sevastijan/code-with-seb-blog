@@ -1,0 +1,506 @@
+---
+title: 'Redis Streams: The Practical Guide (And When to Skip Kafka)'
+date: '2026-03-28'
+category: 'Architecture'
+tags: ['redis', 'streaming', 'microservices', 'architecture', 'kafka']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: 'Kafka is the default choice for event streaming. But for 80% of microservices workloads, Redis Streams delivers the same patterns — consumer groups, exactly-once processing, dead letter queues — with zero additional infrastructure. Here is the practical guide.'
+---
+
+Last year, I helped a team set up their "event-driven microservices architecture." They had 12 services, maybe 500 events per second at peak, and a three-month timeline. Their architecture document specified Kafka.
+
+Three weeks in, they had spent more time configuring Kafka (broker nodes, partition strategies, replication factors, consumer group rebalancing, schema registry) than building actual business logic. The Kafka cluster needed its own monitoring stack. Their DevOps engineer was spending 30% of his time on Kafka operations alone.
+
+I asked them: "Do you need to retain events for 30 days? Do you need to replay millions of events? Are you processing more than 100K events per second?"
+
+The answer to all three was no. They replaced Kafka with Redis Streams in a week. Same consumer group patterns, same at-least-once guarantees, sub-millisecond latency, and zero additional infrastructure — they already had Redis for caching. If you've been following the [monorepo vs microservices debate](/blog/mono-services-architecture-combining-the-advantages-of-monorepo-and-microservices), inter-service communication is where the real complexity lives.
+
+This isn't anti-Kafka. Kafka is extraordinary at what it does. But it's like driving a semi truck to pick up groceries. Redis Streams is the right-sized vehicle for most teams.
+
+## What Redis Streams Actually Is
+
+Redis Streams is a persistent, append-only log data structure built directly into Redis. Think of it as a Kafka topic, but living inside your Redis instance. Every entry has a unique ID (timestamp + sequence number) and a set of field-value pairs.
+
+```
+Stream: "orders"
+├── 1711648000000-0  {action: "created", orderId: "abc123", total: "99.99"}
+├── 1711648000001-0  {action: "paid", orderId: "abc123", method: "stripe"}
+├── 1711648000002-0  {action: "created", orderId: "def456", total: "149.99"}
+└── 1711648000003-0  {action: "shipped", orderId: "abc123", carrier: "ups"}
+```
+
+Key characteristics:
+- **Persistent** — survives Redis restarts (with AOF/RDB)
+- **Ordered** — entries are strictly ordered by ID
+- **Immutable** — you can't modify entries after insertion (like Kafka)
+- **Consumer groups** — multiple consumers can share the workload
+- **Acknowledgments** — track which messages have been processed
+- **Capped** — optionally limit stream length to prevent unbounded growth
+
+## Core Commands: XADD, XREAD, XRANGE
+
+### Adding Events: XADD
+
+```typescript
+import { createClient } from 'redis';
+
+const redis = createClient({ url: 'redis://localhost:6379' });
+await redis.connect();
+
+// Add event with auto-generated ID (recommended)
+const id = await redis.xAdd('orders', '*', {
+  action: 'created',
+  orderId: 'abc123',
+  total: '99.99',
+  userId: 'user_42',
+});
+// Returns: "1711648000000-0"
+
+// Add with max length cap (MAXLEN ~1000 keeps approximately 1000 entries)
+await redis.xAdd('orders', '*', {
+  action: 'paid',
+  orderId: 'abc123',
+}, { TRIM: { strategy: 'MAXLEN', strategyModifier: '~', threshold: 10000 } });
+```
+
+The `*` tells Redis to auto-generate the ID using the current timestamp + sequence number. The `~` modifier on MAXLEN means "approximately" — Redis trims efficiently by removing whole radix tree nodes rather than exact counts.
+
+### Reading Events: XREAD
+
+```typescript
+// Read new events (blocking)
+const events = await redis.xRead(
+  { key: 'orders', id: '$' },  // '$' = only new events
+  { COUNT: 10, BLOCK: 5000 }    // Wait up to 5 seconds
+);
+
+// Read from beginning
+const allEvents = await redis.xRead(
+  { key: 'orders', id: '0' },  // '0' = from the start
+  { COUNT: 100 }
+);
+
+// Read from multiple streams simultaneously
+const multi = await redis.xRead([
+  { key: 'orders', id: '$' },
+  { key: 'payments', id: '$' },
+  { key: 'shipments', id: '$' },
+], { COUNT: 10, BLOCK: 5000 });
+```
+
+### Querying History: XRANGE
+
+```typescript
+// Get all events
+const all = await redis.xRange('orders', '-', '+');
+
+// Get events in a time range
+const recent = await redis.xRange(
+  'orders',
+  '1711648000000',  // start timestamp
+  '1711649000000',  // end timestamp
+  { COUNT: 50 }
+);
+
+// Reverse range (newest first)
+const newest = await redis.xRevRange('orders', '+', '-', { COUNT: 10 });
+```
+
+## Consumer Groups: Distributed Processing
+
+This is where Redis Streams becomes a real messaging system. Consumer groups let multiple consumers share the workload of processing a stream — each message is delivered to exactly one consumer in the group.
+
+```
+Stream: "orders"
+    │
+    ├── Consumer Group: "order-processors"
+    │   ├── Consumer A → processes message 1, 4, 7...
+    │   ├── Consumer B → processes message 2, 5, 8...
+    │   └── Consumer C → processes message 3, 6, 9...
+    │
+    └── Consumer Group: "analytics"
+        ├── Consumer X → processes message 1, 3, 5...
+        └── Consumer Y → processes message 2, 4, 6...
+```
+
+Multiple consumer groups can read the same stream independently — each group gets every message, but within a group, messages are distributed.
+
+### Setting Up Consumer Groups
+
+```typescript
+// Create a consumer group (read from the beginning)
+await redis.xGroupCreate('orders', 'order-processors', '0', {
+  MKSTREAM: true,  // Create stream if it doesn't exist
+});
+
+// Create another group for analytics
+await redis.xGroupCreate('orders', 'analytics', '0', {
+  MKSTREAM: true,
+});
+```
+
+### Reading with Consumer Groups: XREADGROUP
+
+```typescript
+async function processOrders(consumerId: string) {
+  while (true) {
+    try {
+      // Read new messages for this consumer
+      const messages = await redis.xReadGroup(
+        'order-processors',  // group name
+        consumerId,           // consumer name
+        { key: 'orders', id: '>' },  // '>' = only new, undelivered messages
+        { COUNT: 10, BLOCK: 5000 }
+      );
+
+      if (!messages) continue;
+
+      for (const stream of messages) {
+        for (const message of stream.messages) {
+          // Process the message
+          await handleOrderEvent(message.id, message.message);
+
+          // Acknowledge successful processing
+          await redis.xAck('orders', 'order-processors', message.id);
+        }
+      }
+    } catch (error) {
+      console.error(`Consumer ${consumerId} error:`, error);
+      await sleep(1000); // Back off on error
+    }
+  }
+}
+
+// Start multiple consumers
+processOrders('consumer-1');
+processOrders('consumer-2');
+processOrders('consumer-3');
+```
+
+**The XACK pattern is critical.** Without acknowledgment, Redis considers the message "pending" — it can be re-delivered to another consumer if the original one crashes. This is your at-least-once delivery guarantee.
+
+### Handling Failed Messages: The Pending Entries List
+
+When a consumer reads a message but doesn't ACK it (crash, bug, timeout), that message sits in the **Pending Entries List (PEL)**. You need to claim and re-process these:
+
+```typescript
+async function recoverPendingMessages() {
+  // Check for messages pending longer than 60 seconds
+  const pending = await redis.xPending(
+    'orders',
+    'order-processors',
+    '-', '+', 100
+  );
+
+  for (const entry of pending) {
+    const [id, consumer, idleTime, deliveryCount] = entry;
+
+    if (idleTime > 60000) { // 60 seconds
+      if (deliveryCount > 3) {
+        // Dead letter — move to DLQ stream
+        const messages = await redis.xRange('orders', id, id);
+        if (messages.length > 0) {
+          await redis.xAdd('orders-dlq', '*', {
+            ...messages[0].message,
+            originalId: id,
+            failedConsumer: consumer,
+            failCount: String(deliveryCount),
+          });
+        }
+        await redis.xAck('orders', 'order-processors', id);
+      } else {
+        // Claim and retry
+        await redis.xClaim(
+          'orders',
+          'order-processors',
+          'recovery-consumer',
+          60000,  // min idle time
+          id
+        );
+      }
+    }
+  }
+}
+
+// Run recovery every 30 seconds
+setInterval(recoverPendingMessages, 30000);
+```
+
+## Production Architecture: Event-Driven Microservices
+
+Here's a complete pattern for building event-driven microservices with Redis Streams:
+
+```typescript
+// lib/stream-consumer.ts — reusable consumer wrapper
+interface StreamConsumerConfig {
+  streamKey: string;
+  groupName: string;
+  consumerId: string;
+  batchSize?: number;
+  blockTimeout?: number;
+  maxRetries?: number;
+  dlqStreamKey?: string;
+}
+
+class StreamConsumer {
+  private running = false;
+
+  constructor(
+    private redis: ReturnType<typeof createClient>,
+    private config: StreamConsumerConfig,
+    private handler: (id: string, data: Record<string, string>) => Promise<void>
+  ) {}
+
+  async start() {
+    // Ensure group exists
+    try {
+      await this.redis.xGroupCreate(
+        this.config.streamKey,
+        this.config.groupName,
+        '0',
+        { MKSTREAM: true }
+      );
+    } catch (e: any) {
+      if (!e.message.includes('BUSYGROUP')) throw e;
+      // Group already exists — that's fine
+    }
+
+    this.running = true;
+    await this.consumeLoop();
+  }
+
+  stop() {
+    this.running = false;
+  }
+
+  private async consumeLoop() {
+    while (this.running) {
+      try {
+        const messages = await this.redis.xReadGroup(
+          this.config.groupName,
+          this.config.consumerId,
+          { key: this.config.streamKey, id: '>' },
+          {
+            COUNT: this.config.batchSize || 10,
+            BLOCK: this.config.blockTimeout || 5000,
+          }
+        );
+
+        if (!messages) continue;
+
+        for (const stream of messages) {
+          for (const msg of stream.messages) {
+            try {
+              await this.handler(msg.id, msg.message);
+              await this.redis.xAck(
+                this.config.streamKey,
+                this.config.groupName,
+                msg.id
+              );
+            } catch (error) {
+              console.error(`Failed to process ${msg.id}:`, error);
+              // Message stays in PEL for recovery
+            }
+          }
+        }
+      } catch (error) {
+        console.error('Consumer loop error:', error);
+        await new Promise(r => setTimeout(r, 1000));
+      }
+    }
+  }
+}
+```
+
+```typescript
+// services/order-service.ts — producer
+async function createOrder(order: CreateOrderInput) {
+  const savedOrder = await db.orders.create(order);
+
+  // Publish event
+  await redis.xAdd('orders', '*', {
+    event: 'order.created',
+    orderId: savedOrder.id,
+    userId: savedOrder.userId,
+    total: String(savedOrder.total),
+    items: JSON.stringify(savedOrder.items),
+    timestamp: new Date().toISOString(),
+  });
+
+  return savedOrder;
+}
+```
+
+```typescript
+// services/notification-service.ts — consumer
+const notificationConsumer = new StreamConsumer(
+  redis,
+  {
+    streamKey: 'orders',
+    groupName: 'notifications',
+    consumerId: `notifier-${process.env.INSTANCE_ID}`,
+    dlqStreamKey: 'orders-dlq',
+  },
+  async (id, data) => {
+    if (data.event === 'order.created') {
+      await sendOrderConfirmationEmail(data.userId, data.orderId);
+    }
+    if (data.event === 'order.shipped') {
+      await sendShippingNotification(data.userId, data.orderId);
+    }
+  }
+);
+
+await notificationConsumer.start();
+```
+
+## Redis Streams vs Kafka: The Decision Framework
+
+| Factor | Redis Streams | Kafka |
+|--------|--------------|-------|
+| **Setup complexity** | Zero (you have Redis) | High (3+ brokers, config) |
+| **Latency** | Sub-millisecond | Low milliseconds |
+| **Throughput** | ~100K msg/s per node | 1M+ msg/s per cluster |
+| **Retention** | Limited by RAM | Unlimited (disk) |
+| **Replay** | Yes, but memory-bound | Yes, from any offset |
+| **Consumer groups** | Yes | Yes |
+| **Exactly-once** | At-least-once (with XACK) | Exactly-once (with transactions) |
+| **Ordering** | Per-stream guaranteed | Per-partition guaranteed |
+| **Schema registry** | No | Yes (Confluent) |
+| **Ops overhead** | Minimal | Significant |
+| **Cost** | Low | High |
+
+### Choose Redis Streams when:
+
+- You already run Redis
+- Throughput is under 100K events/second
+- You don't need multi-day event retention
+- You want sub-millisecond latency
+- Your team is small and can't afford Kafka ops
+- You need simple event-driven communication between services
+
+### Choose Kafka when:
+
+- You need massive throughput (millions of events/second)
+- Long-term event retention is required (days/weeks/months)
+- You need exactly-once semantics with transactions
+- You're doing heavy stream processing (Kafka Streams, ksqlDB)
+- You need a schema registry for event evolution
+- You have a dedicated infrastructure team
+
+### Choose neither (use a managed service) when:
+
+- You're on AWS: Amazon MSK (Kafka) or ElastiCache Streams
+- You're on GCP: Cloud Pub/Sub
+- You want zero ops: Upstash Redis (serverless Redis with Streams)
+
+## Gotchas and Production Tips
+
+### 1. Memory management
+
+Redis Streams live in memory. Without trimming, they'll eat all your RAM:
+
+```typescript
+// Always use MAXLEN or MINID when adding
+await redis.xAdd('events', '*', data, {
+  TRIM: { strategy: 'MAXLEN', strategyModifier: '~', threshold: 100000 }
+});
+
+// Or trim periodically
+await redis.xTrim('events', 'MAXLEN', 50000);
+```
+
+### 2. Serialization
+
+Redis Streams only store string field-value pairs. Complex data needs serialization:
+
+```typescript
+// Stringify complex objects
+await redis.xAdd('events', '*', {
+  type: 'order.created',
+  payload: JSON.stringify({ items: [...], total: 99.99 }),
+  metadata: JSON.stringify({ source: 'api', version: '2' }),
+});
+
+// Parse on read
+const data = JSON.parse(message.message.payload);
+```
+
+### 3. Consumer group creation is idempotent-ish
+
+The `XGROUP CREATE` command throws if the group already exists. Always handle the `BUSYGROUP` error:
+
+```typescript
+try {
+  await redis.xGroupCreate(stream, group, '0', { MKSTREAM: true });
+} catch (e: any) {
+  if (!e.message.includes('BUSYGROUP')) throw e;
+}
+```
+
+### 4. Monitor your PEL
+
+Pending entries that never get acknowledged are a memory leak and a sign of consumer problems:
+
+```bash
+# Check pending entries
+redis-cli XPENDING orders order-processors - + 10
+
+# Monitor stream length
+redis-cli XLEN orders
+
+# Check consumer group info
+redis-cli XINFO GROUPS orders
+```
+
+### 5. Use BLOCK wisely
+
+`BLOCK 0` means "wait forever" — if your consumer crashes, the connection stays open. Always set a reasonable timeout:
+
+```typescript
+// Good: block for 5 seconds, then loop
+const messages = await redis.xReadGroup(group, consumer,
+  { key: stream, id: '>' },
+  { COUNT: 10, BLOCK: 5000 }
+);
+
+// Bad: block forever
+const messages = await redis.xReadGroup(group, consumer,
+  { key: stream, id: '>' },
+  { COUNT: 10, BLOCK: 0 }  // Don't do this
+);
+```
+
+## Practical Takeaways
+
+1. **Start with Redis Streams** if you already run Redis and your throughput is under 100K events/sec
+2. **Always XACK** after processing — unacknowledged messages pile up in the PEL
+3. **Implement dead letter queues** — after N retries, move failed messages to a DLQ stream
+4. **Trim your streams** — use MAXLEN to prevent unbounded memory growth
+5. **Use consumer groups** even with a single consumer — it gives you the pending entries list for free
+6. **Monitor PEL size** — a growing PEL means your consumers are failing
+7. **Graduate to Kafka** when you need it — the consumer group patterns are similar enough that migration is straightforward
+
+If you're building a [BFF layer](/blog/bff-the-frontends-best-friend-in-the-microservices-world) that aggregates data from multiple services, Redis Streams is a natural fit for the event bus between them. And if you want to validate the data flowing through your streams, pair it with [Zod runtime validation](/blog/zod-typescript-validation-complete-guide) at each consumer.
+
+Redis Streams won't replace Kafka for high-throughput, long-retention workloads. But for the vast majority of microservices that need event-driven communication, it's the pragmatic choice — less infrastructure, less ops, less cost, and more time building features.
+
+## References
+
+### Sources
+- [Redis Streams Official Documentation](https://redis.io/docs/latest/develop/data-types/streams/) — the authoritative reference
+- [Beyond the Hype: Why We Chose Redis Streams Over Kafka](https://dev.to/mtk3d/beyond-the-hype-why-we-chose-redis-streams-over-kafka-for-our-microservices-dmc) — real-world migration story
+- [Better Stack: Redis vs Kafka — How to Choose in 2026](https://betterstack.com/community/comparisons/redis-vs-kafka/) — detailed feature comparison
+- [Medium: Understanding Redis Streams](https://medium.com/redis-with-raphael-de-lio/understanding-redis-streams-33aa96ca7206) — deep dive into internals
+- [AWS: Redis vs Kafka Comparison](https://aws.amazon.com/compare/the-difference-between-kafka-and-redis/) — vendor-neutral comparison
+
+### Further Reading
+- [Redis: Streaming LLM Output with Redis Streams](https://redis.io/learn/howtos/solutions/streams/streaming-llm-output) — modern use case for AI applications
+- [InfoWorld: How to Use Consumer Groups](https://www.infoworld.com/article/2257824/how-to-use-consumer-groups-in-redis-streams.html) — production patterns for consumer groups
+- [Java Code Geeks: NATS vs Kafka vs Redis Streams](https://www.javacodegeeks.com/2026/03/nats-vs-kafka-vs-redis-streams-for-java-microservices-when-simpler-actually-wins.html) — three-way comparison
+
+---
+
+~Seb 👊
