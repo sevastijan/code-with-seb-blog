@@ -1,0 +1,270 @@
+---
+title: 'Building Micro-Frontends with Next.js Without Killing DX'
+date: '2026-03-28'
+category: 'Architecture'
+tags: ['micro-frontends', 'nextjs', 'architecture', 'module-federation', 'react']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: 'Micro-frontends solve deployment coupling for 100+ engineer orgs. For everyone else, they multiply complexity by the number of teams. Here is when they actually make sense, how to implement them with Next.js Multi-Zones and Module Federation, and the anti-patterns that sink most implementations.'
+---
+
+I've seen micro-frontends save organizations and I've seen them destroy developer experience. The difference is never the technology — it's whether the organization actually needed them.
+
+A fintech company I consulted for had 8 teams sharing one Next.js monolith. Deployments required coordinating all 8 teams, a single broken test blocked everyone, and the release cadence was every two weeks because that's how long the merge-test-deploy cycle took. Micro-frontends gave each team independent deployment. Release cadence went from biweekly to multiple times daily.
+
+A startup I audited had 4 developers and adopted micro-frontends because "that's how the big companies do it." They spent 3 months building the federation infrastructure. They had more YAML than application code. Two of the four developers spent most of their time debugging integration issues between micro-frontends instead of building features.
+
+**The rule:** Micro-frontends solve **organizational scaling** problems, not technical ones. If your deployment bottleneck is coordination between teams, micro-frontends help. If your bottleneck is anything else, they make it worse.
+
+## When Micro-Frontends Make Sense
+
+### Use Micro-Frontends When:
+- **5+ independent teams** need to deploy without coordinating
+- **Different release cadences** — team A ships daily, team B ships quarterly
+- **Distinct product domains** — checkout, inventory, analytics, admin are separate bounded contexts
+- **Organizational autonomy** is more important than technical simplicity
+- **You've already tried** a well-structured monorepo and hit coordination limits
+
+### Don't Use Micro-Frontends When:
+- **Fewer than 30 engineers** — a well-structured monorepo with [Turborepo or Nx](/blog/monorepo-turborepo-nx-react-nextjs-guide) handles this better
+- **Teams share UI heavily** — if 80% of the UI is shared, micro-frontends add cost without benefit
+- **You're a startup** — the infrastructure tax will slow you down
+- **Your problem is code quality** — micro-frontends don't fix bad architecture, they distribute it
+
+## The Three Approaches in Next.js
+
+### Approach 1: Multi-Zones (Simplest)
+
+Next.js Multi-Zones let you compose multiple Next.js apps under one domain. Each "zone" is a standalone Next.js app with its own build and deployment:
+
+```javascript
+// main-app/next.config.mjs
+export default {
+  async rewrites() {
+    return [
+      {
+        source: '/checkout/:path*',
+        destination: 'https://checkout.internal.example.com/:path*',
+      },
+      {
+        source: '/admin/:path*',
+        destination: 'https://admin.internal.example.com/:path*',
+      },
+    ];
+  },
+};
+```
+
+The main app proxies requests to zone-specific apps based on URL path. Each zone is independently deployable.
+
+**Pros:** Zero shared runtime, each zone is a standard Next.js app, trivial to set up.
+
+**Cons:** Full page reload on zone transitions, no shared runtime state, no component sharing.
+
+**Best for:** Completely independent product sections (main app vs admin panel vs docs).
+
+### Approach 2: Module Federation (Most Flexible)
+
+Module Federation allows micro-frontends to share components and dependencies at runtime — no page reloads, shared React instance, component-level composition:
+
+```javascript
+// host-app/next.config.mjs
+import { NextFederationPlugin } from '@module-federation/nextjs-mf';
+
+export default {
+  webpack(config) {
+    config.plugins.push(
+      new NextFederationPlugin({
+        name: 'host',
+        remotes: {
+          checkout: 'checkout@https://checkout.example.com/_next/static/chunks/remoteEntry.js',
+          analytics: 'analytics@https://analytics.example.com/_next/static/chunks/remoteEntry.js',
+        },
+        shared: {
+          react: { singleton: true, requiredVersion: '^19.0.0' },
+          'react-dom': { singleton: true, requiredVersion: '^19.0.0' },
+        },
+      })
+    );
+    return config;
+  },
+};
+```
+
+```javascript
+// checkout-app/next.config.mjs
+import { NextFederationPlugin } from '@module-federation/nextjs-mf';
+
+export default {
+  webpack(config) {
+    config.plugins.push(
+      new NextFederationPlugin({
+        name: 'checkout',
+        filename: 'static/chunks/remoteEntry.js',
+        exposes: {
+          './CheckoutForm': './components/CheckoutForm',
+          './CartSummary': './components/CartSummary',
+        },
+        shared: {
+          react: { singleton: true },
+          'react-dom': { singleton: true },
+        },
+      })
+    );
+    return config;
+  },
+};
+```
+
+```typescript
+// host-app — consuming remote component
+import dynamic from 'next/dynamic';
+
+const CheckoutForm = dynamic(
+  () => import('checkout/CheckoutForm'),
+  { ssr: false, loading: () => <Skeleton /> }
+);
+
+export default function CheckoutPage() {
+  return (
+    <div>
+      <h1>Checkout</h1>
+      <CheckoutForm onComplete={(orderId) => router.push(`/orders/${orderId}`)} />
+    </div>
+  );
+}
+```
+
+**Pros:** Component-level composition, shared dependencies, no page reloads.
+
+**Cons:** Complex webpack config, App Router support is limited, debugging federated modules is painful, version mismatches cause subtle bugs.
+
+**Best for:** Large organizations where teams need to share components across applications.
+
+### Approach 3: Vercel @vercel/microfrontends (Managed)
+
+Vercel's managed micro-frontends solution abstracts the infrastructure:
+
+```javascript
+// vercel.json
+{
+  "microfrontends": {
+    "applications": {
+      "web": { "defaultRoute": true },
+      "checkout": { "routing": [{ "prefix": "/checkout" }] },
+      "admin": { "routing": [{ "prefix": "/admin" }] }
+    }
+  }
+}
+```
+
+**Pros:** Zero webpack config, automatic routing, managed infrastructure, supports App Router.
+
+**Cons:** Vercel lock-in, enterprise pricing.
+
+## Communication Between Micro-Frontends
+
+The hardest problem in micro-frontend architecture: how do independently deployed apps share data?
+
+### Custom Events (Recommended)
+
+```typescript
+// Shared event types (published as npm package)
+interface MicroFrontendEvents {
+  'cart:updated': { items: CartItem[]; total: number };
+  'user:authenticated': { userId: string; token: string };
+  'checkout:completed': { orderId: string };
+  'theme:changed': { theme: 'light' | 'dark' };
+}
+
+// Emitter
+function emitMFEvent<K extends keyof MicroFrontendEvents>(
+  event: K,
+  data: MicroFrontendEvents[K]
+) {
+  window.dispatchEvent(new CustomEvent(`mfe:${event}`, { detail: data }));
+}
+
+// Listener (in any micro-frontend)
+function useMFEvent<K extends keyof MicroFrontendEvents>(
+  event: K,
+  handler: (data: MicroFrontendEvents[K]) => void
+) {
+  useEffect(() => {
+    const listener = (e: CustomEvent) => handler(e.detail);
+    window.addEventListener(`mfe:${event}`, listener as any);
+    return () => window.removeEventListener(`mfe:${event}`, listener as any);
+  }, [event, handler]);
+}
+```
+
+### Shared State via URL
+
+The URL is the most reliable shared state mechanism between micro-frontends — it survives page reloads, is bookmarkable, and requires no runtime coupling:
+
+```typescript
+// Checkout micro-frontend reads cart from URL params
+const searchParams = useSearchParams();
+const cartId = searchParams.get('cartId');
+// Fetch cart data independently using the cartId
+```
+
+## Anti-Patterns That Sink Implementations
+
+### 1. Sharing Everything
+
+If your micro-frontends share a design system, a state management library, an API client, a routing system, and a build pipeline — you've built a distributed monolith. Worse in every way than the monolith you escaped.
+
+**Rule:** Share only React, react-dom, and a design system. Everything else is independently owned.
+
+### 2. Coupling Through Shared State
+
+```typescript
+// ❌ ANTI-PATTERN: Shared Redux store across micro-frontends
+const globalStore = createStore(rootReducer);
+// Now every micro-frontend is coupled to every other
+```
+
+Each micro-frontend should own its state. Communicate through events, not shared stores.
+
+### 3. No Design System
+
+Without a shared component library, each team builds their own buttons, forms, and layouts. The user sees three different button styles on one page. Invest in a shared design system before adopting micro-frontends.
+
+### 4. Ignoring Bundle Size
+
+If each micro-frontend ships its own copy of React, you're loading React 5 times. Use `singleton: true` in Module Federation shared config, and monitor the total bundle size across all micro-frontends.
+
+## Practical Takeaways
+
+1. **Don't adopt micro-frontends until you have 5+ teams and coordination pain.** Monorepos are better for smaller orgs.
+2. **Start with Multi-Zones** — the simplest approach that gives independent deployments.
+3. **Graduate to Module Federation** when you need component-level sharing across apps.
+4. **Communicate via custom events** — typed, loosely coupled, no shared state.
+5. **Share React as singleton** — loading React 5 times is a performance disaster.
+6. **Invest in a design system first** — visual consistency is the first casualty of micro-frontends.
+7. **Each MFE owns its own state** — no shared Redux, no global Zustand stores across MFEs.
+8. **Monitor total bundle size** — the sum of all micro-frontends matters, not each one individually.
+9. **Use URL as shared state** — it's the most reliable cross-MFE communication mechanism.
+10. **The goal is team autonomy, not technical elegance.** If teams can't deploy independently, the architecture isn't working regardless of how clever it is.
+
+Micro-frontends are organizational architecture wearing a technical mask. The right question isn't "should we use Module Federation?" It's "do our teams need independent deployment?" If yes, choose the simplest approach that achieves it. If no, a [well-structured monorepo](/blog/monorepo-turborepo-nx-react-nextjs-guide) is always the better choice.
+
+## References
+
+### Sources
+- [Martin Fowler: Micro Frontends](https://martinfowler.com/articles/micro-frontends.html) — the definitive article on the architecture
+- [Next.js: Multi-Zones Guide](https://nextjs.org/docs/app/guides/multi-zones) — official multi-zone documentation
+- [Alibek.dev: Micro-frontends with Next.js and Module Federation](https://alibek.dev/micro-frontends-with-nextjs-and-module-federation) — practical implementation guide
+- [DEV.to: Top 10 Micro Frontend Anti-Patterns](https://dev.to/florianrappl/top-10-micro-frontend-anti-patterns-3809) — what not to do
+- [Medium: When Micro Frontends Make Sense and When They Don't](https://lukasniessen.medium.com/micro-frontends-when-they-make-sense-and-when-they-dont-a1a06b726065) — honest assessment
+
+### Further Reading
+- [Elysiate: Micro-Frontends Architecture with Module Federation 2025](https://www.elysiate.com/blog/micro-frontends-architecture-module-federation-2025) — architecture patterns
+- [Nx: Module Federation and Nx](https://nx.dev/concepts/module-federation/module-federation-and-nx) — Nx integration guide
+- [SitePoint: 5 Pitfalls of Micro Frontends](https://www.sitepoint.com/micro-frontend-architecture-pitfalls/) — common failures
+
+---
+
+~Seb 👊
