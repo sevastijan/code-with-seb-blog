@@ -1,0 +1,553 @@
+---
+title: 'Modular Monorepo for React + Next.js: Turborepo vs Nx in 2026'
+date: '2026-03-28'
+category: 'Architecture'
+tags: ['monorepo', 'turborepo', 'nx', 'architecture', 'react']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: 'Turborepo gives you a fast car. Nx gives you the whole highway system. Here is the complete guide to building modular monorepos for React + Next.js — package architecture, shared libraries, dependency management, CI optimization, and the decision framework for choosing your tool.'
+---
+
+I inherited a monorepo last year that took 26 minutes to build in CI. It had 14 packages, 3 Next.js apps, a shared component library, a utils package, and a design tokens package. Everything depended on everything. Changing a utility function triggered a full rebuild of all 14 packages. The CI bill was $4,200/month.
+
+After restructuring the dependency graph and adding Turborepo with proper caching, the same CI pipeline ran in 90 seconds. Not because Turborepo is magic — but because 13 of 14 packages didn't need rebuilding. The tool just needed to know that.
+
+Monorepos aren't just "put everything in one repo." Done wrong, they're a shared disaster where one team's bad dependency breaks everyone else's build. Done right, they're a force multiplier — shared code, consistent tooling, atomic changes across packages, and a [single CI pipeline that's smarter](/blog/optimizing-cicd-pipelines-dx-deploy-times-guide) than 14 separate ones.
+
+This guide covers the full picture: when monorepos make sense, how to structure packages, Turborepo vs Nx in depth, dependency management, design system integration, CI optimization, and the real-world problems nobody warns you about.
+
+## When Monorepos Make Sense (And When They Don't)
+
+### Use a Monorepo When:
+
+- **Multiple apps share code** — a Next.js web app, a React Native mobile app, and an admin panel sharing auth logic, API clients, and types
+- **You have a design system** — components, tokens, and utilities consumed by multiple apps
+- **You want atomic changes** — updating a shared type and all consumers in one PR
+- **Your team is < 50 engineers** — coordination cost is manageable
+- **You want consistent tooling** — one ESLint config, one TypeScript config, one CI pipeline
+
+### Don't Use a Monorepo When:
+
+- **Teams are fully independent** — separate products with separate release cycles
+- **You have > 100 engineers** — Git operations slow down, CI becomes a bottleneck, ownership gets murky
+- **Different tech stacks** — a Python backend and a React frontend don't benefit from sharing a repo
+- **Regulatory requirements** — some compliance frameworks require separate repositories per service
+
+## The Package Architecture
+
+A well-structured monorepo has clear layers with one-way dependency flow:
+
+```
+monorepo/
+├── apps/                    # Deployable applications
+│   ├── web/                 # Next.js main app
+│   ├── admin/               # Next.js admin panel
+│   └── mobile/              # React Native app
+├── packages/                # Shared libraries
+│   ├── ui/                  # Design system components
+│   ├── config-eslint/       # Shared ESLint config
+│   ├── config-typescript/   # Shared tsconfig
+│   ├── api-client/          # Type-safe API client
+│   ├── auth/                # Authentication utilities
+│   ├── analytics/           # Analytics wrapper
+│   └── utils/               # Pure utility functions
+├── turbo.json               # Turborepo pipeline config
+├── pnpm-workspace.yaml      # Workspace definition
+├── package.json             # Root scripts
+└── tsconfig.json            # Root TS config (optional)
+```
+
+### The Dependency Rule
+
+Dependencies flow in ONE direction: **apps → packages**. Never the reverse. Packages can depend on other packages, but the graph must be acyclic.
+
+```
+apps/web ─────→ packages/ui
+                packages/api-client
+                packages/auth
+                packages/analytics
+
+apps/admin ───→ packages/ui
+                packages/api-client
+                packages/auth
+
+packages/ui ──→ packages/utils (OK)
+packages/utils → packages/ui  (FORBIDDEN — circular!)
+```
+
+### Setting Up with pnpm Workspaces
+
+pnpm is the standard package manager for monorepos in 2026. It's faster than npm, has native workspace support, and uses a content-addressable store that avoids duplicate packages:
+
+```yaml
+# pnpm-workspace.yaml
+packages:
+  - 'apps/*'
+  - 'packages/*'
+```
+
+```json
+// Root package.json
+{
+  "name": "monorepo",
+  "private": true,
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "lint": "turbo run lint",
+    "test": "turbo run test",
+    "typecheck": "turbo run typecheck"
+  },
+  "devDependencies": {
+    "turbo": "^2.4.0"
+  }
+}
+```
+
+### Creating an Internal Package
+
+Internal packages are consumed within the monorepo but never published to npm:
+
+```json
+// packages/utils/package.json
+{
+  "name": "@repo/utils",
+  "version": "0.0.0",
+  "private": true,
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@repo/config-typescript": "workspace:*",
+    "typescript": "^5.7.0"
+  }
+}
+```
+
+```typescript
+// packages/utils/src/index.ts
+export { cn } from './cn';
+export { formatDate } from './format-date';
+export { debounce, throttle } from './timing';
+export { isEmail, isURL } from './validators';
+
+export type { DeepPartial, Prettify, StrictOmit } from './types';
+```
+
+**Key details:**
+- `"private": true` — never published to npm
+- `workspace:*` — resolves to the local version, not a registry version
+- `"exports"` field with `"types"` — ensures TypeScript can find types without a build step
+- Source TypeScript is consumed directly — no build step needed for internal packages (the consuming app's bundler handles compilation)
+
+### Consuming Internal Packages
+
+```json
+// apps/web/package.json
+{
+  "dependencies": {
+    "@repo/ui": "workspace:*",
+    "@repo/utils": "workspace:*",
+    "@repo/api-client": "workspace:*"
+  }
+}
+```
+
+```typescript
+// apps/web/src/components/UserCard.tsx
+import { Card, Avatar, Badge } from '@repo/ui';
+import { formatDate } from '@repo/utils';
+import { useUser } from '@repo/api-client';
+
+export function UserCard({ userId }: { userId: string }) {
+  const { data: user } = useUser(userId);
+  if (!user) return null;
+
+  return (
+    <Card>
+      <Avatar src={user.avatar} alt={user.name} />
+      <h3>{user.name}</h3>
+      <Badge variant={user.role}>{user.role}</Badge>
+      <p>Joined {formatDate(user.createdAt)}</p>
+    </Card>
+  );
+}
+```
+
+## Turborepo: The Fast Lane
+
+Turborepo is a build system, not a monorepo framework. It does one thing: **run tasks fast** by understanding your dependency graph and caching results.
+
+### turbo.json Configuration
+
+```json
+// turbo.json
+{
+  "$schema": "https://turborepo.dev/schema.json",
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "inputs": ["src/**", "package.json", "tsconfig.json"],
+      "outputs": [".next/**", "dist/**"],
+      "cache": true
+    },
+    "dev": {
+      "dependsOn": ["^build"],
+      "persistent": true,
+      "cache": false
+    },
+    "lint": {
+      "inputs": ["src/**", "*.config.*"],
+      "cache": true
+    },
+    "typecheck": {
+      "dependsOn": ["^build"],
+      "inputs": ["src/**", "tsconfig.json"],
+      "cache": true
+    },
+    "test": {
+      "inputs": ["src/**", "tests/**"],
+      "cache": true
+    }
+  }
+}
+```
+
+**Key concepts:**
+- `"^build"` — caret means "run build in my dependencies first" (topological ordering)
+- `"inputs"` — only these files affect the cache key. Change a README? Cache hit.
+- `"outputs"` — directories to cache and restore
+- `"persistent": true` — for dev servers that don't exit
+
+### How Caching Works
+
+When you run `turbo run build`:
+
+1. Turbo computes a hash from: task inputs + dependency versions + environment variables
+2. If the hash matches a previous run → **cache hit** → restore outputs instantly (< 100ms)
+3. If no match → run the task → save outputs to cache
+
+```bash
+$ turbo run build
+
+• Packages in scope: @repo/utils, @repo/ui, @repo/api-client, web, admin
+• Running build in 5 packages
+
+@repo/utils:build  cache hit, replaying logs ██████████████ 0.1s
+@repo/ui:build     cache hit, replaying logs ██████████████ 0.1s
+@repo/api-client:  cache hit, replaying logs ██████████████ 0.1s
+web:build          cache miss, running       ██████████████ 28.3s
+admin:build        cache miss, running       ██████████████ 15.7s
+
+Tasks:    5 successful, 5 total
+Cached:   3 cached, 5 total
+Time:     29.1s
+```
+
+You changed code in `apps/web` only — the 3 packages that didn't change are restored from cache in 100ms each.
+
+### Filtered Execution
+
+Only run tasks for changed packages:
+
+```bash
+# Only packages changed since main
+turbo run build --filter=...[origin/main]
+
+# Only the web app and its dependencies
+turbo run build --filter=web...
+
+# Only the ui package (no dependencies)
+turbo run build --filter=@repo/ui
+```
+
+### Remote Caching
+
+Share cache across your entire team and CI:
+
+```bash
+# With Vercel (built-in)
+turbo login
+turbo link
+
+# Or with GitHub Actions cache (free)
+# See the CI optimization section
+```
+
+When engineer A builds `@repo/ui` and pushes, engineer B gets a cache hit without rebuilding. CI gets cache hits from both engineers. This compounds — in a team of 10, most builds are near-instant.
+
+## Nx: The Full Platform
+
+Nx is more opinionated and more powerful. Where Turborepo gives you caching and task orchestration, Nx adds:
+
+- **Project graph visualization** — see every dependency in your monorepo
+- **Affected commands** — only run tasks on projects impacted by your changes
+- **Generators** — scaffold new packages, components, and features with templates
+- **Module boundary enforcement** — lint rules that prevent illegal cross-package imports
+- **Distributed task execution** — split work across multiple CI machines
+
+### Basic Nx Setup
+
+```bash
+npx create-nx-workspace@latest my-monorepo \
+  --preset=react-monorepo \
+  --bundler=webpack \
+  --style=tailwind
+
+# Or add Nx to an existing repo
+npx nx@latest init
+```
+
+### nx.json Configuration
+
+```json
+// nx.json
+{
+  "targetDefaults": {
+    "build": {
+      "dependsOn": ["^build"],
+      "inputs": ["production", "^production"],
+      "cache": true
+    },
+    "test": {
+      "inputs": ["default", "^production"],
+      "cache": true
+    },
+    "lint": {
+      "inputs": ["default", "{workspaceRoot}/.eslintrc.json"],
+      "cache": true
+    }
+  },
+  "namedInputs": {
+    "default": ["{projectRoot}/**/*", "sharedGlobals"],
+    "production": [
+      "default",
+      "!{projectRoot}/**/*.spec.*",
+      "!{projectRoot}/tsconfig.spec.json"
+    ],
+    "sharedGlobals": ["{workspaceRoot}/tsconfig.base.json"]
+  }
+}
+```
+
+### Module Boundary Enforcement
+
+This is Nx's killer feature for large teams. You define tags for each project and rules for which tags can depend on which:
+
+```json
+// project.json (for each project)
+{
+  "tags": ["scope:web", "type:app"]
+}
+// Or for a shared package:
+{
+  "tags": ["scope:shared", "type:ui"]
+}
+```
+
+```json
+// .eslintrc.json (root)
+{
+  "rules": {
+    "@nx/enforce-module-boundaries": [
+      "error",
+      {
+        "depConstraints": [
+          { "sourceTag": "type:app", "onlyDependOnLibsWithTags": ["type:ui", "type:util", "type:data"] },
+          { "sourceTag": "type:ui", "onlyDependOnLibsWithTags": ["type:util"] },
+          { "sourceTag": "type:util", "onlyDependOnLibsWithTags": [] },
+          { "sourceTag": "scope:web", "onlyDependOnLibsWithTags": ["scope:web", "scope:shared"] },
+          { "sourceTag": "scope:admin", "onlyDependOnLibsWithTags": ["scope:admin", "scope:shared"] }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Now if an engineer in the `admin` app tries to import from the `web` app — ESLint error. If a `ui` package tries to import from an `app` — ESLint error. Architecture is enforced by tooling, not by PR reviews and good intentions.
+
+### Generators
+
+Scaffold new packages with consistent structure:
+
+```bash
+# Generate a new React library
+nx generate @nx/react:library my-feature --directory=packages/my-feature
+
+# Generate a new Next.js app
+nx generate @nx/next:application dashboard --directory=apps/dashboard
+
+# Custom generators for your team's conventions
+nx generate @my-org/workspace:react-package my-package
+```
+
+## Turborepo vs Nx: The Decision Framework
+
+| Factor | Turborepo | Nx |
+|--------|-----------|-----|
+| **Learning curve** | Low (1 hour) | Medium (1-2 days) |
+| **Setup time** | 10 minutes | 30-60 minutes |
+| **Caching** | Excellent | Excellent |
+| **Task orchestration** | Excellent | Excellent |
+| **Affected detection** | `--filter=...[base]` | `nx affected` (more precise) |
+| **Module boundaries** | None (use ESLint manually) | Built-in enforcement |
+| **Code generation** | None | Generators + custom generators |
+| **Visualization** | None | Project graph UI |
+| **Distributed execution** | No | Nx Agents (paid) |
+| **Ecosystem** | JS/TS only | Multi-language support |
+| **Config complexity** | Minimal (`turbo.json`) | More files (`nx.json`, `project.json`) |
+| **Vendor lock-in** | Low | Medium |
+| **Best for** | < 20 packages, speed-focused | > 20 packages, governance-focused |
+
+### My Recommendation
+
+- **Startups and small teams (< 15 engineers, < 10 packages):** Turborepo. You'll be productive in 10 minutes. Don't over-engineer.
+- **Growing teams (15-50 engineers, 10-50 packages):** Nx or Turborepo with discipline. If you need boundary enforcement, use Nx. If you trust your team and want simplicity, Turborepo with good PR practices works.
+- **Large organizations (50+ engineers, 50+ packages):** Nx. The module boundary enforcement, generators, and distributed execution pay for the learning curve many times over.
+
+## The Design System Package
+
+A design system is the most common shared package in a monorepo. Here's the architecture:
+
+```
+packages/ui/
+├── src/
+│   ├── components/
+│   │   ├── Button/
+│   │   │   ├── Button.tsx
+│   │   │   ├── Button.test.tsx
+│   │   │   └── index.ts
+│   │   ├── Card/
+│   │   ├── Dialog/
+│   │   ├── Input/
+│   │   └── index.ts           # Public API
+│   ├── tokens/
+│   │   ├── colors.ts
+│   │   ├── spacing.ts
+│   │   ├── typography.ts
+│   │   └── index.ts
+│   ├── hooks/
+│   │   ├── useMediaQuery.ts
+│   │   └── index.ts
+│   └── index.ts               # Package entry point
+├── package.json
+└── tsconfig.json
+```
+
+```typescript
+// packages/ui/src/index.ts — the public API
+// Components
+export { Button, type ButtonProps } from './components/Button';
+export { Card, type CardProps } from './components/Card';
+export { Dialog, type DialogProps } from './components/Dialog';
+export { Input, type InputProps } from './components/Input';
+
+// Tokens
+export { colors, spacing, typography } from './tokens';
+
+// Hooks
+export { useMediaQuery } from './hooks/useMediaQuery';
+```
+
+**The public API rule:** Consumers only import from the package root (`@repo/ui`), never from deep paths (`@repo/ui/src/components/Button/Button`). This lets you refactor internals without breaking consumers.
+
+## Common Monorepo Problems and Solutions
+
+### Problem 1: Phantom Dependencies
+
+A package uses a dependency that it doesn't declare in its own `package.json` — it "accidentally" works because another package installed it at the root.
+
+**Solution:** pnpm's strict node_modules structure prevents this by default. Each package can only access its own declared dependencies.
+
+### Problem 2: Version Conflicts
+
+App A needs React 18, App B needs React 19.
+
+**Solution:** Use a single version policy. Pin major dependencies at the root:
+
+```json
+// Root package.json
+{
+  "pnpm": {
+    "overrides": {
+      "react": "^19.0.0",
+      "react-dom": "^19.0.0"
+    }
+  }
+}
+```
+
+### Problem 3: Circular Dependencies
+
+Package A imports from B, B imports from A.
+
+**Solution:** Extract shared code into a third package C that both depend on. Nx boundary enforcement catches this automatically.
+
+### Problem 4: Slow Git Operations
+
+Large monorepos slow down `git clone`, `git status`, and `git log`.
+
+**Solution:** Use shallow clones in CI (`--depth=1`), Git's sparse checkout for large repos, and consider `git maintenance` for local development.
+
+### Problem 5: Unclear Ownership
+
+Who owns `@repo/utils`? When 8 teams contribute, nobody feels responsible.
+
+**Solution:** CODEOWNERS file:
+
+```
+# .github/CODEOWNERS
+packages/ui/           @frontend-platform-team
+packages/api-client/   @backend-team
+packages/auth/         @security-team
+packages/utils/        @frontend-platform-team
+apps/web/              @web-team
+apps/admin/            @admin-team
+```
+
+## Practical Takeaways
+
+1. **Start with Turborepo** if you're under 10 packages. Graduate to Nx when you need boundary enforcement or generators.
+2. **Use pnpm workspaces** — strict node_modules prevent phantom dependencies.
+3. **One-way dependency flow** — apps depend on packages, never the reverse.
+4. **Single version policy** — pin major dependencies at the root with `pnpm.overrides`.
+5. **Internal packages don't need a build step** — the consuming app's bundler compiles them.
+6. **Namespace your packages** — `@repo/ui`, `@repo/utils`. Prevents conflicts with npm packages.
+7. **Public API only** — consumers import from the package root, never deep paths.
+8. **CODEOWNERS** — every package has a designated owner.
+9. **Cache everything in CI** — dependency cache, Turbo/Nx cache, build cache. A 26-minute build becomes 90 seconds.
+10. **Run affected commands only** — `turbo run build --filter=...[origin/main]` or `nx affected --target=build`.
+
+A well-structured monorepo isn't just a code organization strategy — it's a team coordination strategy. The tooling enforces the architecture, the caching eliminates waste, and the shared packages multiply every improvement across every app. If you're combining this with a [scalable frontend architecture based on Atomic Design and Feature Slices](/blog/from-components-to-systems-scalable-frontend-with-atomiec-design), the monorepo becomes even more powerful — each feature slice maps cleanly to a package boundary. And for the shared ESLint config, use the [strict setup I covered in my linting guide](/blog/advanced-linting-type-safety-eslint-typescript-guide).
+
+Get the structure right, and the tooling will take care of the rest.
+
+## References
+
+### Sources
+- [Nx vs Turborepo Official Comparison](https://nx.dev/docs/guides/adopting-nx/nx-vs-turborepo) — Nx team's detailed comparison
+- [PkgPulse: Turborepo vs Nx 2026](https://www.pkgpulse.com/blog/turborepo-vs-nx-monorepo-2026) — independent 2026 comparison
+- [Turborepo: Structuring a Repository](https://turborepo.dev/docs/crafting-your-repository/structuring-a-repository) — official architecture guide
+- [Turborepo: Creating an Internal Package](https://turborepo.dev/docs/crafting-your-repository/creating-an-internal-package) — internal package setup
+- [Feature-Sliced Design: Frontend Monorepo Explained](https://feature-sliced.design/blog/frontend-monorepo-explained) — architecture patterns
+- [Nhost: How We Configured pnpm and Turborepo](https://nhost.io/blog/how-we-configured-pnpm-and-turborepo-for-our-monorepo) — real-world setup
+
+### Further Reading
+- [Vercel: Design System with Turborepo Template](https://vercel.com/templates/react/turborepo-design-system) — starter template
+- [Nx: Module Federation and Nx](https://nx.dev/concepts/module-federation/module-federation-and-nx) — micro-frontends in Nx
+- [Graphite: Managing Dependencies in a Monorepo](https://graphite.com/guides/managing-dependencies-monorepo) — dependency management strategies
+- [Digma: 10 Common Monorepo Problems](https://digma.ai/10-common-problems-of-working-with-a-monorepo/) — challenges and solutions
+
+---
+
+~Seb 👊
