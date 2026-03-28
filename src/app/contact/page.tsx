@@ -2,6 +2,7 @@
 
 import { useRef, useEffect, useState } from 'react';
 import { ArrowRight, ArrowUpRight, Mail, MapPin, Clock, Github, Linkedin, Youtube, Instagram, ChevronDown } from 'lucide-react';
+import { ContactForm } from '@/components/ContactForm';
 import { CustomCursor } from '@/components/CustomCursor';
 import { ScrollProgress } from '@/components/ScrollProgress';
 import { FooterAwwwards } from '@/components/FooterAwwwards';
@@ -164,6 +165,17 @@ export default function ContactPage() {
 
         <div className="container">
           <div className="cnt-form-layout" style={{ maxWidth: '640px', margin: '0 auto' }}>
+            {/* Contact Form */}
+            <div className="mb-20">
+              <div className="mb-8">
+                <span className="label">Get in touch</span>
+                <h2 className="text-3xl sm:text-4xl font-bold mt-2">
+                  Send me a <span className="text-gradient-animated">message</span>
+                </h2>
+              </div>
+              <ContactForm />
+            </div>
+
             <div className="cnt-info">
               {/* Info cards */}
               <div className="cnt-info-cards">
