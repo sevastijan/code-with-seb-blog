@@ -1,0 +1,638 @@
+---
+title: 'State Machines in React: Practical XState + Context Patterns'
+date: '2026-03-28'
+category: 'Development'
+tags: ['react', 'xstate', 'state-management', 'typescript', 'patterns']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: 'Boolean flags multiply. isLoading && !isError && isSubmitted && !isRetrying — sound familiar? State machines make impossible states impossible. Here is the practical guide to XState v5 in React with real patterns: auth flows, multi-step forms, and async orchestration.'
+---
+
+Every React codebase I audit has the same disease: boolean soup.
+
+```typescript
+const [isLoading, setIsLoading] = useState(false);
+const [isError, setIsError] = useState(false);
+const [isSuccess, setIsSuccess] = useState(false);
+const [isRetrying, setIsRetrying] = useState(false);
+const [isSubmitted, setIsSubmitted] = useState(false);
+const [data, setData] = useState(null);
+```
+
+Six booleans = 64 possible combinations. Most are impossible (`isLoading && isSuccess`). Some are dangerous (`isError && isRetrying && isSubmitted`). Nobody tests them all. Nobody even knows they exist. And when a bug report says "the button is disabled but nothing is loading," you spend an hour tracing which combination of booleans created that state.
+
+State machines solve this by making **impossible states impossible**. Instead of six independent booleans, you have one state variable with explicit transitions:
+
+```
+idle → loading → success
+                → error → retrying → success
+                                    → error
+```
+
+You can't be `loading` and `success` simultaneously. You can't reach `retrying` without going through `error` first. The machine enforces the rules that booleans can't.
+
+## When State Machines Are Worth It (And When They're Not)
+
+State machines add complexity. That complexity pays for itself in specific scenarios:
+
+### Use State Machines For:
+- **Multi-step workflows** — checkout, onboarding, wizards
+- **Authentication flows** — login, OAuth, MFA, session management
+- **Media players** — play, pause, buffering, seeking, ended
+- **Complex forms** — validation states, submission, retry, draft saving
+- **Async orchestration** — parallel requests with dependent transitions
+- **Anything with "if we're in state X, this event should do Y"**
+
+### Don't Use State Machines For:
+- **Simple toggles** — dark mode, sidebar open/closed. Use `useState`.
+- **Server state** — data from APIs. Use [TanStack Query](/blog/tanstack-query-advanced-caching-rsc-guide).
+- **Global UI state** — selected item, filters. Use [Zustand](/blog/killing-prop-drilling-event-driven-frontend-architecture).
+- **Form field values** — use React Hook Form or controlled inputs.
+
+**Rule of thumb:** If your component has 3+ booleans that interact with each other, or you find yourself writing `if (isX && !isY && isZ)`, it's time for a state machine.
+
+## XState v5: The Actor Model
+
+XState v5 is a complete rewrite centered on the **actor model**. Every machine is an actor that:
+- Has its own internal state (context)
+- Receives events
+- Can spawn child actors
+- Can send events to other actors
+
+### Your First Machine
+
+```typescript
+import { setup, assign } from 'xstate';
+
+const toggleMachine = setup({
+  types: {
+    context: {} as { count: number },
+    events: {} as { type: 'TOGGLE' } | { type: 'RESET' },
+  },
+}).createMachine({
+  id: 'toggle',
+  initial: 'inactive',
+  context: { count: 0 },
+  states: {
+    inactive: {
+      on: {
+        TOGGLE: {
+          target: 'active',
+          actions: assign({ count: ({ context }) => context.count + 1 }),
+        },
+      },
+    },
+    active: {
+      on: {
+        TOGGLE: { target: 'inactive' },
+        RESET: {
+          target: 'inactive',
+          actions: assign({ count: 0 }),
+        },
+      },
+    },
+  },
+});
+```
+
+### Using in React
+
+```typescript
+import { useMachine } from '@xstate/react';
+
+function Toggle() {
+  const [state, send] = useMachine(toggleMachine);
+
+  return (
+    <div>
+      <p>Status: {state.value}</p>
+      <p>Toggled {state.context.count} times</p>
+      <button onClick={() => send({ type: 'TOGGLE' })}>
+        {state.matches('active') ? 'Deactivate' : 'Activate'}
+      </button>
+      {state.matches('active') && (
+        <button onClick={() => send({ type: 'RESET' })}>Reset</button>
+      )}
+    </div>
+  );
+}
+```
+
+## Pattern 1: Authentication Flow
+
+Authentication is the perfect state machine use case — it has clear states, complex transitions, and impossible-to-track boolean combinations when done with `useState`:
+
+```typescript
+import { setup, assign, fromPromise } from 'xstate';
+
+// Async actors for API calls
+const loginActor = fromPromise(async ({ input }: { input: { email: string; password: string } }) => {
+  const res = await fetch('/api/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    const error = await res.json();
+    throw new Error(error.message || 'Login failed');
+  }
+  return res.json() as Promise<{ user: User; token: string }>;
+});
+
+const authMachine = setup({
+  types: {
+    context: {} as {
+      user: User | null;
+      token: string | null;
+      error: string | null;
+      attempts: number;
+    },
+    events: {} as
+      | { type: 'LOGIN'; email: string; password: string }
+      | { type: 'LOGOUT' }
+      | { type: 'RETRY' }
+      | { type: 'SESSION_EXPIRED' }
+      | { type: 'TOKEN_REFRESHED'; token: string },
+  },
+  actors: { loginActor },
+}).createMachine({
+  id: 'auth',
+  initial: 'unauthenticated',
+  context: { user: null, token: null, error: null, attempts: 0 },
+
+  states: {
+    unauthenticated: {
+      on: {
+        LOGIN: { target: 'authenticating' },
+      },
+    },
+
+    authenticating: {
+      invoke: {
+        src: 'loginActor',
+        input: ({ event }) => {
+          if (event.type !== 'LOGIN') throw new Error('Unexpected event');
+          return { email: event.email, password: event.password };
+        },
+        onDone: {
+          target: 'authenticated',
+          actions: assign({
+            user: ({ event }) => event.output.user,
+            token: ({ event }) => event.output.token,
+            error: null,
+            attempts: 0,
+          }),
+        },
+        onError: {
+          target: 'error',
+          actions: assign({
+            error: ({ event }) => (event.error as Error).message,
+            attempts: ({ context }) => context.attempts + 1,
+          }),
+        },
+      },
+    },
+
+    authenticated: {
+      on: {
+        LOGOUT: {
+          target: 'unauthenticated',
+          actions: assign({ user: null, token: null }),
+        },
+        SESSION_EXPIRED: { target: 'sessionExpired' },
+      },
+    },
+
+    error: {
+      on: {
+        RETRY: {
+          target: 'unauthenticated',
+          guard: ({ context }) => context.attempts < 3,
+        },
+        LOGIN: { target: 'authenticating' },
+      },
+      after: {
+        // Auto-clear error after 5 seconds
+        5000: { target: 'unauthenticated', actions: assign({ error: null }) },
+      },
+    },
+
+    sessionExpired: {
+      on: {
+        LOGIN: { target: 'authenticating' },
+        TOKEN_REFRESHED: {
+          target: 'authenticated',
+          actions: assign({ token: ({ event }) => event.token }),
+        },
+      },
+    },
+  },
+});
+```
+
+### Using the Auth Machine with Context
+
+```typescript
+// providers/AuthProvider.tsx
+'use client';
+
+import { createActorContext } from '@xstate/react';
+import { authMachine } from '@/machines/auth';
+
+export const AuthContext = createActorContext(authMachine);
+
+export function AuthProvider({ children }: { children: React.ReactNode }) {
+  return <AuthContext.Provider>{children}</AuthContext.Provider>;
+}
+
+// Any component — no prop drilling
+export function useAuth() {
+  const actorRef = AuthContext.useActorRef();
+  const state = AuthContext.useSelector((s) => s);
+
+  return {
+    user: state.context.user,
+    isAuthenticated: state.matches('authenticated'),
+    isLoading: state.matches('authenticating'),
+    error: state.context.error,
+    login: (email: string, password: string) =>
+      actorRef.send({ type: 'LOGIN', email, password }),
+    logout: () => actorRef.send({ type: 'LOGOUT' }),
+  };
+}
+```
+
+```typescript
+// components/LoginForm.tsx
+function LoginForm() {
+  const { isLoading, error, login } = useAuth();
+
+  const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const form = new FormData(e.currentTarget);
+    login(form.get('email') as string, form.get('password') as string);
+  };
+
+  return (
+    <form onSubmit={handleSubmit}>
+      <input name="email" type="email" required />
+      <input name="password" type="password" required />
+      {error && <p className="text-red-500">{error}</p>}
+      <button type="submit" disabled={isLoading}>
+        {isLoading ? 'Signing in...' : 'Sign In'}
+      </button>
+    </form>
+  );
+}
+```
+
+**What the machine guarantees:**
+- Can't send LOGIN while already authenticating (no double submissions)
+- Can't RETRY more than 3 times (guard prevents it)
+- Error auto-clears after 5 seconds (timed transition)
+- SESSION_EXPIRED only works from authenticated state
+- Every state transition is explicit and testable
+
+## Pattern 2: Multi-Step Checkout
+
+```typescript
+const checkoutMachine = setup({
+  types: {
+    context: {} as {
+      cart: CartItem[];
+      shippingAddress: Address | null;
+      paymentMethod: PaymentMethod | null;
+      orderId: string | null;
+      error: string | null;
+    },
+    events: {} as
+      | { type: 'SET_SHIPPING'; address: Address }
+      | { type: 'SET_PAYMENT'; method: PaymentMethod }
+      | { type: 'SUBMIT_ORDER' }
+      | { type: 'BACK' }
+      | { type: 'EDIT_SHIPPING' }
+      | { type: 'RETRY' },
+  },
+}).createMachine({
+  id: 'checkout',
+  initial: 'shipping',
+  context: {
+    cart: [],
+    shippingAddress: null,
+    paymentMethod: null,
+    orderId: null,
+    error: null,
+  },
+
+  states: {
+    shipping: {
+      on: {
+        SET_SHIPPING: {
+          target: 'payment',
+          actions: assign({ shippingAddress: ({ event }) => event.address }),
+        },
+      },
+    },
+
+    payment: {
+      on: {
+        SET_PAYMENT: {
+          target: 'review',
+          actions: assign({ paymentMethod: ({ event }) => event.method }),
+        },
+        BACK: { target: 'shipping' },
+      },
+    },
+
+    review: {
+      on: {
+        SUBMIT_ORDER: { target: 'processing' },
+        EDIT_SHIPPING: { target: 'shipping' },
+        BACK: { target: 'payment' },
+      },
+    },
+
+    processing: {
+      invoke: {
+        src: fromPromise(async ({ input }) => {
+          return api.orders.create(input);
+        }),
+        input: ({ context }) => ({
+          cart: context.cart,
+          shipping: context.shippingAddress,
+          payment: context.paymentMethod,
+        }),
+        onDone: {
+          target: 'confirmation',
+          actions: assign({ orderId: ({ event }) => event.output.id }),
+        },
+        onError: {
+          target: 'error',
+          actions: assign({ error: ({ event }) => (event.error as Error).message }),
+        },
+      },
+    },
+
+    error: {
+      on: {
+        RETRY: { target: 'processing' },
+        BACK: { target: 'review' },
+      },
+    },
+
+    confirmation: {
+      type: 'final',
+    },
+  },
+});
+```
+
+### The Checkout UI
+
+```typescript
+function CheckoutWizard() {
+  const [state, send] = useMachine(checkoutMachine);
+
+  // The machine determines which step to show — no manual step tracking
+  return (
+    <div>
+      <StepIndicator
+        steps={['Shipping', 'Payment', 'Review', 'Confirmation']}
+        current={state.value as string}
+      />
+
+      {state.matches('shipping') && (
+        <ShippingForm
+          onSubmit={(address) => send({ type: 'SET_SHIPPING', address })}
+        />
+      )}
+
+      {state.matches('payment') && (
+        <PaymentForm
+          onSubmit={(method) => send({ type: 'SET_PAYMENT', method })}
+          onBack={() => send({ type: 'BACK' })}
+        />
+      )}
+
+      {state.matches('review') && (
+        <OrderReview
+          context={state.context}
+          onSubmit={() => send({ type: 'SUBMIT_ORDER' })}
+          onBack={() => send({ type: 'BACK' })}
+          onEditShipping={() => send({ type: 'EDIT_SHIPPING' })}
+        />
+      )}
+
+      {state.matches('processing') && <LoadingSpinner text="Processing order..." />}
+
+      {state.matches('error') && (
+        <ErrorState
+          message={state.context.error!}
+          onRetry={() => send({ type: 'RETRY' })}
+          onBack={() => send({ type: 'BACK' })}
+        />
+      )}
+
+      {state.matches('confirmation') && (
+        <OrderConfirmation orderId={state.context.orderId!} />
+      )}
+    </div>
+  );
+}
+```
+
+## Pattern 3: Async Data Fetching Machine
+
+For complex async flows that TanStack Query can't handle (parallel dependent requests with fallbacks):
+
+```typescript
+const dataFetchMachine = setup({
+  types: {
+    context: {} as {
+      user: User | null;
+      orders: Order[];
+      recommendations: Product[];
+      error: string | null;
+    },
+    events: {} as
+      | { type: 'FETCH'; userId: string }
+      | { type: 'RETRY' }
+      | { type: 'REFRESH' },
+  },
+  actors: {
+    fetchUser: fromPromise(async ({ input }: { input: string }) => {
+      return api.users.getById(input);
+    }),
+    fetchOrders: fromPromise(async ({ input }: { input: string }) => {
+      return api.orders.getByUser(input);
+    }),
+    fetchRecommendations: fromPromise(async ({ input }: { input: string }) => {
+      return api.products.getRecommendations(input);
+    }),
+  },
+}).createMachine({
+  id: 'dashboard-data',
+  initial: 'idle',
+
+  states: {
+    idle: {
+      on: { FETCH: { target: 'loading', actions: assign({ error: null }) } },
+    },
+
+    loading: {
+      type: 'parallel',
+      states: {
+        user: {
+          initial: 'fetching',
+          states: {
+            fetching: {
+              invoke: {
+                src: 'fetchUser',
+                input: ({ event }) => (event as any).userId,
+                onDone: {
+                  target: 'done',
+                  actions: assign({ user: ({ event }) => event.output }),
+                },
+                onError: { target: 'failed' },
+              },
+            },
+            done: { type: 'final' },
+            failed: { type: 'final' },
+          },
+        },
+        orders: {
+          initial: 'fetching',
+          states: {
+            fetching: {
+              invoke: {
+                src: 'fetchOrders',
+                input: ({ event }) => (event as any).userId,
+                onDone: {
+                  target: 'done',
+                  actions: assign({ orders: ({ event }) => event.output }),
+                },
+                onError: { target: 'failed' },
+              },
+            },
+            done: { type: 'final' },
+            failed: { type: 'final' },
+          },
+        },
+      },
+      onDone: { target: 'loaded' },
+    },
+
+    loaded: {
+      on: {
+        REFRESH: { target: 'loading' },
+      },
+    },
+  },
+});
+```
+
+This machine fetches user and orders **in parallel** — if one fails, the other still completes. The `onDone` on the parallel state fires when all child states reach their final state.
+
+## Visualizing Your Machines
+
+XState's killer developer experience feature: **every machine is visualizable**. Paste your machine into [stately.ai/viz](https://stately.ai/viz) and get an interactive state diagram.
+
+This means:
+- Product managers can review the flow visually
+- QA can see every possible state and transition
+- New team members understand complex logic in minutes
+- Edge cases are visible — if there's no transition from state X on event Y, it's obvious
+
+## Testing State Machines
+
+State machines are pure logic — they're trivially testable:
+
+```typescript
+import { createActor } from 'xstate';
+import { authMachine } from './auth';
+
+describe('authMachine', () => {
+  it('transitions from unauthenticated to authenticating on LOGIN', () => {
+    const actor = createActor(authMachine);
+    actor.start();
+
+    expect(actor.getSnapshot().value).toBe('unauthenticated');
+
+    actor.send({ type: 'LOGIN', email: 'test@test.com', password: 'pass' });
+    expect(actor.getSnapshot().value).toBe('authenticating');
+  });
+
+  it('prevents retry after 3 attempts', () => {
+    const actor = createActor(authMachine, {
+      snapshot: {
+        ...authMachine.resolveState({ value: 'error' }),
+        context: { ...authMachine.context, attempts: 3, error: 'Failed' },
+      },
+    });
+    actor.start();
+
+    actor.send({ type: 'RETRY' });
+    // Guard prevents transition — still in error state
+    expect(actor.getSnapshot().value).toBe('error');
+  });
+
+  it('cannot logout from unauthenticated state', () => {
+    const actor = createActor(authMachine);
+    actor.start();
+
+    actor.send({ type: 'LOGOUT' });
+    // LOGOUT is not handled in unauthenticated — state unchanged
+    expect(actor.getSnapshot().value).toBe('unauthenticated');
+  });
+});
+```
+
+## State Machines vs useReducer vs Zustand
+
+| Feature | useState/booleans | useReducer | XState | Zustand |
+|---------|-------------------|------------|--------|---------|
+| **Impossible states** | Possible | Possible | Impossible | Possible |
+| **Explicit transitions** | No | Partial | Yes | No |
+| **Visual debugging** | No | No | Yes (Stately) | No |
+| **Side effects** | Manual | Manual | Built-in (invoke) | Manual |
+| **Guards/conditions** | Manual | Manual | Built-in | Manual |
+| **Parallel states** | Manual | Manual | Built-in | Manual |
+| **Testability** | Hard | Medium | Excellent | Medium |
+| **Learning curve** | None | Low | Medium-High | Low |
+| **Bundle size** | 0 | 0 | ~33KB | ~3KB |
+| **Best for** | Simple UI | Form logic | Complex flows | Global state |
+
+## Practical Takeaways
+
+1. **If you have 3+ interacting booleans, use a state machine.** The boolean combinations will bite you.
+2. **XState v5 uses actors** — every machine is an actor with its own state and lifecycle.
+3. **Use `createActorContext`** to share machines via React Context without prop drilling.
+4. **Invoke for async operations** — `fromPromise` handles loading/success/error automatically.
+5. **Guards prevent invalid transitions** — max retries, validation checks, permission gates.
+6. **Visualize your machines** — stately.ai/viz turns code into diagrams that anyone can review.
+7. **Test the transitions, not the UI** — state machines are pure logic that's trivially testable.
+8. **Don't overuse state machines** — simple toggles, server state, and global UI state have better tools.
+9. **Parallel states for concurrent flows** — fetch multiple resources simultaneously with independent error handling.
+10. **Start with the diagram** — draw the states and transitions before writing code. If you can't draw it, you don't understand the flow.
+
+State machines don't replace your other tools — they complement them. Use [Zustand for global UI state](/blog/killing-prop-drilling-event-driven-frontend-architecture), [TanStack Query for server state](/blog/tanstack-query-advanced-caching-rsc-guide), and XState for complex, stateful workflows where impossible states must stay impossible.
+
+## References
+
+### Sources
+- [Stately.ai: XState v5 Quick Start](https://stately.ai/docs/quick-start) — official getting started guide
+- [Stately.ai: Actors](https://stately.ai/docs/actors) — the actor model in XState v5
+- [Stately.ai: XState v5 Announcement](https://stately.ai/blog/2023-12-01-xstate-v5) — what changed and why
+- [DEV.to: Reducer vs Finite State Machines](https://dev.to/ibrocodes/reducer-vs-finite-state-machines-understanding-the-paradigm-shift-177a) — paradigm comparison
+- [Upstatement: Multi-Step Checkout with State Machines](https://upstatement.com/blog/building-a-multi-step-checkout-form-from-scratch) — production implementation
+
+### Further Reading
+- [Sandro Maglione: State Machines and Actors in XState v5](https://www.sandromaglione.com/articles/state-machines-and-actors-in-xstate-v5) — deep dive into the actor model
+- [First AML: Improving Multi-Step Forms with State Machines](https://firstaml.dev/blog/2ldc7qgkjwbg7h2bm3xryc3so6eqb1) — production case study
+- [Makers Den: State Management Trends in React 2025](https://makersden.io/blog/react-state-management-in-2025) — where XState fits in the landscape
+- [Smashing Magazine: The Rise of State Machines](https://www.smashingmagazine.com/2018/01/rise-state-machines/) — foundational article on why state machines matter
+
+---
+
+~Seb 👊
