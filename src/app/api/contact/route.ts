@@ -205,11 +205,8 @@ function buildConfirmationEmail(name: string): string {
           <!-- Footer -->
           <tr>
             <td style="padding: 32px 40px;">
-              <p style="margin: 0 0 4px; font-size: 14px; color: #ffffff; font-weight: 600;">
-                Talk soon,
-              </p>
-              <p style="margin: 0 0 20px; font-size: 14px; color: #b0b0b0;">
-                Sebastian Sleczka
+              <p style="margin: 0 0 20px; font-size: 14px; color: #ffffff; font-weight: 600;">
+                Talk soon, Seb &#x1F44A;
               </p>
               <table role="presentation" cellpadding="0" cellspacing="0">
                 <tr>
