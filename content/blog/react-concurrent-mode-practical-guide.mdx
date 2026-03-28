@@ -1,0 +1,408 @@
+---
+title: 'React Concurrent Mode: The Practical Guide to useTransition, useDeferredValue, and Async Actions'
+date: '2026-03-28'
+category: 'Development'
+tags: ['react', 'performance', 'concurrent-mode', 'hooks', 'typescript']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: 'React concurrent rendering makes the UI responsive during heavy computation — but it doubles re-renders if misused. Here is the practical guide: when useTransition beats debounce, how useDeferredValue works, React 19 async Actions, and the patterns that actually improve production performance.'
+---
+
+I watched a senior engineer spend a full day adding debounce to a search component. The search filtered 10,000 products in a table — every keystroke triggered a re-render of all 10,000 rows, freezing the input for 200ms. Debounce "fixed" it by delaying the filter by 300ms. The input felt responsive, but search results lagged behind by half a second.
+
+Then I replaced the debounce with `useTransition`. One hook, three lines of code. The input stayed responsive **and** results appeared as fast as the CPU could render them — no artificial delay. On a fast machine, results were instant. On a slow machine, the input still never froze.
+
+That's what concurrent rendering does: it lets React **interrupt** expensive rendering work when the user does something urgent. No delays, no freezes, no compromise.
+
+But concurrent rendering isn't free. It doubles re-renders in certain cases. It requires understanding React's priority system. And it's completely useless for 90% of state updates. Here's when to use it, when to avoid it, and the patterns that actually matter in production.
+
+## The Mental Model: Priority Lanes
+
+React concurrent mode splits updates into two priority lanes:
+
+```
+URGENT (synchronous):              NON-URGENT (interruptible):
+├── User typing in input           ├── Filtering a large list
+├── Clicking a button              ├── Rendering search results
+├── Toggling a checkbox            ├── Updating a heavy chart
+├── Hovering over an element       ├── Loading new page content
+└── Scrolling                      └── Background data updates
+```
+
+Without concurrent rendering, all updates are synchronous — they block the thread until complete. A 200ms re-render of 10,000 list items blocks the input for 200ms.
+
+With concurrent rendering, React starts rendering the list, but if the user types again, React **abandons** the in-progress render and handles the keystroke first. The list re-render restarts with the new search term. The input never freezes.
+
+## useTransition: Control the Update Function
+
+`useTransition` wraps a state update to mark it as non-urgent (a "transition"):
+
+```typescript
+import { useState, useTransition } from 'react';
+
+function ProductSearch({ products }: { products: Product[] }) {
+  const [query, setQuery] = useState('');
+  const [filtered, setFiltered] = useState(products);
+  const [isPending, startTransition] = useTransition();
+
+  function handleSearch(value: string) {
+    // URGENT: Update the input immediately
+    setQuery(value);
+
+    // NON-URGENT: Filter the list in a transition
+    startTransition(() => {
+      const result = products.filter(p =>
+        p.name.toLowerCase().includes(value.toLowerCase())
+      );
+      setFiltered(result);
+    });
+  }
+
+  return (
+    <div>
+      <input
+        value={query}
+        onChange={(e) => handleSearch(e.target.value)}
+        placeholder="Search products..."
+      />
+
+      {isPending && <Spinner className="ml-2" />}
+
+      <ProductTable products={filtered} />
+    </div>
+  );
+}
+```
+
+**What happens:**
+1. User types "s" → `setQuery('s')` is urgent → input updates instantly
+2. `startTransition(() => setFiltered(...))` starts rendering the filtered list
+3. User types "sh" before the filter completes → React **abandons** the "s" filter
+4. `setQuery('sh')` updates input → new transition starts with "sh"
+5. User stops typing → filter completes → `isPending` becomes false → results show
+
+The input **never freezes**, regardless of how many products are in the list.
+
+### useTransition vs Debounce
+
+| Aspect | Debounce | useTransition |
+|--------|----------|---------------|
+| **Mechanism** | Delays function call | Lets React interrupt render |
+| **Input responsiveness** | Immediate | Immediate |
+| **Result delay** | Fixed (300ms typical) | Adaptive (CPU-dependent) |
+| **On fast machines** | Still waits 300ms | Results appear instantly |
+| **On slow machines** | May still jank if 300ms isn't enough | Input stays responsive |
+| **Network requests** | Great — reduces API calls | Useless — doesn't delay calls |
+| **CPU-bound work** | Masks the problem | Solves the problem |
+
+**Rule:** Use debounce for **network requests** (reducing API calls). Use useTransition for **CPU-bound rendering** (expensive re-renders).
+
+## useDeferredValue: Defer a Value
+
+`useDeferredValue` is the simpler alternative — it creates a "lagging copy" of a value that updates in a transition automatically:
+
+```typescript
+import { useState, useDeferredValue, useMemo } from 'react';
+
+function ProductSearch({ products }: { products: Product[] }) {
+  const [query, setQuery] = useState('');
+  const deferredQuery = useDeferredValue(query);
+
+  // This computation uses deferredQuery — it's deferred (non-urgent)
+  const filtered = useMemo(
+    () => products.filter(p =>
+      p.name.toLowerCase().includes(deferredQuery.toLowerCase())
+    ),
+    [products, deferredQuery]
+  );
+
+  const isStale = query !== deferredQuery;
+
+  return (
+    <div>
+      <input
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        placeholder="Search products..."
+      />
+      <div style={{ opacity: isStale ? 0.7 : 1, transition: 'opacity 0.2s' }}>
+        <ProductTable products={filtered} />
+      </div>
+    </div>
+  );
+}
+```
+
+**When to use which:**
+- **useTransition:** When you control the state update (you call `setState`)
+- **useDeferredValue:** When you receive a value as a prop and can't control when it changes
+
+```typescript
+// useTransition — you own the state update
+function SearchPage() {
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState([]);
+  const [isPending, startTransition] = useTransition();
+
+  function onSearch(value: string) {
+    setQuery(value);
+    startTransition(() => setResults(expensiveFilter(value)));
+  }
+}
+
+// useDeferredValue — you receive the value as a prop
+function ResultsList({ query }: { query: string }) {
+  const deferredQuery = useDeferredValue(query);
+  const results = useMemo(() => expensiveFilter(deferredQuery), [deferredQuery]);
+  return <List items={results} />;
+}
+```
+
+## React 19: Async Actions and useOptimistic
+
+React 19 expanded transitions to support **async functions**, creating a powerful pattern for form submissions and mutations:
+
+### Async startTransition
+
+```typescript
+import { useTransition } from 'react';
+
+function CreateOrderButton({ cartItems }: { cartItems: CartItem[] }) {
+  const [isPending, startTransition] = useTransition();
+
+  async function handleCreate() {
+    startTransition(async () => {
+      // isPending is true immediately
+      const order = await createOrder(cartItems);
+      // isPending becomes false after the async action completes
+      redirect(`/orders/${order.id}`);
+    });
+  }
+
+  return (
+    <button onClick={handleCreate} disabled={isPending}>
+      {isPending ? 'Creating order...' : 'Place Order'}
+    </button>
+  );
+}
+```
+
+No manual `setIsLoading` state. No try/catch for setting error states. React manages the pending state automatically.
+
+### useActionState (Form Actions)
+
+```typescript
+import { useActionState } from 'react';
+
+async function submitForm(previousState: FormState, formData: FormData) {
+  const email = formData.get('email') as string;
+
+  if (!email.includes('@')) {
+    return { error: 'Invalid email', success: false };
+  }
+
+  await subscribe(email);
+  return { error: null, success: true };
+}
+
+function NewsletterForm() {
+  const [state, formAction, isPending] = useActionState(submitForm, {
+    error: null,
+    success: false,
+  });
+
+  return (
+    <form action={formAction}>
+      <input name="email" type="email" required />
+      {state.error && <p className="text-red-500">{state.error}</p>}
+      {state.success && <p className="text-green-500">Subscribed!</p>}
+      <button type="submit" disabled={isPending}>
+        {isPending ? 'Subscribing...' : 'Subscribe'}
+      </button>
+    </form>
+  );
+}
+```
+
+### useOptimistic
+
+Show the result of a mutation **immediately**, before the server confirms:
+
+```typescript
+import { useOptimistic, useTransition } from 'react';
+
+function TodoList({ todos }: { todos: Todo[] }) {
+  const [optimisticTodos, addOptimistic] = useOptimistic(
+    todos,
+    (state, newTodo: Todo) => [...state, newTodo]
+  );
+  const [isPending, startTransition] = useTransition();
+
+  async function handleAdd(formData: FormData) {
+    const title = formData.get('title') as string;
+    const optimisticTodo = { id: crypto.randomUUID(), title, completed: false };
+
+    startTransition(async () => {
+      addOptimistic(optimisticTodo); // UI updates INSTANTLY
+      await createTodo({ title });    // Server call happens in background
+      // If it fails, React reverts to the original `todos`
+    });
+  }
+
+  return (
+    <div>
+      <form action={handleAdd}>
+        <input name="title" placeholder="New todo" />
+        <button type="submit">Add</button>
+      </form>
+      <ul>
+        {optimisticTodos.map(todo => (
+          <li key={todo.id} style={{ opacity: todo.id.includes('-') ? 0.7 : 1 }}>
+            {todo.title}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+```
+
+## When Concurrent Features Help (And When They Don't)
+
+### They Help:
+- **Large list filtering** (1,000+ items rendered simultaneously)
+- **Complex chart re-renders** (D3, recharts with many data points)
+- **Tab switching** with heavy content per tab
+- **Pagination** with hundreds of rows per page
+- **Form submissions** (async Actions with isPending)
+- **Optimistic updates** (useOptimistic)
+
+### They Don't Help:
+- **Network-bound operations** — useTransition doesn't make API calls faster
+- **Simple components** — the overhead of double re-renders hurts more than it helps
+- **Single state updates** — if only one thing changes, there's nothing to deprioritize
+- **Already-memoized components** — if React.memo prevents re-renders, transitions are unnecessary
+
+### The Double Re-Render Cost
+
+useTransition causes **two re-renders** per transition:
+1. First render: `isPending = true` (synchronous, urgent)
+2. Second render: transition completes, `isPending = false` (interruptible)
+
+For simple state updates, this is slower than a single render. Only use transitions when the second render is expensive enough that interruptibility matters.
+
+## Integration with Server Components
+
+Transitions play beautifully with [Server Components and streaming](/blog/ssr-vs-ssg-vs-isr-vs-rsc-nextjs-strategies):
+
+```typescript
+// app/products/page.tsx — Server Component
+import { Suspense } from 'react';
+import { SearchInput } from './SearchInput';
+import { ProductGrid } from './ProductGrid';
+
+export default async function ProductsPage({
+  searchParams,
+}: {
+  searchParams: { q?: string };
+}) {
+  return (
+    <div>
+      <SearchInput defaultValue={searchParams.q} />
+      <Suspense key={searchParams.q} fallback={<ProductGridSkeleton />}>
+        <ProductGrid query={searchParams.q} />
+      </Suspense>
+    </div>
+  );
+}
+```
+
+```typescript
+// SearchInput.tsx — Client Component with transition
+'use client';
+
+import { useTransition } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
+
+export function SearchInput({ defaultValue }: { defaultValue?: string }) {
+  const router = useRouter();
+  const [isPending, startTransition] = useTransition();
+
+  function handleSearch(value: string) {
+    startTransition(() => {
+      router.push(`/products?q=${encodeURIComponent(value)}`);
+    });
+  }
+
+  return (
+    <div>
+      <input
+        defaultValue={defaultValue}
+        onChange={(e) => handleSearch(e.target.value)}
+        placeholder="Search products..."
+      />
+      {isPending && <Spinner />}
+    </div>
+  );
+}
+```
+
+The `startTransition` wrapping `router.push` means Next.js treats the navigation as a transition — the current page stays interactive while the new page loads in the background.
+
+## Measuring the Impact
+
+Use React DevTools Profiler to verify concurrent features are helping:
+
+1. Open React DevTools → Profiler tab
+2. Click "Record"
+3. Perform the action (type in search, switch tabs)
+4. Click "Stop"
+5. Look for:
+   - **Concurrent Feature Render** label on flamegraph
+   - Multiple smaller render passes instead of one long block
+   - Input-related renders completing before list renders
+
+```bash
+# Enable React Profiler in production
+# next.config.mjs
+{
+  reactStrictMode: true,
+  compiler: {
+    reactRemoveProperties: process.env.NODE_ENV === 'production' ? { properties: ['^data-testid$'] } : false,
+  },
+}
+```
+
+## Practical Takeaways
+
+1. **Use `useTransition` for CPU-bound rendering** — large lists, complex charts, heavy tab content.
+2. **Use debounce for network requests** — API calls, search-as-you-type with server-side search.
+3. **Use `useDeferredValue` when you receive values as props** — you can't control when they change.
+4. **React 19 async Actions** eliminate manual loading state management — `isPending` is free.
+5. **`useOptimistic` for instant feedback** — show the mutation result before the server confirms.
+6. **Don't use transitions for simple updates** — the double re-render makes them slower for trivial state changes.
+7. **Always pair with `useMemo`** — transitions re-render the component; memoization prevents recomputing unchanged parts.
+8. **`startTransition` + `router.push`** for smooth navigation transitions in Next.js.
+9. **Profile before and after** — React DevTools Profiler shows whether transitions actually helped.
+10. **Understand that [React Fiber](/blog/deep-dive-into-react-fiber-the-engine-behind-modern-react) enables all of this** — concurrent rendering is built on Fiber's interruptible architecture.
+
+Concurrent rendering isn't a feature you toggle on. It's a set of tools for specific performance problems. Used correctly — for expensive renders with urgent user interactions — it eliminates jank without artificial delays. Used incorrectly — for every state update — it doubles your render count for no benefit.
+
+## References
+
+### Sources
+- [React Docs: useTransition](https://react.dev/reference/react/useTransition) — official hook reference
+- [React Docs: useOptimistic](https://react.dev/reference/react/useOptimistic) — optimistic update hook
+- [React v19 Blog Post](https://react.dev/blog/2024/12/05/react-19) — Actions and async transitions
+- [DeveloperWay: useTransition Performance Game Changer or...?](https://www.developerway.com/posts/use-transition) — benchmark analysis
+- [3perf: React Concurrency, Explained](https://3perf.com/talks/react-concurrency/) — visual guide to concurrent rendering
+
+### Further Reading
+- [Curiosum: React 18 Concurrent Rendering Performance Guide](https://www.curiosum.com/blog/performance-optimization-with-react-18-concurrent-rendering) — practical optimization patterns
+- [Dawchihliou: Stress Testing Concurrent Features](https://dawchihliou.github.io/articles/stress-testing-concurrent-features-in-react-18) — benchmarks with 100K+ 3D objects
+- [Steve Kinney: Concurrent React and Scheduling](https://stevekinney.com/courses/react-performance/concurrent-react-scheduling) — deep dive into the scheduler
+
+---
+
+~Seb 👊
