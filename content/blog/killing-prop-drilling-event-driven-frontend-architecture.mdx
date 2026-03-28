@@ -1,0 +1,518 @@
+---
+title: 'Killing Prop Drilling with Event-Driven Frontend Architecture'
+date: '2026-03-28'
+category: 'Development'
+tags: ['react', 'architecture', 'state-management', 'typescript', 'patterns']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: 'Prop drilling is a symptom, not the disease. The real problem is coupling. Here are five architectural patterns to eliminate it — from composition to event buses, Zustand to Jotai, and the decision framework for choosing the right state architecture in 2026.'
+---
+
+I once counted the prop chain in a production React app I was auditing. A `theme` prop was being passed through **eleven** components before reaching the one that actually used it. Eleven components that didn't care about `theme`, didn't render differently based on it, but were forced to accept it, destructure it, and pass it down — just because a leaf component 11 levels deep needed to know if the background was dark or light.
+
+This isn't just ugly. It's architecturally toxic. Every component in that chain is now coupled to `theme`. Change the prop name? 11 files. Add a new theme property? 11 files. Refactor one component in the chain? Careful — you might break the prop forwarding.
+
+Prop drilling is the symptom. **Tight coupling between components that shouldn't know about each other** is the disease. And the treatment isn't always what you'd expect — sometimes it's not even a state management library.
+
+## Why Prop Drilling Happens
+
+Prop drilling happens when you put state in the wrong place. Specifically, when state lives in an ancestor component but is only consumed by distant descendants. The React tree structure forces you to pass it through every intermediate component.
+
+```
+App
+ └─ Dashboard
+     └─ Sidebar
+         └─ UserSection
+             └─ UserMenu
+                 └─ ThemeToggle   ← needs `theme` and `setTheme`
+```
+
+The naive solution: put `theme` state in `App`, pass it through `Dashboard → Sidebar → UserSection → UserMenu → ThemeToggle`. Five components acting as useless intermediaries.
+
+The real question isn't "how do I pass props deeper?" It's **"why does this component need to know about state that lives so far away?"**
+
+## Solution 1: Component Composition (No Library Needed)
+
+Before reaching for any library, try restructuring your components. This is the most underrated solution — it works in 40% of prop drilling cases and requires zero dependencies.
+
+### Children as Props
+
+```typescript
+// BEFORE: Prop drilling through Layout → Sidebar → Content
+function App() {
+  const [user, setUser] = useState<User | null>(null);
+
+  return (
+    <Layout user={user} setUser={setUser}>
+      <Sidebar user={user} />
+      <Content user={user} />
+    </Layout>
+  );
+}
+
+function Layout({ user, setUser, children }) {
+  return <div className="layout">{children}</div>;
+  // Layout doesn't USE user — it just passes it through!
+}
+```
+
+```typescript
+// AFTER: Compose at the top, no drilling needed
+function App() {
+  const [user, setUser] = useState<User | null>(null);
+
+  return (
+    <Layout>
+      <Sidebar>
+        <UserMenu user={user} onLogout={() => setUser(null)} />
+      </Sidebar>
+      <Content>
+        <UserGreeting name={user?.name} />
+      </Content>
+    </Layout>
+  );
+}
+
+function Layout({ children }: { children: React.ReactNode }) {
+  return <div className="layout">{children}</div>;
+  // Layout doesn't know about user at all
+}
+```
+
+By composing at the top level, you pass the data-consuming components directly — the intermediate components just render `children` without knowing what's inside.
+
+### Render Props and Slot Pattern
+
+For more complex cases, use named slots:
+
+```typescript
+function DashboardLayout({
+  header,
+  sidebar,
+  content,
+}: {
+  header: React.ReactNode;
+  sidebar: React.ReactNode;
+  content: React.ReactNode;
+}) {
+  return (
+    <div className="grid grid-cols-[250px_1fr]">
+      <div className="col-span-2">{header}</div>
+      <aside>{sidebar}</aside>
+      <main>{content}</main>
+    </div>
+  );
+}
+
+// Usage — all data-dependent components are composed at the top
+function App() {
+  const user = useUser();
+  const metrics = useMetrics();
+
+  return (
+    <DashboardLayout
+      header={<Header user={user} />}
+      sidebar={<Sidebar user={user} metrics={metrics} />}
+      content={<MetricsDashboard metrics={metrics} />}
+    />
+  );
+}
+```
+
+`DashboardLayout` has zero knowledge of `user` or `metrics`. It's purely a layout component. The data flows directly from `App` to the components that need it.
+
+## Solution 2: React Context (For Low-Frequency State)
+
+Context is designed for state that changes infrequently and is needed by many components: themes, locale, auth status, feature flags.
+
+```typescript
+// contexts/ThemeContext.tsx
+'use client';
+
+import { createContext, useContext, useState, type ReactNode } from 'react';
+
+type Theme = 'light' | 'dark' | 'system';
+
+interface ThemeContextType {
+  theme: Theme;
+  setTheme: (theme: Theme) => void;
+  resolvedTheme: 'light' | 'dark';
+}
+
+const ThemeContext = createContext<ThemeContextType | null>(null);
+
+export function ThemeProvider({ children }: { children: ReactNode }) {
+  const [theme, setTheme] = useState<Theme>('system');
+
+  const resolvedTheme = theme === 'system'
+    ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+    : theme;
+
+  return (
+    <ThemeContext.Provider value={{ theme, setTheme, resolvedTheme }}>
+      {children}
+    </ThemeContext.Provider>
+  );
+}
+
+export function useTheme(): ThemeContextType {
+  const context = useContext(ThemeContext);
+  if (!context) {
+    throw new Error('useTheme must be used within a ThemeProvider');
+  }
+  return context;
+}
+```
+
+```typescript
+// Any deeply nested component — zero prop drilling
+function ThemeToggle() {
+  const { theme, setTheme } = useTheme();
+
+  return (
+    <select value={theme} onChange={(e) => setTheme(e.target.value as Theme)}>
+      <option value="light">Light</option>
+      <option value="dark">Dark</option>
+      <option value="system">System</option>
+    </select>
+  );
+}
+```
+
+### When Context Breaks Down
+
+Context re-renders every consumer when any value in the context changes. For high-frequency state (cursor position, form input, real-time data), this causes performance problems:
+
+```typescript
+// BAD: Every component using this context re-renders when ANY value changes
+const AppContext = createContext({
+  user: null,     // Changes rarely
+  theme: 'dark',  // Changes rarely
+  cart: [],       // Changes frequently!
+  cursor: { x: 0, y: 0 }, // Changes constantly!
+});
+```
+
+**Rule of thumb:** If the state updates more than once per second, don't use Context. Split into separate contexts at minimum, or use Zustand/Jotai.
+
+## Solution 3: Zustand (The Pragmatic Default)
+
+Zustand is the most popular state management library in 2026 — ~20M weekly downloads, ~3KB bundle. It's the right choice for 80% of applications.
+
+```typescript
+// stores/dashboard.ts
+import { create } from 'zustand';
+import { devtools, persist } from 'zustand/middleware';
+
+interface DashboardState {
+  // State
+  selectedMetric: string;
+  dateRange: { start: Date; end: Date };
+  filters: Record<string, string[]>;
+  sidebarOpen: boolean;
+
+  // Actions
+  setSelectedMetric: (metric: string) => void;
+  setDateRange: (range: { start: Date; end: Date }) => void;
+  toggleFilter: (key: string, value: string) => void;
+  toggleSidebar: () => void;
+  resetFilters: () => void;
+}
+
+export const useDashboardStore = create<DashboardState>()(
+  devtools(
+    persist(
+      (set) => ({
+        selectedMetric: 'revenue',
+        dateRange: {
+          start: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000),
+          end: new Date(),
+        },
+        filters: {},
+        sidebarOpen: true,
+
+        setSelectedMetric: (metric) => set({ selectedMetric: metric }),
+        setDateRange: (dateRange) => set({ dateRange }),
+        toggleFilter: (key, value) =>
+          set((state) => {
+            const current = state.filters[key] || [];
+            const updated = current.includes(value)
+              ? current.filter((v) => v !== value)
+              : [...current, value];
+            return { filters: { ...state.filters, [key]: updated } };
+          }),
+        toggleSidebar: () => set((state) => ({ sidebarOpen: !state.sidebarOpen })),
+        resetFilters: () => set({ filters: {} }),
+      }),
+      { name: 'dashboard-store' } // Persist to localStorage
+    )
+  )
+);
+```
+
+```typescript
+// Any component — no props, no context, no drilling
+function MetricSelector() {
+  const selectedMetric = useDashboardStore((s) => s.selectedMetric);
+  const setSelectedMetric = useDashboardStore((s) => s.setSelectedMetric);
+
+  return (
+    <select value={selectedMetric} onChange={(e) => setSelectedMetric(e.target.value)}>
+      <option value="revenue">Revenue</option>
+      <option value="orders">Orders</option>
+      <option value="users">Users</option>
+    </select>
+  );
+}
+
+function Sidebar() {
+  const sidebarOpen = useDashboardStore((s) => s.sidebarOpen);
+  // Only re-renders when sidebarOpen changes — not when other state changes
+  if (!sidebarOpen) return null;
+  return <aside>{/* sidebar content */}</aside>;
+}
+```
+
+**Zustand's killer feature:** Selector-based subscriptions. Each component only re-renders when the specific slice of state it subscribes to changes. This is something Context can't do out of the box.
+
+## Solution 4: Event Bus (For Cross-Cutting Concerns)
+
+An event bus is the right tool for ephemeral, one-shot communications between unrelated components. Think: toast notifications, analytics events, keyboard shortcuts, global UI triggers.
+
+```typescript
+// lib/event-bus.ts
+type EventMap = {
+  'toast:show': { message: string; type: 'success' | 'error' | 'info' };
+  'toast:dismiss': { id: string };
+  'analytics:track': { event: string; properties?: Record<string, unknown> };
+  'shortcut:save': undefined;
+  'shortcut:search': undefined;
+  'modal:open': { id: string; data?: unknown };
+  'modal:close': { id: string };
+  'order:created': { orderId: string };
+  'user:logout': undefined;
+};
+
+type EventHandler<T> = (data: T) => void;
+
+class TypedEventBus {
+  private listeners = new Map<string, Set<EventHandler<any>>>();
+
+  on<K extends keyof EventMap>(event: K, handler: EventHandler<EventMap[K]>): () => void {
+    if (!this.listeners.has(event)) {
+      this.listeners.set(event, new Set());
+    }
+    this.listeners.get(event)!.add(handler);
+
+    // Return unsubscribe function
+    return () => {
+      this.listeners.get(event)?.delete(handler);
+    };
+  }
+
+  emit<K extends keyof EventMap>(event: K, data: EventMap[K]): void {
+    this.listeners.get(event)?.forEach((handler) => handler(data));
+  }
+
+  off<K extends keyof EventMap>(event: K, handler: EventHandler<EventMap[K]>): void {
+    this.listeners.get(event)?.delete(handler);
+  }
+}
+
+export const eventBus = new TypedEventBus();
+```
+
+```typescript
+// hooks/useEventBus.ts
+import { useEffect } from 'react';
+import { eventBus } from '@/lib/event-bus';
+
+export function useEvent<K extends keyof EventMap>(
+  event: K,
+  handler: (data: EventMap[K]) => void
+) {
+  useEffect(() => {
+    const unsubscribe = eventBus.on(event, handler);
+    return unsubscribe;
+  }, [event, handler]);
+}
+```
+
+```typescript
+// OrderForm.tsx — publisher (doesn't know about ToastContainer)
+function OrderForm() {
+  const handleSubmit = async (data: OrderData) => {
+    const order = await createOrder(data);
+
+    // Announce what happened — doesn't care who's listening
+    eventBus.emit('order:created', { orderId: order.id });
+    eventBus.emit('toast:show', {
+      message: `Order ${order.id} created!`,
+      type: 'success',
+    });
+    eventBus.emit('analytics:track', {
+      event: 'order_created',
+      properties: { total: data.total },
+    });
+  };
+
+  return <form onSubmit={handleSubmit}>{/* ... */}</form>;
+}
+
+// ToastContainer.tsx — subscriber (doesn't know about OrderForm)
+function ToastContainer() {
+  const [toasts, setToasts] = useState<Toast[]>([]);
+
+  useEvent('toast:show', (data) => {
+    setToasts((prev) => [...prev, { id: crypto.randomUUID(), ...data }]);
+  });
+
+  useEvent('toast:dismiss', (data) => {
+    setToasts((prev) => prev.filter((t) => t.id !== data.id));
+  });
+
+  return (
+    <div className="fixed top-4 right-4 space-y-2">
+      {toasts.map((toast) => (
+        <ToastItem key={toast.id} {...toast} />
+      ))}
+    </div>
+  );
+}
+```
+
+**The power of events:** `OrderForm` and `ToastContainer` have zero knowledge of each other. They communicate through events. You can add a new subscriber (e.g., an analytics component that tracks orders) without touching `OrderForm` at all.
+
+### When to Use Events vs State
+
+| Use Events For | Use State For |
+|---------------|--------------|
+| Notifications / toasts | UI state (open/closed, selected) |
+| Analytics tracking | Form data |
+| Keyboard shortcuts | User preferences |
+| Cross-component triggers | Data from APIs |
+| Side effects (logging) | Computed / derived values |
+| "Something happened" | "What is the current value?" |
+
+**The key distinction:** Events are fire-and-forget. State is persistent. If a component mounts after an event was emitted, it won't see the event. If it subscribes to state, it gets the current value immediately.
+
+## Solution 5: Jotai / Signals (Atomic State)
+
+For applications with lots of independent, composable state — where derived values are central to your data model:
+
+```typescript
+// atoms/dashboard.ts
+import { atom } from 'jotai';
+
+// Primitive atoms
+export const selectedMetricAtom = atom<string>('revenue');
+export const dateRangeAtom = atom<{ start: Date; end: Date }>({
+  start: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000),
+  end: new Date(),
+});
+export const filtersAtom = atom<Record<string, string[]>>({});
+
+// Derived atom — automatically recomputes when dependencies change
+export const activeFilterCountAtom = atom((get) => {
+  const filters = get(filtersAtom);
+  return Object.values(filters).reduce((sum, arr) => sum + arr.length, 0);
+});
+
+// Async derived atom — fetches data based on other atoms
+export const metricsDataAtom = atom(async (get) => {
+  const metric = get(selectedMetricAtom);
+  const range = get(dateRangeAtom);
+  const filters = get(filtersAtom);
+
+  const response = await fetch(
+    `/api/metrics?metric=${metric}&start=${range.start.toISOString()}&end=${range.end.toISOString()}&filters=${JSON.stringify(filters)}`
+  );
+  return response.json();
+});
+```
+
+```typescript
+// Components subscribe to exactly the atoms they need
+function FilterBadge() {
+  const [count] = useAtom(activeFilterCountAtom);
+  if (count === 0) return null;
+  return <Badge>{count} filters active</Badge>;
+}
+
+function MetricsChart() {
+  const [data] = useAtom(metricsDataAtom);
+  // Automatically refetches when selectedMetric, dateRange, or filters change
+  return <Chart data={data} />;
+}
+```
+
+**Jotai's advantage:** Fine-grained reactivity. Each atom is independently subscribable. Derived atoms automatically recompute — like a spreadsheet. Components only re-render when their specific atoms change.
+
+## The Decision Framework for 2026
+
+```
+Do you need state at all?
+├── No → Component composition (children, slots)
+│
+├── Yes → Is it server state (from an API)?
+│   ├── Yes → TanStack Query / SWR
+│   │         (caching, dedup, revalidation handled)
+│   │
+│   └── No → Is it low-frequency? (theme, locale, auth)
+│       ├── Yes → React Context
+│       │
+│       └── No → How complex is your state?
+│           ├── Simple (< 5 values) → Zustand
+│           ├── Complex with derived values → Jotai
+│           └── Enterprise (10+ devs, time-travel) → Redux Toolkit
+│
+│ Cross-cutting concerns? (toasts, analytics, shortcuts)
+└── Event Bus
+```
+
+### The State Management Landscape in 2026
+
+| Library | Bundle | Use Case | Re-render Strategy |
+|---------|--------|----------|-------------------|
+| **Context** | 0 KB | Theme, locale, auth | All consumers |
+| **Zustand** | 3 KB | General-purpose | Selector-based |
+| **Jotai** | 4 KB | Atomic, derived state | Per-atom |
+| **Redux Toolkit** | 15 KB | Enterprise, time-travel | Selector-based |
+| **Signals** | 4 KB | Fine-grained reactivity | Automatic |
+| **TanStack Query** | 13 KB | Server state | Query-based |
+| **Event Bus** | < 1 KB | Cross-cutting concerns | N/A |
+
+## Practical Takeaways
+
+1. **Try composition first** — restructure components before adding libraries. `children` and slot patterns eliminate 40% of prop drilling.
+2. **Separate server state from client state** — use TanStack Query for API data, Zustand/Jotai for UI state.
+3. **Context is for low-frequency state only** — theme, locale, auth status. Never put high-frequency data in Context.
+4. **Zustand is the default for 2026** — 3 KB, selector-based subscriptions, zero boilerplate. Use it unless you have a specific reason not to.
+5. **Event bus for cross-cutting concerns** — notifications, analytics, shortcuts. Don't try to model these as state.
+6. **Type your event bus** — TypeScript generics prevent runtime errors and enable autocomplete.
+7. **Don't mix patterns randomly** — pick one primary state approach per application. Adding all five patterns creates confusion.
+8. **Prop drilling 2-3 levels is fine** — not all props need to be in global state. Direct passing is the simplest, most debuggable approach for shallow trees.
+
+If you're combining these patterns with [scalable frontend architecture using Atomic Design and Feature Slices](/blog/from-components-to-systems-scalable-frontend-with-atomiec-design), the component boundaries naturally reduce prop drilling — each feature slice owns its own state. And for type-safe validation of the data flowing through your state management, [Zod](/blog/zod-typescript-validation-complete-guide) pairs perfectly with Zustand stores at the API boundary.
+
+The goal isn't to eliminate all props — it's to eliminate **unnecessary coupling**. When a component passes a prop it doesn't use, that's coupling. When a component receives a prop it needs, that's just data flow. Know the difference.
+
+## References
+
+### Sources
+- [Kent C. Dodds: Prop Drilling](https://kentcdodds.com/blog/prop-drilling) — the definitive explanation of the problem
+- [DeveloperWay: React State Management in 2025](https://www.developerway.com/posts/react-state-management-2025) — comprehensive state management guide
+- [Jotai: Comparison](https://jotai.org/docs/basics/comparison) — official comparison with other state libraries
+- [DEV.to: Event-Driven Architecture for Clean React Communication](https://dev.to/nicolalc/event-driven-architecture-for-clean-react-component-communication-fph) — event bus patterns
+- [DEV.to: State Management in 2026](https://dev.to/jsgurujobs/state-management-in-2026-zustand-vs-jotai-vs-redux-toolkit-vs-signals-2gge) — latest comparison
+
+### Further Reading
+- [PkgPulse: Choosing State Management for React in 2026](https://www.pkgpulse.com/blog/react-state-management-2026) — data-driven comparison
+- [FreeCodeCamp: Event-Based Architectures in JavaScript](https://www.freecodecamp.org/news/event-based-architectures-in-javascript-a-handbook-for-devs/) — deep dive into event patterns
+- [Medium: EventBus Pattern in React](https://medium.com/@ilham.abdillah.alhamdi/eventbus-pattern-in-react-a-lightweight-alternative-to-context-and-redux-cc6e8a1dc9ca) — implementation guide
+- [LogRocket: Solving Prop Drilling](https://blog.logrocket.com/solving-prop-drilling-react-apps/) — solution comparison with benchmarks
+
+---
+
+~Seb 👊
