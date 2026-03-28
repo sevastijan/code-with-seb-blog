@@ -1,0 +1,569 @@
+---
+title: 'Advanced Caching Strategies with TanStack Query + React Server Components'
+date: '2026-03-28'
+category: 'Development'
+tags: ['react', 'tanstack-query', 'caching', 'nextjs', 'performance']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: 'TanStack Query handles 90% of data fetching pain out of the box. The other 10% — prefetching with RSC, streaming hydration, optimistic updates, cache invalidation strategies — is where apps become fast or frustrating. Here is the advanced playbook.'
+---
+
+Most React developers discover TanStack Query (React Query) and immediately feel relief. No more `useEffect` + `useState` + loading/error state boilerplate. No more stale data after navigation. No more race conditions from abandoned requests. The library handles all of it.
+
+But then they hit the edge cases. The dashboard that shows stale data for 5 seconds after a mutation. The infinite list that refetches everything when one item changes. The Server Component that can't share its prefetched data with Client Components. The optimistic update that rolls back and flickers.
+
+These aren't TanStack Query bugs — they're configuration and architecture mistakes. The defaults are deliberately conservative (staleTime: 0, gcTime: 5 minutes), and most applications need to override them thoughtfully.
+
+This guide covers the advanced patterns: server-side prefetching with RSC and streaming, cache time configuration, invalidation strategies, optimistic updates, parallel and dependent queries, infinite queries, and the mental model that makes all of it click.
+
+## The Mental Model: staleTime vs gcTime
+
+These two values control everything in TanStack Query's cache behavior, and most developers confuse them:
+
+```
+Query fetched
+    │
+    ▼
+┌──────────────────────────────────────────────────────────┐
+│                    FRESH (staleTime)                      │
+│  No background refetch. Data is served from cache.        │
+│  Default: 0ms (data is immediately stale)                 │
+└──────────────────────────────┬───────────────────────────┘
+                               │ staleTime expires
+                               ▼
+┌──────────────────────────────────────────────────────────┐
+│                    STALE                                   │
+│  Data is served from cache, but refetch triggers on:      │
+│  - Window focus (refetchOnWindowFocus)                     │
+│  - Component mount (refetchOnMount)                       │
+│  - Network reconnect (refetchOnReconnect)                 │
+│  - Manual invalidation                                    │
+└──────────────────────────────┬───────────────────────────┘
+                               │ All observers unmount
+                               ▼
+┌──────────────────────────────────────────────────────────┐
+│               INACTIVE (gcTime countdown)                 │
+│  No components are using this query.                      │
+│  Data stays in cache for gcTime, then garbage collected.  │
+│  Default: 5 minutes                                       │
+└──────────────────────────────┬───────────────────────────┘
+                               │ gcTime expires
+                               ▼
+                          GARBAGE COLLECTED
+                          (removed from cache)
+```
+
+### Setting the Right Defaults
+
+```typescript
+// lib/query-client.ts
+import { QueryClient } from '@tanstack/react-query';
+
+export function createQueryClient() {
+  return new QueryClient({
+    defaultOptions: {
+      queries: {
+        // Data is fresh for 60 seconds — no refetch in this window
+        staleTime: 60 * 1000,
+
+        // Keep inactive queries in cache for 10 minutes
+        gcTime: 10 * 60 * 1000,
+
+        // Don't refetch on window focus for most apps
+        refetchOnWindowFocus: false,
+
+        // Retry failed queries 2 times with exponential backoff
+        retry: 2,
+        retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 30000),
+      },
+      mutations: {
+        // Retry mutations once (be careful — mutations are not idempotent!)
+        retry: 1,
+      },
+    },
+  });
+}
+```
+
+**Why change staleTime from 0?** The default of 0ms means every component mount triggers a background refetch. For most data (user profiles, product lists, dashboard metrics), this is wasteful. 60 seconds of staleness is acceptable and dramatically reduces API calls.
+
+### Per-Query Overrides
+
+Different data has different freshness requirements:
+
+```typescript
+// Real-time data — always fresh
+const { data: notifications } = useQuery({
+  queryKey: ['notifications'],
+  queryFn: fetchNotifications,
+  staleTime: 0,           // Always refetch
+  refetchInterval: 10000, // Poll every 10 seconds
+});
+
+// User profile — rarely changes
+const { data: user } = useQuery({
+  queryKey: ['user', userId],
+  queryFn: () => fetchUser(userId),
+  staleTime: 5 * 60 * 1000, // Fresh for 5 minutes
+  gcTime: 30 * 60 * 1000,   // Keep in cache for 30 minutes
+});
+
+// Static data — almost never changes
+const { data: categories } = useQuery({
+  queryKey: ['categories'],
+  queryFn: fetchCategories,
+  staleTime: Infinity,       // Never stale (manual invalidation only)
+  gcTime: 24 * 60 * 60 * 1000, // Keep for 24 hours
+});
+```
+
+## Prefetching with React Server Components
+
+The biggest performance win with TanStack Query v5 in Next.js is server-side prefetching — the data is already in the cache when the Client Component mounts, eliminating loading states entirely.
+
+### The Setup
+
+```typescript
+// app/providers.tsx
+'use client';
+
+import { QueryClientProvider } from '@tanstack/react-query';
+import { createQueryClient } from '@/lib/query-client';
+import { useState } from 'react';
+
+export function Providers({ children }: { children: React.ReactNode }) {
+  // Create QueryClient once per client lifecycle
+  const [queryClient] = useState(() => createQueryClient());
+
+  return (
+    <QueryClientProvider client={queryClient}>
+      {children}
+    </QueryClientProvider>
+  );
+}
+```
+
+```typescript
+// app/layout.tsx
+import { Providers } from './providers';
+
+export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <html>
+      <body>
+        <Providers>{children}</Providers>
+      </body>
+    </html>
+  );
+}
+```
+
+### Prefetching in Server Components
+
+```typescript
+// app/dashboard/page.tsx (Server Component)
+import { dehydrate, HydrationBoundary, QueryClient } from '@tanstack/react-query';
+import { DashboardContent } from './DashboardContent';
+
+export default async function DashboardPage() {
+  const queryClient = new QueryClient();
+
+  // Prefetch data on the server
+  await Promise.all([
+    queryClient.prefetchQuery({
+      queryKey: ['metrics'],
+      queryFn: fetchMetrics,
+    }),
+    queryClient.prefetchQuery({
+      queryKey: ['recent-orders'],
+      queryFn: () => fetchOrders({ limit: 20 }),
+    }),
+    queryClient.prefetchQuery({
+      queryKey: ['user', 'current'],
+      queryFn: fetchCurrentUser,
+    }),
+  ]);
+
+  return (
+    <HydrationBoundary state={dehydrate(queryClient)}>
+      <DashboardContent />
+    </HydrationBoundary>
+  );
+}
+```
+
+```typescript
+// app/dashboard/DashboardContent.tsx (Client Component)
+'use client';
+
+import { useQuery } from '@tanstack/react-query';
+
+export function DashboardContent() {
+  // Data is already in the cache from server prefetch — NO loading state!
+  const { data: metrics } = useQuery({
+    queryKey: ['metrics'],
+    queryFn: fetchMetrics,
+  });
+
+  const { data: orders } = useQuery({
+    queryKey: ['recent-orders'],
+    queryFn: () => fetchOrders({ limit: 20 }),
+  });
+
+  // Render immediately — data was prefetched on the server
+  return (
+    <div>
+      <MetricsGrid data={metrics!} />
+      <OrderTable orders={orders!} />
+    </div>
+  );
+}
+```
+
+**The flow:**
+1. Server Component prefetches data
+2. `dehydrate(queryClient)` serializes the cache
+3. `HydrationBoundary` passes serialized cache to the client
+4. Client Component's `useQuery` finds data already in cache → instant render
+
+### Streaming Prefetch (No Await)
+
+Since TanStack Query v5.40, you can start prefetching without awaiting — the data streams to the client as it resolves:
+
+```typescript
+// app/dashboard/page.tsx
+export default async function DashboardPage() {
+  const queryClient = new QueryClient();
+
+  // Don't await — start the fetch but don't block rendering
+  queryClient.prefetchQuery({
+    queryKey: ['slow-analytics'],
+    queryFn: fetchAnalytics, // Takes 2 seconds
+  });
+
+  // Fast data — await this one
+  await queryClient.prefetchQuery({
+    queryKey: ['metrics'],
+    queryFn: fetchMetrics, // Takes 100ms
+  });
+
+  return (
+    <HydrationBoundary state={dehydrate(queryClient)}>
+      {/* Metrics render immediately, analytics streams in when ready */}
+      <DashboardContent />
+    </HydrationBoundary>
+  );
+}
+```
+
+## Cache Invalidation: The Hard Part
+
+Cache invalidation is famously one of the two hard problems in computer science. TanStack Query gives you several strategies:
+
+### Strategy 1: Invalidate After Mutation
+
+The most common pattern — after a mutation succeeds, invalidate the affected queries:
+
+```typescript
+const createOrder = useMutation({
+  mutationFn: (data: CreateOrderInput) => api.orders.create(data),
+  onSuccess: () => {
+    // Invalidate all queries that start with ['orders']
+    queryClient.invalidateQueries({ queryKey: ['orders'] });
+
+    // Also invalidate metrics (order count changed)
+    queryClient.invalidateQueries({ queryKey: ['metrics'] });
+  },
+});
+```
+
+### Strategy 2: Query Key Hierarchy
+
+Structure your query keys hierarchically for surgical invalidation:
+
+```typescript
+// Query key factory
+export const orderKeys = {
+  all: ['orders'] as const,
+  lists: () => [...orderKeys.all, 'list'] as const,
+  list: (filters: OrderFilters) => [...orderKeys.lists(), filters] as const,
+  details: () => [...orderKeys.all, 'detail'] as const,
+  detail: (id: string) => [...orderKeys.details(), id] as const,
+};
+
+// Usage
+useQuery({ queryKey: orderKeys.detail('abc123'), queryFn: ... });
+useQuery({ queryKey: orderKeys.list({ status: 'pending' }), queryFn: ... });
+
+// Invalidation — surgical precision
+queryClient.invalidateQueries({ queryKey: orderKeys.detail('abc123') }); // One order
+queryClient.invalidateQueries({ queryKey: orderKeys.lists() });          // All lists
+queryClient.invalidateQueries({ queryKey: orderKeys.all });              // Everything
+```
+
+### Strategy 3: Mutation Response Updates
+
+If the mutation returns the updated entity, skip the refetch entirely:
+
+```typescript
+const updateOrder = useMutation({
+  mutationFn: (data: UpdateOrderInput) => api.orders.update(data),
+  onSuccess: (updatedOrder) => {
+    // Update the specific order in cache without refetching
+    queryClient.setQueryData(
+      orderKeys.detail(updatedOrder.id),
+      updatedOrder
+    );
+
+    // Still invalidate lists (ordering might have changed)
+    queryClient.invalidateQueries({ queryKey: orderKeys.lists() });
+  },
+});
+```
+
+## Optimistic Updates
+
+Show the result of a mutation immediately, then roll back if it fails:
+
+```typescript
+const toggleFavorite = useMutation({
+  mutationFn: (productId: string) => api.products.toggleFavorite(productId),
+
+  onMutate: async (productId) => {
+    // Cancel outgoing refetches to avoid overwriting optimistic update
+    await queryClient.cancelQueries({ queryKey: ['products', productId] });
+
+    // Snapshot the current value
+    const previous = queryClient.getQueryData<Product>(['products', productId]);
+
+    // Optimistically update
+    queryClient.setQueryData<Product>(['products', productId], (old) => {
+      if (!old) return old;
+      return { ...old, isFavorite: !old.isFavorite };
+    });
+
+    // Return snapshot for rollback
+    return { previous };
+  },
+
+  onError: (_error, productId, context) => {
+    // Rollback to snapshot
+    if (context?.previous) {
+      queryClient.setQueryData(['products', productId], context.previous);
+    }
+  },
+
+  onSettled: (_data, _error, productId) => {
+    // Refetch to ensure consistency
+    queryClient.invalidateQueries({ queryKey: ['products', productId] });
+  },
+});
+```
+
+**The flow:**
+1. User clicks "favorite" → UI updates instantly (optimistic)
+2. API call fires in the background
+3. If success → refetch to confirm (data might have other changes)
+4. If error → rollback to previous value
+
+## Parallel and Dependent Queries
+
+### Parallel Queries
+
+Independent queries run in parallel automatically:
+
+```typescript
+function Dashboard() {
+  // These three fire simultaneously
+  const metrics = useQuery({ queryKey: ['metrics'], queryFn: fetchMetrics });
+  const orders = useQuery({ queryKey: ['orders'], queryFn: fetchOrders });
+  const users = useQuery({ queryKey: ['users'], queryFn: fetchUsers });
+
+  // ...
+}
+```
+
+### Parallel Suspense Queries
+
+With Suspense, use `useSuspenseQueries` to prevent waterfall:
+
+```typescript
+function Dashboard() {
+  // BAD: Sequential — second query waits for first to resolve
+  const { data: metrics } = useSuspenseQuery({ queryKey: ['metrics'], queryFn: fetchMetrics });
+  const { data: orders } = useSuspenseQuery({ queryKey: ['orders'], queryFn: fetchOrders });
+  // metrics suspends → orders doesn't even start until metrics resolves
+
+  // GOOD: Parallel — both fire simultaneously
+  const [metricsResult, ordersResult] = useSuspenseQueries({
+    queries: [
+      { queryKey: ['metrics'], queryFn: fetchMetrics },
+      { queryKey: ['orders'], queryFn: fetchOrders },
+    ],
+  });
+}
+```
+
+### Dependent Queries
+
+When query B needs data from query A:
+
+```typescript
+function UserOrders({ userId }: { userId: string }) {
+  // First: fetch user
+  const { data: user } = useQuery({
+    queryKey: ['user', userId],
+    queryFn: () => fetchUser(userId),
+  });
+
+  // Then: fetch orders using user's data
+  const { data: orders } = useQuery({
+    queryKey: ['orders', { customerId: user?.customerId }],
+    queryFn: () => fetchOrders({ customerId: user!.customerId }),
+    enabled: !!user?.customerId, // Only runs when user data is available
+  });
+}
+```
+
+## Infinite Queries for Pagination
+
+```typescript
+function OrderList() {
+  const {
+    data,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+  } = useInfiniteQuery({
+    queryKey: ['orders', 'infinite'],
+    queryFn: ({ pageParam }) => fetchOrders({
+      cursor: pageParam,
+      limit: 20,
+    }),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (lastPage) => lastPage.nextCursor,
+  });
+
+  const allOrders = data?.pages.flatMap((page) => page.items) ?? [];
+
+  return (
+    <div>
+      {allOrders.map((order) => (
+        <OrderCard key={order.id} order={order} />
+      ))}
+
+      {hasNextPage && (
+        <button
+          onClick={() => fetchNextPage()}
+          disabled={isFetchingNextPage}
+        >
+          {isFetchingNextPage ? 'Loading...' : 'Load More'}
+        </button>
+      )}
+    </div>
+  );
+}
+```
+
+### Updating a Single Item in an Infinite Query
+
+The tricky part — updating one item without refetching all pages:
+
+```typescript
+const updateOrderStatus = useMutation({
+  mutationFn: (data: { orderId: string; status: string }) =>
+    api.orders.updateStatus(data),
+  onSuccess: (updatedOrder) => {
+    // Update the order within the infinite query pages
+    queryClient.setQueryData<InfiniteData<OrderPage>>(
+      ['orders', 'infinite'],
+      (oldData) => {
+        if (!oldData) return oldData;
+        return {
+          ...oldData,
+          pages: oldData.pages.map((page) => ({
+            ...page,
+            items: page.items.map((order) =>
+              order.id === updatedOrder.id ? updatedOrder : order
+            ),
+          })),
+        };
+      }
+    );
+  },
+});
+```
+
+## Request Waterfall Prevention
+
+Waterfalls are the silent performance killer. Component A fetches data, then Component B (child) starts fetching:
+
+```
+Component A fetches    ████████████
+  Component B fetches              ████████████
+    Component C fetches                        ████████████
+Total:                 ████████████████████████████████████████
+                       ^                                     ^
+                       0ms                                 3000ms
+```
+
+### Prevention: Prefetch at the Route Level
+
+```typescript
+// app/dashboard/page.tsx — prefetch EVERYTHING the route needs
+export default async function DashboardPage() {
+  const queryClient = new QueryClient();
+
+  await Promise.all([
+    queryClient.prefetchQuery({ queryKey: ['user'], queryFn: fetchUser }),
+    queryClient.prefetchQuery({ queryKey: ['metrics'], queryFn: fetchMetrics }),
+    queryClient.prefetchQuery({ queryKey: ['orders'], queryFn: fetchOrders }),
+    queryClient.prefetchQuery({ queryKey: ['products'], queryFn: fetchProducts }),
+  ]);
+
+  return (
+    <HydrationBoundary state={dehydrate(queryClient)}>
+      <DashboardContent /> {/* All data already cached — no waterfalls */}
+    </HydrationBoundary>
+  );
+}
+```
+
+All four queries fire in parallel on the server. By the time Client Components mount, everything is in the cache.
+
+## Practical Takeaways
+
+1. **Set `staleTime` to 60s as your default** — 0ms is wasteful for most data. Override per-query for real-time needs.
+2. **Prefetch in Server Components** — use `dehydrate` + `HydrationBoundary` to eliminate loading states on initial render.
+3. **Use query key factories** — structured keys (`orderKeys.list(filters)`) enable surgical cache invalidation.
+4. **Optimistic updates for user actions** — toggle favorite, update status, delete items. Roll back on error.
+5. **`useSuspenseQueries` for parallel Suspense** — a single `useSuspenseQuery` creates waterfalls.
+6. **Infinite queries for pagination** — `useInfiniteQuery` + cursor-based pagination handles load-more patterns cleanly.
+7. **Update cache from mutation responses** — `setQueryData` with the server's response avoids unnecessary refetches.
+8. **Prefetch at the route level** — move all data fetching to the Server Component page to prevent client-side waterfalls.
+9. **Don't invalidate everything** — use hierarchical query keys to invalidate only what changed.
+10. **`gcTime` on the server is Infinity** — server-side QueryClients are short-lived, so there's no GC concern.
+
+For a broader view of the TanStack ecosystem beyond Query, I covered Router, Table, Form, Store, and more in my [TanStack ecosystem guide](/blog/tanstack-ecosystem-complete-guide-2026). And if you're choosing between TanStack Query with REST vs tRPC vs GraphQL, my [API data layer comparison](/blog/graphql-vs-rest-vs-trpc-data-layer-guide) covers the tradeoffs.
+
+TanStack Query turns data fetching from a source of bugs into a source of confidence. The defaults get you 90% of the way. These patterns handle the other 10% — the part that separates fast, responsive applications from laggy ones.
+
+## References
+
+### Sources
+- [TanStack Query: Advanced Server Rendering](https://tanstack.com/query/latest/docs/framework/react/guides/advanced-ssr) — official RSC + prefetching guide
+- [TanStack Query: Caching Examples](https://tanstack.com/query/latest/docs/framework/react/guides/caching) — cache behavior visualization
+- [TanStack Query: Query Invalidation](https://tanstack.com/query/v5/docs/framework/react/guides/query-invalidation) — invalidation strategies
+- [TanStack Query: Suspense Guide](https://tanstack.com/query/latest/docs/framework/react/guides/suspense) — Suspense integration
+- [TanStack Query: Performance & Request Waterfalls](https://tanstack.com/query/latest/docs/framework/react/guides/request-waterfalls) — waterfall prevention
+- [TKDodo: Automatic Query Invalidation After Mutations](https://tkdodo.eu/blog/automatic-query-invalidation-after-mutations) — advanced invalidation patterns
+
+### Further Reading
+- [TanStack Query: Next.js Suspense Streaming Example](https://tanstack.com/query/v5/docs/framework/react/examples/nextjs-suspense-streaming) — streaming with Suspense
+- [Supastarter: Eliminate Loading States with Prefetching](https://supastarter.dev/dev-tips/2025-08-27-prefetching-queries-in-tanstack-query) — practical prefetching guide
+- [Leapcell: Advanced Data Fetching — Optimistic Updates and Pagination](https://leapcell.io/blog/advanced-data-fetching-with-tanstack-query-optimistic-updates-pagination-and-websocket-integration) — WebSocket integration patterns
+
+---
+
+~Seb 👊
