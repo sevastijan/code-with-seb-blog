@@ -1,0 +1,284 @@
+---
+title: 'Container + Presenter Pattern 2.0: Modern Best Practices with Hooks and TypeScript'
+date: '2026-03-28'
+category: 'Development'
+tags: ['react', 'patterns', 'typescript', 'architecture', 'best-practices']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: '"The Container/Presenter pattern is dead since Hooks." Wrong. The pattern evolved — containers became custom hooks, presenters became pure components, and the separation of concerns is more important than ever with Server Components.'
+---
+
+"We don't need Container/Presenter anymore. Hooks replaced it." I hear this at least once a month. It's one of those half-truths that sound smart but lead to terrible architecture.
+
+What Hooks replaced was the **class-based implementation** — the `ContainerComponent` class with `componentDidMount` and render props. What Hooks didn't replace was the **principle**: separate data-fetching/logic from rendering/presentation. That separation is more important now than it was in 2018 — especially with React Server Components, where the server/client boundary enforces a similar split.
+
+The pattern evolved. Containers became custom hooks. Presenters became pure, typed components. The result is cleaner than the original.
+
+## The Classic Pattern (What We Had)
+
+```typescript
+// 2018: Class-based container
+class UserListContainer extends React.Component {
+  state = { users: [], loading: true };
+
+  componentDidMount() {
+    fetchUsers().then(users => this.setState({ users, loading: false }));
+  }
+
+  render() {
+    return <UserListPresenter users={this.state.users} loading={this.state.loading} />;
+  }
+}
+
+// Presenter: pure rendering, no data logic
+function UserListPresenter({ users, loading }) {
+  if (loading) return <Spinner />;
+  return <ul>{users.map(u => <li key={u.id}>{u.name}</li>)}</ul>;
+}
+```
+
+## The Modern Pattern: Custom Hooks as Containers
+
+The "container" is now a custom hook that encapsulates data fetching and business logic. The "presenter" is a pure component that receives typed props:
+
+```typescript
+// hooks/useUserList.ts — THE CONTAINER
+import { useQuery } from '@tanstack/react-query';
+
+interface UseUserListOptions {
+  role?: string;
+  limit?: number;
+}
+
+export function useUserList(options: UseUserListOptions = {}) {
+  const { role, limit = 20 } = options;
+
+  const query = useQuery({
+    queryKey: ['users', { role, limit }],
+    queryFn: () => fetchUsers({ role, limit }),
+  });
+
+  const sortedUsers = useMemo(
+    () => query.data?.sort((a, b) => a.name.localeCompare(b.name)) ?? [],
+    [query.data]
+  );
+
+  return {
+    users: sortedUsers,
+    isLoading: query.isLoading,
+    error: query.error,
+    refetch: query.refetch,
+    isEmpty: !query.isLoading && sortedUsers.length === 0,
+  };
+}
+```
+
+```typescript
+// components/UserList.tsx — THE PRESENTER
+interface UserListProps {
+  users: User[];
+  isLoading: boolean;
+  isEmpty: boolean;
+  error: Error | null;
+  onRefresh?: () => void;
+}
+
+export function UserList({ users, isLoading, isEmpty, error, onRefresh }: UserListProps) {
+  if (isLoading) return <UserListSkeleton />;
+  if (error) return <ErrorCard message={error.message} onRetry={onRefresh} />;
+  if (isEmpty) return <EmptyState message="No users found" />;
+
+  return (
+    <ul className="space-y-2">
+      {users.map((user) => (
+        <li key={user.id} className="flex items-center gap-3 p-3 rounded-lg bg-gray-800">
+          <Avatar src={user.avatar} alt={user.name} size="sm" />
+          <div>
+            <p className="font-medium">{user.name}</p>
+            <p className="text-sm text-gray-400">{user.email}</p>
+          </div>
+          <Badge variant={user.role} className="ml-auto">{user.role}</Badge>
+        </li>
+      ))}
+    </ul>
+  );
+}
+```
+
+```typescript
+// pages/UsersPage.tsx — THE COMPOSITION
+export function UsersPage() {
+  const { users, isLoading, isEmpty, error, refetch } = useUserList({ role: 'active' });
+
+  return (
+    <div>
+      <h1>Team Members</h1>
+      <UserList
+        users={users}
+        isLoading={isLoading}
+        isEmpty={isEmpty}
+        error={error}
+        onRefresh={refetch}
+      />
+    </div>
+  );
+}
+```
+
+### Why This Is Better Than the Original
+
+1. **The hook is reusable** — use `useUserList` in any component, not just one container
+2. **The presenter is testable** — pass props, check output, no mocking needed
+3. **TypeScript enforces the contract** — the interface IS the documentation
+4. **The presenter works in Storybook** — because it's just props → JSX
+5. **Multiple hooks compose** — combine `useUserList`, `useFilters`, `usePagination` in one page
+
+## Pattern with Server Components
+
+React Server Components naturally enforce the Container/Presenter split:
+
+```typescript
+// app/users/page.tsx — SERVER COMPONENT (Container)
+// This IS the container — it fetches data on the server
+export default async function UsersPage() {
+  const users = await fetchUsers({ role: 'active', limit: 50 });
+
+  // Presenter is a client component that handles interactivity
+  return (
+    <div>
+      <h1>Team Members</h1>
+      <UserList users={users} />
+    </div>
+  );
+}
+```
+
+```typescript
+// components/UserList.tsx — CLIENT COMPONENT (Presenter)
+'use client';
+
+export function UserList({ users }: { users: User[] }) {
+  const [search, setSearch] = useState('');
+  const filtered = users.filter(u =>
+    u.name.toLowerCase().includes(search.toLowerCase())
+  );
+
+  return (
+    <div>
+      <input
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+        placeholder="Search users..."
+      />
+      <ul>
+        {filtered.map(user => <UserCard key={user.id} user={user} />)}
+      </ul>
+    </div>
+  );
+}
+```
+
+The Server Component fetches data (container). The Client Component renders and handles interactivity (presenter). The `'use client'` boundary IS the Container/Presenter boundary.
+
+## Advanced: The Headless Component Pattern
+
+Take it further — the presenter doesn't even render markup. It provides behavior via render props or hooks:
+
+```typescript
+// Headless component — provides sorting logic, no UI
+function useSortableList<T>(items: T[], defaultKey: keyof T) {
+  const [sortKey, setSortKey] = useState<keyof T>(defaultKey);
+  const [direction, setDirection] = useState<'asc' | 'desc'>('asc');
+
+  const sorted = useMemo(() => {
+    const sorted = [...items].sort((a, b) => {
+      const aVal = a[sortKey];
+      const bVal = b[sortKey];
+      if (aVal < bVal) return direction === 'asc' ? -1 : 1;
+      if (aVal > bVal) return direction === 'asc' ? 1 : -1;
+      return 0;
+    });
+    return sorted;
+  }, [items, sortKey, direction]);
+
+  const toggleSort = (key: keyof T) => {
+    if (key === sortKey) {
+      setDirection(d => d === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortKey(key);
+      setDirection('asc');
+    }
+  };
+
+  return { sorted, sortKey, direction, toggleSort };
+}
+
+// Usage — presenter provides its own markup
+function UserTable({ users }: { users: User[] }) {
+  const { sorted, sortKey, direction, toggleSort } = useSortableList(users, 'name');
+
+  return (
+    <table>
+      <thead>
+        <tr>
+          <SortHeader label="Name" active={sortKey === 'name'} direction={direction}
+            onClick={() => toggleSort('name')} />
+          <SortHeader label="Email" active={sortKey === 'email'} direction={direction}
+            onClick={() => toggleSort('email')} />
+          <SortHeader label="Role" active={sortKey === 'role'} direction={direction}
+            onClick={() => toggleSort('role')} />
+        </tr>
+      </thead>
+      <tbody>
+        {sorted.map(user => (
+          <tr key={user.id}>
+            <td>{user.name}</td>
+            <td>{user.email}</td>
+            <td>{user.role}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+```
+
+## When to Use Each Variant
+
+| Scenario | Pattern | Why |
+|----------|---------|-----|
+| **Data from API + UI** | Custom hook + component | Hook handles TanStack Query, component is pure |
+| **Server-rendered data** | RSC + Client Component | RSC fetches, Client handles interactivity |
+| **Complex business logic** | Hook extracts logic | Keep components focused on rendering |
+| **Reusable behavior** | Headless hook | Sorting, filtering, pagination — reusable across UI |
+| **Storybook/testing** | Props-only presenter | Easy to test and document |
+
+## Practical Takeaways
+
+1. **The pattern isn't dead — it evolved.** Containers are hooks, presenters are typed components.
+2. **Custom hooks ARE containers.** They encapsulate data fetching, transformations, and business logic.
+3. **Presenters take props, return JSX.** No hooks (except UI-only ones like `useState` for local state).
+4. **Server Components are natural containers.** The `'use client'` boundary enforces the split.
+5. **Type the presenter interface explicitly.** It's the contract between logic and rendering.
+6. **Test presenters with props, not mocks.** If you need to mock a hook, your presenter has too much logic.
+7. **Headless hooks for reusable behavior.** Sorting, pagination, and filtering patterns work across any UI.
+8. **Compose hooks, don't nest containers.** A page combines `useUsers` + `useFilters` + `usePagination` — not nested container components.
+
+The Container/Presenter pattern is the most underrated architecture pattern in React. It's not glamorous, it doesn't require a library, and it doesn't have a logo. But it makes codebases testable, readable, and refactorable — which is what actually matters when you're maintaining code for years.
+
+## References
+
+### Sources
+- [React Docs: Custom Hooks](https://react.dev/learn/reusing-logic-with-custom-hooks) — official guide to extracting logic into hooks
+- [React Docs: Server Components](https://react.dev/reference/rsc/server-components) — the natural container/presenter boundary
+- [Kent C. Dodds: AHA Programming](https://kentcdodds.com/blog/aha-programming) — avoiding premature abstraction
+- [Dan Abramov: Presentational and Container Components](https://medium.com/@dan_abramov/smart-and-dumb-components-7ca2f9a7c7d0) — the original article (with updated notes about hooks)
+
+### Further Reading
+- [Patterns.dev: Container/Presentational Pattern](https://www.patterns.dev/react/presentational-container-pattern/) — visual guide with examples
+- [Kent C. Dodds: How to use React Context effectively](https://kentcdodds.com/blog/how-to-use-react-context-effectively) — context as container pattern
+
+---
+
+~Seb 👊
