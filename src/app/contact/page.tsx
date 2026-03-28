@@ -164,9 +164,9 @@ export default function ContactPage() {
         <div className="cnt-form-section-line" />
 
         <div className="container">
-          <div className="cnt-form-layout" style={{ maxWidth: '640px', margin: '0 auto' }}>
+          <div className="cnt-form-layout">
             {/* Contact Form */}
-            <div className="mb-20">
+            <div>
               <div className="mb-8">
                 <span className="label">Get in touch</span>
                 <h2 className="text-3xl sm:text-4xl font-bold mt-2">
