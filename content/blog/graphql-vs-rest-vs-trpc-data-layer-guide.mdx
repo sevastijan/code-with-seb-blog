@@ -1,0 +1,467 @@
+---
+title: 'GraphQL vs REST vs tRPC: Choosing the Right Data Layer for Large Apps'
+date: '2026-03-28'
+category: 'Architecture'
+tags: ['api', 'graphql', 'rest', 'trpc', 'architecture']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: 'GraphQL adoption grew 340% since 2023. tRPC appeared in 15% of job listings and is climbing fast. REST still dominates at 70%. The right answer in 2026 is not picking one — it is knowing which to use where. Here is the complete decision framework.'
+---
+
+I've built production APIs with all three — REST, GraphQL, and tRPC. And the question I get asked most isn't "which is best?" It's "which should I use for my project?" The honest answer in 2026: probably more than one.
+
+The typical modern application uses REST for public APIs and integrations, tRPC or GraphQL for the frontend data layer, and REST or gRPC for service-to-service communication. The "one API to rule them all" mindset is dead. Each tool has a sweet spot, and forcing one into another's territory creates pain.
+
+Here's what I've learned from building and scaling all three, including the problems that only show up at scale — the N+1 queries in GraphQL, the over-engineering in REST, and the TypeScript-only limitation of tRPC that kills adoption in mixed teams.
+
+## REST: The Universal Standard
+
+REST isn't a technology — it's an architectural style built on HTTP. Resources have URLs, operations use HTTP methods, and responses use status codes. It's the lingua franca of the web.
+
+### What REST Gets Right
+
+```typescript
+// The simplicity is the feature
+GET    /api/users           → List users
+GET    /api/users/123       → Get user 123
+POST   /api/users           → Create user
+PATCH  /api/users/123       → Update user 123
+DELETE /api/users/123       → Delete user 123
+GET    /api/users/123/orders → Get user 123's orders
+```
+
+**HTTP caching works natively.** A `GET /api/products` with `Cache-Control: max-age=3600` is cached by browsers, CDNs, and reverse proxies without any application code. GraphQL and tRPC can't do this because they use POST requests or custom protocols.
+
+**Every language, framework, and tool understands REST.** Your iOS app, Android app, partner integrations, CLI tools, Postman, curl — they all speak REST natively.
+
+**OpenAPI/Swagger provides machine-readable documentation.** Auto-generated docs, client SDKs, and request validation come free.
+
+### What REST Gets Wrong
+
+**Overfetching:** You ask for a user, you get the entire user object — even if you only need the name:
+
+```typescript
+// You need: user.name, user.avatar
+// You get: user.name, user.avatar, user.email, user.address,
+//          user.preferences, user.createdAt, user.lastLogin,
+//          user.settings, user.subscriptionDetails...
+```
+
+**Underfetching:** Getting a user's orders requires a separate request. Getting order items requires another. A single page might need 5-10 requests:
+
+```typescript
+// Dashboard needs: user + orders + products + metrics + notifications
+const user = await fetch('/api/users/123');
+const orders = await fetch('/api/users/123/orders');
+const products = await fetch('/api/products?featured=true');
+const metrics = await fetch('/api/metrics/summary');
+const notifications = await fetch('/api/notifications?unread=true');
+// 5 sequential (or parallel) round trips
+```
+
+**No type safety between client and server** (without additional tooling). Change a response field on the server, and the client finds out at runtime.
+
+### Modern REST with Type Safety
+
+The gap is closing. Hono and Elysia provide type-safe REST APIs with end-to-end inference:
+
+```typescript
+// Hono — type-safe REST with RPC-style client
+import { Hono } from 'hono';
+import { zValidator } from '@hono/zod-validator';
+import { z } from 'zod';
+
+const app = new Hono()
+  .get('/users/:id', async (c) => {
+    const id = c.req.param('id');
+    const user = await db.users.findUnique({ where: { id } });
+    return c.json(user);
+  })
+  .post(
+    '/users',
+    zValidator('json', z.object({
+      name: z.string().min(1),
+      email: z.string().email(),
+    })),
+    async (c) => {
+      const data = c.req.valid('json');
+      const user = await db.users.create({ data });
+      return c.json(user, 201);
+    }
+  );
+
+// Client gets full type inference (like tRPC)
+import { hc } from 'hono/client';
+const client = hc<typeof app>('http://localhost:3000');
+const res = await client.users[':id'].$get({ param: { id: '123' } });
+// res is fully typed!
+```
+
+## GraphQL: The Flexible Data Layer
+
+GraphQL lets the client specify exactly what data it needs. No overfetching, no underfetching. One request, exactly the shape you want.
+
+### What GraphQL Gets Right
+
+```graphql
+# One request, exactly the data the dashboard needs
+query DashboardData {
+  currentUser {
+    name
+    avatar
+    role
+  }
+  recentOrders(limit: 5) {
+    id
+    total
+    status
+    items {
+      product {
+        name
+        price
+      }
+    }
+  }
+  metrics {
+    revenue
+    orderCount
+    customerCount
+  }
+}
+```
+
+**One request instead of five.** The client describes the shape of data it needs, and the server resolves it in a single round trip.
+
+**Strong type system.** The schema is the contract — both client and server agree on types, and tools like GraphQL Code Generator produce TypeScript types automatically.
+
+**Introspection.** The schema is self-documenting. Tools like GraphiQL and Apollo Studio let you explore the API interactively.
+
+**Perfect for BFF layers.** When your frontend needs data from multiple backend services, GraphQL is an excellent aggregation layer — I covered this pattern in detail in my [BFF architecture guide](/blog/bff-the-frontends-best-friend-in-the-microservices-world).
+
+### What GraphQL Gets Wrong
+
+#### The N+1 Problem
+
+This is GraphQL's biggest production footgun. When you query a list with nested relations, each item triggers a separate database query:
+
+```graphql
+# This innocent query...
+query {
+  orders(limit: 50) {  # 1 query
+    customer {          # 50 queries (one per order)
+      name
+      orders {          # 50 more queries (one per customer)
+        total
+      }
+    }
+  }
+}
+# = 101 database queries for one GraphQL request
+```
+
+**Solution:** DataLoader batches individual requests into batch queries. But you have to know about it, implement it correctly, and maintain it:
+
+```typescript
+// DataLoader batches N individual loads into 1 batch query
+const userLoader = new DataLoader(async (userIds: string[]) => {
+  const users = await db.users.findMany({
+    where: { id: { in: userIds } },
+  });
+  // Must return results in the same order as input IDs
+  return userIds.map(id => users.find(u => u.id === id));
+});
+
+// Each resolver calls loader.load(id) — DataLoader batches them
+const resolvers = {
+  Order: {
+    customer: (order) => userLoader.load(order.customerId),
+  },
+};
+```
+
+#### Complexity and Security
+
+Any client can construct a deeply nested query that crushes your server:
+
+```graphql
+# An attacker's dream query
+query {
+  users {
+    orders {
+      items {
+        product {
+          reviews {
+            author {
+              orders {
+                items {
+                  product {
+                    # ... 10 levels deep, exponential data
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+**You must implement:** query depth limiting, query complexity analysis, rate limiting per complexity score, and persisted queries for production.
+
+#### Caching Is Hard
+
+REST caches at the HTTP level with standard headers. GraphQL uses POST requests (not cacheable by default) and responses have variable shapes. You need a GraphQL-aware caching layer (Apollo Client, Relay, urql with normalized cache).
+
+#### The Tooling Tax
+
+A production GraphQL setup requires: schema definition language, resolvers, DataLoaders, code generation, a caching client, query complexity analysis, and monitoring. This is significantly more infrastructure than REST.
+
+### When GraphQL Shines
+
+- **Multiple frontend clients** (web, mobile, TV) each needing different data shapes
+- **Aggregating data from multiple services** — GraphQL as a BFF/gateway
+- **Teams where frontend and backend are separate** — the schema is the contract
+- **Complex, nested data models** — a single query replaces multiple REST calls
+
+## tRPC: End-to-End Type Safety
+
+tRPC eliminates the API layer entirely. You define procedures on the server, and the client calls them with full type inference — no schemas, no code generation, no runtime overhead.
+
+### What tRPC Gets Right
+
+```typescript
+// server/routers/user.ts
+import { z } from 'zod';
+import { router, publicProcedure, protectedProcedure } from '../trpc';
+
+export const userRouter = router({
+  getById: publicProcedure
+    .input(z.object({ id: z.string().uuid() }))
+    .query(async ({ input, ctx }) => {
+      const user = await ctx.db.users.findUnique({
+        where: { id: input.id },
+        select: { id: true, name: true, avatar: true, role: true },
+      });
+      if (!user) throw new TRPCError({ code: 'NOT_FOUND' });
+      return user;
+    }),
+
+  update: protectedProcedure
+    .input(z.object({
+      name: z.string().min(1).max(100).optional(),
+      avatar: z.string().url().optional(),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      return ctx.db.users.update({
+        where: { id: ctx.session.userId },
+        data: input,
+      });
+    }),
+
+  list: publicProcedure
+    .input(z.object({
+      cursor: z.string().optional(),
+      limit: z.number().min(1).max(100).default(20),
+    }))
+    .query(async ({ input, ctx }) => {
+      const items = await ctx.db.users.findMany({
+        take: input.limit + 1,
+        cursor: input.cursor ? { id: input.cursor } : undefined,
+        orderBy: { createdAt: 'desc' },
+      });
+      const hasMore = items.length > input.limit;
+      return {
+        items: hasMore ? items.slice(0, -1) : items,
+        nextCursor: hasMore ? items[items.length - 1].id : undefined,
+      };
+    }),
+});
+```
+
+```typescript
+// Client — ZERO code generation, full type inference
+'use client';
+
+import { trpc } from '@/lib/trpc';
+
+function UserProfile({ userId }: { userId: string }) {
+  const { data: user } = trpc.user.getById.useQuery({ id: userId });
+  // user is fully typed: { id: string; name: string; avatar: string; role: string }
+
+  const updateMutation = trpc.user.update.useMutation();
+  // updateMutation.mutate({ name: 'New Name' }) — type-checked!
+  // updateMutation.mutate({ invalid: true }) — TypeScript ERROR!
+
+  if (!user) return <Skeleton />;
+  return <div>{user.name}</div>;
+}
+```
+
+**The magic:** Change a field name on the server → TypeScript immediately shows errors on every client that uses it. No API docs to update, no code generation to run, no runtime surprises. This is the productivity gain that makes tRPC addictive.
+
+### tRPC v11 with Next.js Server Components
+
+```typescript
+// lib/trpc/server.ts — Server-side caller for RSC
+import { createCallerFactory } from '@/server/trpc';
+import { appRouter } from '@/server/routers';
+
+const createCaller = createCallerFactory(appRouter);
+
+export async function getServerTRPC() {
+  return createCaller({
+    // Pass request context (auth, db, etc.)
+    session: await getSession(),
+    db: prisma,
+  });
+}
+```
+
+```typescript
+// app/users/page.tsx — Server Component with tRPC
+import { getServerTRPC } from '@/lib/trpc/server';
+
+export default async function UsersPage() {
+  const trpc = await getServerTRPC();
+  const { items } = await trpc.user.list({ limit: 20 });
+
+  return (
+    <ul>
+      {items.map(user => (
+        <li key={user.id}>{user.name}</li>
+      ))}
+    </ul>
+  );
+}
+```
+
+### What tRPC Gets Wrong
+
+**TypeScript-only.** If any consumer is not TypeScript (mobile app in Swift, partner integration in Python), tRPC doesn't work. This is the dealbreaker for public APIs.
+
+**Tight coupling.** Client and server must share the same TypeScript project (or monorepo). This is a feature for full-stack apps, but a limitation for distributed teams.
+
+**No HTTP caching.** Like GraphQL, tRPC uses custom protocols that don't benefit from standard HTTP caching.
+
+**Growing complexity at scale.** With 200+ procedures, the router gets unwieldy. You need good organization and naming conventions.
+
+## The Complete Decision Framework
+
+```
+Who is consuming this API?
+│
+├── External developers / partners / public
+│   └── REST with OpenAPI
+│       (universal compatibility, HTTP caching, documentation)
+│
+├── Your own TypeScript frontend (monorepo)
+│   ├── Simple CRUD? → tRPC
+│   │   (zero overhead, full type safety)
+│   │
+│   ├── Complex nested data from multiple sources? → GraphQL
+│   │   (flexible queries, aggregation layer)
+│   │
+│   └── Need both? → tRPC for mutations, GraphQL for queries
+│
+├── Mobile apps (Swift/Kotlin)
+│   ├── Same team controls both? → REST or GraphQL
+│   └── Different teams? → GraphQL (schema as contract)
+│
+├── Service-to-service (internal)
+│   ├── Same datacenter, high throughput? → gRPC
+│   └── Simple communication? → REST
+│
+└── AI agents / webhooks
+    └── REST (predictable, cacheable, documented)
+```
+
+## Head-to-Head Comparison
+
+| Factor | REST | GraphQL | tRPC |
+|--------|------|---------|------|
+| **Learning curve** | Low | High | Low (if you know TS) |
+| **Type safety** | Manual (OpenAPI) | Generated | Automatic |
+| **Overfetching** | Common | Eliminated | Eliminated (by design) |
+| **Caching** | HTTP-native | Complex (normalized) | Manual |
+| **Performance** | Fast | Slower (N+1 risk) | Fast |
+| **Public API** | Excellent | Good | Not possible |
+| **Mobile clients** | Native | Good (with codegen) | Not possible |
+| **Ecosystem** | Massive | Large | Growing |
+| **Tooling overhead** | Low | High | Very low |
+| **Real-time** | WebSockets/SSE | Subscriptions | Subscriptions |
+| **File uploads** | Native | Complex | Complex |
+| **Bundle size impact** | None | Apollo ~50KB | ~10KB |
+| **Team adoption** | Universal | Needs training | TS devs only |
+
+## The Pragmatic 2026 Architecture
+
+Most production applications I build in 2026 use this stack:
+
+```
+┌─────────────────────────────────────────────┐
+│ Next.js Frontend (App Router)               │
+│                                             │
+│  Server Components ──→ tRPC (server caller) │
+│  Client Components ──→ tRPC (React Query)   │
+│                                             │
+├─────────────────────────────────────────────┤
+│ tRPC Router (internal API)                  │
+│  - User procedures                          │
+│  - Order procedures                         │
+│  - Analytics procedures                     │
+│                                             │
+├─────────────────────────────────────────────┤
+│ REST API (public, /api/v1/*)                │
+│  - Partner integrations                     │
+│  - Webhook endpoints                        │
+│  - Mobile app (if non-TS)                   │
+│  - OpenAPI documentation                    │
+│                                             │
+├─────────────────────────────────────────────┤
+│ Database (Prisma / Drizzle)                 │
+└─────────────────────────────────────────────┘
+```
+
+**tRPC for the Next.js frontend** — maximum developer velocity, zero API maintenance.
+
+**REST for everything external** — universal compatibility, HTTP caching, partner-friendly.
+
+**No GraphQL unless** you have multiple frontend teams, complex data aggregation needs, or a mobile app team that benefits from the schema contract.
+
+## Practical Takeaways
+
+1. **tRPC is the default for full-stack TypeScript** — if your frontend and backend are in the same monorepo and both TypeScript, tRPC eliminates an entire category of bugs and boilerplate.
+2. **REST for public APIs** — always. Partners, integrations, mobile apps, and AI agents speak REST natively.
+3. **GraphQL for data aggregation** — when you need a BFF layer that combines multiple services into one flexible query interface.
+4. **Don't use GraphQL for simple CRUD** — the tooling tax (DataLoaders, complexity analysis, caching) isn't justified unless you have complex, nested data needs.
+5. **Most apps need more than one** — tRPC internally + REST externally is the winning pattern for 2026.
+6. **Type safety is non-negotiable** — whether via tRPC inference, GraphQL codegen, or OpenAPI client generation, your API layer should be typed end-to-end.
+7. **Consider Hono or Elysia** for type-safe REST — they provide tRPC-like inference with standard HTTP semantics.
+8. **GraphQL's N+1 problem is real** — if you use GraphQL, implement DataLoaders from day one. Not later. Day one.
+9. **The question is "who consumes this?"** — not "which is best?" Different consumers have different needs.
+
+If you're using tRPC, pair it with [Zod validation](/blog/zod-typescript-validation-complete-guide) for input schemas — it's the natural combination. And if you're building the frontend with [TanStack Query](/blog/tanstack-ecosystem-complete-guide-2026), tRPC's React Query integration gives you the best of both worlds.
+
+The API layer is a tool, not an identity. Use the right tool for each consumer, and don't let framework loyalty override pragmatic architecture.
+
+## References
+
+### Sources
+- [Fordel Studios: GraphQL vs REST 2026](https://fordelstudios.com/research/graphql-vs-rest-2026-honest-take) — honest production comparison
+- [DEV.to: REST vs GraphQL vs tRPC vs gRPC — The Definitive Guide](https://dev.to/pockit_tools/rest-vs-graphql-vs-trpc-vs-grpc-in-2026-the-definitive-guide-to-choosing-your-api-layer-1j8m) — comprehensive 2026 comparison
+- [tRPC: React Server Components Setup](https://trpc.io/docs/client/react/server-components) — official RSC integration guide
+- [GraphQL.org: Solving N+1 with DataLoader](https://www.graphql-js.org/docs/n1-dataloader/) — official DataLoader documentation
+- [JSGuruJobs: API Layer Choice Affects Team Size](https://jsgurujobs.com/blog/rest-api-vs-graphql-vs-trpc-in-2026-and-why-your-api-layer-choice-affects-your-team-size-more-than-your-tech-stack) — organizational impact analysis
+
+### Further Reading
+- [DEV.to: Mastering tRPC with React Server Components 2026](https://dev.to/christadrian/mastering-trpc-with-react-server-components-the-definitive-2026-guide-1i2e) — tRPC v11 deep dive
+- [PkgPulse: Hono vs Elysia 2026](https://www.pkgpulse.com/blog/hono-vs-elysia-2026) — type-safe REST framework comparison
+- [Shopify Engineering: Solving N+1 for GraphQL Through Batching](https://shopify.engineering/solving-the-n-1-problem-for-graphql-through-batching) — production-scale solution
+- [WunderGraph: When to Use Each API Style](https://wundergraph.com/blog/graphql-vs-federation-vs-trpc-vs-rest-vs-grpc-vs-asyncapi-vs-webhooks) — the most complete comparison
+
+---
+
+~Seb 👊
