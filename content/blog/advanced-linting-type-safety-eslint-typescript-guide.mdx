@@ -1,0 +1,734 @@
+---
+title: 'Advanced Linting & Type Safety: The Strictest ESLint + TypeScript + Prettier Setup in 2026'
+date: '2026-03-28'
+category: 'Development'
+tags: ['typescript', 'eslint', 'prettier', 'developer-tools', 'code-quality']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: 'Most TypeScript projects use "strict": true and call it a day. But TypeScript has 5 extra strictness flags that catch real bugs, ESLint v9 flat config changes everything, and Biome can replace your entire toolchain in 0.8 seconds. Here is the complete setup.'
+---
+
+I reviewed a pull request last month where a senior engineer spent two days debugging a production crash. The root cause was `array[0]` returning `undefined` because the array was empty — but TypeScript said the type was `string`, not `string | undefined`. The engineer trusted the type, skipped the null check, and `.toLowerCase()` blew up in production.
+
+One compiler flag would have caught it: `noUncheckedIndexedAccess`. And if they'd been using [Zod for runtime validation](/blog/zod-typescript-validation-complete-guide) at the API boundary, the type would have been correct from the start. It's been available since TypeScript 4.1 — released in 2020. Six years later, most projects still don't enable it.
+
+This is the gap I see in every codebase I audit: teams turn on `"strict": true`, install ESLint with some `recommended` preset, run Prettier, and call their tooling "done." Meanwhile, they're missing dozens of type-safety options, running ESLint with deprecated config formats, fighting Prettier conflicts, and not enforcing any of it at commit time.
+
+This guide is the full setup — the strictest TypeScript config, ESLint v9 flat config with type-checked rules, Prettier without conflicts, Husky + lint-staged for enforcement, and the Biome alternative that does it all 50x faster.
+
+## TypeScript: Beyond "strict": true
+
+`"strict": true` enables these flags:
+- `strictNullChecks`
+- `strictFunctionTypes`
+- `strictBindCallApply`
+- `strictPropertyInitialization`
+- `noImplicitAny`
+- `noImplicitThis`
+- `alwaysStrict`
+- `useUnknownInCatchVariables`
+
+That's good. But TypeScript has **five additional flags** that catch real bugs and aren't included in `strict`. Here's the strictest `tsconfig.json` I use on every project:
+
+```json
+{
+  "compilerOptions": {
+    // Base strict mode
+    "strict": true,
+
+    // === THE FIVE EXTRA FLAGS ===
+
+    // 1. Array/object indexing returns T | undefined (not just T)
+    "noUncheckedIndexedAccess": true,
+
+    // 2. Optional properties (?) mean "absent", not "undefined"
+    "exactOptionalPropertyTypes": true,
+
+    // 3. Forces obj["key"] syntax for index signatures (explicit about dynamic access)
+    "noPropertyAccessFromIndexSignature": true,
+
+    // 4. Error on unused local variables
+    "noUnusedLocals": true,
+
+    // 5. Error on unused function parameters
+    "noUnusedParameters": true,
+
+    // === ADDITIONAL SAFETY ===
+
+    // Error if switch case falls through without break
+    "noFallthroughCasesInSwitch": true,
+
+    // Error if function doesn't explicitly return in all paths
+    "noImplicitReturns": true,
+
+    // Force consistent casing in imports (catches cross-platform bugs)
+    "forceConsistentCasingInFileNames": true,
+
+    // Ensure imports resolve correctly
+    "moduleResolution": "bundler",
+    "module": "ESNext",
+    "target": "ES2022",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+
+    // Isolated builds (required for most bundlers)
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+
+    // Skip type-checking node_modules
+    "skipLibCheck": true
+  }
+}
+```
+
+### What Each Extra Flag Actually Catches
+
+#### noUncheckedIndexedAccess — The Bug Killer
+
+This is the single most impactful flag you're not using. Without it:
+
+```typescript
+const users = ['Alice', 'Bob'];
+const first = users[0]; // Type: string ← LIE! Could be undefined
+
+const scores: Record<string, number> = { alice: 100 };
+const bobScore = scores['bob']; // Type: number ← LIE! It's undefined
+```
+
+With `noUncheckedIndexedAccess`:
+
+```typescript
+const users = ['Alice', 'Bob'];
+const first = users[0]; // Type: string | undefined ← HONEST
+
+if (first) {
+  console.log(first.toLowerCase()); // Safe
+}
+
+// Or use non-null assertion if you're CERTAIN
+const definitelyFirst = users[0]!; // Type: string (you take the risk)
+```
+
+**Real impact:** This catches the exact class of bugs where you access arrays or objects by index and assume the value exists. In my experience, enabling this flag in existing codebases surfaces 10-50 legitimate bugs.
+
+#### exactOptionalPropertyTypes — The Subtle Distinction
+
+In TypeScript, `?` on a property means two different things:
+1. The property might not exist on the object
+2. The property might be `undefined`
+
+These are semantically different. With `exactOptionalPropertyTypes`:
+
+```typescript
+interface User {
+  name: string;
+  nickname?: string; // Means: might not have this property
+}
+
+const user: User = {
+  name: 'Alice',
+  nickname: undefined, // ERROR! Can't explicitly set to undefined
+};
+
+// If you NEED it to accept undefined, be explicit:
+interface UserV2 {
+  name: string;
+  nickname?: string | undefined; // Now both absent AND undefined are OK
+}
+```
+
+**Why it matters:** APIs distinguish between "field not sent" and "field sent as null/undefined." `PATCH` requests often mean "only update fields that are present." If your type conflates absence with `undefined`, you'll accidentally overwrite fields with `undefined`.
+
+#### noPropertyAccessFromIndexSignature — Explicit Dynamic Access
+
+```typescript
+interface Config {
+  name: string;
+  [key: string]: string; // Index signature
+}
+
+const config: Config = { name: 'App', theme: 'dark' };
+
+// Without flag:
+config.name;   // OK (known property)
+config.theme;  // OK (but this is dynamic — could be anything!)
+
+// With flag:
+config.name;     // OK (known property)
+config.theme;    // ERROR! Use bracket notation for dynamic keys
+config['theme']; // OK (explicitly acknowledging this is dynamic)
+```
+
+This flag makes it visually obvious which property accesses are statically known vs. dynamically resolved.
+
+## ESLint v9: The Flat Config Revolution
+
+ESLint v9 replaced `.eslintrc.json` with a flat config format (`eslint.config.mjs`). The old format is deprecated and will be removed. Here's the complete setup:
+
+### Installation
+
+```bash
+npm install -D eslint @eslint/js typescript-eslint eslint-config-prettier globals
+```
+
+### The Config File
+
+```javascript
+// eslint.config.mjs
+import eslint from '@eslint/js';
+import tseslint from 'typescript-eslint';
+import eslintConfigPrettier from 'eslint-config-prettier';
+import globals from 'globals';
+
+export default tseslint.config(
+  // Global ignores
+  {
+    ignores: [
+      'node_modules/**',
+      '.next/**',
+      'out/**',
+      'dist/**',
+      'coverage/**',
+      '*.config.mjs',
+    ],
+  },
+
+  // Base ESLint recommended rules
+  eslint.configs.recommended,
+
+  // TypeScript strict rules WITH type checking
+  ...tseslint.configs.strictTypeChecked,
+
+  // Stylistic rules (opinionated but useful)
+  ...tseslint.configs.stylisticTypeChecked,
+
+  // TypeScript parser config
+  {
+    languageOptions: {
+      globals: {
+        ...globals.browser,
+        ...globals.node,
+      },
+      parserOptions: {
+        projectService: true,
+        tsconfigRootDir: import.meta.dirname,
+      },
+    },
+  },
+
+  // Custom rule overrides
+  {
+    rules: {
+      // Require explicit return types on exported functions
+      '@typescript-eslint/explicit-function-return-type': ['error', {
+        allowExpressions: true,
+        allowTypedFunctionExpressions: true,
+        allowHigherOrderFunctions: true,
+      }],
+
+      // Enforce consistent type imports
+      '@typescript-eslint/consistent-type-imports': ['error', {
+        prefer: 'type-imports',
+        fixStyle: 'inline-type-imports',
+      }],
+
+      // No floating promises (unhandled async)
+      '@typescript-eslint/no-floating-promises': 'error',
+
+      // No misused promises (passing async to sync callback)
+      '@typescript-eslint/no-misused-promises': ['error', {
+        checksVoidReturn: { attributes: false }, // Allow async onClick handlers
+      }],
+
+      // Enforce exhaustive switch statements
+      '@typescript-eslint/switch-exhaustiveness-check': 'error',
+
+      // Ban specific types
+      '@typescript-eslint/no-restricted-types': ['error', {
+        types: {
+          '{}': { message: 'Use Record<string, unknown> instead', fixWith: 'Record<string, unknown>' },
+          'object': { message: 'Use Record<string, unknown> instead', fixWith: 'Record<string, unknown>' },
+          'Function': { message: 'Use a specific function type like () => void', },
+        },
+      }],
+
+      // Consistent naming conventions
+      '@typescript-eslint/naming-convention': ['error',
+        { selector: 'interface', format: ['PascalCase'] },
+        { selector: 'typeAlias', format: ['PascalCase'] },
+        { selector: 'enum', format: ['PascalCase'] },
+        { selector: 'enumMember', format: ['UPPER_CASE'] },
+      ],
+
+      // Prefer nullish coalescing over logical OR
+      '@typescript-eslint/prefer-nullish-coalescing': 'error',
+
+      // Prefer optional chaining
+      '@typescript-eslint/prefer-optional-chain': 'error',
+
+      // No unnecessary type assertions
+      '@typescript-eslint/no-unnecessary-type-assertion': 'error',
+
+      // No unused variables (with sensible exceptions)
+      '@typescript-eslint/no-unused-vars': ['error', {
+        argsIgnorePattern: '^_',
+        varsIgnorePattern: '^_',
+        caughtErrorsIgnorePattern: '^_',
+      }],
+    },
+  },
+
+  // React-specific overrides (if applicable)
+  {
+    files: ['**/*.tsx'],
+    rules: {
+      // Allow explicit return types to be omitted in JSX components
+      '@typescript-eslint/explicit-function-return-type': 'off',
+    },
+  },
+
+  // Test file overrides
+  {
+    files: ['**/*.test.ts', '**/*.test.tsx', '**/*.spec.ts'],
+    rules: {
+      '@typescript-eslint/no-floating-promises': 'off',
+      '@typescript-eslint/no-unsafe-assignment': 'off',
+    },
+  },
+
+  // Prettier MUST be last — disables formatting rules that conflict
+  eslintConfigPrettier,
+);
+```
+
+### Understanding strictTypeChecked
+
+The `strictTypeChecked` preset enables rules that leverage TypeScript's type system for deeper analysis. This catches bugs that basic linting misses:
+
+```typescript
+// @typescript-eslint/no-floating-promises
+async function fetchData() { /* ... */ }
+fetchData(); // ERROR! Unhandled promise — must await or void
+
+// @typescript-eslint/no-misused-promises
+const items = [1, 2, 3];
+items.forEach(async (item) => { // ERROR! forEach doesn't handle the returned promise
+  await processItem(item);
+});
+// Fix: use for...of loop or Promise.all
+
+// @typescript-eslint/no-unnecessary-condition
+function greet(name: string) {
+  if (name) { // ERROR! name is always truthy (it's string, not string | undefined)
+    console.log(`Hello ${name}`);
+  }
+}
+
+// @typescript-eslint/switch-exhaustiveness-check
+type Status = 'active' | 'inactive' | 'pending';
+function handleStatus(status: Status) {
+  switch (status) {
+    case 'active': return 'Active';
+    case 'inactive': return 'Inactive';
+    // ERROR! Missing case for 'pending'
+  }
+}
+```
+
+These type-checked rules are significantly more powerful than basic ESLint rules because they understand the actual types in your code, not just the syntax.
+
+## Prettier: The Non-Negotiable Formatter
+
+Prettier ends formatting debates permanently. Here's the setup:
+
+```bash
+npm install -D prettier eslint-config-prettier
+```
+
+```json
+// .prettierrc
+{
+  "semi": true,
+  "singleQuote": true,
+  "trailingComma": "all",
+  "printWidth": 100,
+  "tabWidth": 2,
+  "arrowParens": "always",
+  "endOfLine": "lf",
+  "bracketSpacing": true,
+  "jsxSingleQuote": false,
+  "plugins": ["prettier-plugin-tailwindcss"]
+}
+```
+
+```
+// .prettierignore
+node_modules
+.next
+out
+dist
+coverage
+pnpm-lock.yaml
+package-lock.json
+```
+
+### The Golden Rule: ESLint for Logic, Prettier for Formatting
+
+**Never** use ESLint for formatting. Never use `eslint-plugin-prettier` (it's slow and causes conflicts). Instead:
+
+1. `eslint-config-prettier` **disables** all ESLint formatting rules
+2. Prettier runs **separately** and handles all formatting
+3. No conflicts. Ever.
+
+```json
+// package.json scripts
+{
+  "scripts": {
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "typecheck": "tsc --noEmit"
+  }
+}
+```
+
+## Husky + lint-staged: Enforcement at Commit Time
+
+Rules without enforcement are suggestions. Husky and lint-staged turn them into requirements.
+
+### Setup
+
+```bash
+npm install -D husky lint-staged
+npx husky init
+```
+
+This creates a `.husky/pre-commit` file. Edit it:
+
+```bash
+#!/bin/sh
+npx lint-staged
+```
+
+### lint-staged Configuration
+
+```json
+// .lintstagedrc.json
+{
+  "*.{ts,tsx}": [
+    "eslint --fix --max-warnings 0",
+    "prettier --write"
+  ],
+  "*.{js,mjs,cjs}": [
+    "eslint --fix --max-warnings 0",
+    "prettier --write"
+  ],
+  "*.{json,md,mdx,yml,yaml}": [
+    "prettier --write"
+  ],
+  "*.css": [
+    "prettier --write"
+  ]
+}
+```
+
+**Key detail:** `--max-warnings 0` means any ESLint warning blocks the commit. Without this, warnings accumulate silently until you have hundreds.
+
+### Adding Type Checking to Pre-Commit
+
+Type checking is expensive — running `tsc --noEmit` on every commit is slow for large projects. Here's a pragmatic approach:
+
+```json
+// .lintstagedrc.json
+{
+  "*.{ts,tsx}": [
+    "eslint --fix --max-warnings 0",
+    "prettier --write",
+    "bash -c 'tsc --noEmit --pretty'"
+  ]
+}
+```
+
+**Note:** `tsc` doesn't support checking individual files — it always checks the whole project. For large codebases, move type checking to a pre-push hook or CI instead:
+
+```bash
+# .husky/pre-push
+#!/bin/sh
+npm run typecheck
+```
+
+## Biome: The 50x Faster Alternative
+
+Biome is a Rust-based tool that replaces both ESLint and Prettier in a single binary. The performance difference is staggering:
+
+| Operation | ESLint + Prettier | Biome | Speedup |
+|-----------|------------------|-------|---------|
+| Lint 10K files | 45.2s | 0.8s | **56x** |
+| Format 10K files | 12.1s | 0.3s | **40x** |
+| Full check (large monorepo) | ~12s | ~0.2s | **60x** |
+
+### Setup
+
+```bash
+npm install -D @biomejs/biome
+npx @biomejs/biome init
+```
+
+```json
+// biome.json
+{
+  "$schema": "https://biomejs.dev/schemas/2.0.0/schema.json",
+  "organizeImports": {
+    "enabled": true
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": true,
+      "correctness": {
+        "noUnusedImports": "error",
+        "noUnusedVariables": "error",
+        "useExhaustiveDependencies": "warn"
+      },
+      "suspicious": {
+        "noExplicitAny": "error",
+        "noConsole": "warn"
+      },
+      "complexity": {
+        "noForEach": "warn",
+        "useFlatMap": "error"
+      },
+      "style": {
+        "useConst": "error",
+        "useTemplate": "error",
+        "noNonNullAssertion": "warn"
+      }
+    }
+  },
+  "formatter": {
+    "enabled": true,
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineWidth": 100
+  },
+  "javascript": {
+    "formatter": {
+      "semicolons": "always",
+      "quoteStyle": "single",
+      "trailingCommas": "all",
+      "arrowParentheses": "always"
+    }
+  }
+}
+```
+
+```json
+// package.json
+{
+  "scripts": {
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "format": "biome format --write .",
+    "typecheck": "tsc --noEmit"
+  }
+}
+```
+
+### When to Use Biome vs ESLint + Prettier
+
+**Choose Biome when:**
+- You're starting a new project
+- Performance matters (large codebase, slow CI)
+- You want simplicity (one tool, one config)
+- You don't need type-aware lint rules
+- You don't need framework-specific plugins (eslint-plugin-react-hooks, @next/eslint-plugin-next)
+
+**Choose ESLint + Prettier when:**
+- You need type-aware rules (`strictTypeChecked` — Biome can't do this yet)
+- You need `eslint-plugin-react-hooks` (Biome's equivalent is improving but not complete)
+- You need `@next/eslint-plugin-next` for Next.js specific rules
+- You have custom ESLint rules or plugins
+- Your team is already invested in the ESLint ecosystem
+
+**My recommendation for 2026:** Use Biome for formatting + basic linting, and ESLint only for type-aware rules that Biome can't handle. This gives you the speed of Biome with the depth of typescript-eslint.
+
+## CI Pipeline Integration
+
+Your local checks (Husky) are the first line of defense. CI is the second — it catches cases where someone bypasses hooks with `--no-verify`:
+
+```yaml
+# .github/workflows/quality.yml
+name: Code Quality
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Type Check
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Format Check
+        run: npx prettier --check .
+
+      - name: Build
+        run: npm run build
+```
+
+**Run all three checks in CI:** typecheck, lint, format. If any fail, the PR is blocked. No exceptions.
+
+## Common Gotchas and Fixes
+
+### 1. ESLint Flat Config Doesn't Find My Files
+
+Flat config uses different glob patterns than the old format:
+
+```javascript
+// OLD (.eslintrc.json) — "overrides" with "files"
+// NEW (eslint.config.mjs) — separate config objects
+{
+  files: ['**/*.tsx'],
+  rules: { /* TSX-specific rules */ },
+},
+{
+  files: ['**/*.test.ts'],
+  rules: { /* test-specific rules */ },
+},
+```
+
+### 2. Type-Checked Rules Are Slow
+
+`strictTypeChecked` runs the TypeScript compiler in the background. If it's too slow:
+
+```javascript
+// Use projectService instead of project (faster)
+{
+  languageOptions: {
+    parserOptions: {
+      projectService: true,  // New, faster API
+      // project: './tsconfig.json', // Old, slower
+    },
+  },
+}
+```
+
+### 3. "Parsing error: Cannot read tsconfig.json"
+
+Your `tsconfig.json` must include all files that ESLint is checking:
+
+```json
+// tsconfig.json
+{
+  "include": ["src/**/*", "app/**/*", "*.config.mjs", "*.config.ts"]
+}
+```
+
+### 4. Prettier and Tailwind Class Sorting
+
+Install the Tailwind plugin for automatic class sorting:
+
+```bash
+npm install -D prettier-plugin-tailwindcss
+```
+
+```json
+// .prettierrc
+{
+  "plugins": ["prettier-plugin-tailwindcss"]
+}
+```
+
+### 5. lint-staged Runs on Wrong Files
+
+Make sure your glob patterns are correct:
+
+```json
+// Wrong — won't match nested files
+{ "*.ts": ["eslint --fix"] }
+
+// Right — matches files at any depth
+{ "**/*.ts": ["eslint --fix"] }
+
+// Actually, lint-staged matches staged files, not glob patterns
+// The patterns filter which staged files to process
+// "*.ts" DOES match nested files in lint-staged (different from shell globs)
+```
+
+## The Complete Setup Checklist
+
+Here's the full setup sequence for a new Next.js project:
+
+```bash
+# 1. TypeScript (with strict + extras)
+# Edit tsconfig.json with the strict config from this article
+
+# 2. ESLint v9 flat config
+npm install -D eslint @eslint/js typescript-eslint eslint-config-prettier globals
+# Create eslint.config.mjs with the config from this article
+
+# 3. Prettier
+npm install -D prettier prettier-plugin-tailwindcss
+# Create .prettierrc and .prettierignore
+
+# 4. Husky + lint-staged
+npm install -D husky lint-staged
+npx husky init
+# Edit .husky/pre-commit to run lint-staged
+# Create .lintstagedrc.json
+
+# 5. CI pipeline
+# Create .github/workflows/quality.yml
+
+# 6. Verify everything works
+npm run typecheck && npm run lint && npx prettier --check .
+```
+
+## Practical Takeaways
+
+1. **Enable `noUncheckedIndexedAccess`** — it's the single highest-impact TypeScript flag you're probably not using. Catches real production bugs.
+2. **Use `strictTypeChecked` in ESLint** — type-aware rules catch entire categories of bugs that basic rules miss (floating promises, misused promises, unnecessary conditions).
+3. **ESLint for logic, Prettier for formatting** — never mix them. Use `eslint-config-prettier` to disable conflicts.
+4. **Enforce at commit time** with Husky + lint-staged. Use `--max-warnings 0` to prevent warning accumulation.
+5. **Enforce in CI** — catches `--no-verify` bypasses. Block PRs that fail typecheck, lint, or format.
+6. **Consider Biome** for formatting + basic linting. Use ESLint only for type-aware rules.
+7. **Migrate to flat config now** — `.eslintrc` is deprecated. ESLint v9 flat config is the future.
+8. **Run type checking in pre-push or CI** — it's too slow for pre-commit on large projects.
+
+Pair this setup with [clean code principles](/blog/principles-of-clean-frontend-code-dry-kiss-solid) and you've got a codebase that actively fights against bugs. Add [feature flags with progressive rollouts](/blog/feature-flags-progressive-rollouts-nextjs-guide) and you can ship with confidence even when you're moving fast.
+
+A tight linting and type-safety setup catches bugs before they reach code review, prevents formatting debates, and builds confidence that the code in `main` actually works. The 30 minutes it takes to set up saves hundreds of hours of debugging over the life of a project.
+
+## References
+
+### Sources
+- [typescript-eslint: Shared Configs](https://typescript-eslint.io/users/configs/) — official strictTypeChecked documentation
+- [ESLint: Configuration Migration Guide](https://eslint.org/docs/latest/use/configure/migration-guide) — migrating to flat config
+- [TypeScript TSConfig Reference](https://www.typescriptlang.org/tsconfig/) — all compiler options explained
+- [The Strictest TypeScript Config](https://whatislove.dev/articles/the-strictest-typescript-config/) — comprehensive strict mode analysis
+- [Prettier: Pre-commit Hook](https://prettier.io/docs/precommit) — official Prettier + lint-staged guide
+- [eslint-config-prettier](https://github.com/prettier/eslint-config-prettier) — disabling conflicting rules
+
+### Further Reading
+- [PkgPulse: Biome vs ESLint + Prettier 2026](https://www.pkgpulse.com/blog/biome-vs-eslint-prettier-linting-2026) — detailed performance benchmarks
+- [Biome Migration Guide for 2026](https://dev.to/pockit_tools/biome-the-eslint-and-prettier-killer-complete-migration-guide-for-2026-27m) — step-by-step Biome migration
+- [Better Stack: Husky and lint-staged Guide](https://betterstack.com/community/guides/scaling-nodejs/husky-and-lint-staged/) — complete setup tutorial
+- [Advanced Frontends: ESLint Flat Config with TypeScript](https://advancedfrontends.com/eslint-flat-config-typescript-javascript/) — modern ESLint patterns
+
+---
+
+~Seb 👊
