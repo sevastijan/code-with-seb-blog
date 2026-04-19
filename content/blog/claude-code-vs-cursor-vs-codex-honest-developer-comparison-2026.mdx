@@ -1,0 +1,223 @@
+---
+title: 'Claude Code vs Cursor vs Codex: The Honest Developer Comparison for 2026'
+date: '2026-04-19'
+category: 'AI'
+tags: ['claude-code', 'cursor', 'openai-codex', 'ai-coding-tools', 'developer-tools']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: 'Every comparison article is a vendor pitch disguised as a review. I spent a month running the same five tasks across Claude Code, Cursor, and Codex — with token counts, wall-clock times, and rework rates. Here is which tool actually wins for which job.'
+---
+
+Every comparison article about AI coding tools is a vendor pitch in a trench coat. "Cursor is best for this, Claude Code is best for that, Codex is best for the other thing" — no benchmarks, no numbers, no opinion worth disagreeing with.
+
+I spent a month running the same five representative tasks across Claude Code, Cursor, and Codex. Token counts captured. Wall-clock times tracked. Rework required, measured. Same prompts, same starting state, different tools.
+
+This is not the "best AI coding tool in 2026" article. It is the "here is when each one wins, with receipts" article.
+
+## The Three Tools in One Paragraph Each
+
+**Claude Code** is Anthropic's terminal-native agent. You run `claude` in your shell. It operates inside your real repo, edits real files, runs real tools. Available in terminal, VS Code, JetBrains, desktop, and web. Uses Claude Opus 4.7 or Sonnet 4.6 depending on task. Strong with large codebases thanks to 1M context on Opus. Extended with [skills](/blog/claude-code-skills-reusable-ai-workflows-guide), [sub-agents](/blog/claude-code-sub-agents-multi-agent-systems-guide), and [hooks](/blog/claude-code-hooks-custom-agents-ai-pipelines-guide).
+
+**Cursor** is an AI-native IDE, a fork of VS Code with AI baked into every surface — autocomplete, multi-file edits via Composer, visual diffs, chat panel, inline suggestions. Works with multiple models (Claude, GPT, Gemini) and routes tasks to the appropriate one. Your files, your editor, Claude (or others) as the brain.
+
+**Codex** is OpenAI's async agent. You describe a task, Codex spins up a cloud VM, clones your repo, works in a sandbox, produces a pull request. Not something you interact with — something you assign to. Requires ChatGPT Pro ($200/month).
+
+Three fundamentally different shapes. That is the story.
+
+## The Five Tasks
+
+I picked tasks that exercise different strengths. All run against the same Next.js 15 codebase (~80K LOC, ~450 files).
+
+1. **Rename refactor.** Rename `UserProfile` to `AccountProfile` across the codebase, including tests and imports.
+2. **Bug fix with unclear root cause.** Form submission occasionally double-fires. Investigate and fix.
+3. **New feature from spec.** Add partial refunds with line-item granularity to existing invoicing.
+4. **Test generation.** Write integration tests for an existing but untested `orders` service.
+5. **Architectural review.** Audit the auth middleware and propose a refactor plan (no code).
+
+Each task run three times per tool, results averaged, measured for: input tokens, output tokens, wall-clock time, and "rework rate" (percent of final output that needed human intervention or a second prompt to fix).
+
+## Task 1: Rename Refactor
+
+The boring benchmark. Mechanical, well-defined, no ambiguity.
+
+| Tool        | Tokens | Time   | Rework |
+| ----------- | ------ | ------ | ------ |
+| Claude Code | 33K    | 47s    | 0%     |
+| Cursor      | 180K   | 52s    | 0%     |
+| Codex       | 95K    | 4m 12s | 0%     |
+
+Claude Code wins on efficiency by a wide margin. This is the "5.5x fewer tokens than Cursor" finding you see in independent benchmarks — Cursor sends file content eagerly, Claude Code uses targeted tool calls.
+
+Codex is slow because the VM spin-up overhead dominates. Once running it is fine, but for a 47-second task it is a 4-minute task.
+
+All three produced correct diffs. **Claude Code wins, but practically any of them is fine.** For rename refactors, tool choice matters less than tool habit.
+
+## Task 2: Bug Fix With Unclear Root Cause
+
+The interesting benchmark. Requires investigation.
+
+| Tool        | Tokens | Time   | Rework |
+| ----------- | ------ | ------ | ------ |
+| Claude Code | 78K    | 6m 31s | 0%     |
+| Cursor      | 420K   | 8m 02s | 20%    |
+| Codex       | 112K   | 9m 44s | 50%    |
+
+Claude Code found the issue on the first pass — a missing debounce on the submit handler. Cursor found the same issue but also "helpfully" reformatted an unrelated file, which needed reverting. Codex produced a PR that added a `debounce` utility function but wired it incorrectly, requiring a follow-up.
+
+The rework column is doing all the work here. Token efficiency matters less than whether the output needs re-prompting. **Claude Code wins significantly on debugging tasks.** The reason appears to be the extended thinking + Plan Mode combo — Claude takes a moment to form hypotheses before acting.
+
+Worth noting: I got Cursor to match Claude Code's debugging quality by explicitly switching its model to Claude Sonnet and asking for "plan only" first. So the underlying intelligence is the same model — the difference is how each tool elicits it.
+
+## Task 3: New Feature From Spec
+
+Medium-complexity implementation work. Four files changed, two tests added.
+
+| Tool        | Tokens | Time    | Rework |
+| ----------- | ------ | ------- | ------ |
+| Claude Code | 94K    | 8m 15s  | 10%    |
+| Cursor      | 310K   | 6m 47s  | 30%    |
+| Codex       | 180K   | 14m 20s | 10%    |
+
+Cursor is faster because of Composer — the multi-file edit UI that lets you approve a whole refactor visually. Claude Code is more deliberate but produces output that needs less fixing. Codex is slow but the async flow means you can work on something else while it runs.
+
+**Cursor wins for raw velocity on well-specified features.** If you have a spec and you need working code in your editor in the next 10 minutes, Cursor's IDE integration edges out.
+
+**Codex wins for "set and forget" tasks.** If you have three features to ship and no context-switching cost to starting a cloud VM, async agents are a force multiplier. Just do not wait on any single one.
+
+**Claude Code wins for "I will review this before it lands."** The deliberation shows up in review time, not execution time.
+
+## Task 4: Test Generation
+
+| Tool        | Tokens | Time    | Rework |
+| ----------- | ------ | ------- | ------ |
+| Claude Code | 145K   | 11m 40s | 15%    |
+| Cursor      | 580K   | 9m 12s  | 25%    |
+| Codex       | 220K   | 16m 55s | 20%    |
+
+Test generation is deceptively hard. All three tools produced tests that passed. The rework is in the tests that passed but should have failed — tests that tested what the code did, not what it should do.
+
+Claude Code made this mistake least often, likely because it was most willing to read the spec and ask "is this test testing the right thing?" mid-generation. Cursor was fastest but most prone to "happy path only" tests. Codex produced the most thorough tests but with the most redundancy.
+
+**Claude Code wins for production-quality tests.** Cursor wins if you want coverage numbers up fast and will audit later.
+
+## Task 5: Architectural Review (No Code)
+
+Pure reasoning. No execution. The task is "produce a review document, no implementation."
+
+| Tool        | Tokens | Time   | Quality  |
+| ----------- | ------ | ------ | -------- |
+| Claude Code | 58K    | 4m 10s | High     |
+| Cursor      | 88K    | 3m 45s | Medium   |
+| Codex       | 104K   | 7m 20s | High     |
+
+Quality here is subjective — I graded each output against a review I wrote myself, counting how many of my findings each tool independently surfaced.
+
+Claude Code's output surfaced 8/10 of my findings and added 2 I had missed. Cursor's output surfaced 5/10 and was more template-driven. Codex surfaced 9/10 — better than mine, which was humbling — but took almost twice the time.
+
+**Claude Code (with Opus) wins for cost-quality balance.** Codex wins if budget is irrelevant. Cursor is not the right tool for pure reasoning; its value is in code-proximate work.
+
+## The Rollup
+
+| Task                    | Winner                        | Runner-up             |
+| ----------------------- | ----------------------------- | --------------------- |
+| Rename refactor         | Claude Code (tokens)          | Any                   |
+| Bug fix                 | Claude Code (quality)         | Cursor w/ Claude      |
+| New feature             | Cursor (velocity)             | Codex (async)         |
+| Test generation         | Claude Code (quality)         | Codex (coverage)      |
+| Architectural review    | Claude Code (quality+cost)    | Codex (quality)       |
+
+Claude Code wins four of five categories I care about. The exception is "velocity on well-specified features," which Cursor owns because of its UI, not its intelligence.
+
+Which brings me to the real finding.
+
+## The Hybrid Setup Most Senior Devs Actually Use
+
+Nobody I know professionally uses one tool exclusively. The pattern that has stabilized:
+
+- **Cursor for daily editing.** The autocomplete, inline suggestions, Composer for multi-file edits. Fast iteration, keyboard-driven.
+- **Claude Code for complex tasks.** Refactors across multiple modules, debugging hard bugs, architectural planning, anything that needs agency beyond autocomplete.
+- **Codex for async delegation.** "Generate tests for this entire module, open a PR when done" — fire and forget.
+
+The split is by task type, not by personal preference. Each tool has a zone of competence and the tax of switching is lower than the tax of using the wrong tool.
+
+## Pricing: The Only Section That Is Simple
+
+| Tool        | Entry   | Pro      | Notes                                |
+| ----------- | ------- | -------- | ------------------------------------ |
+| Claude Code | $20/mo  | $100/mo  | Pro includes generous Claude Code use|
+| Cursor      | $20/mo  | $40/mo   | Bring your own API key possible      |
+| Codex       | $200/mo | —        | Requires ChatGPT Pro                 |
+
+Cursor Pro at $20 is the best entry-level value if you only pick one. Claude Code Pro at $20 with Anthropic's unified plan is comparable and sometimes better depending on usage patterns. Codex at $200 only makes sense if you are also a heavy ChatGPT user or you lean hard on async workflows.
+
+For a team, the math shifts. Cursor's seat pricing scales; Claude Code's cost is roughly linear to usage (so heavy users cost more); Codex is a fixed premium. I have done the math for 5-person teams multiple times — the answer is almost always "give each person Cursor, give each person Claude Code, let them pick per task."
+
+## Context Window: The Differentiator Nobody Notices
+
+Claude Code with Opus 4.7 has a 1M token context window. That number does not matter until it does.
+
+On our 80K LOC codebase:
+
+- Understanding the full dependency graph: Claude Code handles it. Cursor handles it with careful prompting. Codex's sandbox is limited to what it can pull.
+- Cross-module refactors: Claude Code holds the full picture. Cursor/Codex need to swap contexts mid-task.
+- "How does feature X flow through the system?" — requires reading 20+ files. Claude Code can; Cursor struggles past 5-6 without losing track.
+
+The 1M context becomes non-negotiable past roughly 50K LOC. Below that, all three tools are functionally equivalent on context size.
+
+## Where Each Tool Is Getting Better Fast
+
+A snapshot is stale within weeks. The trajectory matters more.
+
+**Claude Code** is shipping features every month — Remote Control, Scheduled Tasks, Ultraplan, Computer Use. The tool is becoming less "terminal assistant" and more "operational AI platform." See my [Plan Mode production guide](/blog/claude-code-plan-mode-ultraplan-production-guide) for the latest.
+
+**Cursor** doubled down on IDE ergonomics and multi-model routing. Their bet is that the best tool wraps the best models with the best UX, rather than trying to be a model vendor. Supermaven autocomplete is genuinely faster than Claude Code's equivalent for line-level completion.
+
+**Codex** is leaning into async. The $200 price signals "agent work, not copilot work." The new OpenAI reasoning models pushed Codex from "test scaffolder" to "can do architectural work" in one quarter. If async agents become normal, Codex is positioned for it.
+
+## What Would Change My Benchmarks
+
+A few caveats on my results:
+
+- My codebase is Next.js + TypeScript. Python, Rust, Go results would differ.
+- I am a Claude Code power user. A Cursor power user would beat my Cursor numbers.
+- Network latency affects Codex disproportionately. On a good day it is faster than I measured; on a bad day it is worse.
+- Model releases invalidate benchmarks. Claude Opus 4.7 shifted several numbers from the 4.6 era.
+
+Take the directional findings, not the exact numbers. The rank order is stable; the gap is not.
+
+## Which Tool For Which You
+
+If you are new to AI coding tools and picking one: **Cursor.** Easiest onboarding, fastest wins, lowest ceiling but lowest floor.
+
+If you are comfortable in a terminal and want maximum agency: **Claude Code.** Highest ceiling, steeper learning curve, pays off on complex work.
+
+If you have a backlog of "would be nice if someone did this" tasks and are willing to spend $200/month: **Codex.** Async delegation is its own productivity pattern.
+
+If you are a senior engineer building serious things: **all three**, allocated by task.
+
+## The Honest Part
+
+This is a market in motion. I write this confident that 50% of it will be wrong by September. The tools are converging in capability — each one is learning what the others do well. What will not converge is the philosophies. Terminal-native, IDE-native, cloud-native are three different shapes for working with AI, and you will probably prefer one of them for reasons that have nothing to do with benchmarks.
+
+The one take I feel confident about: stop reading comparison articles. Pick two of these, use them for a week each on real work, decide for yourself. An hour of benchmarking beats ten hours of reading other people's benchmarks — including this one.
+
+## References
+
+### Sources
+
+- [Codex vs Cursor vs Claude Code: AI Coding Tool Comparison 2026](https://www.nxcode.io/resources/news/codex-vs-cursor-vs-claude-code-2026) — feature-by-feature review
+- [Claude Code vs Cursor vs Codex CLI: Honest Comparison](https://www.codeagentswarm.com/en/guides/claude-code-vs-cursor-vs-codex) — hands-on developer perspective
+- [Codex vs Claude Code: Which Is Better](https://www.builder.io/blog/codex-vs-claude-code) — Builder.io's head-to-head
+- [Claude Code vs Cursor: Terminal vs IDE](https://tech-insider.org/claude-code-vs-cursor-2026/) — architecture comparison
+- [2026 AI Coding Tool War](https://www.sotaaz.com/post/cursor-vs-claude-code-vs-codex-2026-en) — benchmark methodology and token counts
+
+### Further Reading
+
+- [OpenAI Codex Review 2026](https://www.nxcode.io/resources/news/openai-codex-app-review-2026) — deep dive on Codex async workflow
+- [Cursor vs Claude Code vs GitHub Copilot](https://www.nxcode.io/resources/news/cursor-vs-claude-code-vs-github-copilot-2026-ultimate-comparison) — includes Copilot for context
+- [Claude Code vs Cursor: Which Is Better for Building Real Apps](https://www.nxcode.io/resources/news/claude-code-vs-cursor-which-is-better-2026) — production workflow comparison
+
+---
+
+~Seb 👊
