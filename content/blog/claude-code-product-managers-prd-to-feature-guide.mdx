@@ -1,0 +1,318 @@
+---
+title: 'Claude Code for Product Managers: From PRD to Deployed Feature Without Writing Code'
+date: '2026-04-20'
+category: 'AI'
+tags: ['claude-code', 'product-management', 'notion', 'figma', 'mcp']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: "You don't need to be a developer to use Claude Code. Connect it to Notion (PRDs), Linear (tickets), and Figma (designs), and go from product requirement to deployed feature with AI doing the implementation. Here's the PM playbook."
+---
+
+I watched a product manager ship a feature last month. Not "wrote the spec and handed it off." She opened her terminal, pointed Claude Code at a PRD in Notion, reviewed the generated code changes in plain English, and merged a PR — all before the standup where she was going to ask engineering to prioritize it.
+
+She's not a developer. She took one computer science course in college and forgot most of it. But she understood her product deeply, had clear requirements, and knew what "done" looked like. Claude Code handled the rest.
+
+This isn't a theoretical workflow. I've been setting up Claude Code for non-engineering roles across three companies, and PMs are the group where it clicks fastest. Not because the tool is easy — it's a terminal app, and terminals are intimidating — but because PMs already think in structured requirements, acceptance criteria, and user stories. That's exactly what Claude Code needs to do good work.
+
+Here's the complete playbook for product managers who want to go from PRD to deployed feature without waiting in the sprint backlog.
+
+## Why PMs Should Care About Claude Code
+
+Let me be direct: Claude Code is not "no-code." You will see a terminal. You will run commands. You will occasionally look at a file diff and feel uncomfortable. But the gap between "I can't code" and "I can use Claude Code" is much smaller than the gap between "I can't code" and "I can write code."
+
+The reason is that Claude Code doesn't need you to understand *how* code works. It needs you to understand *what* you want. And defining "what you want" with precision is literally a PM's job.
+
+Here's what becomes possible:
+
+- **Prototype in hours, not sprints.** Write a PRD, let Claude Code generate a working prototype, and put it in front of users before engineering even estimates the work.
+- **Unblock yourself.** That "small copy change" that's been sitting in the backlog for three weeks? You can ship it in five minutes.
+- **Review code meaningfully.** Instead of rubber-stamping PRs you don't understand, ask Claude to explain every change in business terms.
+- **Generate perfect tickets.** Break a PRD into engineering tickets with acceptance criteria, edge cases, and time estimates that actually make sense.
+
+The [landscape of AI coding tools](/blog/ai-coding-tools-2026-developer-guide) has matured to the point where the target user isn't just senior engineers anymore. PMs are the next wave, and the ones who adopt early will have a structural advantage.
+
+## The PM MCP Stack
+
+MCP — Model Context Protocol — is what makes Claude Code useful beyond just writing code. Think of MCP servers as plugins that let Claude Code talk to your existing tools. For PMs, the killer stack is:
+
+**Notion MCP** — Claude reads and writes to your Notion workspace. It can pull PRDs, update status pages, and create documentation automatically.
+
+**Linear MCP (or Jira MCP)** — Claude creates, updates, and queries issues in your project management tool. It understands priorities, sprints, and dependencies.
+
+**Figma MCP** — Claude reads your Figma designs and generates component code that matches them. Not pixel-perfect, but close enough for prototypes and surprisingly good for production.
+
+**GitHub MCP** — Claude creates branches, opens PRs, reads code reviews, and generates release notes. This is built into Claude Code by default.
+
+Setting up each MCP server takes about ten minutes. You add a configuration block to your Claude Code settings, authenticate with each service, and you're connected. No API keys to manage manually, no webhook configuration, no infrastructure.
+
+```json
+{
+  "mcpServers": {
+    "notion": {
+      "command": "npx",
+      "args": ["-y", "@notionhq/mcp-server"],
+      "env": { "NOTION_API_KEY": "your-key-here" }
+    },
+    "linear": {
+      "command": "npx",
+      "args": ["-y", "@linear/mcp-server"],
+      "env": { "LINEAR_API_KEY": "your-key-here" }
+    },
+    "figma": {
+      "command": "npx",
+      "args": ["-y", "@anthropic/mcp-server-figma"],
+      "env": { "FIGMA_ACCESS_TOKEN": "your-token-here" }
+    }
+  }
+}
+```
+
+Once connected, you talk to Claude Code in plain English and it routes requests to the right service. "Read the PRD titled Q2 Search Redesign from Notion" just works.
+
+## Workflow 1: PRD to Technical Spec
+
+This is the workflow that sold me on PMs using Claude Code. You write a PRD in Notion the way you normally would — user stories, acceptance criteria, mockup links, success metrics. Then you ask Claude Code to generate a technical specification from it.
+
+```
+> Read the PRD "Q2 Search Redesign" from Notion and generate
+  a technical spec. Include database schema changes, API
+  endpoints, frontend components, and migration strategy.
+  Flag any requirements that are ambiguous.
+```
+
+Claude reads the PRD, understands the business requirements, and produces a technical spec that your engineering team can actually use. But here's the part that matters most: it flags ambiguities.
+
+Every PM has shipped a PRD with a requirement like "search should be fast." Claude will come back with: "The PRD says 'search should be fast' — do you mean sub-200ms p95 latency for typeahead suggestions, or sub-1s for full results? This affects whether we need Elasticsearch or can use Postgres full-text search."
+
+That question would have surfaced in sprint planning, three days after you wrote the PRD. Now it surfaces in three minutes. You update the PRD, regenerate the spec, and by the time engineering sees it, the ambiguities are already resolved.
+
+I save the generated spec back into Notion as a sub-page of the PRD. Engineers can see both the "what" and the "how," and the gap between PM intent and engineering understanding shrinks dramatically.
+
+## Workflow 2: PRD to Linear Tickets
+
+Once the technical spec exists, breaking it into tickets is mechanical work that PMs spend hours on. Claude Code does it in seconds.
+
+```
+> Read the technical spec for "Q2 Search Redesign" and create
+  Linear tickets. Group by epic. Include acceptance criteria,
+  edge cases, and story point estimates. Mark dependencies
+  between tickets.
+```
+
+Claude creates tickets directly in Linear with titles, descriptions, acceptance criteria, labels, and point estimates. It understands dependencies — "the API endpoint ticket blocks the frontend ticket" — and sets them up correctly.
+
+Are the estimates perfect? No. Claude tends to underestimate complex backend work and overestimate simple frontend tasks. But the estimates are a starting point that's better than "we'll estimate in grooming," and engineers can adjust them in minutes instead of spending an hour generating them from scratch.
+
+The deep integration between [Claude Code and issue trackers like Linear and Jira](/blog/claude-code-jira-linear-issue-driven-dev-guide) means tickets stay synchronized. When a PR gets merged, the linked ticket moves to "Done." When a ticket gets reprioritized, Claude can resurface the context when the engineer eventually picks it up.
+
+## Workflow 3: Figma Design to Component Code
+
+This workflow feels like magic the first time you see it. You have a Figma design. You point Claude Code at it. Claude generates React components that match the design.
+
+```
+> Look at the Figma file "Search Redesign - Final" and
+  generate React components for the search bar, results list,
+  and filter sidebar. Use our existing design system tokens
+  from src/styles/tokens.ts.
+```
+
+Claude reads the Figma file through the MCP server, extracts layout information, colors, typography, spacing, and component structure, then generates code that uses your existing design system.
+
+The output isn't production-ready for complex interactions. Animations, complex state management, and responsive edge cases need engineering polish. But for a PM who wants to build a clickable prototype to test with users? It's more than enough. And for straightforward UI — a settings page, a data table, a form — the output is often close to final.
+
+The key is telling Claude about your existing design system. Without that context, it generates one-off styles. With it, the components use your tokens, your spacing scale, and your component patterns. This is where your CLAUDE.md file (more on that below) becomes critical.
+
+## Workflow 4: Review PRs Without Reading Code
+
+This is the workflow that changes the PM-engineering relationship. Instead of rubber-stamping PRs you can't really evaluate, you ask Claude Code to explain them.
+
+```
+> Explain PR #247 in business terms. What user-facing
+  behavior changed? Are there any changes that don't match
+  the acceptance criteria in the Linear ticket? Any potential
+  regressions?
+```
+
+Claude reads the PR diff, cross-references it with the linked ticket, and gives you a plain-English summary:
+
+*"This PR adds typeahead search suggestions. When a user types 3+ characters, they see up to 5 suggestions from the product catalog. The acceptance criteria says suggestions should appear within 200ms — the implementation uses a 150ms debounce plus a server call, so actual latency will be 150ms + network time. On slow connections this might exceed 200ms. The PR doesn't include the 'recent searches' feature mentioned in AC #4."*
+
+Now you can leave a meaningful review comment: "Looks good on the typeahead, but AC #4 (recent searches) is missing — is that a separate PR or was it descoped?" That's a better review than most PMs can do by reading code, and it took thirty seconds.
+
+## Workflow 5: Generate Release Notes from Merged PRs
+
+Every two weeks, someone has to write release notes. Usually it's the PM, and usually it involves digging through a list of PR titles that say things like "fix: debounce handler cleanup" and trying to translate that into something customers care about.
+
+```
+> Look at all PRs merged to main since the last release tag.
+  Generate user-facing release notes grouped by feature area.
+  Use the format: what changed, why it matters, any actions
+  needed. Skip purely technical changes that don't affect
+  users.
+```
+
+Claude reads every merged PR, understands the business context from linked tickets and PR descriptions, and generates release notes that actually make sense to customers. Technical PRs like dependency updates and refactors get filtered out. Feature PRs get translated into benefits. Bug fixes get described in terms of what was broken and what's now fixed.
+
+I pipe these into our changelog page and email newsletter with minimal editing. What used to take an afternoon now takes fifteen minutes of review.
+
+## Setting Up Claude Code as a PM
+
+You need three things: a terminal, Node.js, and an Anthropic API key (or a Claude Max subscription). That's it.
+
+**Step 1: Open your terminal.** On Mac, it's the Terminal app. On Windows, use PowerShell. You don't need to know bash commands — Claude Code has its own interface.
+
+**Step 2: Install Claude Code.**
+
+```bash
+npm install -g @anthropic-ai/claude-code
+```
+
+If `npm` doesn't work, install Node.js from nodejs.org first. It's a one-click installer.
+
+**Step 3: Navigate to your project.**
+
+```bash
+cd ~/path/to/your-project
+```
+
+Ask an engineer which directory to use. It's usually the main repository folder.
+
+**Step 4: Launch Claude Code.**
+
+```bash
+claude
+```
+
+That's it. You're in. Claude Code will index the project and you can start asking questions in plain English.
+
+**Step 5: Configure MCP servers.** Run `claude mcp add` for each service you want to connect. Claude Code walks you through the authentication flow.
+
+The total setup time is about twenty minutes. Most of that is waiting for MCP authentication flows and project indexing. After the initial setup, launching Claude Code takes two seconds.
+
+If you've ever built a full-stack app using the [vibe coding approach](/blog/vibe-coding-full-stack-app-one-day-guide), you already know the basics. The PM workflow is the same loop — describe what you want, review the output, iterate — just applied to product work instead of pure engineering.
+
+## CLAUDE.md for PMs: Not the Same as for Developers
+
+Developers use CLAUDE.md to describe coding conventions, test commands, and architecture patterns. PMs need a different CLAUDE.md — one focused on product context, business rules, and communication style.
+
+Here's a PM-oriented CLAUDE.md template:
+
+```markdown
+# CLAUDE.md — Product Manager Context
+
+## Product
+SaaS analytics platform for e-commerce. 2,400 active customers.
+Primary persona: marketing managers at DTC brands, $5M-50M revenue.
+
+## Business Rules
+- Never suggest changes that break Shopify integration (our #1 source)
+- All user-facing copy must match our voice guide in /docs/voice.md
+- GDPR compliance is non-negotiable — flag any data handling changes
+- Pricing tiers: Starter ($29), Growth ($99), Enterprise (custom)
+
+## When I Ask You To...
+- "Generate tickets" → Use Linear, include acceptance criteria
+- "Review a PR" → Explain in business terms, flag AC mismatches
+- "Write release notes" → Customer-facing language, skip technical PRs
+- "Create a spec" → Technical audience, include migration strategy
+
+## Our Stack (for context, not for me to modify)
+Next.js 14, TypeScript, Postgres, Redis, Vercel, Stripe
+
+## Key Contacts
+- @sarah — frontend lead, ask about component patterns
+- @james — backend lead, ask about API design
+- @maria — design lead, Figma source of truth
+```
+
+This CLAUDE.md gives Claude the product context it needs to generate relevant output. Without it, Claude generates generic specs and tickets. With it, Claude generates specs that reference your actual integrations, business constraints, and user personas.
+
+## The Limitations: What Claude Code Can't Do for PMs
+
+I'd be doing you a disservice if I didn't cover this honestly. Claude Code is powerful, but it has real boundaries.
+
+**Claude can't replace engineering judgment.** It can generate a technical spec, but it can't evaluate whether that spec is the *right* approach for your specific system at your specific scale. A senior engineer might look at Claude's spec and say "this won't work because our event bus can't handle that throughput" — that kind of contextual judgment requires experience with the actual system.
+
+**The 70% problem applies to PMs too.** Claude gets you to a working prototype fast, but the last 30% — edge cases, error handling, performance under load, accessibility, security — requires engineering. If you ship Claude's first draft to production, you're shipping a demo. The [vibe coding playbook](/blog/vibe-coding-full-stack-app-one-day-guide) talks about this extensively: the first 70% is the easy part.
+
+**Complex state management is a weak spot.** If your feature involves complex multi-step workflows with branching logic, undo/redo, or real-time collaboration, Claude's generated code will need significant engineering review.
+
+**Claude doesn't know your users.** It knows what your PRD says about your users, but it doesn't have the intuition you've built from hundreds of user interviews. Don't let Claude make product decisions — let it execute product decisions you've already made.
+
+**Context window limits matter.** If your PRD is 20 pages, your codebase is massive, and you're asking Claude to cross-reference Figma designs simultaneously, you might hit context limits. Break complex workflows into steps.
+
+## When to Involve Engineers vs. When Claude Code Is Enough
+
+Here's my rough framework:
+
+**Claude Code is enough for:**
+- Copy changes, text updates, configuration tweaks
+- Generating prototypes and proof-of-concepts
+- Creating tickets and specs from PRDs
+- Reviewing PRs for business logic correctness
+- Writing release notes and documentation
+- Simple UI changes using existing components
+- Adding a new page that follows an existing pattern
+
+**Involve engineers when:**
+- The feature touches authentication, payments, or data privacy
+- Performance is a hard requirement (latency SLAs, throughput targets)
+- The change affects database schemas in production
+- Multiple services need coordinated changes
+- The feature requires new infrastructure (queues, caches, third-party integrations)
+- You're not sure whether it's safe — asking is always the right call
+
+The general principle: if the change is *additive* and follows existing patterns, Claude Code is probably fine. If the change is *structural* or touches sensitive systems, loop in engineering.
+
+## Cost: What a PM's Claude Code Usage Typically Costs
+
+PMs use Claude Code differently than developers, and the cost profile reflects that. Developers run Claude Code for hours, making large code changes across many files. PMs tend to do shorter, focused sessions — read this PRD, generate these tickets, explain this PR.
+
+Based on the PM teams I've set up:
+
+- **Light usage** (ticket generation, PR reviews, occasional specs): $30-60/month
+- **Medium usage** (daily PR reviews, weekly specs, prototype generation): $80-150/month
+- **Heavy usage** (daily prototyping, full workflow automation): $150-300/month
+
+If you're on a Claude Max subscription ($100-200/month depending on tier), your Claude Code usage is included. For most PMs, this is the better deal — you get Claude.ai for ad-hoc questions plus Claude Code for workflow automation under one subscription.
+
+Compare that to the cost of a PM spending four hours a week on ticket grooming, release notes, and PR review. At a fully loaded PM cost of $100+/hour, even the heavy usage tier pays for itself in the first week.
+
+For organizations scaling this across PM teams, the [token optimization strategies](/blog/claude-code-token-optimization-bill-cut-guide) that work for engineering teams apply to PM usage too — shorter context, focused sessions, and good CLAUDE.md files reduce token waste significantly.
+
+## Getting Started This Week
+
+Don't try to adopt all five workflows at once. Here's the order I recommend:
+
+**Week 1:** Install Claude Code, set up your CLAUDE.md, connect Notion. Try Workflow 4 (PR reviews). It's the lowest risk and highest immediate value.
+
+**Week 2:** Try Workflow 5 (release notes) at the end of your next sprint. Add Linear MCP and try Workflow 2 (ticket generation) for one feature.
+
+**Week 3:** Try Workflow 1 (PRD to spec) with a real PRD. Share the generated spec with engineering and get their feedback on quality.
+
+**Week 4:** If you have Figma designs, try Workflow 3. Build a prototype and test it with users.
+
+By the end of the month, you'll know which workflows are worth keeping and which don't fit your team's dynamics. The PMs I've onboarded typically keep three out of five and build their own variations for the other two.
+
+The line between "product" and "engineering" is blurring. Not disappearing — just blurring. PMs who can prototype, review code, and generate specs from their own tools will move faster, make better decisions, and unblock themselves from the sprint cycle. Claude Code is the bridge that makes that practical today.
+
+### Sources
+
+- [Anthropic — Claude Code documentation](https://docs.anthropic.com/en/docs/claude-code)
+- [Model Context Protocol specification](https://modelcontextprotocol.io/)
+- [Notion API and MCP integration](https://developers.notion.com/)
+- [Linear API reference](https://developers.linear.app/)
+- [Figma developer platform](https://www.figma.com/developers)
+- [METR study on AI coding tool productivity](https://metr.org/blog/2025-07-10-early-2025-ai-experienced-os-dev-study/)
+
+### Further Reading
+
+- [Anthropic — Building effective agents](https://www.anthropic.com/engineering/building-effective-agents)
+- [Figma — AI and the future of design](https://www.figma.com/blog/ai-and-the-future-of-design/)
+- [Lenny Rachitsky — How PMs should think about AI tools](https://www.lennysnewsletter.com/)
+- [SVPG — Product discovery with AI](https://www.svpg.com/product-discovery/)
+
+---
+
+*~Seb* 👊

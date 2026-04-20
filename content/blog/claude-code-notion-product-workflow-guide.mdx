@@ -1,0 +1,403 @@
+---
+title: 'Claude Code + Notion: Automate Your Entire Product Workflow'
+date: '2026-04-20'
+category: 'AI'
+tags: ['claude-code', 'notion', 'mcp', 'product-management', 'automation']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: "The official Notion MCP server lets Claude Code search your workspace, create pages, and manage databases from the terminal. Here's how to connect them and automate the workflows that eat your mornings — from PRD drafts to sprint planning to release notes."
+---
+
+Every product team I've worked with has the same bottleneck: the gap between where decisions happen and where work gets tracked. Conversations happen in Slack, specs live in Notion, code ships through GitHub, and someone — usually a PM or a tech lead — spends their mornings copying context between all three.
+
+I got tired of being that someone. So I connected Claude Code to our Notion workspace using the [Model Context Protocol](/blog/mcp-vs-a2a-ai-agent-protocols-guide-2026), and what started as a convenience turned into a complete rethinking of how we run product workflows.
+
+Here's the full setup — from initial connection to five automated workflows that replaced hours of manual work each week.
+
+## Why Notion + Claude Code
+
+Notion is fundamentally a structured data platform disguised as a document editor. Every page is a block tree. Every database is a queryable collection with typed properties. This makes it unusually well-suited for AI automation compared to, say, Google Docs or Confluence.
+
+Claude Code, on the other hand, is an AI agent that lives in your terminal and understands your codebase. It can read files, run commands, make git commits, and — through MCP servers — interact with external services.
+
+Put them together and you get an agent that can:
+
+- Read your product backlog and generate sprint plans
+- Turn meeting transcripts into Notion tickets with proper metadata
+- Build PRDs from a one-paragraph description, pre-filled with your team's template
+- Generate release notes by reading your git log and writing them directly into your Notion changelog
+
+The key insight: **Notion's block-based structure gives Claude Code clean, parseable data to work with.** It's not scraping HTML or guessing at document structure. It's querying databases with filters, reading properties with types, and creating pages with precise schemas.
+
+## Setup: Notion MCP Server Installation
+
+The official Notion MCP server is maintained by Notion's team and available through the MCP registry. Here's how to get it running.
+
+### Step 1: Create a Notion Integration
+
+1. Go to [notion.so/my-integrations](https://www.notion.so/my-integrations)
+2. Click "New integration"
+3. Name it something like "Claude Code Agent"
+4. Select the workspace you want to connect
+5. Under Capabilities, enable: Read content, Update content, Insert content, and Read/update database properties
+6. Copy the Internal Integration Token — you'll need it next
+
+### Step 2: Share Pages with Your Integration
+
+Notion integrations don't get blanket access to your workspace. You need to explicitly share pages and databases:
+
+1. Open the Notion page or database you want Claude to access
+2. Click "..." menu → "Connections" → find your integration
+3. Confirm access
+
+This is actually a security feature I appreciate — more on scoping permissions later.
+
+### Step 3: Configure the MCP Server in Claude Code
+
+Add the Notion MCP server to your Claude Code configuration. In your project's `.claude/settings.json` or your global settings:
+
+```json
+{
+  "mcpServers": {
+    "notion": {
+      "command": "npx",
+      "args": ["-y", "@notionhq/mcp-server"],
+      "env": {
+        "NOTION_API_KEY": "ntn_your_integration_token_here",
+        "OPENAPI_MCP_HEADERS": "{\"Notion-Version\":\"2022-06-28\"}"
+      }
+    }
+  }
+}
+```
+
+Restart Claude Code, and you should see the Notion tools appear when you run `/mcp`:
+
+```
+notion: 8 tools available
+  - notion_search
+  - notion_get_page
+  - notion_create_page
+  - notion_update_page
+  - notion_get_database
+  - notion_query_database
+  - notion_create_database_entry
+  - notion_update_database_entry
+```
+
+### Step 4: Verify the Connection
+
+Ask Claude Code to search your workspace:
+
+```
+> Search my Notion workspace for "product roadmap"
+```
+
+If it returns results, you're connected. If not, double-check that you've shared the relevant pages with your integration.
+
+## The Notion Plugin for Claude Code
+
+While the raw MCP server gives you tools, the **Notion plugin** bundles those tools with [Skills](/blog/claude-code-skills-reusable-ai-workflows-guide) and slash commands that make the experience dramatically smoother.
+
+The plugin adds pre-built workflows on top of the MCP layer:
+
+```
+┌──────────────────────────────────────────────┐
+│            NOTION PLUGIN                      │
+├──────────────────────────────────────────────┤
+│  Slash Commands    Skills     MCP Server      │
+│  ┌────────────┐  ┌────────┐  ┌────────────┐  │
+│  │ /notion-prd│  │ Auto-  │  │ notion_    │  │
+│  │ /notion-   │  │ detect │  │ search,    │  │
+│  │  sprint    │  │ Notion │  │ query_db,  │  │
+│  │ /notion-   │  │ tasks  │  │ create_    │  │
+│  │  release   │  │        │  │ page...    │  │
+│  └────────────┘  └────────┘  └────────────┘  │
+└──────────────────────────────────────────────┘
+```
+
+Install it from the Claude Code plugin registry:
+
+```bash
+claude plugin add notion
+```
+
+This gives you slash commands like `/notion-prd`, `/notion-sprint`, and `/notion-release` — but you can also just describe what you need in natural language, and the skills layer will invoke the right tools automatically.
+
+## Five Automated Workflows That Replaced My Mornings
+
+### 1. PRD Generation from Conversations
+
+**The old way:** Someone describes a feature in Slack. I open Notion, create a page from our PRD template, fill in 12 sections manually, paste the Slack conversation as context, and spend 30 minutes formatting.
+
+**The new way:**
+
+```
+> Read the Slack thread I pasted below and create a PRD in our
+> Product Specs database. Use our standard template. Fill in the
+> problem statement, proposed solution, success metrics, and
+> technical considerations based on the conversation.
+>
+> [paste conversation]
+```
+
+Claude Code reads your PRD template from Notion, extracts the structured information from the conversation, and creates a fully-formatted page in your database — complete with properties like Status (Draft), Priority, and Owner.
+
+The key trick: point Claude at an **existing PRD** in your database first so it learns your team's structure and tone:
+
+```
+> Read the PRD for "User Authentication Revamp" in our Product
+> Specs database. Use the same structure and level of detail
+> to write a new PRD for the feature I'm about to describe.
+```
+
+This produces PRDs that actually match your team's conventions instead of generic AI output.
+
+### 2. Sprint Planning from Backlog
+
+This is the workflow that saved us the most time. We keep our product backlog as a Notion database with properties: Priority (P0-P3), Estimate (story points), Status, and Team.
+
+```
+> Query our Product Backlog database for all items with
+> Status = "Ready" and Priority = P0 or P1. Our sprint
+> capacity is 34 story points. Create a sprint plan that
+> maximizes priority coverage within capacity. Write the
+> plan to a new page in Sprint Plans.
+```
+
+Claude queries the database, sorts by priority, fits items within the point budget, and creates a sprint plan page with:
+
+- Selected items with their estimates and owners
+- Total points allocated vs. capacity
+- Items that didn't make the cut (with reasoning)
+- Risk flags for items without estimates or owners
+
+You can even set this up as a [scheduled routine](/blog/claude-code-routines-scheduled-automation-guide) that runs every Monday morning and posts the draft sprint plan to Slack for review.
+
+### 3. Meeting Notes to Action Items and Tickets
+
+We record all product meetings and run them through a transcription service. The transcript goes into Notion. Then Claude does the rest:
+
+```
+> Read the meeting notes page "Product Sync - April 18" in our
+> Meetings database. Extract all action items, decisions, and
+> open questions. Create tickets in our Product Backlog database
+> for each action item, with the assignee and due date from the
+> meeting notes. Update the meeting page with a structured
+> summary at the top.
+```
+
+This produces:
+
+1. A clean summary block inserted at the top of the meeting page
+2. Individual tickets in the backlog database, linked back to the meeting page
+3. A "Decisions" callout block with each decision and its context
+
+The accuracy is surprisingly good for extracting assignees and deadlines from natural conversation, but I always do a quick review pass. Takes 2 minutes instead of 20.
+
+### 4. Release Notes from Git Log
+
+This one connects Claude Code's native git understanding with Notion's publishing workflow:
+
+```
+> Read the git log since tag v2.4.0. Group changes by category
+> (Features, Improvements, Bug Fixes). Write release notes to
+> a new page in our Changelog database with the title
+> "v2.5.0 - April 2026". Use our existing release notes style.
+```
+
+Claude reads your commit history, groups by conventional commit types, cross-references with any linked Notion tickets (if your commits reference ticket IDs), and produces release notes that match your existing tone.
+
+I pair this with a post-deploy hook that triggers automatically. The release notes page appears in Notion within minutes of a production deploy.
+
+### 5. Documentation Sync
+
+Codebases drift from documentation. This workflow catches the drift:
+
+```
+> Compare our API documentation page "REST API Reference" in
+> Notion with the actual route handlers in src/api/. Identify
+> any endpoints that exist in code but not in docs, any
+> documented endpoints that no longer exist, and any parameter
+> mismatches. Create a report page with the differences.
+```
+
+Claude reads both the Notion documentation and your actual source code, then generates a diff report. We run this weekly as a routine. It's caught three undocumented endpoints and two deprecated-but-still-documented routes in the first month.
+
+## Working with Notion Databases
+
+Databases are where the real power lives. Here's what you need to know about querying and manipulating them through Claude Code.
+
+### Querying with Filters
+
+The `notion_query_database` tool accepts Notion's filter syntax:
+
+```
+> Query the Tasks database where Status is "In Progress"
+> and Assignee contains "Sebastian", sorted by Due Date
+> ascending.
+```
+
+Claude translates this into the proper Notion API filter format behind the scenes. You don't need to know the JSON filter syntax — just describe what you want.
+
+### Creating Entries with Typed Properties
+
+When creating database entries, Claude maps your natural language to Notion's property types:
+
+- **Select/Multi-select:** Matched against existing options
+- **Date:** Parsed from natural language ("next Friday", "end of Q2")
+- **Relation:** Linked to pages in related databases
+- **People:** Matched against workspace members
+- **Number:** Extracted from context (story points, priority levels)
+
+### Updating Properties in Bulk
+
+This is where automation really shines:
+
+```
+> For all items in the Sprint Backlog database where Status
+> is "Done" and Sprint is "Sprint 24", change Status to
+> "Released" and add the tag "v2.5.0".
+```
+
+Bulk updates that would take 10 minutes of clicking through Notion's UI happen in seconds.
+
+## Claude Code Skills for Notion
+
+If you want to build reusable Notion workflows that your whole team can invoke, [Claude Code Skills](/blog/claude-code-skills-reusable-ai-workflows-guide) are the way to go.
+
+Create a `.claude/skills/notion-prd/` directory with an `instructions.md`:
+
+```markdown
+# Notion PRD Generator
+
+When invoked, this skill:
+1. Asks for a feature description (or reads from clipboard)
+2. Queries the Product Specs database for the most recent PRD
+3. Uses that PRD's structure as a template
+4. Creates a new PRD page with all standard sections
+5. Sets Status = "Draft", adds the invoking user as Owner
+
+## Template Sections
+- Problem Statement
+- Proposed Solution
+- User Stories
+- Technical Considerations
+- Success Metrics
+- Open Questions
+```
+
+Now anyone on your team can type `/notion-prd` and get a consistent PRD without knowing the underlying database structure or API. The skill encapsulates the procedural knowledge — which database to query, which template to follow, which properties to set.
+
+You can build similar skills for standup updates, bug reports, retrospective notes, and any other repeating Notion workflow. The [CLAUDE.md memory system](/blog/claude-md-memory-persistent-context-guide) keeps the context about your team's conventions persistent across sessions, so the skills get better as you refine them.
+
+## Limitations You'll Hit
+
+### API Rate Limits
+
+Notion's API has a rate limit of 3 requests per second per integration. For most workflows, this isn't noticeable. But if you're doing bulk operations — updating 50 database entries, for instance — you'll hit throttling. Claude Code handles retries gracefully, but the operation will be slower than you'd expect.
+
+For heavy batch operations, consider breaking them into smaller chunks or running them as background routines during off-hours.
+
+### Block Structure Complexity
+
+Notion pages are trees of blocks, and some block types are complex: synced blocks, column layouts, embedded databases, and linked databases don't always round-trip cleanly through the API. If your pages use heavy formatting, expect some fidelity loss when Claude reads and rewrites them.
+
+Stick to standard blocks (paragraphs, headings, lists, code blocks, callouts, tables) for the best results.
+
+### Large Pages
+
+Pages with hundreds of blocks require multiple API calls to read fully, which compounds with the rate limit issue. If you're working with very long documents, consider splitting them into sub-pages or using database entries instead of single monolithic pages.
+
+### Relation and Rollup Properties
+
+Relations between databases work well for simple lookups, but complex rollup formulas don't always translate to useful information through the API. Claude gets the computed values but not the formula logic, so it can read rollups but can't create new rollup configurations.
+
+## Cost: Token Usage for Notion Operations
+
+Every Notion API call through MCP adds tokens to your context. Here's what to expect:
+
+| Operation | Approximate Token Cost |
+|-----------|----------------------|
+| Search workspace | 500-2,000 tokens (depends on results) |
+| Read a page | 1,000-5,000 tokens (depends on page length) |
+| Query a database | 1,000-10,000 tokens (depends on results and properties) |
+| Create a page | 500-1,500 tokens (request + confirmation) |
+| Update properties | 300-800 tokens |
+
+A typical PRD generation workflow — search for template, read template, create page — costs roughly 5,000-10,000 tokens on the Notion side, plus whatever Claude uses for reasoning and writing. At current Opus pricing, that's a few cents per workflow execution.
+
+For teams running multiple automations daily, the costs are real but modest compared to the time saved. A PM spending 30 minutes on manual PRD formatting costs far more than the $0.15 in API tokens.
+
+## Security: What Notion Data Claude Can Access
+
+This matters, especially if your Notion workspace contains sensitive information like HR documents, financial data, or customer PII.
+
+### Scoping Permissions
+
+The integration token you created only accesses pages and databases you explicitly share with it. This is your primary security boundary. My recommendations:
+
+1. **Create separate integrations for separate concerns.** Use one integration for the product backlog, another for HR docs (if you must connect them at all).
+2. **Share databases, not the entire workspace.** Only share the specific databases Claude needs.
+3. **Use read-only when possible.** If a workflow only needs to read data (like the documentation sync), create a read-only integration.
+
+### What Claude Sees
+
+When Claude queries a Notion database, it sees all properties and content of pages shared with the integration. This includes:
+
+- Page content (all blocks)
+- Database properties (all columns)
+- Comments on pages
+- Page history (creation date, last edited by)
+
+It does **not** see:
+
+- Pages not shared with the integration
+- Workspace settings or member information
+- Integration tokens or API keys
+- Other integrations' data
+
+### Token Storage
+
+Your Notion API key is stored in your Claude Code MCP configuration (`.claude/settings.json`). Make sure this file is in your `.gitignore` if you're using a project-level configuration. For team setups, use environment variables rather than hardcoded tokens:
+
+```json
+{
+  "mcpServers": {
+    "notion": {
+      "command": "npx",
+      "args": ["-y", "@notionhq/mcp-server"],
+      "env": {
+        "NOTION_API_KEY": "${NOTION_API_KEY}"
+      }
+    }
+  }
+}
+```
+
+## The Bottom Line
+
+Notion + Claude Code isn't just about saving time on individual tasks — it's about removing the translation layer between how your team thinks and how your tools work. The PM describes a feature in natural language, and it appears in Notion with the right structure, properties, and links. The engineer merges a PR, and the changelog updates itself.
+
+Start with one workflow. The PRD generator is the easiest to set up and the most immediately impressive. Once your team sees a well-structured PRD appear in Notion from a three-sentence prompt, they'll start asking what else can be automated.
+
+The answer is: almost everything that involves moving structured information from one place to another. And that's most of product work.
+
+## References
+
+### Sources
+- [Notion API Documentation](https://developers.notion.com/) - Official Notion API reference and guides
+- [Model Context Protocol — Official Specification](https://modelcontextprotocol.io/) - MCP server architecture and standards
+- [Notion MCP Server — GitHub](https://github.com/makenotion/notion-mcp-server) - Official Notion MCP server repository
+- [Claude Code Documentation — MCP Integration](https://docs.anthropic.com/en/docs/claude-code/mcp) - Configuring MCP servers in Claude Code
+
+### Further Reading
+- [MCP vs A2A: The Only Two AI Agent Protocols You Need to Know](/blog/mcp-vs-a2a-ai-agent-protocols-guide-2026) - Understanding MCP's role in the protocol landscape
+- [Claude Code Routines: Your AI Agent Works While You Sleep](/blog/claude-code-routines-scheduled-automation-guide) - Schedule Notion workflows to run automatically
+- [Claude Code Skills: The 98% Token Savings Architecture](/blog/claude-code-skills-reusable-ai-workflows-guide) - Build reusable skills for your Notion workflows
+- [CLAUDE.md Memory: Persistent Context Across Sessions](/blog/claude-md-memory-persistent-context-guide) - Keep Notion conventions in Claude's memory
+
+---
+
+~Seb 👊

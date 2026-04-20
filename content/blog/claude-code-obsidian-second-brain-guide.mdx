@@ -1,0 +1,430 @@
+---
+title: 'Claude Code + Obsidian: Build an AI Second Brain That Actually Works'
+date: '2026-04-20'
+category: 'AI'
+tags: ['claude-code', 'obsidian', 'second-brain', 'mcp', 'knowledge-management']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: "Karpathy's LLM Knowledge Base gist got 14K stars in a week. The idea is simple: connect Claude Code to your Obsidian vault and let AI read, search, and build on your notes. Here's the complete setup — MCP bridges, the Claudian plugin, vault architecture, and the workflows that make it stick."
+---
+
+Andrej Karpathy posted a GitHub gist titled "LLM Knowledge Base" in early 2026. It described a dead-simple idea: store your knowledge in plain Markdown files, point an LLM at them, and let the model search, connect, and build on your notes. Fourteen thousand stars in a week. The idea clearly struck a nerve.
+
+It struck mine too. I had been running an Obsidian vault for two years — 1,400+ notes, daily journals, project briefs, meeting notes, reading highlights, half-baked ideas. A classic second brain. The problem was the same one everyone hits: **I wrote notes I never read again.** The knowledge went in, but it rarely came back out at the right moment.
+
+Connecting Claude Code to my vault changed that. Not because the AI is magic, but because it turns a write-only archive into something I can actually query, summarize, and build on. I ask "What did I decide about the authentication approach last month?" and get an answer with quotes from my own notes. I say "Generate a project brief from this week's meeting notes" and get a draft that pulls from three separate files I had already forgotten about.
+
+This guide covers the full setup — three integration approaches, vault architecture for AI readability, five workflows I use daily, and the gotchas that will save you hours of debugging.
+
+## Why This Combo Exploded
+
+Three things converged in late 2025 and early 2026:
+
+**Obsidian hit 1.5 million users.** The plain-Markdown, local-first philosophy attracted developers, researchers, and knowledge workers who wanted to own their data. No proprietary format. No cloud lock-in. Just `.md` files in a folder.
+
+**Claude Code shipped MCP support.** The [Model Context Protocol](/blog/mcp-vs-a2a-ai-agent-protocols-guide-2026) gave Claude Code a standardized way to connect to external tools and data sources. Suddenly, connecting an LLM to a local folder of Markdown files wasn't a hack — it was a supported pattern with a real protocol behind it.
+
+**Karpathy validated the pattern.** When the most influential ML educator on the planet says "just point an LLM at your notes," people listen. His gist wasn't revolutionary technology. It was permission. Permission to stop building complex RAG pipelines and just let the model read your files.
+
+The result: an explosion of tools, plugins, and workflows connecting Obsidian vaults to LLMs. Here are the three approaches that actually work.
+
+## Approach 1: MCP Bridge (obsidian-claude-code-mcp)
+
+This is the cleanest integration. An MCP server sits between Claude Code and your vault, exposing your notes as searchable resources.
+
+The community-maintained `obsidian-claude-code-mcp` server provides tools for reading notes, searching by content or tags, listing files in specific folders, and reading frontmatter metadata. Claude Code discovers these tools automatically through the MCP protocol and can call them mid-conversation.
+
+### Setup
+
+Install the MCP server:
+
+```bash
+npm install -g obsidian-claude-code-mcp
+```
+
+Add it to your Claude Code MCP configuration in `~/.claude/settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "obsidian": {
+      "command": "obsidian-claude-code-mcp",
+      "args": ["--vault", "/Users/you/Documents/ObsidianVault"],
+      "env": {}
+    }
+  }
+}
+```
+
+Or, if you prefer project-level config, add it to `.claude/settings.json` in your project root:
+
+```json
+{
+  "mcpServers": {
+    "obsidian": {
+      "command": "obsidian-claude-code-mcp",
+      "args": [
+        "--vault", "/Users/you/Documents/ObsidianVault",
+        "--exclude", "templates,archive/2023"
+      ]
+    }
+  }
+}
+```
+
+The `--exclude` flag matters. Without it, Claude will index your entire vault on every search, including template files and old archives you never query. More on vault architecture below.
+
+### What You Get
+
+Once connected, Claude Code gains these tools:
+
+- `vault_search(query)` — full-text search across all notes
+- `vault_read(path)` — read a specific note by path
+- `vault_list(folder)` — list files in a folder
+- `vault_tags()` — list all tags in the vault
+- `vault_search_tags(tag)` — find notes with a specific tag
+- `vault_frontmatter(path)` — read YAML frontmatter metadata
+
+You interact with them naturally. Ask Claude "What are my notes about authentication?" and it calls `vault_search("authentication")`, reads the top results, and synthesizes an answer. No special syntax needed.
+
+### Why MCP Over Direct File Access
+
+You might wonder why you need an MCP server when Claude Code can already read files with its built-in `Read` tool. Two reasons:
+
+1. **Search.** Claude Code's `Grep` tool does regex search. The MCP server does semantic-aware search with ranking, tag filtering, and frontmatter-aware queries. The difference matters when your vault has 1,000+ notes.
+
+2. **Token efficiency.** The MCP server returns only relevant content. Direct file reads pull entire files, including metadata, formatting, and sections irrelevant to your query. Over a session, this adds up — and if you have been reading my [token optimization guide](/blog/claude-code-token-optimization-bill-cut-guide), you know every unnecessary token compounds.
+
+## Approach 2: Claudian Plugin (Claude in Obsidian's Sidebar)
+
+Claudian takes the opposite approach: instead of bringing your vault to Claude Code, it brings Claude into Obsidian.
+
+Claudian is an Obsidian community plugin that embeds a Claude-powered chat interface in Obsidian's sidebar. You highlight text, right-click, and ask Claude to summarize, expand, critique, or transform it. The plugin has access to your current note, linked notes, and — with the right configuration — your entire vault.
+
+### Setup
+
+1. Open Obsidian Settings > Community Plugins > Browse
+2. Search for "Claudian"
+3. Install and enable
+4. Enter your Anthropic API key in the plugin settings
+5. Configure context scope (current note, linked notes, or vault-wide)
+
+### When to Use It
+
+Claudian is better than the MCP approach when you are already working inside Obsidian and want quick, inline AI assistance. Summarize the note you are reading. Generate questions from a research paper you just highlighted. Expand a bullet list into prose.
+
+It is worse for cross-vault analysis, multi-file workflows, and anything that benefits from Claude Code's full tool suite (bash, file editing, git). If your workflow is "query my vault while coding," use the MCP bridge. If your workflow is "enhance my notes while note-taking," use Claudian.
+
+## Approach 3: Vault-as-Repo (Claude Code Reads .md Files Directly)
+
+The simplest approach. No plugins, no MCP servers. Just point Claude Code at your vault folder.
+
+If your vault is a git repo (and it should be — version control for notes is underrated), you can open it directly in Claude Code:
+
+```bash
+cd ~/Documents/ObsidianVault
+claude
+```
+
+Claude Code will read your CLAUDE.md (more on that below), index the file structure, and you can interact with your notes using the built-in `Read`, `Grep`, and `Glob` tools.
+
+### When This Works
+
+- Small to medium vaults (under 500 notes)
+- Simple queries that map well to grep/glob
+- When you want Claude to edit your notes, not just read them
+- When you want full git integration (commit, diff, history)
+
+### When This Breaks
+
+- Large vaults. Claude Code's `Glob` and `Grep` can choke on 2,000+ files if you are not careful with `.claudeignore`.
+- Complex queries. "Find all notes where I mentioned a problem that relates to the current project" is a semantic search. Grep does not do semantic search.
+- Token cost. Reading files directly means full file contents in context. A 20-note search can easily burn 50K tokens.
+
+For most developers, I recommend **starting with Approach 3** (it takes zero setup) and graduating to **Approach 1** (MCP bridge) once your vault crosses ~500 notes or you find yourself needing better search.
+
+## Vault Architecture for AI Readability
+
+Your vault structure matters more when an LLM is reading it. Here is the architecture I settled on after three months of iteration.
+
+### Folder Structure
+
+```
+vault/
+├── CLAUDE.md              # AI instructions (see below)
+├── .claudeignore           # Exclude templates, attachments
+├── 00-inbox/               # Quick capture, unsorted
+├── 10-projects/            # Active project folders
+│   ├── project-alpha/
+│   └── project-beta/
+├── 20-areas/               # Ongoing areas of responsibility
+│   ├── engineering/
+│   ├── management/
+│   └── learning/
+├── 30-resources/           # Reference material
+│   ├── articles/
+│   ├── books/
+│   └── courses/
+├── 40-archive/             # Completed projects, old notes
+├── 50-daily/               # Daily notes by year/month
+│   └── 2026/
+│       └── 04/
+├── templates/              # Note templates
+└── attachments/            # Images, PDFs
+```
+
+The numbered prefix (PARA-inspired) is not just for humans. It helps Claude understand the hierarchy without reading every file. When I say "look at my active projects," Claude knows to check `10-projects/`. When I say "search my reference notes," it goes to `30-resources/`.
+
+### Naming Conventions
+
+File names should be descriptive and grep-friendly:
+
+```
+# Good
+2026-04-15-auth-migration-decision.md
+project-alpha-architecture-overview.md
+meeting-2026-04-18-team-standup.md
+
+# Bad
+Untitled.md
+New Note 3.md
+asdfg.md
+```
+
+Claude Code uses filenames for initial relevance filtering before reading content. A well-named file often does not need to be opened at all — the name tells Claude whether it is relevant.
+
+### Frontmatter Metadata
+
+Every note should have YAML frontmatter. This is where the MCP approach really shines — it can filter by frontmatter without reading full file contents.
+
+```yaml
+---
+type: meeting-note        # note type: meeting-note, decision, research, daily, project
+project: project-alpha    # related project
+date: 2026-04-18
+tags: [auth, migration, backend]
+status: active            # active, completed, archived
+people: [alice, bob]      # participants (for meeting notes)
+---
+```
+
+The `type` field is the most important one. It lets you ask Claude "summarize all my decision notes from this month" without scanning every file.
+
+### .claudeignore for Vaults
+
+```
+# Templates — Claude shouldn't read these
+templates/
+
+# Attachments — images and PDFs waste tokens
+attachments/
+*.png
+*.jpg
+*.pdf
+
+# Archive — old notes rarely relevant
+40-archive/
+
+# Obsidian internals
+.obsidian/
+.trash/
+```
+
+This single file will save you thousands of tokens per session. The `.obsidian/` folder alone contains plugin configs, themes, and workspace files that are pure noise for an LLM.
+
+## CLAUDE.md for Your Obsidian Vault
+
+If you are using Approach 1 (MCP) or Approach 3 (vault-as-repo), a CLAUDE.md at the vault root dramatically improves Claude's behavior. I covered the full [CLAUDE.md architecture](/blog/claude-md-memory-persistent-context-guide) in a separate guide — here is what belongs in the vault-specific version.
+
+```markdown
+# CLAUDE.md — Obsidian Vault
+
+## Vault Structure
+- 00-inbox/: unsorted quick captures
+- 10-projects/: active projects (each project = subfolder)
+- 20-areas/: ongoing areas (engineering, management, learning)
+- 30-resources/: reference material (articles, books, courses)
+- 40-archive/: completed/inactive (rarely search here)
+- 50-daily/: daily notes organized by year/month
+
+## Note Conventions
+- Every note has YAML frontmatter with: type, project, date, tags, status
+- Types: meeting-note, decision, research, daily, project, idea
+- Meeting notes have a "people" field listing participants
+- Decision notes have an "outcome" field with the final decision
+
+## Rules
+- Never modify notes in 30-resources/ — those are source material
+- When creating notes, always add full frontmatter
+- Use [[wikilinks]] for internal note references
+- Daily notes go in 50-daily/YYYY/MM/ with filename YYYY-MM-DD.md
+- Prefer searching by tags and type over full-text when possible
+
+## My Projects
+- project-alpha: Backend migration to Rust (active)
+- project-beta: Mobile app redesign (active)
+- blog: codewithseb.com content pipeline (active)
+```
+
+Keep this under 300 tokens. Same principle as any CLAUDE.md — every line is loaded on every session, so make each one count. If you need deeper context on [structuring context efficiently](/blog/context-engineering-claude-code-guide), that guide covers the broader architecture.
+
+## 5 Workflows That Make It Stick
+
+The setup is only useful if you actually use it. Here are the five workflows I run regularly.
+
+### 1. Daily Note Summarization
+
+Every Friday, I ask Claude to summarize my week:
+
+```
+Summarize my daily notes from this week (2026-04-14 to 2026-04-18).
+Group by project. Highlight decisions made and action items.
+```
+
+Claude reads five daily notes, pulls out decisions, meetings, and todos, and produces a one-page weekly review. This replaced a 30-minute manual process I used to skip half the time.
+
+### 2. Project Brief Generation
+
+When starting a new project, I point Claude at existing notes:
+
+```
+Read all notes tagged "project-gamma" and generate a project brief.
+Include: goals, key decisions made so far, open questions,
+and people involved.
+```
+
+Claude searches by tag, reads the relevant notes, and drafts a brief. I edit for 10 minutes instead of writing from scratch for an hour.
+
+### 3. Knowledge Q&A
+
+The simplest and most-used workflow:
+
+```
+What did I decide about the database schema for project-alpha?
+Check my decision notes.
+```
+
+Claude searches for notes with `type: decision` and `project: project-alpha`, finds the relevant one, and quotes the outcome. This is the "second brain that actually answers back" promise delivered.
+
+### 4. Automatic Backlink Suggestions
+
+Obsidian's strength is in linked notes, but I am lazy about linking:
+
+```
+Read my last 10 notes in 00-inbox/. For each one, suggest
+which existing notes it should link to, and where the
+[[wikilink]] should go in the text.
+```
+
+Claude reads the inbox notes, searches the vault for related content, and outputs a list of suggested wikilinks with exact insertion points. I review and accept in bulk.
+
+### 5. Meeting Notes to Action Items
+
+After a meeting, I dump raw notes into the vault and run:
+
+```
+Read today's meeting note. Extract action items with owners
+and deadlines. Create a new note in 10-projects/project-alpha/
+called "action-items-2026-04-18.md" with the extracted items.
+```
+
+Claude parses the messy meeting notes, identifies who committed to what, and creates a clean action-item list I can track.
+
+## Privacy: Everything Stays Local
+
+One question I get constantly: "Doesn't connecting Claude to your notes mean your notes go to the cloud?"
+
+Partially. Here is the privacy model:
+
+**What stays local:**
+- Your vault files on disk
+- The Obsidian app and all plugins
+- The MCP server process
+- Search indexing (if using the MCP bridge)
+
+**What goes to Anthropic's API:**
+- The content of notes Claude reads during a session
+- Your queries and Claude's responses
+
+This is the same model as using Claude Code on any codebase. The files live on your machine. When Claude reads one, its content is sent as part of the API request. Anthropic does not train on API inputs (per their data policy), but the content does leave your machine during the session.
+
+If that is a dealbreaker, the vault-as-repo approach with a self-hosted model is an option — but you lose Claude's quality. For most people, the tradeoff is the same one you already accepted by using Claude Code on your source code.
+
+**No cloud sync needed.** Obsidian Sync, iCloud, Dropbox — none of these are required. Claude Code reads files from your local filesystem. If you sync for other reasons (multi-device access), that is orthogonal to the AI integration.
+
+## Limitations and Gotchas
+
+After three months of daily use, here is what I wish someone had told me upfront.
+
+**Vault size matters.** Above ~2,000 notes, full-vault searches get slow and expensive with the direct file approach. The MCP bridge handles it better because it can index and cache, but even then, you will want `.claudeignore` to exclude archives and attachments. If your vault is genuinely huge (5,000+ notes), consider splitting it into an active vault and an archive vault.
+
+**Token costs add up.** A single "summarize my week" workflow reads 5–7 daily notes, each 300–800 words. That is 10K–20K input tokens per run. Do that daily and you are looking at $2–5/month just for note summarization. Check `/cost` regularly and apply the strategies from my [token optimization guide](/blog/claude-code-token-optimization-bill-cut-guide) — trimming CLAUDE.md, using `.claudeignore`, and compact mode all help.
+
+**Sync conflicts.** If you use Obsidian Sync or git-based sync and Claude edits a note while Obsidian is open, you can get sync conflicts. My workaround: use Claude Code for read-heavy workflows (search, summarize, Q&A) and Obsidian for write-heavy workflows (note-taking, linking). When Claude does create or edit files, close Obsidian first or work in a different vault subfolder.
+
+**Wikilinks vs Markdown links.** Obsidian uses `[[wikilinks]]` by default, but Claude Code generates standard `[text](path)` Markdown links. If you want Claude to use wikilinks, add a rule to your CLAUDE.md: `"Use [[wikilinks]] for internal note references, not Markdown links."` Without this, you will end up with inconsistent link styles.
+
+**Frontmatter parsing.** Not all MCP servers parse YAML frontmatter correctly, especially with complex nested structures or lists. Keep frontmatter simple — flat key-value pairs and simple tag arrays. Avoid nested objects.
+
+**No real-time sync with Obsidian.** When Claude reads your vault, it reads the files as they exist on disk at that moment. If you are actively editing a note in Obsidian, the version on disk might be a few seconds behind what you see on screen (Obsidian batches disk writes). For read workflows, this is rarely a problem. For write workflows, save in Obsidian before asking Claude to read.
+
+## Getting Started: The 15-Minute Setup
+
+If you want to try this today, here is the minimum viable setup:
+
+1. **Initialize your vault as a git repo** (if it is not already):
+   ```bash
+   cd ~/Documents/ObsidianVault
+   git init
+   git add -A
+   git commit -m "initial commit"
+   ```
+
+2. **Create `.claudeignore`:**
+   ```
+   .obsidian/
+   .trash/
+   templates/
+   attachments/
+   40-archive/
+   ```
+
+3. **Create `CLAUDE.md`** with your vault structure and rules (use the template above).
+
+4. **Open Claude Code in your vault:**
+   ```bash
+   cd ~/Documents/ObsidianVault
+   claude
+   ```
+
+5. **Ask your first question:**
+   ```
+   What are my most recent notes about? Summarize the last 5 files
+   modified in 00-inbox/.
+   ```
+
+That is it. No plugins, no MCP server, no API keys beyond what Claude Code already uses. You can upgrade to the MCP bridge later when you hit the limits of direct file access.
+
+The Karpathy gist had it right: the best knowledge base architecture is the one you already have. If you have an Obsidian vault, you have a knowledge base. Claude Code is just the interface that makes it queryable.
+
+## References
+
+### Sources
+- [Karpathy's LLM Knowledge Base Gist](https://gist.github.com/karpathy/1dd0294ef9567971c1e4348a90d69285) - The gist that started the trend, 14K+ stars
+- [Obsidian](https://obsidian.md/) - Local-first Markdown knowledge base, 1.5M+ users
+- [Model Context Protocol — Anthropic](https://modelcontextprotocol.io/) - Official MCP specification and documentation
+- [Claude Code Docs — MCP Configuration](https://docs.anthropic.com/en/docs/claude-code/mcp) - How to configure MCP servers in Claude Code
+- [Claudian — Obsidian Plugin](https://github.com/claudian-ai/claudian) - Community plugin embedding Claude in Obsidian's sidebar
+
+### Further Reading
+- [CLAUDE.md & Memory: The Complete Guide to Persistent AI Context](/blog/claude-md-memory-persistent-context-guide) - Full CLAUDE.md architecture and optimization
+- [MCP vs A2A: The Only Two AI Agent Protocols You Need to Know](/blog/mcp-vs-a2a-ai-agent-protocols-guide-2026) - Understanding MCP in the broader protocol landscape
+- [Context Engineering for Claude Code](/blog/context-engineering-claude-code-guide) - Why context structure beats prompt wording
+- [Claude Code Token Optimization: How I Cut My Bill 70%](/blog/claude-code-token-optimization-bill-cut-guide) - Token cost strategies that apply to vault workflows
+- [Building a Second Brain — Tiago Forte](https://www.buildingasecondbrain.com/) - The PARA method that inspired the vault structure
+- [Obsidian Plugin Directory](https://obsidian.md/plugins) - Browse community plugins including AI integrations
+
+---
+
+~Seb 👊

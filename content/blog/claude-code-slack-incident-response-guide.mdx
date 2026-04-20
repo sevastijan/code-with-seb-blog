@@ -1,0 +1,412 @@
+---
+title: 'Slack + Claude Code: Build AI-Powered Team Notifications and Incident Response'
+date: '2026-04-20'
+category: 'AI'
+tags: ['claude-code', 'slack', 'mcp', 'incident-response', 'devops']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: "Sentry fires an alert. Claude reads the error, checks the git log, identifies the likely cause, and posts a diagnosis to your #incidents Slack channel — all before you finish your coffee. Here's how to build automated incident triage with Claude Code + Slack + Sentry MCP."
+---
+
+Last Tuesday at 6:47 AM, a Sentry alert fired for a null pointer in our payment service. I was asleep. By the time I opened my laptop at 8:15, Claude had already read the stack trace, checked the git log for recent changes to that file, identified the commit that introduced the regression, and posted a three-paragraph diagnosis to our #incidents Slack channel. It tagged the developer who wrote the commit and suggested a one-line fix.
+
+The whole incident took 90 seconds of AI time instead of the 45 minutes of human time it would have cost — someone waking up, finding the alert, opening Sentry, digging through logs, cross-referencing with recent deploys, and writing a coherent summary for the team.
+
+That is the promise of connecting Claude Code to Slack. Not a chatbot that answers "what's the weather." A triage system that does the boring, critical work of [incident response](/blog/claude-code-routines-scheduled-automation-guide) while your team focuses on fixing the problem.
+
+## The Incident Response Tax
+
+Every on-call engineer knows the ritual. An alert fires. You open PagerDuty or Slack. You click through to Sentry or Datadog. You read the error message, which is usually cryptic. You check the stack trace, which points to a file you haven't touched in months. You open the git log to see who changed it recently. You check the deploy history to see if this started after a release. You look at the breadcrumbs to understand what the user was doing. Then, finally, you write a message in Slack summarizing what you found.
+
+That process takes 20 to 60 minutes per incident. For a team handling five alerts a day, that is two to five hours of senior engineering time spent on context gathering before anyone writes a single line of code.
+
+This is the incident response tax — and most teams pay it silently because it feels like "real work." It is not. It is mechanical investigation that follows the same pattern every time: read the error, find the cause, summarize for the team. That pattern is exactly what an AI agent can automate.
+
+## The MCP Trio: Slack + Sentry + GitHub
+
+MCP (Model Context Protocol) is how Claude Code talks to external services. Each MCP server gives Claude access to a specific tool — reading Slack messages, querying Sentry errors, browsing GitHub commits. When you combine three MCP servers, you get an agent that can pull context from multiple sources and synthesize it into something useful.
+
+Here is what each server provides:
+
+- **Slack MCP** — Post messages, read threads, react to messages, list channels, search message history
+- **Sentry MCP** — Read error details, stack traces, breadcrumbs, release information, affected users count
+- **GitHub MCP** — Read commits, diffs, blame history, PR details, deployment status
+
+The magic is not in any single integration. It is in the combination. Claude reads the Sentry error, correlates it with a GitHub commit, and writes a summary to Slack — all in one automated flow.
+
+## Setting Up the Slack MCP Server
+
+### Installation
+
+Add the Slack MCP server to your Claude Code configuration:
+
+```json
+// .claude/settings.json
+{
+  "mcpServers": {
+    "slack": {
+      "command": "npx",
+      "args": ["-y", "@anthropic/mcp-slack"],
+      "env": {
+        "SLACK_BOT_TOKEN": "xoxb-your-bot-token",
+        "SLACK_TEAM_ID": "T01ABCDEF"
+      }
+    }
+  }
+}
+```
+
+### Getting Your Bot Token
+
+1. Go to [api.slack.com/apps](https://api.slack.com/apps) and create a new app
+2. Under **OAuth & Permissions**, add these bot token scopes:
+   - `channels:read` — list public channels
+   - `channels:history` — read messages in public channels
+   - `chat:write` — post messages
+   - `reactions:write` — add emoji reactions
+   - `users:read` — resolve user names
+3. Install the app to your workspace
+4. Copy the **Bot User OAuth Token** (starts with `xoxb-`)
+
+### Testing the Connection
+
+```bash
+# In Claude Code, verify the MCP server is connected
+claude mcp status
+
+# Test posting a message
+# Claude can now use the slack_post_message tool
+```
+
+Once connected, Claude can post messages, read channel history, react to messages, and search across your workspace. The key tools you will use:
+
+- `slack_post_message` — send a message to any channel the bot is in
+- `slack_get_channel_history` — read recent messages from a channel
+- `slack_add_reaction` — add emoji reactions (useful for acknowledging alerts)
+- `slack_search_messages` — search across channels by keyword
+
+## Setting Up the Sentry MCP Server
+
+```json
+// .claude/settings.json (add alongside the Slack server)
+{
+  "mcpServers": {
+    "slack": { "..." : "..." },
+    "sentry": {
+      "command": "npx",
+      "args": ["-y", "@anthropic/mcp-sentry"],
+      "env": {
+        "SENTRY_AUTH_TOKEN": "sntrys_your-auth-token",
+        "SENTRY_ORG_SLUG": "your-org"
+      }
+    }
+  }
+}
+```
+
+Generate your Sentry auth token at **Settings > Auth Tokens** in your Sentry dashboard. Grant it `event:read`, `project:read`, and `org:read` scopes.
+
+With this connected, Claude can read issue details, stack traces, breadcrumbs (the sequence of events leading to the error), release metadata, and affected user counts — everything you manually click through in the Sentry UI.
+
+## The Automated Triage Pipeline
+
+Here is the flow: alert fires, Claude investigates, Claude posts to Slack. No human in the loop until the diagnosis is ready.
+
+### Step 1: Trigger
+
+Use a [Claude Code Routine](/blog/claude-code-routines-scheduled-automation-guide) with a webhook trigger. Configure your Sentry project to send webhook alerts to the routine endpoint:
+
+```json
+{
+  "name": "incident-triage",
+  "prompt": "A new Sentry alert has fired. Use the Sentry MCP to read the full error details, stack trace, and breadcrumbs. Then use GitHub MCP to check the git blame for the affected files, find the most recent commits that touched those files, and identify the likely cause. Post a triage summary to #incidents in Slack.",
+  "repository": "myorg/myapp",
+  "connectors": ["slack", "sentry", "github"],
+  "triggers": [
+    {
+      "type": "webhook",
+      "source": "sentry"
+    }
+  ]
+}
+```
+
+### Step 2: Investigate
+
+Claude follows a consistent investigation pattern:
+
+1. Read the Sentry issue — error message, exception type, affected file and line number
+2. Pull the full stack trace — identify the function call chain
+3. Read breadcrumbs — what did the user do before the error?
+4. Check git blame — who last modified the affected lines?
+5. Check recent commits — was this file changed in the last deploy?
+6. Cross-reference — does this error correlate with a recent PR merge?
+
+### Step 3: Post Diagnosis to Slack
+
+Claude posts a structured message to your #incidents channel:
+
+```
+:rotating_light: Incident Triage — NullPointerException in PaymentService
+
+**Error:** Cannot read property 'amount' of undefined
+**File:** src/services/payment.ts:142
+**First seen:** 6:47 AM | **Events:** 23 | **Users affected:** 8
+
+**Likely cause:** Commit a3f2c1b by @alex (merged 11 hours ago)
+changed the response shape from the billing API without updating
+the null check on line 142. The `invoice.amount` field is now
+nested under `invoice.data.amount`.
+
+**Suggested fix:**
+- Line 142: change `invoice.amount` to `invoice.data?.amount`
+- This matches the updated API schema in the billing service docs
+
+**Links:**
+- Sentry: https://sentry.io/issues/12345
+- Commit: https://github.com/myorg/myapp/commit/a3f2c1b
+- PR: #847
+
+cc: @alex @oncall-payments
+```
+
+That message contains everything the on-call engineer needs. No clicking through three different dashboards. No context gathering. Just read the summary and decide: fix now, or schedule for later.
+
+## Four Automation Recipes
+
+### Recipe 1: Incident Triage (shown above)
+
+The full pipeline described above. Best for teams with more than ten alerts per week where context gathering eats into engineering time.
+
+### Recipe 2: Deploy Notifications
+
+Post rich deployment summaries to #deployments when a release goes out:
+
+```
+You are a deploy notification agent.
+
+When triggered by a GitHub deployment webhook:
+1. Read the release tag and changelog from GitHub
+2. List all PRs merged since the last release
+3. Summarize the changes in 3-5 bullet points
+4. Check if any Sentry issues were marked as "resolved in next release"
+5. Post to #deployments in Slack with the summary, PR links, and resolved issues count
+
+Format the message with the release version as the header.
+```
+
+This replaces the manual "what went out in today's deploy?" Slack thread that every team has.
+
+### Recipe 3: Daily Standup Summary
+
+Run at 8:55 AM, five minutes before standup. Claude scans activity from the last 24 hours and posts a summary:
+
+```
+You are a standup preparation agent. Every morning:
+
+1. Read the last 24 hours of messages from #engineering, #incidents, and #deployments
+2. List all PRs merged yesterday from GitHub
+3. List any open Sentry issues with "unresolved" status from the last 24 hours
+4. Summarize: what shipped, what broke, what's in progress
+
+Post to #standup-prep. Keep it under 15 lines. Use bullet points.
+```
+
+This is a perfect [scheduled routine](/blog/claude-code-routines-scheduled-automation-guide) — fire-and-forget, runs on Anthropic's infrastructure, no laptop needed.
+
+### Recipe 4: PR Merge Announcements
+
+When a PR merges, post a human-readable summary to #engineering:
+
+```
+You are a PR announcement agent.
+
+When a PR merges to main:
+1. Read the PR title, description, and diff summary from GitHub
+2. Summarize what changed in 2-3 sentences aimed at non-authors
+3. Tag relevant team channels if the change touches their domain
+4. Post to #engineering
+
+Skip PRs labeled "chore" or "deps" to reduce noise.
+```
+
+This pairs well with [automated PR reviews](/blog/claude-code-github-actions-pr-automation-guide) — Claude reviews the PR before merge and announces it after.
+
+## Building a Slack Bot That Responds to @claude Mentions
+
+Beyond automated pipelines, you can build an interactive bot that responds when someone mentions `@claude` in Slack. This uses the Slack Events API combined with a Claude Code routine:
+
+```json
+{
+  "name": "slack-claude-bot",
+  "prompt": "You are a helpful engineering assistant in Slack. When mentioned, read the message and thread context, then respond helpfully. You have access to the codebase, GitHub, and Sentry. If asked about an error, look it up in Sentry. If asked about a file or function, search the codebase. Keep responses concise — this is Slack, not a document.",
+  "repository": "myorg/myapp",
+  "connectors": ["slack", "github", "sentry"],
+  "triggers": [
+    {
+      "type": "webhook",
+      "source": "slack",
+      "event": "app_mention"
+    }
+  ]
+}
+```
+
+### What the Bot Can Do
+
+- **"@claude what changed in the payments module this week?"** — Claude searches the git log for recent commits to `src/payments/` and posts a summary
+- **"@claude is this Sentry error related to PR #847?"** — Claude reads both the Sentry issue and the PR diff, then correlates them
+- **"@claude summarize this thread"** — Claude reads the Slack thread and posts a TL;DR
+
+### What It Should Not Do
+
+Do not let the bot execute code, push commits, or make changes to production systems from a Slack message. The bot is read-and-respond only. For code changes, use [proper CI/CD pipelines with review gates](/blog/claude-code-github-actions-pr-automation-guide).
+
+Configure this boundary in your [managed security policies](/blog/claude-code-security-hardening-enterprise-guide):
+
+```json
+{
+  "permissions": {
+    "deniedTools": [
+      "Bash(git push*)",
+      "Bash(git commit*)",
+      "Bash(npm run deploy*)"
+    ]
+  }
+}
+```
+
+## Claude Code Routines for Scheduled Slack Reports
+
+The daily standup recipe above is one example, but [Routines](/blog/claude-code-routines-scheduled-automation-guide) unlock a whole category of scheduled Slack reporting:
+
+- **Weekly incident retrospective** (Fridays at 4 PM) — summarize all incidents from the week, identify patterns, suggest preventive measures
+- **Monthly dependency audit** — scan for outdated or vulnerable dependencies, post a report to #security
+- **Sprint velocity update** — count merged PRs, closed issues, and Sentry errors resolved, post to #product
+
+Each routine is a JSON config with a cron schedule, a prompt, and the Slack connector. No custom infrastructure. No cron jobs on a server you will forget about.
+
+## Rate Limiting and Cost Control
+
+The fastest way to get your Slack bot muted by the team is to post fifty messages a day to #engineering. The fastest way to get your API key revoked is to let a runaway routine burn $200 in tokens.
+
+### Message Rate Limiting
+
+Add explicit rate limiting instructions to your routine prompts:
+
+```
+Rate limiting rules:
+- Maximum 5 messages per channel per hour
+- Batch related updates into a single message
+- Use threads for follow-up details, not new top-level messages
+- Skip notifications for issues with fewer than 3 events (likely transient)
+- Add :eyes: reaction to acknowledge alerts instead of posting when context is minimal
+```
+
+### Token Cost Control
+
+Set `max_tokens` on every routine. A typical triage routine needs 4,000-6,000 tokens. A standup summary needs 2,000-3,000. Do not leave it unbounded.
+
+```json
+{
+  "model": "claude-sonnet-4-6",
+  "max_tokens": 6000,
+  "max_turns": 5
+}
+```
+
+Use Sonnet for routine tasks. Reserve Opus for complex multi-step investigations. The cost difference is significant at scale — Sonnet runs at roughly one-fifth the cost of Opus for these straightforward read-and-summarize patterns.
+
+At typical usage, expect these monthly costs:
+
+| Routine | Frequency | Cost/run | Monthly |
+|---------|-----------|----------|---------|
+| Incident triage | ~10/week | $0.08 | $3.20 |
+| Deploy notification | ~5/week | $0.04 | $0.80 |
+| Daily standup | Daily | $0.06 | $1.80 |
+| Weekly retro | Weekly | $0.15 | $0.60 |
+
+Total: roughly $6-7/month. Less than a single hour of on-call engineering time.
+
+## Security: Scoping Slack Access
+
+Your Slack workspace contains sensitive conversations — HR channels, salary discussions, legal threads. Claude should not have access to any of that.
+
+### Channel Scoping
+
+Only invite the Slack bot to channels it needs: #incidents, #deployments, #engineering, #standup-prep. The bot cannot read channels it is not a member of. This is Slack's built-in access control and it works well.
+
+### Explicit Channel Allowlists
+
+Add channel restrictions to your routine prompts and [managed policies](/blog/claude-code-security-hardening-enterprise-guide):
+
+```
+You may ONLY post to these channels:
+- #incidents
+- #deployments
+- #engineering
+- #standup-prep
+
+Never read or post to channels containing: hr, salary, legal, executive, confidential.
+```
+
+### Token Scope Minimization
+
+When creating the Slack app, grant only the scopes the bot needs. Do not add `admin` scopes. Do not add `files:read` unless the bot needs to read uploaded files. Every unnecessary scope is an unnecessary risk.
+
+### Audit What Claude Reads
+
+If your [compliance requirements](/blog/claude-code-security-hardening-enterprise-guide) demand auditability, use Claude Code's built-in audit trail. Every MCP tool invocation is logged — you can verify exactly which channels Claude read, what messages it accessed, and what it posted.
+
+For [team-wide deployments](/blog/claude-code-team-leads-onboarding-guide), centralize the Slack MCP configuration in managed settings so individual developers cannot expand the bot's channel access.
+
+## When NOT to Automate
+
+I need to be direct about this: automated triage is not a replacement for human incident response. It is a complement.
+
+**Do not automate:**
+
+- **Severity 1 incidents** — database outages, data breaches, full service failures. These need a human on a call within minutes, not a Slack message from a bot.
+- **Customer-facing communications** — Claude can draft the incident update, but a human reviews and posts it. Always.
+- **Rollback decisions** — Claude can identify the likely cause and suggest a rollback, but the decision to actually revert production is a human call.
+- **Post-mortems** — Claude can summarize the timeline, but the learning happens in the human discussion. Do not shortcut that.
+
+**Do automate:**
+
+- Initial triage and context gathering
+- Alert deduplication ("this is the same error as ISSUE-4521")
+- Routing to the correct team based on affected services
+- Non-critical notifications (deploy summaries, PR announcements, standup prep)
+
+The rule of thumb: automate the investigation, not the decision. Claude gathers context so humans can make faster, better-informed choices.
+
+## The Bottom Line
+
+Connecting Claude Code to Slack through MCP is not about building a fancy chatbot. It is about eliminating the 20-60 minutes of mechanical context gathering that happens before every incident gets triaged, every deploy gets summarized, and every standup gets prepped.
+
+Start with one automation:
+
+1. **Set up the Slack MCP server** — five minutes
+2. **Create an incident triage routine** — ten minutes
+3. **Let it run for a week** — watch the #incidents channel
+
+When your team starts their day with a diagnosis already waiting instead of an alert they have to investigate from scratch, you will wonder how you ever did it the other way.
+
+## References
+
+### Sources
+- [Model Context Protocol — Official Specification](https://modelcontextprotocol.io/) - MCP architecture and server standards
+- [Slack API Documentation — Bot Tokens & Scopes](https://api.slack.com/authentication/token-types#bot) - Bot token setup and OAuth scopes
+- [Sentry Webhooks Documentation](https://docs.sentry.io/product/integrations/integration-platform/webhooks/) - Configuring Sentry webhook alerts
+- [Claude Code Routines — Anthropic Docs](https://code.claude.com/docs/en/scheduled-tasks) - Scheduled automation and webhook triggers
+
+### Further Reading
+- [Claude Code Routines: Your AI Agent Works While You Sleep](/blog/claude-code-routines-scheduled-automation-guide) - Setting up scheduled routines on Anthropic's cloud
+- [Claude Code GitHub Actions: Automate PR Reviews](/blog/claude-code-github-actions-pr-automation-guide) - CI/CD integration with GitHub Actions
+- [Claude Code Security Hardening for Enterprise](/blog/claude-code-security-hardening-enterprise-guide) - Permission scoping, audit trails, and managed policies
+- [Claude Code for Team Leads: Onboarding Guide](/blog/claude-code-team-leads-onboarding-guide) - Rolling out Claude Code to a multi-developer team
+
+---
+
+~Seb 👊

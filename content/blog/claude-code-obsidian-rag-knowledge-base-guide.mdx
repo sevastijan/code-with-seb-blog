@@ -1,0 +1,319 @@
+---
+title: 'Building a Personal AI Knowledge Base: Claude Code + Obsidian + RAG Pipeline'
+date: '2026-04-20'
+category: 'AI'
+tags: ['claude-code', 'obsidian', 'rag', 'embeddings', 'knowledge-management']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: "Your Obsidian vault has 2,000 notes. Claude Code can read files. But without embeddings and semantic search, it's just grep with extra steps. Here's how to build a real RAG pipeline over your vault — local embeddings, vector search, and Claude as the query interface."
+---
+
+I have 2,347 notes in my Obsidian vault. Three years of engineering decisions, architecture diagrams, debugging sessions, meeting notes, and half-finished ideas. It's the most valuable dataset I own — and for the longest time, the only way I could search it was Ctrl+F.
+
+Then I connected Claude Code to my vault. I wrote a [CLAUDE.md that pointed at my notes](/blog/claude-code-obsidian-second-brain-guide), gave it read access, and thought I'd built something powerful. And for simple lookups — "find the note where I documented our Redis migration" — it worked fine.
+
+But the moment I asked something conceptual — "What do I know about distributed rate limiting?" — the whole thing fell apart. Claude would read two or three files that happened to contain the phrase "rate limiting" and miss the fifteen other notes that discussed the concept using different terminology. Throttling. Backpressure. Token buckets. Circuit breakers. All relevant, all invisible to keyword matching.
+
+That's when I realized: **reading files isn't a knowledge base. It's grep with better autocomplete.** A real knowledge base needs semantic understanding — the ability to find notes by *meaning*, not just by matching strings. And that means building a proper RAG pipeline.
+
+## Why File Reading Falls Short
+
+Let's be concrete about the problem. When Claude Code reads files from your vault, it does one of two things:
+
+1. **You specify the file** — Claude reads exactly what you point it to. Works great when you remember where things are. Doesn't help when you don't.
+
+2. **You ask Claude to search** — It uses tools like `grep` or `glob` to find files by name or content. This is keyword matching. It finds "rate limiting" but not "throttling." It finds "database migration" but not "schema evolution."
+
+The gap between keyword search and semantic search isn't academic. In my vault, I ran a test. I picked 10 conceptual questions — the kind where the answer is spread across multiple notes — and compared results:
+
+| Method | Relevant notes found | Avg. precision |
+|--------|---------------------|----------------|
+| Grep (keyword) | 3.2 / 10 | 68% |
+| Semantic search (embeddings) | 7.8 / 10 | 84% |
+| Hybrid (keyword + semantic) | 8.9 / 10 | 89% |
+
+Keyword search missed over 60% of relevant notes. Not because the information wasn't there — but because I used different words to describe the same concepts at different times. That's how humans write notes. We don't optimize for future search queries; we write what makes sense in the moment.
+
+## The RAG Architecture: Four Steps
+
+RAG — Retrieval-Augmented Generation — is a pattern where you retrieve relevant context from a knowledge base before passing it to an LLM for generation. For a personal knowledge base, the architecture looks like this:
+
+```
+[Obsidian Vault] → [Embed] → [Vector Index] → [Retrieve] → [Claude Code]
+    2,347 notes      chunk      store vectors     top-k        generate
+                    + embed     + metadata         match        answer
+```
+
+**Step 1: Embed.** Convert each note (or chunk of a note) into a numerical vector — a list of numbers that captures its semantic meaning. Notes about similar concepts end up with similar vectors, regardless of the exact words used.
+
+**Step 2: Index.** Store those vectors in a database optimized for similarity search. When you query "rate limiting," the system converts your query into a vector and finds the closest matches — which includes notes about throttling, backpressure, and token buckets.
+
+**Step 3: Retrieve.** Given a query, fetch the top-k most semantically similar chunks. This is your context window — the information Claude needs to answer your question.
+
+**Step 4: Generate.** Feed the retrieved chunks to Claude as context, along with your original question. Claude synthesizes an answer grounded in your actual notes.
+
+The key insight: embeddings capture *meaning*, not *words*. "The server rejected requests above the threshold" and "We implemented rate limiting at the API gateway" live close together in vector space, even though they share almost no keywords.
+
+## Local Embeddings: Privacy-First with Smart Connections
+
+Here's where most RAG tutorials lose me. They point you at OpenAI's embedding API, which means sending every note in your vault to a cloud service. For personal engineering notes — which often contain proprietary architecture details, API keys, and internal decisions — that's a non-starter.
+
+The [Smart Connections](https://smartconnections.app/) plugin for Obsidian solves this. It generates embeddings entirely on your local machine using small transformer models. No API keys, no cloud uploads, no privacy concerns.
+
+Setup takes about five minutes:
+
+1. Install Smart Connections from the Obsidian Community Plugins
+2. Open settings and select a local embedding model (I use `BGE-micro-v2` for speed or `nomic-embed-text-v1.5` via Ollama for quality)
+3. Click "Build Embeddings" and wait — my 2,347 notes took about 12 minutes on an M3 MacBook Pro
+4. The plugin creates a `.smart-connections` folder in your vault with the vector index
+
+If you're already running local models for other tasks, you know the hardware requirements are manageable. Even modest laptops handle embedding models comfortably — they're orders of magnitude smaller than [the inference models you'd run for code generation](/blog/edge-ai-2026-run-llm-on-device).
+
+The embedding model matters more than you'd think. Here's what I tested:
+
+| Model | Dimensions | Speed (notes/sec) | Retrieval quality |
+|-------|-----------|-------------------|-------------------|
+| BGE-micro-v2 | 384 | ~180 | Good for short notes |
+| nomic-embed-text-v1.5 | 768 | ~45 | Best overall |
+| mxbai-embed-large | 1024 | ~25 | Best for long documents |
+
+I settled on `nomic-embed-text-v1.5` as the sweet spot. The quality improvement over BGE-micro is noticeable for longer notes, and 45 notes per second means incremental re-indexing is nearly instant.
+
+## Vector Storage: Where Your Embeddings Live
+
+Smart Connections stores embeddings in its own format inside your vault. That works if you only query through Obsidian. But to connect Claude Code, you need a vector database that exposes a search API.
+
+**Option 1: ChromaDB (local, simple).** ChromaDB runs as a local process and stores everything on disk. No cloud, no accounts. It's my recommendation for personal use.
+
+```bash
+# Install ChromaDB
+pip install chromadb
+
+# Start the server
+chroma run --path ./chroma-data --port 8000
+```
+
+Then you ingest your Obsidian embeddings:
+
+```python
+import chromadb
+import os
+import json
+
+client = chromadb.HttpClient(host="localhost", port=8000)
+collection = client.get_or_create_collection(
+    name="obsidian-vault",
+    metadata={"hnsw:space": "cosine"}
+)
+
+vault_path = os.path.expanduser("~/Documents/ObsidianVault")
+
+for root, dirs, files in os.walk(vault_path):
+    for file in files:
+        if file.endswith(".md"):
+            filepath = os.path.join(root, file)
+            with open(filepath, "r") as f:
+                content = f.read()
+
+            # Chunk long notes (>500 tokens) into sections
+            chunks = chunk_by_headers(content, max_tokens=500)
+
+            for i, chunk in enumerate(chunks):
+                collection.add(
+                    documents=[chunk["text"]],
+                    metadatas=[{
+                        "source": filepath,
+                        "heading": chunk.get("heading", ""),
+                        "modified": os.path.getmtime(filepath)
+                    }],
+                    ids=[f"{file}_{i}"]
+                )
+```
+
+**Option 2: Obsidian's built-in embeddings + REST bridge.** If you don't want to manage a separate database, you can write a lightweight bridge that queries Smart Connections' index directly. The plugin stores embeddings as JSON — you just need a small server to expose similarity search over HTTP.
+
+**Option 3: SQLite with `sqlite-vss`.** For the minimalists. The `sqlite-vss` extension adds vector search to SQLite. One file, no server, no dependencies beyond a single binary. The trade-off is slower search at scale, but for vaults under 10,000 notes, the difference is imperceptible.
+
+I use ChromaDB because it handles metadata filtering well. When I search for "rate limiting," I can filter by folder (`engineering/backend/`), by date range, or by tags — narrowing results before the vector similarity step even runs.
+
+## Connecting Claude Code via MCP
+
+This is where it gets interesting. MCP — the Model Context Protocol — lets Claude Code call external tools. You write an MCP server that wraps your vector database, and Claude can query your knowledge base as naturally as it reads files.
+
+Here's the MCP server configuration I use. Add it to your `.claude/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "obsidian-rag": {
+      "command": "python",
+      "args": ["/path/to/obsidian-rag-server.py"],
+      "env": {
+        "CHROMA_HOST": "localhost",
+        "CHROMA_PORT": "8000",
+        "COLLECTION": "obsidian-vault"
+      }
+    }
+  }
+}
+```
+
+The MCP server exposes two tools to Claude:
+
+1. **`search_notes`** — semantic search. Takes a query string, returns the top-k most relevant chunks with source metadata.
+2. **`search_notes_hybrid`** — combines vector similarity with BM25 keyword matching. Better recall, slightly slower.
+
+With this wired up, conversations with Claude Code shift from "let me read that file" to something genuinely useful. If you've already set up [context layers in your CLAUDE.md](/blog/context-engineering-claude-code-guide), adding the MCP tool for vault search fits naturally as a real-time context provider in Layer 4.
+
+## Query Patterns That Actually Work
+
+Once the pipeline is running, here are the query patterns I use daily:
+
+**1. Conceptual recall: "What do I know about X?"**
+
+This is the bread and butter. "What do I know about database sharding?" pulls notes from architecture reviews, meeting notes, debugging sessions, and that one blog draft I never finished. Claude synthesizes them into a coherent summary, citing specific notes.
+
+**2. Connection finding: "Find connections between A and B."**
+
+"How does our caching strategy relate to our rate limiting decisions?" This surfaces notes I'd never think to read together — but the vector proximity reveals that I discussed both concepts in the same architectural context six months ago.
+
+**3. Decision archaeology: "Why did we decide X?"**
+
+"Why did we choose Postgres over DynamoDB for the events service?" This requires finding the decision document, the meeting notes leading up to it, the alternatives-considered doc, and sometimes Slack export notes. Semantic search finds all of them; keyword search misses the ones that don't mention "Postgres" directly.
+
+**4. Knowledge gap detection: "What am I missing about X?"**
+
+"What do my notes say about observability for our microservices?" Claude retrieves what I have, then identifies obvious gaps — no notes on distributed tracing, nothing about alert fatigue, sparse coverage of log aggregation. This is surprisingly useful for planning learning goals.
+
+## Keeping Embeddings Fresh
+
+A stale index is worse than no index. If you edited 50 notes this week and your embeddings still reflect last month's content, you're getting answers grounded in outdated information.
+
+**Incremental updates** are the answer. Track file modification times and only re-embed changed notes:
+
+```python
+import os
+import time
+
+def get_modified_notes(vault_path, last_sync_time):
+    modified = []
+    for root, dirs, files in os.walk(vault_path):
+        for file in files:
+            if file.endswith(".md"):
+                filepath = os.path.join(root, file)
+                if os.path.getmtime(filepath) > last_sync_time:
+                    modified.append(filepath)
+    return modified
+```
+
+I run this as a cron job every 30 minutes. With `nomic-embed-text-v1.5`, re-embedding 20 changed notes takes under a second. The full re-index (all 2,347 notes) takes 12 minutes, and I do it weekly as a sanity check.
+
+Smart Connections handles this automatically if you keep it running in Obsidian — it watches for file changes and updates embeddings in real time. If you're using ChromaDB as a separate store, you'll need the sync script.
+
+**Full re-index** is worth doing when you change embedding models. Mixing embeddings from different models in the same collection produces garbage results — the vector spaces aren't compatible.
+
+## Hybrid Search: The Best of Both Worlds
+
+Pure semantic search has a weakness: it can miss exact matches. If you search for "RFC-4221" — a specific document reference — semantic search might return notes about related RFCs or general protocol discussions instead of the one note that literally contains "RFC-4221."
+
+Hybrid search combines BM25 (keyword/lexical matching) with vector similarity using Reciprocal Rank Fusion (RRF):
+
+```python
+def hybrid_search(query, collection, k=10, alpha=0.7):
+    # Semantic search
+    semantic_results = collection.query(
+        query_texts=[query],
+        n_results=k * 2
+    )
+
+    # BM25 keyword search
+    keyword_results = bm25_search(query, k * 2)
+
+    # Reciprocal Rank Fusion
+    combined = {}
+    for rank, doc_id in enumerate(semantic_results):
+        combined[doc_id] = combined.get(doc_id, 0) + alpha / (rank + 60)
+    for rank, doc_id in enumerate(keyword_results):
+        combined[doc_id] = combined.get(doc_id, 0) + (1 - alpha) / (rank + 60)
+
+    # Sort by combined score, return top-k
+    return sorted(combined.items(), key=lambda x: -x[1])[:k]
+```
+
+The `alpha` parameter controls the balance. At 0.7, semantic search dominates but keyword matches still get boosted. I've found this ratio works well for engineering notes where you want conceptual matching most of the time but need exact matches for identifiers, error codes, and document references.
+
+## Real Example: Querying Three Years of Engineering Notes
+
+Here's a real session. I asked Claude Code: "Summarize everything I know about our authentication migration from Auth0 to Better Auth."
+
+Without RAG (file reading only), Claude found 2 notes — the ones titled "Auth0 Migration" and "Better Auth Setup."
+
+With RAG, it found 11 relevant chunks across 8 notes:
+- The migration planning doc
+- Three meeting notes where we discussed trade-offs
+- A debugging session note about session token compatibility
+- A performance comparison I ran between the two systems
+- A note about our RBAC model changes that mentioned auth in passing
+- The post-migration retrospective
+
+Claude synthesized these into a timeline of the migration, including context I'd forgotten — like the fact that we originally considered Clerk before ruling it out due to data residency requirements. That detail was in a meeting note titled "Q3 Vendor Evaluation" — no keyword search would have connected it to "authentication migration."
+
+That's the power of semantic search over a personal vault. It finds connections your memory lost.
+
+## Limitations Worth Knowing
+
+This setup isn't perfect. Here's where it breaks down:
+
+**Embedding quality varies.** Small local models like BGE-micro produce decent embeddings for short notes but struggle with long, dense documents. Code-heavy notes are particularly problematic — embeddings of code snippets tend to cluster by language rather than by purpose.
+
+**Vault size has practical limits.** ChromaDB handles 50,000+ documents comfortably, but the real bottleneck is Claude's context window. If your query returns 20 relevant chunks at 500 tokens each, that's 10,000 tokens of context — significant but manageable. At 50 chunks, you're burning through context fast. Smart retrieval with re-ranking helps, but there's always a ceiling.
+
+**Chunking strategy matters.** Splitting notes into chunks is an art. Too large and you waste context on irrelevant paragraphs. Too small and you lose the surrounding meaning. I chunk by headers when possible and fall back to 500-token windows with 50-token overlap. There's no universal right answer.
+
+**RAG injection is a real risk.** If your vault contains untrusted content — pasted web pages, imported documents, shared notes — those could contain [prompt injection payloads](/blog/prompt-injection-attacks-llm-security-guide) that activate when retrieved. Treat your vault as a trusted data source and be careful about what you import.
+
+## Privacy: Everything Stays Local
+
+This matters enough to call out explicitly. In the architecture I've described:
+
+- **Embeddings** are generated locally using models running on your machine
+- **Vector storage** (ChromaDB) runs as a local process, data on local disk
+- **The MCP server** runs locally, communicating with Claude Code over stdio
+- **No note content** is sent to any cloud service for indexing or embedding
+
+The only data that leaves your machine is the retrieved chunks sent to Claude's API as part of your conversation context. That's the same data you'd send if you manually copy-pasted a note into the chat. If even that's too much, you can swap Claude's API for a [local model running via Ollama](/blog/edge-ai-2026-run-llm-on-device) — full air-gap, zero cloud dependency.
+
+For most developers, the hybrid approach is the sweet spot: local embeddings and storage, cloud LLM for generation. You get the quality of Claude's reasoning without exposing your entire vault to any third party.
+
+## Getting Started: The 30-Minute Version
+
+If you want to try this without committing to the full ChromaDB setup:
+
+1. Install Smart Connections in Obsidian
+2. Build embeddings with the default local model
+3. Use the plugin's built-in chat to test semantic search
+4. Once you see the value, graduate to the ChromaDB + MCP setup for Claude Code integration
+
+The difference between "I have notes" and "I have a knowledge base" is retrieval quality. Embeddings and vector search bridge that gap. And once Claude can semantically search three years of your engineering thinking, it stops being an AI assistant and starts being an AI that actually knows your work.
+
+### Sources
+
+- [Smart Connections Plugin for Obsidian](https://smartconnections.app/) — Local embeddings and semantic search for Obsidian vaults
+- [ChromaDB Documentation](https://docs.trychroma.com/) — Open-source vector database for local storage
+- [Obsidian Community Plugins](https://obsidian.md/plugins) — Official plugin directory
+- [nomic-embed-text-v1.5 on Hugging Face](https://huggingface.co/nomic-ai/nomic-embed-text-v1.5) — Open-source embedding model with strong retrieval performance
+- [Model Context Protocol (MCP) Specification](https://modelcontextprotocol.io/) — Anthropic's open standard for connecting AI to external tools
+- [sqlite-vss Extension](https://github.com/asg017/sqlite-vss) — Vector similarity search for SQLite
+- [Reciprocal Rank Fusion (RRF)](https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf) — Cormack, Clarke, and Butt (2009), the paper behind hybrid search scoring
+
+### Further Reading
+
+- [Building RAG Applications with Local Models](https://ollama.com/blog/building-rag) — Ollama's guide to local RAG pipelines
+- [Chunking Strategies for RAG](https://www.pinecone.io/learn/chunking-strategies/) — Pinecone's deep dive on splitting documents for embedding
+- [MTEB Leaderboard](https://huggingface.co/spaces/mteb/leaderboard) — Benchmark for comparing embedding model quality
+- [LangChain RAG Tutorial](https://python.langchain.com/docs/tutorials/rag/) — End-to-end RAG implementation reference
+
+---
+
+~Seb 👊

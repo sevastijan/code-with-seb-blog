@@ -1,0 +1,418 @@
+---
+title: "The Developer's MCP Stack: Obsidian + GitHub + Sentry + Postgres + Slack in One Workflow"
+date: '2026-04-20'
+category: 'AI'
+tags: ['claude-code', 'mcp', 'developer-workflow', 'integrations', 'automation']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: "400+ MCP servers exist but nobody shows how to chain them. The real power is orchestration: Slack alert → Sentry error → GitHub PR → Obsidian knowledge base. Here's how to build a multi-MCP developer workflow that actually saves hours."
+---
+
+I had seven MCP servers installed before I realized I was using them wrong. Each one was a standalone tool — I would ask Claude to check Sentry, then separately ask it to look at the database, then separately ask it to make a GitHub PR. Three disconnected conversations. Three context windows. No orchestration.
+
+Then one night an alert fired. Instead of my usual context-switching marathon across browser tabs, I stayed in Claude Code and said: "Check the Slack alert in #incidents, pull the Sentry error details, query the database for affected users, write a fix, open a PR, and log what happened in Obsidian." Six tools. One prompt. Twelve minutes from alert to merged fix.
+
+That was the moment MCP stopped being a convenience and became infrastructure.
+
+## The Problem: Islands of Capability
+
+Most developers who try MCP install one or two servers — GitHub and maybe a database connector — and use them as slightly fancier CLI wrappers. The docs for each server show you how to set it up in isolation. What nobody shows is how to chain them.
+
+But chaining is where the value compounds. A single MCP server saves you a tab switch. Five MCP servers working together save you an entire workflow. The difference is not additive — it is multiplicative, because each step in a chain produces context that the next step consumes without you having to copy-paste or re-explain anything.
+
+If you have been following the [MCP vs A2A protocol comparison](/blog/mcp-vs-a2a-ai-agent-protocols-guide-2026), you know MCP is the standard for tool connections. This article is about what happens when you stop thinking about individual connections and start thinking about workflows.
+
+## My Recommended Stack
+
+After months of testing, this is the stack I run daily. Seven servers. Each one earns its place.
+
+| Server | Purpose | Transport |
+| --- | --- | --- |
+| **GitHub** | PRs, issues, code search | stdio |
+| **Brave Search** | Web research, documentation lookups | stdio |
+| **Sentry** | Error tracking, stack traces, release health | stdio |
+| **PostgreSQL** | Direct database queries, schema inspection | stdio |
+| **Slack** | Channel messages, alerts, team communication | stdio |
+| **Obsidian** | Knowledge base, incident logs, decision records | stdio |
+| **Context7** | Up-to-date library documentation | stdio |
+
+You do not need all seven to start. GitHub + Brave Search + your database connector is a strong foundation. Add the rest as your workflows demand them.
+
+## Installation and Configuration
+
+Everything lives in one file: `claude_desktop_config.json` (for Claude Desktop) or `.claude/settings.json` and your MCP config for Claude Code. Here is the full configuration for my stack.
+
+### GitHub MCP Server
+
+The official GitHub MCP server gives Claude access to repositories, pull requests, issues, and code search.
+
+```json
+{
+  "mcpServers": {
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "<your-token>"
+      }
+    }
+  }
+}
+```
+
+Generate a fine-grained personal access token with repo scope. Do not use a classic token — fine-grained tokens let you limit access to specific repositories.
+
+### Brave Search
+
+Brave Search gives Claude access to web search without the overhead of browser automation.
+
+```json
+{
+  "brave-search": {
+    "command": "npx",
+    "args": ["-y", "@anthropic/mcp-server-brave-search"],
+    "env": {
+      "BRAVE_API_KEY": "<your-api-key>"
+    }
+  }
+}
+```
+
+The free tier gives you 2,000 queries per month. That is more than enough for most development workflows.
+
+### Sentry
+
+The Sentry MCP server surfaces errors, stack traces, and release health data directly into your AI workflow.
+
+```json
+{
+  "sentry": {
+    "command": "npx",
+    "args": ["-y", "@sentry/mcp-server"],
+    "env": {
+      "SENTRY_AUTH_TOKEN": "<your-auth-token>",
+      "SENTRY_ORG": "your-org-slug"
+    }
+  }
+}
+```
+
+Create an internal integration in Sentry with read access to issues, events, and projects. Write access is optional — I keep it read-only and use the GitHub server for code changes.
+
+### PostgreSQL
+
+Direct database access. Be careful with this one — a read-only connection string is strongly recommended.
+
+```json
+{
+  "postgres": {
+    "command": "npx",
+    "args": [
+      "-y",
+      "@modelcontextprotocol/server-postgres",
+      "postgresql://readonly_user:password@localhost:5432/mydb"
+    ]
+  }
+}
+```
+
+Create a dedicated read-only database user. Never give Claude your application's write credentials. This is not paranoia — it is the same principle as least-privilege access for any automated system. The [security hardening guide](/blog/claude-code-security-hardening-enterprise-guide) covers the full permission model.
+
+### Slack
+
+The Slack MCP server lets Claude read channels, post messages, and react to alerts.
+
+```json
+{
+  "slack": {
+    "command": "npx",
+    "args": ["-y", "@anthropic/mcp-server-slack"],
+    "env": {
+      "SLACK_BOT_TOKEN": "xoxb-your-bot-token"
+    }
+  }
+}
+```
+
+Create a Slack app with `channels:history`, `channels:read`, `chat:write`, and `reactions:write` scopes. Add the bot to the channels you want Claude to access — it cannot see channels it has not been invited to.
+
+### Obsidian
+
+The Obsidian MCP server connects Claude to your local knowledge base. If you are running a second-brain system, this is what makes it truly bidirectional — Claude reads your notes and writes new ones.
+
+```json
+{
+  "obsidian": {
+    "command": "npx",
+    "args": ["-y", "obsidian-mcp-server"],
+    "env": {
+      "OBSIDIAN_VAULT_PATH": "/Users/you/ObsidianVault"
+    }
+  }
+}
+```
+
+I use this for incident logs, architecture decision records, and project journals. The [Obsidian second-brain guide](/blog/claude-code-obsidian-second-brain-guide) goes deeper on the knowledge management side.
+
+### Context7
+
+Context7 solves a specific problem: LLMs have stale training data. When you are working with a library that shipped a breaking change last month, Claude's built-in knowledge is wrong. Context7 fetches live documentation.
+
+```json
+{
+  "context7": {
+    "command": "npx",
+    "args": ["-y", "@context7/mcp-server"]
+  }
+}
+```
+
+No API key required. It pulls from public documentation sources. I use it most heavily with Next.js, Prisma, and any library that ships major versions quarterly.
+
+### The Full Config
+
+Here is the combined `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "<token>"
+      }
+    },
+    "brave-search": {
+      "command": "npx",
+      "args": ["-y", "@anthropic/mcp-server-brave-search"],
+      "env": {
+        "BRAVE_API_KEY": "<key>"
+      }
+    },
+    "sentry": {
+      "command": "npx",
+      "args": ["-y", "@sentry/mcp-server"],
+      "env": {
+        "SENTRY_AUTH_TOKEN": "<token>",
+        "SENTRY_ORG": "your-org"
+      }
+    },
+    "postgres": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-postgres",
+        "postgresql://readonly:pass@localhost:5432/mydb"
+      ]
+    },
+    "slack": {
+      "command": "npx",
+      "args": ["-y", "@anthropic/mcp-server-slack"],
+      "env": {
+        "SLACK_BOT_TOKEN": "xoxb-your-token"
+      }
+    },
+    "obsidian": {
+      "command": "npx",
+      "args": ["-y", "obsidian-mcp-server"],
+      "env": {
+        "OBSIDIAN_VAULT_PATH": "/path/to/vault"
+      }
+    },
+    "context7": {
+      "command": "npx",
+      "args": ["-y", "@context7/mcp-server"]
+    }
+  }
+}
+```
+
+## Chaining Workflows: Where the Real Value Lives
+
+Individual tools are useful. Chained workflows are transformative. Here are the three chains I use most.
+
+### Chain 1: Error Alert to Fix
+
+```
+Slack alert → Sentry details → Code analysis → GitHub PR
+```
+
+A message appears in `#incidents`. I tell Claude: "Check the latest alert in #incidents and fix it." Claude reads the Slack message, extracts the Sentry issue ID, pulls the full stack trace from Sentry, finds the relevant code in the repo via GitHub, writes a fix, and opens a PR. I review the diff, approve, and merge.
+
+### Chain 2: Research to Documentation
+
+```
+Brave Search → Context7 → Code implementation → Obsidian note
+```
+
+When adopting a new library or pattern, I ask Claude to research the current best practices (Brave Search), pull the latest docs (Context7), implement the pattern in our codebase (GitHub), and write an architecture decision record in Obsidian explaining why we chose this approach.
+
+### Chain 3: Database Investigation to Incident Report
+
+```
+Slack alert → PostgreSQL query → Sentry correlation → Obsidian incident log
+```
+
+A customer reports weird behavior. Claude checks Slack for context, queries the database to understand the data state, correlates with any Sentry errors for that user or endpoint, and writes a structured incident report in Obsidian with timeline, root cause, affected scope, and remediation steps.
+
+## Real Workflow: On-Call Incident Response
+
+Let me walk through a real incident from last month. Names and details changed, but the workflow is exact.
+
+**2:47 AM.** PagerDuty fires, which posts to `#incidents` in Slack. The message says: "500 errors spiking on /api/orders endpoint. 23% error rate."
+
+I open Claude Code and type one prompt:
+
+> Read the latest message in #incidents on Slack. Pull the error details from Sentry for the orders endpoint. Check the orders table in Postgres for any anomalies in the last hour. Diagnose the root cause, write a fix, open a PR on GitHub, and log the incident in my Obsidian vault under Incidents/2026-03.
+
+Here is what Claude did, step by step:
+
+**Step 1 — Slack.** Read the alert. Extracted the endpoint path and error rate.
+
+**Step 2 — Sentry.** Found 847 occurrences of a `TypeError: Cannot read properties of null (reading 'shippingAddress')` in the last 30 minutes. The stack trace pointed to `src/services/orderService.ts:142`.
+
+**Step 3 — PostgreSQL.** Queried recent orders and found that 12% of orders created in the last hour had `shipping_address_id = NULL`. A migration had added a new order flow that skipped the address validation step.
+
+**Step 4 — Code analysis.** Read `orderService.ts` via the codebase, found the null access on line 142 where it assumed `shippingAddress` always exists.
+
+**Step 5 — Fix and PR.** Added a null check with a fallback to the user's default address. Opened a PR with a clear description linking the Sentry issue and the database evidence.
+
+**Step 6 — Obsidian.** Created an incident report with timeline, root cause (migration gap), blast radius (12% of new orders), fix description, and a follow-up task to add validation to the new order flow.
+
+Total time: 12 minutes. The previous month's equivalent incident — same complexity, different endpoint — took me 55 minutes of tab-switching between Sentry, pgAdmin, VS Code, GitHub, and Notion.
+
+## MCP Tool Search: Running 10+ Servers Without Bloat
+
+A reasonable objection: "Seven servers means hundreds of tool definitions in the context window. That is expensive."
+
+This was true in early MCP implementations. It is no longer true, thanks to MCP Tool Search — a lazy loading mechanism that Claude Code uses to avoid context bloat.
+
+Here is how it works. When you have many MCP servers configured, Claude Code does not inject every tool definition into the system prompt. Instead, it loads a lightweight index of tool names and descriptions. When Claude needs a specific tool, it calls `ToolSearch` to fetch the full JSON schema for that tool on demand.
+
+The practical impact: I run seven servers with a combined 40+ tools. Without lazy loading, that would be roughly 8,000 tokens of tool definitions in every conversation. With lazy loading, the baseline cost is around 800 tokens for the index, plus schema tokens only for the tools actually used in a given conversation.
+
+This is why the "how many servers is too many" question has a different answer than you might expect.
+
+## Performance: How Many MCP Servers Is Too Many?
+
+The answer depends on what you mean by "too many."
+
+**Startup time.** Each server launches as a separate process. Seven servers add about 3-4 seconds to Claude Desktop startup. Fifteen servers push that to 8-10 seconds. Noticeable but not painful.
+
+**Memory.** Each Node.js-based MCP server (the majority) consumes 30-80 MB of RAM. Seven servers is roughly 350 MB. If you are on a 16 GB machine, this is noise. On 8 GB, it starts to matter.
+
+**Token cost.** With lazy loading, adding more servers has minimal impact on per-conversation token costs. Without lazy loading — which depends on your client — each server adds its full tool schema to every conversation. Check your costs with `/cost` and read the [token optimization guide](/blog/claude-code-token-optimization-bill-cut-guide) for the full picture.
+
+**Reliability.** This is the real ceiling. Each server is a process that can crash, hang, or lose connection. At seven servers, I see maybe one crash per week — usually the database connector timing out. At fifteen, you would be debugging MCP infrastructure instead of writing code.
+
+My recommendation: **7-10 servers is the sweet spot.** Enough to cover your core workflows without spending time on MCP maintenance.
+
+## Security: Each Server Is an Attack Surface
+
+I need to be blunt about this. Every MCP server you install is code you are running on your machine with access to your credentials. The MCP protocol itself has no built-in authentication between client and server. A malicious or compromised server can:
+
+- Read environment variables (including tokens for other servers)
+- Execute arbitrary commands if it has shell access
+- Exfiltrate data through its own network connections
+- Modify files on your filesystem
+
+This is not theoretical. Documented attacks include tool poisoning (where a server's tool description contains hidden instructions for the LLM), rug pulls (where a server updates its tools after initial approval), and cross-server data exfiltration.
+
+Practical mitigations:
+
+1. **Only install servers from verified sources.** The official Anthropic servers and servers from the tool vendors themselves (Sentry, GitHub, Slack) are your safest bet.
+2. **Audit the source code.** If it is an npm package, check the GitHub repo. If the repo has 12 stars and one contributor, think twice.
+3. **Use read-only credentials wherever possible.** Your database server should never have write access. Your GitHub token should be scoped to specific repos.
+4. **Run servers in containers when possible.** Docker isolation prevents a compromised server from accessing your filesystem directly.
+5. **Monitor network traffic.** A Postgres MCP server should only talk to your database, not to external APIs.
+
+The full security model — including managed policies, deny rules, and hook-based security gates — is in the [enterprise security hardening guide](/blog/claude-code-security-hardening-enterprise-guide).
+
+## Cost Implications of MCP-Heavy Workflows
+
+MCP server usage affects your Claude Code bill in three ways.
+
+**Tool call tokens.** Every MCP tool invocation includes the tool schema in the prompt and the result in the response. A Sentry error detail response can be 2,000-3,000 tokens. A database query result can be more. In the incident response workflow above, the five tool calls added roughly 12,000 tokens to the conversation.
+
+**Chain length.** Chained workflows are longer conversations. A single-tool interaction might be 5,000 tokens total. A five-tool chain can hit 30,000-40,000 tokens. At Sonnet pricing, that is the difference between $0.02 and $0.12 per workflow run.
+
+**The ROI question.** Twelve cents for a 12-minute incident resolution that used to take 55 minutes is obviously worth it. But running a five-server chain to do something you could have done with a single grep is not. The cost discipline is the same as any tool: use the minimum chain that solves the problem.
+
+Track your MCP-related costs by checking `/cost` after MCP-heavy sessions. If tool calls are dominating your token usage, you might be over-orchestrating. The [token optimization guide](/blog/claude-code-token-optimization-bill-cut-guide) has the full cost management playbook.
+
+## The MCP Audit Checklist
+
+Before installing any new MCP server, I run it through this checklist. Takes five minutes. Has saved me from three sketchy servers so far.
+
+### Source Verification
+
+- [ ] Is the server from the tool vendor (e.g., Sentry's own MCP server) or from Anthropic's official list?
+- [ ] If community-built: does the GitHub repo have meaningful stars, multiple contributors, and recent commits?
+- [ ] Is the npm package published by a verified organization?
+- [ ] Have you read the server's source code, at least the tool definitions and the main handler?
+
+### Permission Audit
+
+- [ ] What credentials does the server require? Are they minimal (read-only where possible)?
+- [ ] Does the server need filesystem access? If so, is it scoped to a specific directory?
+- [ ] Does the server make outbound network requests beyond its primary API?
+- [ ] Can you run the server with a fine-grained token instead of a full-access one?
+
+### Operational Check
+
+- [ ] Does the server handle errors gracefully, or does it crash and take the MCP connection with it?
+- [ ] What happens when the server loses connectivity to its backing service?
+- [ ] How large are typical tool responses? Will they blow up your context window?
+- [ ] Is the server actively maintained? When was the last release?
+
+### Cost Impact
+
+- [ ] How many tools does the server expose? (More tools = more index tokens with lazy loading)
+- [ ] What is the average response size per tool call?
+- [ ] Will this server be used in every conversation, or only occasionally?
+- [ ] Does this server replace a manual workflow that costs you more in time than it costs in tokens?
+
+If a server fails more than two items on this checklist, I do not install it. The MCP ecosystem is growing fast, and quality varies enormously.
+
+## Getting Started
+
+If you are new to MCP, do not install seven servers on day one. Here is the progression I recommend:
+
+**Week 1:** GitHub + Brave Search. Get comfortable with two-tool chains: search for a solution, then implement it via a PR.
+
+**Week 2:** Add your database connector. Now you can investigate data issues without leaving Claude. This is where most developers have their "aha" moment.
+
+**Week 3:** Add Sentry or your error tracking tool. The error-to-fix chain is the highest-ROI workflow in this entire article.
+
+**Week 4:** Add Slack and Obsidian. Communication and knowledge management. This is where workflows start to feel like automation rather than assisted typing.
+
+Run the audit checklist on each server before installing. Check `/cost` after each addition to understand the token impact. And read the [MCP vs A2A guide](/blog/mcp-vs-a2a-ai-agent-protocols-guide-2026) to understand where MCP fits in the broader protocol landscape — especially if you are building multi-agent systems where A2A handles agent-to-agent coordination while MCP handles tool connections.
+
+The goal is not to install the most servers. The goal is to eliminate the workflow gaps where you currently lose time switching between tools, copying context, and re-explaining problems that your AI assistant already understands.
+
+Seven servers, one context window, zero tab switches. That is the stack.
+
+## References
+
+### Sources
+
+- [Model Context Protocol Official Documentation](https://modelcontextprotocol.io/) — protocol specification, SDK guides, and server registry
+- [MCP GitHub Server](https://github.com/modelcontextprotocol/servers/tree/main/src/github) — official Anthropic GitHub MCP server source
+- [Sentry MCP Server](https://docs.sentry.io/organization/integrations/mcp-server/) — Sentry's official MCP integration documentation
+- [MCP Security Vulnerabilities Analysis](https://simonwillison.net/2025/Apr/9/mcp-prompt-injection/) — Simon Willison's breakdown of tool poisoning and prompt injection via MCP
+- [Invariant Labs MCP Attack Research](https://invariantlabs.ai/blog/mcp-security-notification-tool-poisoning-attacks) — tool poisoning, rug pulls, and cross-server exfiltration vectors
+- [Context7 MCP Server](https://github.com/context7/context7-mcp) — live documentation fetching for LLM workflows
+
+### Further Reading
+
+- [MCP Server Registry](https://github.com/modelcontextprotocol/servers) — curated list of official and community MCP servers
+- [Brave Search API Documentation](https://brave.com/search/api/) — API key setup and rate limits for the Brave Search MCP server
+- [PostgreSQL MCP Server](https://github.com/modelcontextprotocol/servers/tree/main/src/postgres) — configuration and read-only setup guide
+- [Obsidian MCP Integration Guide](https://github.com/smithery-ai/obsidian-mcp) — connecting Claude to your Obsidian vault
+- [Claude Code MCP Configuration Docs](https://docs.anthropic.com/en/docs/claude-code/mcp) — official guide to adding MCP servers in Claude Code
+
+---
+
+~Seb 👊
