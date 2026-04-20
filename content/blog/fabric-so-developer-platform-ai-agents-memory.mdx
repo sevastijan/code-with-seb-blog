@@ -1,0 +1,369 @@
+---
+title: 'Building AI Agents with Persistent Memory: Fabric Developer Platform Guide'
+date: '2026-04-20'
+category: 'AI'
+tags: ['fabric', 'ai-agents', 'memory-api', 'developer-platform', 'typescript']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: "AI agents forget everything between sessions. Fabric's Developer Platform solves this with a Memory API, Workspaces API, and Resources API that give your agents persistent, searchable, self-organizing memory. Here's how to build agents that actually learn."
+---
+
+I have been building AI agents for months. Custom support bots, code review assistants, research agents — they all share the same embarrassing problem. Every single session starts from zero. The agent that brilliantly solved a customer's billing issue yesterday? It has no idea that conversation ever happened. The research agent that spent 20 minutes finding the perfect TypeScript pattern? Gone the moment the session ended.
+
+> *Disclosure: Some links in this article are affiliate links — I earn a small commission if you sign up through them, at no extra cost to you. I only recommend tools I genuinely find worth testing.*
+
+This is the amnesia problem, and every developer building agents hits it eventually. Your agent works great in demos. In production, users get frustrated repeating context, and the agent keeps re-solving problems it already solved last Tuesday.
+
+I wrote about [Fabric as an AI workspace](/blog/fabric-so-ai-workspace-review-guide) recently — how it auto-organizes your personal knowledge. But what caught my attention was their Developer Platform. It exposes the same semantic memory engine as an API, purpose-built for giving AI agents persistent, searchable memory. Not another vector database. Something different.
+
+## The Problem: AI Agents Have Amnesia
+
+Let me be specific about what I mean. A typical AI agent flow looks like this:
+
+1. User asks a question
+2. Agent reasons, calls tools, generates an answer
+3. Session ends
+4. All context evaporates
+
+Next session, the agent starts with a blank slate. It does not remember that this user prefers concise answers. It does not remember that `ERROR_CODE_4012` means the payment gateway timed out. It does not remember that it already researched this exact topic three days ago.
+
+You can stuff previous conversations into the context window, but that scales terribly. At 200K tokens, you can fit maybe 50 past conversations. Your agent handles 500 tickets a day. The math does not work.
+
+## Current Solutions and Their Limits
+
+The standard approaches all have trade-offs:
+
+**Vector databases (Pinecone, ChromaDB, Weaviate):** You embed text chunks, store vectors, query by similarity. This works, but you are responsible for chunking strategy, embedding model selection, metadata schemas, and relevance tuning. It is infrastructure, not memory. You are building a search engine and calling it remembering.
+
+**RAG pipelines:** Retrieve relevant documents before generating a response. Better than raw context stuffing, but still requires you to [build and maintain the retrieval layer](/blog/claude-code-obsidian-rag-knowledge-base-guide). Chunking wrong? Your agent retrieves garbage. Index stale? Your agent hallucinates from outdated info.
+
+**Conversation logs:** Store full transcripts, search them later. Noisy, unstructured, and slow. Finding "that one time we solved the Stripe webhook issue" means searching through thousands of irrelevant messages.
+
+None of these give you what a human has: memory that self-organizes, connects related concepts automatically, and surfaces the right context at the right time without you manually curating it.
+
+## Fabric Developer Platform: The Architecture
+
+[Fabric's Developer Platform](https://fabric.so/?via=codewithseb) provides three APIs that work together:
+
+- **Memory API** — Store and retrieve semantic memories. Not vectors — structured, auto-indexed knowledge that the system organizes for you.
+- **Workspaces API** — Isolated environments for different agents, projects, or customers. Each workspace has its own memory space.
+- **Resources API** — Store files, notes, bookmarks, and structured data programmatically.
+
+The key difference from a vector database: Fabric does not just store and retrieve. It *processes*. When you save a memory, the system extracts entities, identifies relationships, categorizes the content, and connects it to existing memories. When you query, it does not just find similar vectors — it traverses a semantic network of related concepts.
+
+Think of it as the difference between a filing cabinet (vector DB) and an assistant who reads everything, understands the connections, and can tell you "this is related to that conversation from last week because they both involve the same API endpoint."
+
+## Memory API Deep Dive
+
+The Memory API is the core of the platform. Here is what makes it different from a vector store:
+
+### Storing Memories
+
+One API call. No embedding model, no chunking strategy, no metadata schema to design:
+
+```typescript
+const response = await fabric.memory.create({
+  workspace_id: "ws_customer_support",
+  content: "Customer #4521 resolved billing issue. Root cause: expired payment method not triggering retry. Solution: manually triggered payment retry via Stripe dashboard, updated webhook to catch expired_card events.",
+  source: "support_ticket_resolved",
+  metadata: {
+    customer_id: "4521",
+    category: "billing",
+    resolution_time_minutes: 12
+  }
+});
+```
+
+Behind the scenes, Fabric:
+- Extracts entities (Customer #4521, Stripe, webhooks, expired_card)
+- Identifies the category and relationships
+- Connects this to existing memories about Stripe, billing issues, and this specific customer
+- Indexes it for semantic search
+
+### Searching by Meaning
+
+The query does not need to match keywords. It searches by *meaning*:
+
+```typescript
+const memories = await fabric.memory.search({
+  workspace_id: "ws_customer_support",
+  query: "payment failing for customer with card problems",
+  limit: 5
+});
+```
+
+This finds the memory above even though the query says "payment failing" and the memory says "expired payment method." It understands the semantic relationship. This is where the "living semantic network" concept kicks in — the system is not matching embeddings, it is traversing connected concepts.
+
+### Auto-Extraction and Indexing
+
+You can also throw unstructured content at it and let Fabric figure out what matters:
+
+```typescript
+await fabric.memory.create({
+  workspace_id: "ws_engineering",
+  content: fullConversationTranscript,
+  source: "engineering_standup",
+  extract: true  // Fabric extracts key facts, decisions, action items
+});
+```
+
+With `extract: true`, Fabric pulls out the signal from the noise. A 30-minute standup transcript becomes a set of structured memories: decisions made, blockers identified, action items assigned.
+
+## Workspaces API: Isolation for Multi-Agent Systems
+
+If you are running multiple agents — or one agent serving multiple customers — you need isolation. The Workspaces API gives each context its own memory space:
+
+```typescript
+// Create isolated workspace per customer
+const workspace = await fabric.workspaces.create({
+  name: "customer_acme_corp",
+  description: "Support memory for ACME Corp account"
+});
+
+// Memories in this workspace are isolated
+await fabric.memory.create({
+  workspace_id: workspace.id,
+  content: "ACME Corp uses custom Stripe integration with webhook endpoint at /api/payments/hook"
+});
+```
+
+This prevents memory cross-contamination. Your agent serving ACME Corp never accidentally surfaces memories from another customer's support history.
+
+## Resources API: Beyond Text Memory
+
+The Resources API lets your agents store and retrieve structured content — files, notes, bookmarks, code snippets:
+
+```typescript
+// Store a code snippet as a resource
+await fabric.resources.create({
+  workspace_id: "ws_engineering",
+  type: "note",
+  title: "Stripe Webhook Error Handler",
+  content: stripeWebhookCode,
+  tags: ["stripe", "webhooks", "error-handling"]
+});
+
+// Store a bookmark to documentation
+await fabric.resources.create({
+  workspace_id: "ws_engineering",
+  type: "bookmark",
+  url: "https://stripe.com/docs/webhooks/best-practices",
+  title: "Stripe Webhook Best Practices"
+});
+```
+
+Resources are searchable alongside memories. When your agent searches for "how to handle Stripe webhooks," it finds both the resolution memories and the code snippet resource.
+
+## Building a Customer Support Agent with Memory
+
+Here is a practical example. A support agent that learns from every resolved ticket:
+
+```typescript
+import Anthropic from "@anthropic-ai/sdk";
+import { FabricClient } from "@fabric-so/sdk";
+
+const anthropic = new Anthropic();
+const fabric = new FabricClient({ apiKey: process.env.FABRIC_API_KEY });
+
+async function handleSupportTicket(customerId: string, question: string) {
+  // Step 1: Search memory for relevant past resolutions
+  const relevantMemories = await fabric.memory.search({
+    workspace_id: `ws_support_${customerId}`,
+    query: question,
+    limit: 5
+  });
+
+  // Step 2: Build context from memories
+  const memoryContext = relevantMemories.results
+    .map(m => `[Previous resolution]: ${m.content}`)
+    .join("\n\n");
+
+  // Step 3: Generate response with memory context
+  const response = await anthropic.messages.create({
+    model: "claude-sonnet-4-20250514",
+    max_tokens: 1024,
+    system: `You are a customer support agent. Use previous resolutions when relevant.
+
+Context from memory:
+${memoryContext}`,
+    messages: [{ role: "user", content: question }]
+  });
+
+  const answer = response.content[0].text;
+
+  // Step 4: Save this resolution as a new memory
+  await fabric.memory.create({
+    workspace_id: `ws_support_${customerId}`,
+    content: `Question: ${question}\nResolution: ${answer}`,
+    source: "support_resolution",
+    metadata: { customer_id: customerId, timestamp: new Date().toISOString() }
+  });
+
+  return answer;
+}
+```
+
+The first time a customer asks about webhook failures, the agent reasons from scratch. The second time — or when a *similar* question comes in — it finds the previous resolution and responds faster, more accurately, with context about what worked before.
+
+Memory builds over time without manual curation. After 100 tickets, your agent has a rich knowledge base specific to each customer. No one had to organize it.
+
+## Connecting with Claude Agent SDK
+
+If you are building with the [Claude Agent SDK](/blog/claude-agent-sdk-typescript-production-guide), you can wire Fabric memory into your agent's tool set:
+
+```typescript
+import { Agent, Tool } from "@anthropic-ai/agent-sdk";
+
+const searchMemoryTool: Tool = {
+  name: "search_memory",
+  description: "Search agent memory for relevant past context",
+  input_schema: {
+    type: "object",
+    properties: {
+      query: { type: "string", description: "What to search for" }
+    },
+    required: ["query"]
+  },
+  async execute({ query }) {
+    const results = await fabric.memory.search({
+      workspace_id: currentWorkspace,
+      query,
+      limit: 5
+    });
+    return JSON.stringify(results.results);
+  }
+};
+
+const saveMemoryTool: Tool = {
+  name: "save_memory",
+  description: "Save important information to persistent memory",
+  input_schema: {
+    type: "object",
+    properties: {
+      content: { type: "string", description: "What to remember" },
+      source: { type: "string", description: "Where this came from" }
+    },
+    required: ["content"]
+  },
+  async execute({ content, source }) {
+    await fabric.memory.create({
+      workspace_id: currentWorkspace,
+      content,
+      source: source || "agent_observation"
+    });
+    return "Memory saved.";
+  }
+};
+
+const agent = new Agent({
+  tools: [searchMemoryTool, saveMemoryTool, ...otherTools],
+  system: "You have persistent memory. Search it before answering. Save important resolutions."
+});
+```
+
+Now your agent *decides* when to remember something. It can search its own memory before responding and save important outcomes after resolving issues.
+
+## Python Client Example
+
+For Python developers, the pattern is the same:
+
+```python
+from fabric_sdk import FabricClient
+import anthropic
+
+fabric = FabricClient(api_key=os.environ["FABRIC_API_KEY"])
+claude = anthropic.Anthropic()
+
+# Search memory
+results = fabric.memory.search(
+    workspace_id="ws_research",
+    query="latest findings on transformer attention mechanisms",
+    limit=10
+)
+
+# Save memory
+fabric.memory.create(
+    workspace_id="ws_research",
+    content="Paper found: 'Efficient Attention' proposes linear attention with O(n) complexity",
+    source="research_session",
+    metadata={"paper": "efficient_attention_2026", "relevance": "high"}
+)
+```
+
+## Memory API vs Vector Databases: What is Different
+
+| Aspect | Vector DB (Pinecone, ChromaDB) | Fabric Memory API |
+|--------|-------------------------------|-------------------|
+| **Storage** | Raw embeddings + metadata | Structured semantic memories |
+| **Organization** | Manual (you design schemas) | Automatic (Fabric extracts and connects) |
+| **Query** | Cosine similarity on vectors | Semantic network traversal |
+| **Relationships** | None (flat storage) | Auto-detected between memories |
+| **Entity extraction** | DIY with NER pipeline | Built-in |
+| **Chunking** | You handle it | Fabric handles it |
+| **Setup time** | Hours (embedding model, index config, schema) | Minutes (API key, one call) |
+
+The trade-off: vector databases give you more control. You choose the embedding model, the distance metric, the index type. Fabric gives you less control but faster time-to-memory. If you need to tune retrieval at the embedding level, use a vector DB. If you want memory that works without infrastructure decisions, Fabric is compelling.
+
+For most agent use cases — support bots, research assistants, personal agents — the Fabric approach wins on developer experience. You are building an agent, not a search engine.
+
+## When to Use Fabric Platform vs Building Your Own RAG
+
+**Use Fabric when:**
+- You want memory to work without designing chunking/embedding pipelines
+- Your agent needs to learn from interactions over time
+- You need workspace isolation for multi-tenant or multi-agent systems
+- You want automatic entity extraction and relationship detection
+- Speed of development matters more than low-level control
+
+**Build your own RAG when:**
+- You need specific embedding models (e.g., domain-trained medical embeddings)
+- You have compliance requirements that prevent third-party data storage
+- You need [on-device processing](/blog/edge-ai-2026-run-llm-on-device) for latency or privacy
+- You want full control over retrieval scoring and re-ranking
+- Your data is primarily large documents that need custom chunking
+
+For a deeper look at building RAG from scratch, I covered the [Obsidian + RAG approach](/blog/claude-code-obsidian-rag-knowledge-base-guide) — it works but requires significant maintenance compared to a managed solution.
+
+## Pricing for Developers
+
+Fabric offers a free tier for developers getting started:
+
+- **Free:** Limited memory storage and API calls — enough to prototype and test
+- **Pro:** Higher limits, priority processing, production-ready rate limits
+- **Enterprise:** Custom workspace limits, dedicated infrastructure, SLA
+
+API costs scale with usage — memory creates and searches are metered. For a support agent handling 100 tickets/day with 5 memory operations per ticket, you are looking at modest costs that scale predictably. Check their [developer docs](https://fabric.so/?via=codewithseb) for current pricing.
+
+## Getting Started
+
+If you want to give your agents memory without spending a week building RAG infrastructure:
+
+1. Sign up at [fabric.so/developers](https://fabric.so/?via=codewithseb)
+2. Create a workspace for your agent
+3. Install the SDK (`npm install @fabric-so/sdk` or `pip install fabric-sdk`)
+4. Start saving and searching memories
+
+The gap between "demo agent" and "production agent" is often just memory. An agent that remembers is an agent that improves. And with Fabric's Developer Platform, adding that memory is an afternoon of work, not a quarter of infrastructure planning.
+
+---
+
+### Sources
+
+- [Fabric Developer Platform Documentation](https://fabric.so/?via=codewithseb)
+- [Anthropic Claude Agent SDK](https://docs.anthropic.com/en/docs/agents-and-tools/claude-agent-sdk)
+- [Pinecone Vector Database Documentation](https://docs.pinecone.io/)
+- [ChromaDB Documentation](https://docs.trychroma.com/)
+
+### Further Reading
+
+- [Building AI Agents with the Claude Agent SDK](/blog/claude-agent-sdk-typescript-production-guide)
+- [Fabric.so AI Workspace Review](/blog/fabric-so-ai-workspace-review-guide)
+- [Building a RAG Knowledge Base with Claude Code and Obsidian](/blog/claude-code-obsidian-rag-knowledge-base-guide)
+- [Edge AI in 2026: Running LLMs On-Device](/blog/edge-ai-2026-run-llm-on-device)
+- [LangChain Memory Documentation](https://python.langchain.com/docs/modules/memory/)
+- [OpenAI Function Calling for Agent Memory](https://platform.openai.com/docs/guides/function-calling)
+
+---
+
+~Seb 👊

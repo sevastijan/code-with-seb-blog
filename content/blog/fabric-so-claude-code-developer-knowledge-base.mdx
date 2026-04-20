@@ -1,0 +1,280 @@
+---
+title: 'Fabric.so + Claude Code: How I Built a Self-Organizing Developer Knowledge Base'
+date: '2026-04-20'
+category: 'AI'
+tags: ['fabric', 'claude-code', 'mcp', 'knowledge-management', 'developer-tools']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: "Fabric's MCP server connects directly to Claude Code — your AI agent can search, save, and organize knowledge without you touching the UI. Here's how to build a developer knowledge base that feeds itself from your coding sessions."
+---
+
+Every developer I know has the same problem. Knowledge is everywhere and nowhere at the same time. That debugging session you spent three hours on last Tuesday? The fix is buried in a Slack thread. The architecture decision from that meeting? Someone's Google Doc you'll never find again. The Stack Overflow answer that saved your weekend? Lost in 400 browser tabs.
+
+> *Disclosure: Some links in this article are affiliate links — I earn a small commission if you sign up through them, at no extra cost to you. I only recommend tools I genuinely find worth testing.*
+
+I've tried every solution. Notion databases. Obsidian vaults. Bookmarking extensions. Plain text files. They all share one fatal flaw: they require you to stop what you're doing, context-switch into "knowledge management mode," and manually file something away. And in the heat of a coding session, you never do it.
+
+So I tried a different approach. I connected [Fabric](https://fabric.so/?via=codewithseb) directly to Claude Code via MCP. Now when I'm debugging, researching, or making architectural decisions, Claude Code automatically saves relevant findings to Fabric — tagged, linked, and searchable by meaning. I never leave the terminal. I never open a separate app. The knowledge base builds itself while I work.
+
+Here's the complete setup and the four workflows that make it actually useful.
+
+## Why Fabric + Claude Code (Not Just One or the Other)
+
+I wrote a full review of [Fabric as a standalone AI workspace](/blog/fabric-so-ai-workspace-review-guide). The TL;DR: Fabric's semantic search is genuinely impressive — you search by meaning, not keywords, and it handles PDFs, bookmarks, notes, voice memos, and screenshots. The AI auto-categorizes everything you throw in.
+
+But using Fabric through its UI creates the same problem as every other knowledge tool. You have to go there. You have to manually save things. You have to leave your flow.
+
+Claude Code fixes that. Through the [Model Context Protocol](/blog/mcp-vs-a2a-ai-agent-protocols-guide-2026), Claude Code can directly call Fabric's API — saving snippets, searching your knowledge base, creating connections between ideas — all without you opening a browser window.
+
+The combination means: **capture happens during work, not after it.**
+
+## Setting Up the Fabric MCP Server
+
+Fabric exposes an MCP-compatible server that Claude Code can connect to directly. Here's the setup.
+
+### Step 1: Get Your Fabric API Key
+
+Sign up at [fabric.so](https://fabric.so/?via=codewithseb), go to Settings > API, and generate a personal access token. You'll need the `read`, `write`, and `search` scopes.
+
+### Step 2: Install the MCP Server
+
+```bash
+npm install -g @fabric-so/mcp-server
+```
+
+### Step 3: Configure Claude Code
+
+Add Fabric to your MCP configuration. If you're using a project-level setup, add it to `.mcp.json` in your project root:
+
+```json
+{
+  "mcpServers": {
+    "fabric": {
+      "command": "fabric-mcp-server",
+      "env": {
+        "FABRIC_API_KEY": "your-api-key-here"
+      },
+      "args": ["--workspace", "dev-knowledge"]
+    }
+  }
+}
+```
+
+Or add it globally in `~/.claude/settings.json` if you want Fabric available across all projects:
+
+```json
+{
+  "mcpServers": {
+    "fabric": {
+      "command": "fabric-mcp-server",
+      "env": {
+        "FABRIC_API_KEY": "your-api-key-here"
+      }
+    }
+  }
+}
+```
+
+### Step 4: Verify the Connection
+
+Start a Claude Code session and ask it to list your Fabric tools. You should see something like:
+
+```
+Available Fabric tools:
+- fabric_save: Save a note/snippet to Fabric
+- fabric_search: Semantic search across your knowledge base
+- fabric_bookmark: Save a URL with full-text extraction
+- fabric_list: List recent items or filter by space
+- fabric_connect: Create a link between two items
+```
+
+That's it. Claude Code can now read from and write to your Fabric workspace mid-conversation.
+
+## How It Actually Works: The Memory API
+
+Here's where Fabric differs from "just another vector store." Most RAG setups give you embeddings + similarity search. You put text in, you get similar text back. It's a flat retrieval system.
+
+Fabric's Memory API builds a **living semantic network**. When you save something, Fabric doesn't just embed it — it:
+
+1. **Extracts concepts** — identifies the key ideas, technologies, patterns, and decisions in your content
+2. **Creates bidirectional links** — automatically connects new items to existing related content
+3. **Builds concept clusters** — groups related knowledge into emergent categories you never defined
+4. **Tracks temporal relationships** — knows that a decision you made in March was informed by research you did in February
+
+This means when Claude Code searches your Fabric workspace, it doesn't just find "similar text." It traverses a graph of connected knowledge. Searching for "authentication approach" might surface your original research notes, the decision you made, the implementation bugs you hit, and the performance benchmarks you ran later — all connected, all in context.
+
+The API calls look straightforward:
+
+```json
+// Saving a finding
+{
+  "tool": "fabric_save",
+  "input": {
+    "content": "Redis SCAN cursor-based iteration avoids blocking...",
+    "title": "Redis SCAN vs KEYS for production",
+    "space": "backend-patterns",
+    "tags": ["redis", "performance", "production"],
+    "context": {
+      "project": "user-service",
+      "session": "debugging-slow-cache-invalidation"
+    }
+  }
+}
+
+// Semantic search
+{
+  "tool": "fabric_search",
+  "input": {
+    "query": "how did we handle cache invalidation last time",
+    "limit": 5,
+    "spaces": ["backend-patterns", "project-decisions"]
+  }
+}
+```
+
+The `context` field is the secret sauce. It tells Fabric *where* this knowledge came from — which project, which coding session, what you were doing when you learned it. Later, when you search, that context helps surface the right results.
+
+## 4 Workflows That Actually Stick
+
+I've been running this setup for six weeks. Most "productivity system" articles describe workflows the author used for three days. Here are the four that survived real daily use.
+
+### Workflow 1: Save Debugging Findings During Coding
+
+This is the killer use case. You're deep in a debugging session. Claude Code helps you find the issue. Normally, that knowledge evaporates — you fix the bug and move on.
+
+Now I add a line to my [CLAUDE.md](/blog/claude-md-memory-persistent-context-guide):
+
+```markdown
+## Knowledge Capture
+When we solve a non-trivial bug or discover unexpected behavior,
+save the finding to Fabric with:
+- What the symptom was
+- What the root cause was
+- How we fixed it
+- Which project/file it was in
+```
+
+Claude Code now does this automatically. Last week it saved "Next.js App Router: dynamic route params are undefined in generateMetadata when using parallel routes" to my Fabric workspace without me asking. Three days later, I hit the same pattern in a different project. Searched Fabric. Found my own note. Saved an hour.
+
+### Workflow 2: Auto-Bookmark Referenced Docs
+
+During coding sessions, Claude Code frequently references documentation — official docs, GitHub issues, API references. Normally these flash by in the conversation and disappear.
+
+Add this to your CLAUDE.md:
+
+```markdown
+## Reference Bookmarking
+When referencing external documentation or GitHub issues during
+our session, bookmark the URL to Fabric with a one-line summary
+of why it was relevant.
+```
+
+Now every doc link Claude Code mentions gets saved to Fabric with full-text extraction. The page content is indexed, not just the URL. When the official docs get reorganized (which they always do), you still have the content.
+
+### Workflow 3: Build Project Decision Logs
+
+Every project accumulates decisions. "We chose Postgres over MongoDB because..." "We went with server components for the dashboard because..." These decisions live in PR descriptions, Slack threads, or nowhere at all.
+
+I structure this with a dedicated Fabric space:
+
+```markdown
+## Decision Logging
+When we make an architectural or technology decision, save to
+Fabric space "project-decisions" with:
+- Decision: what we chose
+- Context: why this question came up
+- Alternatives: what we considered
+- Reasoning: why this option won
+- Date and project name
+```
+
+Six weeks in, I have 23 decision records. When a new team member asks "why don't we use GraphQL?" I search Fabric, find the decision from February with full reasoning, and share it. That's worth more than any wiki page I'd never bother writing.
+
+### Workflow 4: Capture Code Review Learnings
+
+Code reviews surface patterns and anti-patterns. Someone explains why your approach won't scale. Someone shows you a cleaner abstraction. This knowledge is incredibly valuable and almost never captured.
+
+```markdown
+## Code Review Capture
+After discussing code review feedback, save key learnings to
+Fabric with the pattern name, why the alternative is better,
+and an example.
+```
+
+My Fabric workspace now contains entries like "Prefer composition over inheritance for React form components — here's why and here's the pattern." These aren't bookmarks or docs. They're *my* synthesized learnings from *my* codebase.
+
+## Comparing with the Obsidian MCP Approach
+
+I previously built a similar system with [Claude Code + Obsidian](/blog/claude-code-obsidian-second-brain-guide). Both work. Here's an honest comparison:
+
+| Aspect | Fabric + Claude Code | Obsidian + Claude Code |
+|--------|---------------------|----------------------|
+| **Search** | Semantic (by meaning) | Full-text + manual links |
+| **Organization** | AI auto-categorizes | You build the structure |
+| **Data format** | Cloud-hosted, proprietary | Local Markdown files |
+| **Offline** | Limited | Full offline access |
+| **Cross-device** | Automatic sync | Requires Obsidian Sync or git |
+| **Content types** | PDFs, images, voice, video | Markdown + embeds |
+| **Privacy** | Cloud-processed | Fully local |
+| **Speed** | API latency (~200-400ms) | Instant (local files) |
+| **Cost** | $10-15/month | Free (or $8/mo for Sync) |
+
+**Choose Fabric if:** You want zero-effort organization, work across devices constantly, and save diverse content types (not just text). The semantic search alone is worth it if your knowledge base is large and poorly organized.
+
+**Choose Obsidian if:** You need offline access, care about data ownership and privacy, or prefer to build your own organizational structure. The local-first approach means you control everything.
+
+**My setup:** I use both. Obsidian for long-form thinking, project documentation, and anything I want to own forever as plain files. Fabric for the ephemeral-but-useful stuff — debugging findings, bookmarks, decision records, quick captures from coding sessions. They serve different purposes.
+
+## What This Costs Per Month
+
+Let's be transparent about pricing:
+
+- **Fabric Pro plan**: $10/month (includes API access, unlimited saves, semantic search)
+- **Claude Code usage**: Varies, but the MCP calls to Fabric add minimal token overhead — maybe 200-400 tokens per save/search operation
+- **Total additional cost for this workflow**: ~$10-15/month on top of whatever you're already paying for Claude Code
+
+Is it worth it? For me, yes. I estimate I save 2-3 hours per week not re-researching things I've already figured out. At any reasonable hourly rate, that's a clear ROI. Your mileage will vary depending on how much "knowledge re-discovery" you currently do.
+
+## The "Capture Everything, Organize Nothing" Developer Workflow
+
+Here's the mental model that makes this sustainable: **you are not building a knowledge management system.** You are setting up passive capture with active retrieval.
+
+The distinction matters. Knowledge management implies maintenance — pruning, reorganizing, re-tagging. That's work. And work you won't do consistently.
+
+This workflow requires exactly zero maintenance. You code. Claude Code captures relevant findings. Fabric organizes them. When you need something, you search by meaning. You never browse, never file, never maintain.
+
+The only setup cost is the CLAUDE.md instructions (one time, 10 minutes) and the MCP configuration (one time, 5 minutes). After that, it's invisible.
+
+Six weeks in, my Fabric workspace has 147 items I never manually created. Debugging findings, bookmarked docs, decision records, code review learnings. I search it 3-4 times per day. I hit useful results about 70% of the time. The other 30% is knowledge I would have lost either way.
+
+Is it perfect? No. Sometimes Claude Code over-captures — saves something obvious that I'd never need to look up again. Sometimes the semantic search returns tangentially related results. But the bar isn't perfection. The bar is: **is this better than my previous system of saving nothing?** Unquestionably yes.
+
+## Getting Started in 15 Minutes
+
+1. Sign up for Fabric and get an API key (2 minutes)
+2. Install the MCP server and configure Claude Code (5 minutes)
+3. Add capture instructions to your CLAUDE.md (5 minutes)
+4. Start coding — knowledge capture happens automatically
+
+Don't over-engineer it. Start with one workflow (I recommend debugging findings — it has the fastest payoff) and expand from there. The system gets more valuable as it accumulates content, so starting early matters more than starting perfectly.
+
+---
+
+### Sources
+
+- Fabric.so official documentation — https://docs.fabric.so
+- Fabric Memory API reference — https://docs.fabric.so/api/memory
+- Model Context Protocol specification — https://modelcontextprotocol.io
+- Anthropic Claude Code MCP documentation — https://docs.anthropic.com/en/docs/claude-code/mcp
+
+### Further Reading
+
+- "The PARA Method" by Tiago Forte — https://fortelabs.com/blog/para/
+- "Building a Second Brain" — https://www.buildingasecondbrain.com/
+- Fabric.so changelog and release notes — https://fabric.so/changelog
+- MCP server registry — https://github.com/modelcontextprotocol/servers
+
+---
+
+~Seb 👊
