@@ -2394,9 +2394,9 @@
 
   .blog-horizontal-section {
     position: relative;
-    height: 250vh; /* Shorter = faster horizontal scroll */
     background: #0a0a0a;
-    overflow-x: clip; /* Clip horizontal overflow without breaking sticky */
+    overflow-x: clip;
+    padding: clamp(5rem, 10vh, 8rem) 0;
   }
 
   /* Dark green gradient background */
@@ -2501,17 +2501,14 @@
     }
   }
 
-  /* Sticky container */
+  /* Content wrapper (formerly sticky, now a natural flow block) */
   .blog-horizontal-sticky {
-    position: sticky;
-    top: 0;
-    height: 100vh;
+    position: relative;
     display: flex;
     flex-direction: column;
-    justify-content: center;
-    padding: clamp(1.5rem, 4vw, 3rem);
+    gap: clamp(2rem, 4vw, 3rem);
+    padding: clamp(1.5rem, 4vw, 3rem) 0;
     overflow: hidden;
-    /* For absolute positioning of children */
     isolation: isolate;
   }
 
@@ -2520,7 +2517,7 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: clamp(2rem, 5vw, 4rem);
+    padding: 0 clamp(1.5rem, 4vw, 3rem);
     position: relative;
     z-index: 10;
   }
@@ -2573,19 +2570,45 @@
     text-shadow: 0 0 20px var(--c-accent-2-glow);
   }
 
-  /* Track wrapper - clips overflow */
+  /* Track wrapper - native horizontal scroll with drag-to-pan */
   .blog-horizontal-track-wrapper {
     position: relative;
     width: 100%;
-    overflow: visible;
+    overflow-x: auto;
+    overflow-y: visible;
+    scroll-snap-type: x mandatory;
+    scroll-padding-left: clamp(1.5rem, 4vw, 3rem);
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+    cursor: grab;
+    padding: 2rem 0;
+    z-index: 5;
+  }
+
+  .blog-horizontal-track-wrapper::-webkit-scrollbar {
+    display: none;
+  }
+
+  .blog-horizontal-track-wrapper.is-dragging {
+    cursor: grabbing;
+    scroll-snap-type: none;
+    user-select: none;
+  }
+
+  .blog-horizontal-track-wrapper.is-dragging a {
+    pointer-events: none;
   }
 
   /* Horizontal track */
   .blog-horizontal-track {
     display: flex;
     gap: clamp(1.5rem, 4vw, 3rem);
-    will-change: transform;
-    transition: transform 0.1s ease-out;
+    padding: 0 clamp(1.5rem, 4vw, 3rem);
+    width: max-content;
+  }
+
+  .blog-horizontal-card {
+    scroll-snap-align: start;
   }
 
   /* Individual card */
@@ -2949,12 +2972,54 @@
     transform: translate(4px, -4px);
   }
 
-  /* Progress counter with glitch */
+  /* Arrow navigation (replaces scroll progress counter) */
+  .blog-horizontal-nav {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 1.25rem;
+    padding: 0 clamp(1.5rem, 4vw, 3rem);
+    position: relative;
+    z-index: 10;
+  }
+
+  .blog-horizontal-nav-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.75rem;
+    height: 2.75rem;
+    border: 1px solid rgba(0, 255, 136, 0.25);
+    background: rgba(0, 255, 136, 0.04);
+    color: var(--c-accent-2);
+    cursor: pointer;
+    transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  .blog-horizontal-nav-btn:hover:not(:disabled) {
+    background: var(--c-accent-2);
+    color: #0a0a0a;
+    border-color: var(--c-accent-2);
+    box-shadow: 0 0 24px var(--c-accent-2-glow);
+  }
+
+  .blog-horizontal-nav-btn:disabled {
+    opacity: 0.25;
+    cursor: not-allowed;
+  }
+
+  .blog-horizontal-nav-hint {
+    font-family: var(--font-mono), monospace;
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.25em;
+    text-transform: uppercase;
+    color: rgba(255, 255, 255, 0.35);
+  }
+
+  /* Legacy counter - hidden after redesign */
   .blog-horizontal-counter {
-    position: absolute;
-    bottom: 2rem;
-    left: 50%;
-    transform: translateX(-50%);
+    display: none;
   }
 
   .blog-horizontal-counter-glitch {
@@ -4014,22 +4079,20 @@
 
 .srv-takeover {
   position: relative;
-  min-height: 350vh;
+  min-height: 100vh;
   background: #000;
   overflow-x: clip;
 }
 
-/* Sticky fullscreen */
+/* Fullscreen stage (no scroll hijack) */
 .srv-takeover-sticky {
-  position: sticky;
-  top: 0;
+  position: relative;
   height: 100vh;
   width: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
   overflow: clip;
-  will-change: transform;
   z-index: 1;
 }
 
@@ -4418,11 +4481,19 @@
 }
 
 .srv-takeover-dot {
-  width: 8px;
-  height: 8px;
+  width: 10px;
+  height: 10px;
+  padding: 0;
+  border: none;
   border-radius: 50%;
   background: rgba(255,255,255,0.2);
+  cursor: pointer;
   transition: all 0.5s var(--ease-out-expo);
+}
+
+.srv-takeover-dot:hover {
+  background: rgba(255,255,255,0.45);
+  transform: scale(1.25);
 }
 
 .srv-takeover-dot.active {
@@ -4431,48 +4502,37 @@
   transform: scale(1.5);
 }
 
-.srv-takeover-dot.passed {
-  background: rgba(255,255,255,0.4);
-}
-
-/* Scroll indicator */
-.srv-takeover-scroll {
+/* Prev/Next arrow buttons */
+.srv-takeover-arrow {
   position: absolute;
-  bottom: 2rem;
-  left: 2rem;
-  display: flex;
-  flex-direction: column;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3rem;
+  height: 3rem;
+  display: inline-flex;
   align-items: center;
-  gap: 0.75rem;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.55);
+  cursor: pointer;
   z-index: 10;
+  transition: all 0.3s var(--ease-out-expo);
 }
 
-.srv-takeover-scroll span {
-  font-size: 0.65rem;
-  letter-spacing: 0.3em;
-  text-transform: uppercase;
-  color: rgba(255,255,255,0.3);
-  writing-mode: vertical-rl;
-}
-
-.srv-takeover-scroll-line {
-  width: 1px;
-  height: 60px;
-  background: rgba(255,255,255,0.1);
-  position: relative;
-  overflow: hidden;
-}
-
-.srv-takeover-scroll-progress {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 100%;
+.srv-takeover-arrow:hover {
   background: var(--srv-color);
-  transform-origin: top;
-  box-shadow: 0 0 10px var(--srv-color);
-  transition: background 0.5s ease;
+  border-color: var(--srv-color);
+  color: #000;
+  box-shadow: 0 0 32px color-mix(in srgb, var(--srv-color) 60%, transparent);
+}
+
+.srv-takeover-arrow-prev {
+  left: 2rem;
+}
+
+.srv-takeover-arrow-next {
+  right: 5rem; /* leave room for dots column */
 }
 
 /* CTA */
@@ -4519,13 +4579,22 @@
     right: 1rem;
   }
 
+  .srv-takeover-arrow {
+    width: 2.5rem;
+    height: 2.5rem;
+  }
+
+  .srv-takeover-arrow-prev {
+    left: 0.75rem;
+  }
+
+  .srv-takeover-arrow-next {
+    right: 3rem;
+  }
+
   .srv-takeover-label {
     left: 1rem;
     top: 5rem;
-  }
-
-  .srv-takeover-scroll {
-    left: 1rem;
   }
 
   .srv-takeover-cta {

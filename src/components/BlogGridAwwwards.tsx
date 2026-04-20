@@ -28,14 +28,16 @@ function useIsMobile() {
   return isMobile;
 }
 
-// Desktop: scroll-hijacked horizontal slider (original behavior)
+// Desktop: free horizontal scroll with drag-to-pan + arrow navigation (no scroll hijack)
 function DesktopSlider({ posts }: { posts: Post[] }) {
-  const sectionRef = useRef<HTMLElement>(null);
-  const trackRef = useRef<HTMLDivElement>(null);
-  const [scrollProgress, setScrollProgress] = useState(0);
+  const wrapperRef = useRef<HTMLDivElement>(null);
   const cardRefs = useRef<(HTMLAnchorElement | null)[]>([]);
+  const [canScrollLeft, setCanScrollLeft] = useState(false);
+  const [canScrollRight, setCanScrollRight] = useState(true);
+  const dragState = useRef({ active: false, startX: 0, startScroll: 0, moved: false });
 
   const handleMouseMove = useCallback((e: React.MouseEvent<HTMLAnchorElement>, index: number) => {
+    if (dragState.current.active) return;
     const card = cardRefs.current[index];
     if (!card) return;
     const rect = card.getBoundingClientRect();
@@ -59,54 +61,81 @@ function DesktopSlider({ posts }: { posts: Post[] }) {
     if (glow) glow.style.opacity = '0';
   }, []);
 
+  const updateScrollState = useCallback(() => {
+    const w = wrapperRef.current;
+    if (!w) return;
+    setCanScrollLeft(w.scrollLeft > 8);
+    setCanScrollRight(w.scrollLeft < w.scrollWidth - w.clientWidth - 8);
+  }, []);
+
+  const scrollByDirection = useCallback((dir: 'left' | 'right') => {
+    const w = wrapperRef.current;
+    if (!w) return;
+    const firstCard = w.querySelector('.blog-horizontal-card') as HTMLElement | null;
+    const gap = parseFloat(getComputedStyle(w.firstElementChild as Element).gap || '32') || 32;
+    const step = (firstCard?.offsetWidth ?? 380) + gap;
+    w.scrollBy({ left: dir === 'left' ? -step : step, behavior: 'smooth' });
+  }, []);
+
   useEffect(() => {
-    const section = sectionRef.current;
-    const track = trackRef.current;
-    if (!section || !track) return;
+    const w = wrapperRef.current;
+    if (!w) return;
+    updateScrollState();
+    w.addEventListener('scroll', updateScrollState, { passive: true });
+    window.addEventListener('resize', updateScrollState);
+    return () => {
+      w.removeEventListener('scroll', updateScrollState);
+      window.removeEventListener('resize', updateScrollState);
+    };
+  }, [updateScrollState]);
 
-    let isVisible = true;
-    const observer = new IntersectionObserver(
-      ([entry]) => { isVisible = entry.isIntersecting; },
-      { threshold: 0 }
-    );
-    observer.observe(section);
-
-    const handleScroll = () => {
-      if (!isVisible) return;
-      const rect = section.getBoundingClientRect();
-      const windowHeight = window.innerHeight;
-      const sectionHeight = section.offsetHeight;
-      const scrollEnd = sectionHeight - windowHeight;
-
-      if (rect.top <= 0 && rect.bottom >= windowHeight) {
-        const scrolled = -rect.top;
-        const progress = Math.min(1, Math.max(0, scrolled / scrollEnd));
-        setScrollProgress(progress);
-        const trackWidth = track.scrollWidth;
-        const startOffset = 60;
-        const endMargin = window.innerWidth * 0.3;
-        const endPosition = -(trackWidth - window.innerWidth + endMargin);
-        track.style.transform = `translate3d(${startOffset + (endPosition - startOffset) * progress}px, 0, 0)`;
-      } else if (rect.top > 0) {
-        setScrollProgress(0);
-        track.style.transform = 'translate3d(60px, 0, 0)';
-      } else {
-        setScrollProgress(1);
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (!dragState.current.active) return;
+      const w = wrapperRef.current;
+      if (!w) return;
+      const dx = e.pageX - dragState.current.startX;
+      if (Math.abs(dx) > 5) dragState.current.moved = true;
+      w.scrollLeft = dragState.current.startScroll - dx;
+    };
+    const onUp = () => {
+      if (!dragState.current.active) return;
+      dragState.current.active = false;
+      const w = wrapperRef.current;
+      if (w) {
+        w.classList.remove('is-dragging');
       }
     };
-
-    track.style.transform = 'translate3d(60px, 0, 0)';
-    window.addEventListener('scroll', handleScroll, { passive: true });
-    handleScroll();
-
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
     return () => {
-      window.removeEventListener('scroll', handleScroll);
-      observer.disconnect();
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
     };
   }, []);
 
+  const onWrapperMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    const w = wrapperRef.current;
+    if (!w) return;
+    dragState.current = {
+      active: true,
+      startX: e.pageX,
+      startScroll: w.scrollLeft,
+      moved: false,
+    };
+    w.classList.add('is-dragging');
+  };
+
+  const onCardClick = (e: React.MouseEvent) => {
+    if (dragState.current.moved) {
+      e.preventDefault();
+      dragState.current.moved = false;
+    }
+  };
+
   return (
-    <section ref={sectionRef} className="blog-horizontal-section">
+    <section className="blog-horizontal-section">
       <div className="blog-horizontal-bg" />
       <div className="blog-horizontal-sticky">
         <div className="blog-horizontal-giant-num">
@@ -124,8 +153,12 @@ function DesktopSlider({ posts }: { posts: Post[] }) {
           </Link>
         </div>
 
-        <div className="blog-horizontal-track-wrapper">
-          <div ref={trackRef} className="blog-horizontal-track">
+        <div
+          ref={wrapperRef}
+          className="blog-horizontal-track-wrapper"
+          onMouseDown={onWrapperMouseDown}
+        >
+          <div className="blog-horizontal-track">
             {posts.map((post, index) => (
               <Link
                 key={post.slug}
@@ -133,6 +166,7 @@ function DesktopSlider({ posts }: { posts: Post[] }) {
                 href={`/blog/${post.slug}`}
                 className="blog-horizontal-card"
                 style={{ '--card-index': index } as React.CSSProperties}
+                onClick={onCardClick}
                 onMouseMove={(e) => handleMouseMove(e, index)}
                 onMouseLeave={() => handleMouseLeave(index)}
               >
@@ -151,7 +185,11 @@ function DesktopSlider({ posts }: { posts: Post[] }) {
                 </div>
               </Link>
             ))}
-            <Link href="/blog" className="blog-horizontal-card blog-horizontal-card-cta">
+            <Link
+              href="/blog"
+              className="blog-horizontal-card blog-horizontal-card-cta"
+              onClick={onCardClick}
+            >
               <div className="blog-horizontal-cta-glitch">
                 <span className="blog-horizontal-cta-text" data-text="See all articles">See all articles</span>
               </div>
@@ -161,15 +199,26 @@ function DesktopSlider({ posts }: { posts: Post[] }) {
           </div>
         </div>
 
-        <div className="blog-horizontal-counter">
-          <div className="blog-horizontal-counter-glitch">
-            <span className="blog-horizontal-counter-text">
-              {String(Math.round(scrollProgress * 100)).padStart(2, '0')}/100
-            </span>
-            <span className="blog-horizontal-counter-ghost" aria-hidden="true">
-              {String(Math.round(scrollProgress * 100)).padStart(2, '0')}/100
-            </span>
-          </div>
+        <div className="blog-horizontal-nav">
+          <button
+            type="button"
+            className="blog-horizontal-nav-btn"
+            onClick={() => scrollByDirection('left')}
+            disabled={!canScrollLeft}
+            aria-label="Scroll left"
+          >
+            <ChevronLeft className="w-5 h-5" />
+          </button>
+          <span className="blog-horizontal-nav-hint">Drag or scroll →</span>
+          <button
+            type="button"
+            className="blog-horizontal-nav-btn"
+            onClick={() => scrollByDirection('right')}
+            disabled={!canScrollRight}
+            aria-label="Scroll right"
+          >
+            <ChevronRight className="w-5 h-5" />
+          </button>
         </div>
       </div>
     </section>

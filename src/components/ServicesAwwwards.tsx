@@ -1,7 +1,8 @@
 'use client';
 
-import { useRef, useEffect, useState } from 'react';
+import { useRef, useEffect, useState, useCallback } from 'react';
 import Link from 'next/link';
+import { ChevronLeft, ChevronRight } from 'lucide-react';
 
 interface Service {
   id: string;
@@ -19,47 +20,58 @@ const services: Service[] = [
   { id: '03', title: 'LEAD', tagline: 'Vision that wins', color: '#8b5cf6', href: '/services/consulting', easterEgg: 2, easterEggType: 'flip' },
 ];
 
+const AUTO_ADVANCE_MS = 5500;
+
 export function ServicesAwwwards() {
   const sectionRef = useRef<HTMLElement>(null);
   const [activeIndex, setActiveIndex] = useState(0);
-  const [progress, setProgress] = useState(0);
   const [isInView, setIsInView] = useState(false);
+  const [isHovering, setIsHovering] = useState(false);
+  const userInteracted = useRef(false);
+
+  const goTo = useCallback((index: number) => {
+    const next = (index + services.length) % services.length;
+    setActiveIndex(next);
+  }, []);
+
+  const next = useCallback(() => {
+    userInteracted.current = true;
+    setActiveIndex((i) => (i + 1) % services.length);
+  }, []);
+
+  const prev = useCallback(() => {
+    userInteracted.current = true;
+    setActiveIndex((i) => (i - 1 + services.length) % services.length);
+  }, []);
 
   useEffect(() => {
     const section = sectionRef.current;
     if (!section) return;
-
-    const handleScroll = () => {
-      const rect = section.getBoundingClientRect();
-      const windowHeight = window.innerHeight;
-      const sectionHeight = section.offsetHeight;
-
-      // Check if in view
-      if (rect.top <= windowHeight && rect.bottom >= 0) {
-        setIsInView(true);
-      } else {
-        setIsInView(false);
-      }
-
-      if (rect.top <= 0 && rect.bottom >= windowHeight) {
-        const scrolled = -rect.top;
-        const scrollEnd = sectionHeight - windowHeight;
-        const rawProgress = Math.min(1, Math.max(0, scrolled / scrollEnd));
-        setProgress(rawProgress);
-
-        const cardIndex = Math.min(
-          services.length - 1,
-          Math.floor(rawProgress * services.length)
-        );
-        setActiveIndex(cardIndex);
-      }
-    };
-
-    window.addEventListener('scroll', handleScroll, { passive: true });
-    handleScroll();
-
-    return () => window.removeEventListener('scroll', handleScroll);
+    const observer = new IntersectionObserver(
+      ([entry]) => setIsInView(entry.isIntersecting),
+      { threshold: 0.4 }
+    );
+    observer.observe(section);
+    return () => observer.disconnect();
   }, []);
+
+  useEffect(() => {
+    if (!isInView) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'ArrowRight') { e.preventDefault(); next(); }
+      else if (e.key === 'ArrowLeft') { e.preventDefault(); prev(); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [isInView, next, prev]);
+
+  useEffect(() => {
+    if (!isInView || isHovering || userInteracted.current) return;
+    const timer = setTimeout(() => {
+      setActiveIndex((i) => (i + 1) % services.length);
+    }, AUTO_ADVANCE_MS);
+    return () => clearTimeout(timer);
+  }, [activeIndex, isInView, isHovering]);
 
   const activeService = services[activeIndex];
 
@@ -68,8 +80,10 @@ export function ServicesAwwwards() {
       ref={sectionRef}
       className="srv-takeover"
       style={{ '--srv-color': activeService.color } as React.CSSProperties}
+      onMouseEnter={() => setIsHovering(true)}
+      onMouseLeave={() => setIsHovering(false)}
     >
-      {/* Fullscreen sticky container */}
+      {/* Fullscreen stage */}
       <div className="srv-takeover-sticky">
         {/* Dynamic background */}
         <div className="srv-takeover-bg">
@@ -125,25 +139,37 @@ export function ServicesAwwwards() {
           ))}
         </div>
 
-        {/* Progress dots */}
-        <div className="srv-takeover-dots">
-          {services.map((_, i) => (
-            <div
-              key={i}
-              className={`srv-takeover-dot ${activeIndex === i ? 'active' : ''} ${activeIndex > i ? 'passed' : ''}`}
+        {/* Prev/Next arrows */}
+        <button
+          type="button"
+          className="srv-takeover-arrow srv-takeover-arrow-prev"
+          onClick={prev}
+          aria-label="Previous service"
+        >
+          <ChevronLeft className="w-6 h-6" />
+        </button>
+        <button
+          type="button"
+          className="srv-takeover-arrow srv-takeover-arrow-next"
+          onClick={next}
+          aria-label="Next service"
+        >
+          <ChevronRight className="w-6 h-6" />
+        </button>
+
+        {/* Clickable dots */}
+        <div className="srv-takeover-dots" role="tablist">
+          {services.map((service, i) => (
+            <button
+              key={service.id}
+              type="button"
+              role="tab"
+              aria-selected={activeIndex === i}
+              aria-label={`Show ${service.title}`}
+              className={`srv-takeover-dot ${activeIndex === i ? 'active' : ''}`}
+              onClick={() => { userInteracted.current = true; goTo(i); }}
             />
           ))}
-        </div>
-
-        {/* Scroll indicator */}
-        <div className="srv-takeover-scroll">
-          <span>Scroll</span>
-          <div className="srv-takeover-scroll-line">
-            <div
-              className="srv-takeover-scroll-progress"
-              style={{ transform: `scaleY(${progress})` }}
-            />
-          </div>
         </div>
 
         {/* CTA */}
