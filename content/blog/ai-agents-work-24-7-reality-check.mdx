@@ -1,0 +1,216 @@
+---
+title: '"My AI Agents Work 24/7" — What Influencers Actually Mean (And What They Don''t Tell You)'
+date: '2026-04-20'
+category: 'AI'
+tags: ['claude-code', 'ai-agents', 'automation', 'productivity', 'developer-workflow']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: "Influencers claim their AI agents work 24/7 while they sleep. Controlled studies say developers are actually slower with AI tools. The truth is somewhere in between — and far more interesting than either side admits."
+---
+
+"I built an autonomous AI startup system with 37 agents using Claude Code."
+
+That post went viral on DEV.to last month. Thousands of likes. Hundreds of comments asking how to replicate it. LinkedIn influencers screenshot it and add "This is the future of work 🚀."
+
+I clicked through. Read the code. Read the prompts. And here's what "37 agents" actually means: it's 37 prompt templates organized in a folder structure. Each "agent" is a markdown file with instructions. There's no persistent process running. No daemon watching your repo. No AI "employee" working through the night. It's a well-organized Claude Code skill set that you invoke manually.
+
+That's not a knock on the project — it's genuinely clever. But calling it "37 agents working autonomously" is like calling a cookbook "37 chefs." The marketing writes itself. The reality is more mundane. And more useful than the hype suggests.
+
+## What Influencers Post vs. What's Actually Happening
+
+Open Twitter or LinkedIn on any given day and you'll find some variation of:
+
+- "My AI agents wrote 14 PRs overnight while I slept"
+- "I have 5 Claude agents running 24/7 managing my entire codebase"
+- "AI agents replaced my junior developers"
+- "Ship 10x faster with autonomous AI — here's my setup"
+
+The implication is clear: set up some agents, go to bed, wake up to finished work. Passive income, but for code.
+
+Here's what's actually happening behind most of these posts:
+
+**"14 PRs overnight"** — Claude Code Routines ran scheduled tasks that created PRs for dependency updates, documentation fixes, and lint corrections. Useful? Absolutely. But these are the equivalent of automated Dependabot PRs with better commit messages, not feature development.
+
+**"5 agents running 24/7"** — Five GitHub Actions workflows that trigger on PR events and issue creation. They run for 30 seconds to 5 minutes each, then stop. They're not "running 24/7" any more than your CI pipeline is "running 24/7." They're event-driven automations.
+
+**"Replaced my junior developers"** — They're a solo founder who never had junior developers. Claude Code writes boilerplate that a junior would have written. The code review, architecture decisions, and debugging still require the founder's judgment.
+
+**"Ship 10x faster"** — Compared to what baseline? If you're comparing "Claude Code writes a CRUD endpoint" to "I type it character by character," sure. If you're comparing total project delivery including debugging, testing, review, and deployment — the speedup is real but nowhere near 10x.
+
+I'm not trying to be cynical. These tools are genuinely powerful. But the gap between the marketing and the experience is wide enough to drive a bus through, and it's burning developers who buy the hype, set up an "agent army," and wonder why their codebase is full of confident-looking bugs.
+
+## What "24/7 Agents" Actually Are, Technically
+
+Let's demystify the technology. When people say "my agents work 24/7," they're usually talking about one of three things:
+
+### 1. Claude Code Routines
+
+[Routines](/blog/claude-code-routines-scheduled-automation-guide) are Anthropic's cloud-hosted scheduled tasks. You define a prompt, connect a repo, set a cron schedule, and the routine runs on Anthropic's infrastructure. Your laptop doesn't need to be on.
+
+What they can do:
+- Read files in your repo
+- Create branches and PRs
+- Run shell commands
+- Post to Slack/Linear/GitHub via connectors
+- Push to branches prefixed with `claude/`
+
+What they can't do:
+- Push to main (by default — safety guardrail)
+- Access your local environment
+- Run indefinitely (they execute, complete, stop)
+- Make judgment calls about business logic
+
+A routine is a **cron job with AI reasoning**. Powerful, but not a "24/7 employee." It fires at scheduled intervals, does a scoped task, and stops.
+
+### 2. GitHub Actions with Claude Code
+
+[Claude Code GitHub Actions](/blog/claude-code-github-actions-pr-automation-guide) trigger on repo events — PR opened, issue created, comment posted. They run the claude-code-action, execute a prompt against the diff or issue, and post results.
+
+This is event-driven automation, not continuous operation. The agent runs for a few minutes per event, then terminates. Between events, nothing is running.
+
+### 3. Multiple Scheduled Tasks Running at Different Times
+
+The "5 agents running 24/7" setup is usually:
+- 6 AM: Issue triage routine
+- 8 AM: Stale PR check
+- 12 PM: Documentation sync
+- 6 PM: Security scan
+- 2 AM: Dependency update
+
+Five tasks, running at five different times, covering the full day. Collectively they "run 24/7" the same way a series of cron jobs "runs 24/7." Each individual run takes minutes.
+
+## The 5 Things That Actually Work Unattended
+
+Here's what I actually run overnight, and what consistently delivers value:
+
+### 1. Nightly Issue Triage
+
+A routine reads all issues opened in the last 24 hours, adds labels based on the code area referenced, estimates complexity, and posts a triage comment with suggested next steps. When I open GitHub in the morning, every new issue already has context. This saves me 20-30 minutes of morning triage.
+
+**Why it works unattended:** Low-risk. Worst case, a label is wrong. I review the comments over coffee and correct the occasional mislabel.
+
+### 2. Dependency Security Scanning
+
+A weekly routine runs `npm audit`, analyzes which vulnerabilities are actually reachable in my code, and creates a PR for safe upgrades. For breaking changes, it creates an issue with migration steps instead.
+
+**Why it works unattended:** It only creates PRs — it doesn't merge them. I review and merge. The agent does the tedious analysis; I make the decision.
+
+### 3. Stale PR Nudging
+
+A daily check finds open PRs older than 5 days without activity, posts a friendly comment summarizing status and what's blocking merge, and notes any merge conflicts.
+
+**Why it works unattended:** It's a notification system, not an action system. It posts comments; humans decide what to do.
+
+### 4. Documentation Drift Detection
+
+A weekly routine compares the current codebase against docs, finds new exported functions without docs, documented APIs whose signatures changed, and removed features still mentioned in documentation. Creates a PR with fixes.
+
+**Why it works unattended:** Same principle — creates PRs, doesn't merge. The diff review takes 2 minutes because I know the documentation context.
+
+### 5. CI Failure Analysis
+
+When a CI run fails, a GitHub Action triggers that reads the error output, checks the git log for recent changes, and posts a comment on the failing commit with a likely root cause analysis.
+
+**Why it works unattended:** It's read-only analysis. It doesn't fix the code — it points me to the problem. The difference between "CI failed" and "CI failed because the new migration in commit abc123 references a column that doesn't exist yet" saves significant debugging time.
+
+### The Pattern
+
+Notice what all five have in common: **low-risk, scoped tasks that produce recommendations, not actions.** They create PRs (not merge them). Post comments (not close issues). Suggest fixes (not deploy them). The human is always the final decision-maker.
+
+## The 5 Things That DON'T Work Unattended
+
+And here's where the influencer narrative falls apart:
+
+### 1. Writing New Features From Scratch
+
+AI is excellent at boilerplate — CRUD endpoints, standard components, utility functions. But a feature is more than boilerplate. It's understanding the business context, making tradeoffs, handling edge cases that aren't in the ticket. [The 70% problem](/blog/vibe-coding-full-stack-app-one-day-guide) is real: AI builds the prototype fast, then the last 30% requires actual engineering.
+
+Letting an agent write a new feature overnight and merging it in the morning is how you ship bugs that look like features.
+
+### 2. Refactoring Complex Systems
+
+Refactoring requires understanding why code is structured the way it is. Maybe that weird `setTimeout` in the auth flow exists because of a race condition that took three days to diagnose. Maybe that "unnecessary" abstraction is there because of a client's specific compliance requirement. AI doesn't know this context, and no amount of CLAUDE.md will capture every historical decision.
+
+### 3. Debugging Production Issues
+
+Production debugging needs access to logs, metrics, traces, and the ability to reproduce the issue. An unattended agent can't SSH into your server, check the connection pool, and correlate the spike with a deploy. The [incident response setup](/blog/claude-code-slack-incident-response-guide) I wrote about works for triage — identifying the likely cause — but the actual fix requires human judgment.
+
+### 4. Architecture Decisions
+
+"Should we use a message queue here or is a direct API call fine?" That depends on your scale, your team's expertise, your SLA requirements, your budget. Claude can present options. It can't make the call. And an unattended agent shouldn't be making architectural changes to your codebase while you sleep.
+
+### 5. Anything Security-Critical
+
+Running an AI agent with write access to your codebase in unattended mode is an [attack surface](/blog/claude-code-security-hardening-enterprise-guide). [Prompt injection](/blog/prompt-injection-attacks-llm-security-guide) in a human-supervised session is manageable — you review the output. Prompt injection in an autonomous overnight routine that can push to branches? That's a security incident waiting to happen.
+
+This is why Routines push to `claude/` prefixed branches by default. The guardrail exists because Anthropic knows unattended agents need constraints.
+
+## The Honest Economics
+
+The influencer posts never mention cost. Let me fill that gap.
+
+My overnight automation costs roughly $1-3 per night. Five routines, each making a handful of API calls, mostly using Sonnet. At that price, the ROI is obvious — the issue triage alone saves me more time than the cost.
+
+But the "37 agents building my SaaS" influencer setup? That's a different story. Running complex generative tasks — feature implementation, code review, testing — across multiple agents burns through tokens fast. A heavy day of autonomous agent work can easily cost $50-100+ in API fees. Whether that's worth it depends entirely on what the agents produce. If they produce reviewed, tested, deployable code — great ROI. If they produce confident-looking code that needs significant rework — you're paying twice.
+
+The developers who get the most value from [AI coding tools](/blog/ai-coding-tools-2026-developer-guide) aren't the ones running the most agents. They're the ones running the right agents on the right tasks.
+
+## What I Actually Run (The Honest Setup)
+
+Here's my real overnight pipeline. No embellishment.
+
+**Three Routines (daily):**
+1. Issue triage — runs at 6 AM, takes ~2 minutes, costs pennies
+2. Stale PR check — runs at 9 AM, takes ~1 minute
+3. CI failure analysis — event-driven, runs when CI fails
+
+**Two Weekly Routines:**
+1. Dependency scan — runs Monday 3 AM
+2. Doc drift detection — runs Wednesday 7 AM
+
+**My morning routine (5 minutes):**
+1. Check issue triage comments — correct any wrong labels
+2. Review any auto-generated PRs — merge or close
+3. Glance at CI analysis comments — if something broke overnight, I have a head start
+
+That's it. No "army of agents." No "AI building my product while I sleep." Five automated tasks that handle the repetitive work I'd otherwise spend 30+ minutes on each morning.
+
+Is it glamorous enough for a LinkedIn post with rocket emojis? No. Does it actually work, reliably, every single day? Yes.
+
+## The Bottom Line
+
+"My AI agents work 24/7" is marketing. The reality is more like "I have smart cron jobs that handle tedious tasks at scheduled intervals." And honestly? That's more valuable than the fantasy.
+
+The developers who succeed with AI automation in 2026 aren't the ones who automate everything. They're the ones who know **what's worth automating:**
+
+- **Automate:** Triage, scanning, nudging, drift detection, analysis
+- **Don't automate:** Feature development, architecture, security decisions, debugging
+
+- **Let agents create:** PRs, comments, issues, reports
+- **Don't let agents:** Merge, deploy, delete, push to main
+
+- **Trust agents for:** Pattern matching, data gathering, formatting, boilerplate
+- **Don't trust agents for:** Business logic, tradeoff decisions, edge case handling
+
+The influencer who claims "37 agents build my startup" is selling a story. The developer who runs 5 quiet routines that save 30 minutes every morning is building a practice.
+
+One makes for better content. The other makes for better software.
+
+## References
+
+### Sources
+- [Fortune: AI Agents Promise to Work While You Sleep. The Reality Is Far Messier](https://fortune.com/2026/02/23/always-on-ai-agents-openclaw-claude-promise-work-while-sleeping-reality-problems-oversight-guardrails/) - Investigative look at the gap between agent hype and production reality
+- [Claude Code Can Now Do Your Job Overnight — The New Stack](https://thenewstack.io/claude-code-can-now-do-your-job-overnight/) - Technical deep-dive into Routines capabilities and limits
+- [METR: Measuring AI Impact on Developer Productivity](https://metr.org/blog/2025-07-10-early-2025-ai-experienced-os-dev-study/) - Controlled study showing the perception-reality gap in AI productivity
+- [How AI Is Transforming Work at Anthropic](https://www.anthropic.com/research/how-ai-is-transforming-work-at-anthropic) - Anthropic's internal data on how their own engineers use Claude Code
+
+### Further Reading
+- [Claude Code Routines: Your AI Agent Works While You Sleep](/blog/claude-code-routines-scheduled-automation-guide) - Complete setup guide for scheduled automation
+- [Claude Code GitHub Actions: Automate PR Reviews](/blog/claude-code-github-actions-pr-automation-guide) - Event-driven automation with GitHub Actions
+- [AI Coding Tools in 2026: An Honest Guide](/blog/ai-coding-tools-2026-developer-guide) - What actually delivers value across the tool landscape
+- [Claude Code Security Hardening for Enterprise](/blog/claude-code-security-hardening-enterprise-guide) - Why unattended agents need security constraints
+
+---
+
+~Seb 👊
