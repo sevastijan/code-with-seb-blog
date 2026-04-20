@@ -1,0 +1,590 @@
+---
+title: 'Claude Code Remote Control & Dispatch: Building Headless Agent Pipelines'
+date: '2026-04-20'
+category: 'AI'
+tags: ['claude-code', 'automation', 'remote-control', 'dispatch', 'multi-agent']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: "Remote Control, Dispatch, and Channels — three mechanisms shipped Q1 2026 that turn Claude Code from a dev tool into a programmable automation backend. Here's how each works, when to use which, and the production patterns that tie them together."
+---
+
+I spent most of February building an internal tool that needed to orchestrate four Claude Code sessions simultaneously — one analyzing a codebase, one writing tests, one reviewing the output, and a supervisor watching all three. The `claude -p` [headless mode](/blog/claude-code-headless-mode-cicd-automation-playbook) got me about 60% of the way there. The last 40% required something that did not exist yet.
+
+Then Q1 2026 happened. Anthropic shipped three mechanisms in rapid succession — Dispatch, Channels, and Remote Control — and the 40% gap closed overnight. These are not incremental features. They are the primitives that turn Claude Code from "a CLI you can script" into "an agent runtime you can program."
+
+Let me walk you through each one, when to pick which, and the production patterns that emerge when you combine them.
+
+## The Three Primitives
+
+Before diving deep, here is the mental model. Think of Claude Code sessions as processes on a machine. You have always been able to start them. Now you can also:
+
+- **Dispatch** — start sessions programmatically with structured inputs, collect structured outputs. Think `child_process.spawn()` but for agents.
+- **Channels** — open a bidirectional stream to a running session. Think WebSocket, but typed.
+- **Remote Control** — attach to a session's lifecycle. Pause it, resume it, intercept tool calls before they execute. Think a debugger's breakpoint system.
+
+Each solves a different problem. Most production systems need all three.
+
+## Dispatch: Fire-and-Forget Agent Execution
+
+Dispatch is the simplest of the three. You call `claude.dispatch()`, pass a prompt and configuration, and get back a handle. The session runs asynchronously. You collect results when it finishes.
+
+```typescript
+import { dispatch } from '@anthropic-ai/claude-code';
+
+const handle = await dispatch({
+  prompt: 'Analyze src/api/ for N+1 query patterns and suggest fixes',
+  workdir: '/home/app/backend',
+  model: 'sonnet',
+  allowedTools: ['Read', 'Grep', 'Glob'],
+  maxTokens: 50_000,
+  timeout: 120_000,
+});
+
+// Non-blocking — do other work while Claude runs
+const result = await handle.result();
+console.log(result.output);    // Claude's final response
+console.log(result.tokenUsage); // { input: 12400, output: 3200 }
+```
+
+The key difference from `claude -p` is structure. Dispatch gives you typed inputs, typed outputs, error handling that is not "parse stderr," and the ability to run many sessions in parallel without shell gymnastics.
+
+### Batch Automation with Dispatch
+
+Where Dispatch shines is batch work. Say you want to run a security audit across every microservice in a monorepo:
+
+```typescript
+import { dispatch } from '@anthropic-ai/claude-code';
+import { readdir } from 'fs/promises';
+
+const services = await readdir('/home/app/services', {
+  withFileTypes: true,
+});
+
+const handles = await Promise.all(
+  services
+    .filter((d) => d.isDirectory())
+    .map((service) =>
+      dispatch({
+        prompt: `Audit this service for:
+          1. SQL injection vectors
+          2. Unvalidated user input reaching shell commands
+          3. Hardcoded secrets
+          Output a JSON array of findings with file, line, severity, description.`,
+        workdir: `/home/app/services/${service.name}`,
+        model: 'sonnet',
+        allowedTools: ['Read', 'Grep', 'Glob'],
+        outputFormat: 'json',
+        maxTokens: 30_000,
+      })
+    )
+);
+
+const results = await Promise.all(handles.map((h) => h.result()));
+const allFindings = results.flatMap((r) => JSON.parse(r.output));
+console.log(`Found ${allFindings.length} issues across ${services.length} services`);
+```
+
+Twelve services, twelve parallel sessions, one aggregated report. Each session gets its own context window, its own token budget, its own tool whitelist. If one service takes longer, the others do not wait.
+
+This is the pattern I use for [CI/CD automation triggered from GitHub Actions](/blog/claude-code-github-actions-pr-automation-guide). A webhook fires, a dispatcher fans out work, results get aggregated and posted back as a PR comment.
+
+### Event-Driven Pipelines
+
+Dispatch also slots naturally into event-driven architectures. Wrap it in a queue consumer and you have an agent that reacts to events:
+
+```typescript
+import { dispatch } from '@anthropic-ai/claude-code';
+import { consume } from './queue'; // Your message queue client
+
+consume('code-review-requests', async (event) => {
+  const handle = await dispatch({
+    prompt: `Review the changes in commit ${event.commitSha}.
+             Focus on breaking API changes and missing tests.
+             Respond in JSON: { approved: boolean, comments: Comment[] }`,
+    workdir: event.repoPath,
+    model: 'sonnet',
+    allowedTools: ['Read', 'Grep', 'Glob', 'Bash(git diff)'],
+    outputFormat: 'json',
+    maxTokens: 40_000,
+    timeout: 180_000,
+  });
+
+  const review = await handle.result();
+  await postReview(event.prNumber, JSON.parse(review.output));
+});
+```
+
+The event source does not matter — GitHub webhooks, Kafka, SQS, a cron job. Dispatch normalizes the interface. Your agent logic stays the same regardless of what triggers it.
+
+## Channels: Bidirectional Streaming
+
+Dispatch is great for "run and collect." But what if you need to see what is happening while it happens? What if you need to send information into a running session?
+
+Channels open a typed, bidirectional stream between your code and a Claude Code session.
+
+```typescript
+import { createSession } from '@anthropic-ai/claude-code';
+
+const session = await createSession({
+  workdir: '/home/app/backend',
+  model: 'opus',
+  allowedTools: ['Read', 'Edit', 'Bash(npm test)', 'Grep', 'Glob'],
+});
+
+const channel = session.openChannel();
+
+// Stream events as they happen
+channel.on('thinking', (thought) => {
+  dashboard.updateStatus(session.id, thought.summary);
+});
+
+channel.on('toolCall', (call) => {
+  metrics.trackToolUsage(call.tool, call.duration);
+  logger.info(`[${session.id}] ${call.tool}: ${call.input.substring(0, 100)}`);
+});
+
+channel.on('output', (chunk) => {
+  websocket.broadcast('agent-output', { sessionId: session.id, text: chunk });
+});
+
+// Send a prompt through the channel
+await channel.send({
+  type: 'prompt',
+  content: 'Refactor the auth middleware to use JWT verification with RS256',
+});
+
+// Wait for completion
+const result = await channel.waitForIdle();
+```
+
+### Real-Time Monitoring Dashboard
+
+The immediate use case is observability. Every production agent system needs a dashboard, and Channels give you the data stream for free:
+
+```typescript
+import { createSession } from '@anthropic-ai/claude-code';
+import { WebSocketServer } from 'ws';
+
+const wss = new WebSocketServer({ port: 8080 });
+
+async function runMonitoredTask(prompt: string, workdir: string) {
+  const session = await createSession({ workdir, model: 'sonnet' });
+  const channel = session.openChannel();
+
+  const telemetry = {
+    sessionId: session.id,
+    startedAt: Date.now(),
+    tokensUsed: 0,
+    toolCalls: [] as string[],
+    status: 'running',
+  };
+
+  channel.on('tokenUsage', (usage) => {
+    telemetry.tokensUsed += usage.total;
+    broadcast(wss, { type: 'telemetry', data: telemetry });
+  });
+
+  channel.on('toolCall', (call) => {
+    telemetry.toolCalls.push(call.tool);
+    broadcast(wss, { type: 'toolCall', data: call });
+  });
+
+  channel.on('error', (err) => {
+    telemetry.status = 'error';
+    broadcast(wss, { type: 'error', data: { sessionId: session.id, error: err.message } });
+  });
+
+  await channel.send({ type: 'prompt', content: prompt });
+  const result = await channel.waitForIdle();
+
+  telemetry.status = 'complete';
+  broadcast(wss, { type: 'complete', data: telemetry });
+
+  return result;
+}
+```
+
+This is significantly better than parsing `--output-format stream-json` from stdout. Channels give you typed events, backpressure handling, and the ability to send data back into the session — something stdout pipes fundamentally cannot do.
+
+### Feeding Context Mid-Session
+
+The bidirectional part of Channels is what makes them genuinely new. You can inject context into a running session:
+
+```typescript
+channel.on('toolCall', async (call) => {
+  if (call.tool === 'WebFetch' && call.input.includes('api.internal')) {
+    // Intercept internal API calls and provide cached responses
+    await channel.send({
+      type: 'context',
+      content: `Here is the cached response for ${call.input}: ${cachedResponses[call.input]}`,
+    });
+  }
+});
+```
+
+I use this pattern to feed database schema information, API documentation, and test results into sessions that would otherwise waste tokens fetching them.
+
+## Remote Control: Session Lifecycle Management
+
+Remote Control is the most powerful and the most dangerous of the three. It gives you programmatic control over a session's execution — pause, resume, inspect, and intercept.
+
+```typescript
+import { createSession, attachRemote } from '@anthropic-ai/claude-code';
+
+const session = await createSession({
+  workdir: '/home/app/backend',
+  model: 'opus',
+});
+
+const remote = attachRemote(session);
+
+// Pause before any file edit
+remote.intercept('toolCall', async (call, control) => {
+  if (call.tool === 'Edit' || call.tool === 'Write') {
+    control.pause();
+
+    // Send to human for approval
+    const approved = await requestHumanApproval({
+      sessionId: session.id,
+      tool: call.tool,
+      file: call.input.filePath,
+      diff: call.input.diff,
+    });
+
+    if (approved) {
+      control.resume();
+    } else {
+      control.skip('Human reviewer rejected this edit');
+    }
+  }
+});
+
+await remote.send('Migrate the database schema from v2 to v3');
+```
+
+### Human-in-the-Loop Oversight
+
+This is the killer pattern for Remote Control. You let Claude do the thinking and the proposing, but a human approves every destructive action:
+
+```typescript
+const remote = attachRemote(session);
+
+// Define what needs human approval
+const SENSITIVE_PATTERNS = [
+  { tool: 'Edit', pathMatch: /\.(env|config|secret)/ },
+  { tool: 'Bash', commandMatch: /(rm|delete|drop|truncate|push)/ },
+  { tool: 'Write', pathMatch: /migration/ },
+];
+
+remote.intercept('toolCall', async (call, control) => {
+  const isSensitive = SENSITIVE_PATTERNS.some(
+    (p) =>
+      p.tool === call.tool &&
+      ((p.pathMatch && p.pathMatch.test(call.input.filePath || '')) ||
+        (p.commandMatch && p.commandMatch.test(call.input.command || '')))
+  );
+
+  if (isSensitive) {
+    control.pause();
+    const decision = await slackApproval(call);
+
+    switch (decision) {
+      case 'approve':
+        control.resume();
+        break;
+      case 'reject':
+        control.skip('Rejected by ops team');
+        break;
+      case 'abort':
+        control.abort('Session terminated by ops team');
+        break;
+    }
+  }
+});
+```
+
+The difference between this and `--allowedTools` is granularity. `--allowedTools` is binary: the tool is allowed or it is not. Remote Control intercept lets you allow a tool in general but gate specific invocations based on arguments, context, or external policy. You can allow `Bash` but block `Bash(rm -rf /)`. You can allow `Edit` but require approval for edits to `*.migration.*` files.
+
+### Session Checkpointing
+
+Remote Control also enables checkpointing — saving a session's state so you can resume later:
+
+```typescript
+const remote = attachRemote(session);
+
+// Checkpoint every 5 minutes
+const checkpointInterval = setInterval(async () => {
+  const state = await remote.checkpoint();
+  await saveToRedis(`session:${session.id}`, state);
+}, 5 * 60 * 1000);
+
+// Resume from checkpoint after a crash
+const savedState = await loadFromRedis(`session:${session.id}`);
+if (savedState) {
+  const resumed = await createSession({
+    workdir: '/home/app/backend',
+    restore: savedState,
+  });
+  const remote = attachRemote(resumed);
+  await remote.send('Continue where you left off');
+}
+```
+
+This is critical for long-running agent tasks. If a session runs for 20 minutes and your server restarts, without checkpointing you lose everything. With it, you lose five minutes at most.
+
+## The Decision Framework
+
+When should you use which mechanism? Here is how I think about it:
+
+| Scenario | Mechanism | Why |
+|---|---|---|
+| Batch processing (lint 50 files) | Dispatch | Fire-and-forget, collect results |
+| CI/CD pipeline step | Dispatch | Structured input/output, timeout control |
+| Live dashboard / monitoring | Channels | Streaming events, real-time telemetry |
+| Feeding context mid-task | Channels | Bidirectional communication |
+| Human approval gates | Remote Control | Pause/resume, tool interception |
+| Long-running migration | Remote Control | Checkpointing, lifecycle management |
+| Agent teams | All three | Dispatch spawns, Channels monitor, Remote intervenes |
+
+The simple heuristic: if you need the result, use Dispatch. If you need the stream, use Channels. If you need control, use Remote Control.
+
+## The Production Pattern: All Three Together
+
+In practice, mature agent systems combine all three. Here is the architecture I run for automated codebase maintenance:
+
+```typescript
+import { dispatch, createSession, attachRemote } from '@anthropic-ai/claude-code';
+
+async function weeklyMaintenance(repos: string[]) {
+  // DISPATCH: Fan out analysis across repos
+  const analysisHandles = repos.map((repo) =>
+    dispatch({
+      prompt: 'Analyze for dependency vulnerabilities, dead code, and type errors. Output JSON.',
+      workdir: repo,
+      model: 'sonnet',
+      allowedTools: ['Read', 'Grep', 'Glob', 'Bash(npm audit)'],
+      outputFormat: 'json',
+      maxTokens: 30_000,
+    })
+  );
+
+  const analyses = await Promise.all(analysisHandles.map((h) => h.result()));
+  const issues = analyses.flatMap((a) => JSON.parse(a.output));
+
+  // CHANNELS + REMOTE CONTROL: Fix issues with oversight
+  for (const issue of issues.filter((i) => i.severity === 'high')) {
+    const session = await createSession({
+      workdir: issue.repoPath,
+      model: 'opus',
+      allowedTools: ['Read', 'Edit', 'Bash(npm test)', 'Grep', 'Glob'],
+    });
+
+    const channel = session.openChannel();
+    const remote = attachRemote(session);
+
+    // CHANNELS: Stream progress to monitoring
+    channel.on('toolCall', (call) => {
+      datadog.increment('agent.tool_calls', { tool: call.tool });
+    });
+
+    channel.on('tokenUsage', (usage) => {
+      datadog.gauge('agent.tokens', usage.total, { session: session.id });
+    });
+
+    // REMOTE CONTROL: Gate destructive operations
+    remote.intercept('toolCall', async (call, control) => {
+      if (call.tool === 'Edit') {
+        const approved = await pagerdutyApproval(call, issue);
+        approved ? control.resume() : control.skip('Rejected');
+      }
+    });
+
+    await channel.send({
+      type: 'prompt',
+      content: `Fix this issue: ${JSON.stringify(issue)}. Run tests after fixing.`,
+    });
+
+    await channel.waitForIdle();
+  }
+}
+```
+
+Dispatch fans out the read-only analysis. Channels stream telemetry to Datadog. Remote Control gates every edit behind human approval. Three primitives, one coherent system.
+
+This is also how I structure the [scheduled automation routines](/blog/claude-code-routines-scheduled-automation-guide) that run weekly across our codebases.
+
+## Agent Teams: Coordinating Multiple Instances
+
+The combination of Dispatch and Channels makes [multi-agent coordination](/blog/claude-code-sub-agents-multi-agent-systems-guide) significantly cleaner than the subprocess-based approaches from early 2026.
+
+```typescript
+async function agentTeam(task: string, workdir: string) {
+  // Supervisor session with Remote Control
+  const supervisor = await createSession({
+    workdir,
+    model: 'opus',
+    allowedTools: ['Read', 'Grep', 'Glob'],
+  });
+  const supervisorChannel = supervisor.openChannel();
+
+  // Worker pool via Dispatch
+  const workers = {
+    researcher: await dispatch({
+      prompt: `Research the codebase for context on: ${task}. Output a summary.`,
+      workdir,
+      model: 'sonnet',
+      allowedTools: ['Read', 'Grep', 'Glob'],
+    }),
+    planner: await dispatch({
+      prompt: `Create an implementation plan for: ${task}. Output step-by-step JSON.`,
+      workdir,
+      model: 'sonnet',
+      allowedTools: ['Read', 'Grep', 'Glob'],
+    }),
+  };
+
+  // Collect worker results
+  const [research, plan] = await Promise.all([
+    workers.researcher.result(),
+    workers.planner.result(),
+  ]);
+
+  // Feed worker results into supervisor
+  await supervisorChannel.send({
+    type: 'prompt',
+    content: `Based on this research:\n${research.output}\n\nAnd this plan:\n${plan.output}\n\nImplement the changes for: ${task}`,
+  });
+
+  // Dispatch implementation workers based on supervisor's plan
+  const supervisorResult = await supervisorChannel.waitForIdle();
+  return supervisorResult;
+}
+```
+
+The pattern is: Dispatch workers for parallel research, aggregate into a supervisor via Channels, and use Remote Control if the supervisor needs human checkpoints. This is the orchestrator-worker pattern from Anthropic's research, but built with first-class primitives instead of shell scripts.
+
+## Integration with CI/CD and External Systems
+
+Dispatch slots directly into any CI/CD system that can run Node.js. Here is a GitHub Actions example:
+
+```yaml
+name: Agent Pipeline
+on:
+  schedule:
+    - cron: '0 6 * * 1' # Monday 6 AM
+
+jobs:
+  maintenance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Run agent pipeline
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: npx tsx scripts/weekly-maintenance.ts
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-report
+          path: reports/
+```
+
+The `weekly-maintenance.ts` script uses Dispatch internally. GitHub Actions does not know or care that agents are involved — it is just a Node script that exits 0 or 1. This composability is the point.
+
+For Slack integration, Channels are the natural fit:
+
+```typescript
+import { App } from '@slack/bolt';
+import { dispatch } from '@anthropic-ai/claude-code';
+
+const app = new App({ token: process.env.SLACK_TOKEN, signingSecret: process.env.SLACK_SECRET });
+
+app.command('/agent', async ({ command, ack, respond }) => {
+  await ack();
+  await respond('Starting agent task...');
+
+  const handle = await dispatch({
+    prompt: command.text,
+    workdir: '/home/app',
+    model: 'sonnet',
+    maxTokens: 20_000,
+  });
+
+  const result = await handle.result();
+  await respond(`Done!\n\`\`\`\n${result.output}\n\`\`\``);
+});
+```
+
+## Cost and Security Considerations
+
+### Cost
+
+The biggest cost risk with these primitives is parallelism. Dispatch makes it trivially easy to spawn 50 concurrent sessions. Each session consumes tokens independently. Without caps, a single batch job can burn through hundreds of dollars.
+
+Mitigations I enforce on every project:
+
+1. **Per-session token caps.** Always set `maxTokens`. I default to 30,000 for analysis tasks, 80,000 for implementation tasks.
+2. **Concurrency limits.** Never dispatch more sessions than you can afford to max out simultaneously. I use a semaphore:
+
+```typescript
+import pLimit from 'p-limit';
+
+const limit = pLimit(5); // Max 5 concurrent sessions
+
+const handles = repos.map((repo) =>
+  limit(() =>
+    dispatch({
+      prompt: '...',
+      workdir: repo,
+      maxTokens: 30_000,
+    })
+  )
+);
+```
+
+3. **Model routing.** Use Sonnet for analysis, Opus only when you need deep reasoning. The cost difference is roughly 5x.
+4. **Kill switches.** Remote Control's `control.abort()` is your circuit breaker. If token usage exceeds a threshold, abort the session.
+
+### Security
+
+Remote Control introduces a new attack surface: whoever controls the Remote Control endpoint controls what Claude can do. Treat it like SSH access.
+
+1. **Authenticate Remote Control connections.** Never expose the Remote Control API without auth. Use mTLS or API keys at minimum.
+2. **Restrict tool access per session.** Each Dispatch call should get the minimum tools it needs. Analysis gets `Read, Grep, Glob`. Implementation gets `Read, Edit`. Shell access is the exception, not the default.
+3. **Audit everything.** Channels give you a complete stream of every action. Pipe it to immutable storage. When something goes wrong — and it will — you need the full replay.
+4. **Network isolation.** Run agent sessions in containers with restricted network egress. Claude does not need access to your production database to review code.
+
+## What This Changes
+
+Before Q1 2026, building agent pipelines with Claude Code meant shelling out to `claude -p`, parsing stdout, and hoping the exit code told you something useful. It worked, but it was fragile in the way all shell-script automation is fragile.
+
+Dispatch, Channels, and Remote Control replace that with typed, structured, observable primitives. The shift is not incremental. It is the difference between calling an API by `curl`-ing it in a bash script and using an SDK.
+
+If you are running Claude Code in production today — whether for [CI/CD automation](/blog/claude-code-github-actions-pr-automation-guide), [scheduled maintenance](/blog/claude-code-routines-scheduled-automation-guide), or [multi-agent systems](/blog/claude-code-sub-agents-multi-agent-systems-guide) — these three primitives are now the foundation. Learn them. The shell script era of agent automation is over.
+
+## References
+
+### Sources
+
+- [Claude Code SDK Documentation](https://docs.anthropic.com/en/docs/claude-code/sdk) — official SDK reference for Dispatch, Channels, and Remote Control APIs
+- [Claude Code CLI Reference](https://docs.anthropic.com/en/docs/claude-code/cli) — flags, output formats, and headless mode documentation
+- [Building Effective Agents — Anthropic Research](https://www.anthropic.com/engineering/building-effective-agents) — orchestrator-worker patterns and multi-agent design
+- [Claude Code GitHub Action](https://github.com/anthropics/claude-code-action) — official Action with Dispatch integration examples
+
+### Further Reading
+
+- [Claude Code Best Practices](https://docs.anthropic.com/en/docs/claude-code/best-practices) — prompt engineering and tool configuration for agent pipelines
+- [Multi-Agent Systems with Claude](https://docs.anthropic.com/en/docs/claude-code/sub-agents) — official sub-agent architecture guide
+- [Claude Code Hooks Documentation](https://docs.anthropic.com/en/docs/claude-code/hooks) — event-driven hooks for custom agent behavior
+- [Agent Protocol Specification](https://agentprotocol.ai/) — emerging standard for agent-to-agent communication
+
+---
+
+~Seb 👊

@@ -1,0 +1,319 @@
+---
+title: "Building a Full-Stack App with Claude Code in One Day: The Complete Vibe Coding Playbook"
+date: '2026-04-20'
+category: 'AI'
+tags: ['claude-code', 'vibe-coding', 'full-stack', 'nextjs', 'productivity']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: "Vibe coding matured from meme to methodology. But the 70% problem is real — AI gets you to a working prototype fast, then the last 30% requires real engineering. Here's the playbook for building a complete full-stack app in one day without cutting corners that bite you later."
+---
+
+Last month I built a SaaS dashboard — auth, team management, Stripe billing, data visualization — in a single day. Not a throwaway prototype. A production app that's handling real users right now.
+
+Two years ago, that sentence would have been a lie. Today, it's Tuesday.
+
+But here's what nobody tells you about one-day builds: the first 70% takes four hours. The last 30% takes the rest of the day. And if you skip that last 30%, you ship a demo, not a product. I learned this the hard way when a "finished" prototype I shipped at 2pm had an open API endpoint that let any authenticated user read any other user's data. That was a fun Slack message to wake up to.
+
+Vibe coding isn't about letting AI write everything. It's about knowing when to ride the wave and when to grab the steering wheel.
+
+## What Vibe Coding Actually Means in 2026
+
+When Andrej Karpathy coined "vibe coding" in early 2024, it was half-joke, half-prophecy. The idea was simple: describe what you want in natural language, let AI generate the code, and just... vibe with it. Accept suggestions, keep things moving, don't overthink.
+
+Two years later, vibe coding has matured from a meme into a legitimate methodology. But it looks nothing like the original tweet implied. Nobody serious is blindly accepting AI output and pushing to production. What actually happened is that developers built workflows *around* AI generation that combine the speed of vibe coding with the rigor of traditional engineering.
+
+Here's my working definition for 2026: **vibe coding is an AI-first development workflow where you describe intent at the highest useful abstraction level, let AI handle implementation details, and focus your engineering energy on architecture, security, and edge cases.**
+
+The key phrase is "highest useful abstraction level." Sometimes that's "build me a CRUD API for users." Sometimes that's "add a `createdAt` field to this Prisma model." The skill isn't in writing prompts — it's in knowing what level of abstraction to operate at for each task.
+
+## The 70% Problem
+
+Every developer who's built something non-trivial with AI has hit this wall. I call it the 70% problem, and understanding it is the difference between shipping and struggling.
+
+Here's the pattern: You start a project. You describe your architecture. AI generates scaffolding, routes, components, database schemas. Within a few hours, you have a working prototype. It looks great. It handles the happy path beautifully. You feel like a god.
+
+Then you try to log in with a Google account that has a `+` in the email. Or you submit a form with emoji in the name field. Or you hit the back button after a payment. And things start breaking in ways that are specifically hard for AI to anticipate, because these edge cases require understanding your users, your business logic, and the specific ways your stack handles state.
+
+The 70% is what AI builds for you: the structure, the happy paths, the boilerplate, the UI components, the standard patterns. This part used to take weeks. Now it takes hours.
+
+The 30% is what you engineer: security hardening, error boundaries, edge case handling, performance optimization, proper testing, accessibility. This part still takes exactly as long as it should — because these are the parts that require judgment, not just code.
+
+The [AI-accelerated MVP approach](/blog/ai-accelerated-mvp-ship-production-apps-fast) only works when you respect this split. Developers who treat AI as a replacement for engineering ship broken products. Developers who treat AI as a multiplier for engineering ship fast *and* solid.
+
+## The One-Day Playbook
+
+Let me walk you through the exact workflow I use to build full-stack apps in a single day. I'll use a real example: a SaaS dashboard with user authentication, team workspaces, an analytics view, and Stripe subscription management.
+
+### Morning (7:00 AM – 10:00 AM): Architecture First, Code Second
+
+The most important hours of the day are the ones where you write the least code.
+
+I start every project in [Plan Mode](/blog/claude-code-plan-mode-ultraplan-production-guide). Before Claude Code writes a single line of implementation, I want a complete architectural blueprint. This is non-negotiable. Skipping this step is how you end up with an AI-generated mess that works individually but collapses when you try to connect the pieces.
+
+Here's my actual Plan Mode prompt for the dashboard project:
+
+```
+I'm building a SaaS analytics dashboard with Next.js 15, TypeScript,
+Prisma, and Stripe. Plan the complete architecture:
+
+1. Data models: User, Team, TeamMember, Subscription, AnalyticsEvent
+2. Auth: NextAuth with Google and GitHub providers, team-based RBAC
+3. API layer: Server Actions for mutations, API routes for webhooks
+4. Pages: Login, Dashboard, Team Settings, Billing, Analytics
+5. Key decisions: Why server actions vs API routes for each operation
+
+Don't write code yet. Give me the full architectural plan with
+file structure, data flow, and decision rationale.
+```
+
+Plan Mode responds with a complete blueprint: file structure, data model relationships, auth flow, API boundaries. I spend 30–45 minutes reviewing this plan, pushing back on decisions I disagree with, and refining until I have something solid.
+
+This is where I make the big decisions:
+- **Data model relationships** — getting these wrong means refactoring everything later
+- **Auth boundaries** — who can access what, enforced at which layer
+- **State management** — what lives on the server vs. the client
+- **API design** — which operations are server actions, which are API routes, which are webhooks
+
+By 8:30 AM, I have a plan I trust. Now I scaffold:
+
+```bash
+npx create-next-app@latest saas-dashboard --typescript --tailwind --app --src-dir
+cd saas-dashboard
+npm install prisma @prisma/client next-auth @auth/prisma-adapter stripe
+npx prisma init
+```
+
+Then I hand Claude Code my Prisma schema based on the plan and let it generate the initial models. I review every relationship, every index, every default value. The schema is the foundation — get it right now or pay for it all day.
+
+By 10:00 AM, I have: a solid architectural plan, a scaffolded project, a complete database schema, and auth configured and tested with a manual login flow. Zero UI beyond the Next.js default page. That's intentional.
+
+### Midday (10:00 AM – 2:00 PM): Agent Mode Builds the 70%
+
+This is where vibe coding earns its name. With the architecture locked down, I switch Claude Code into agent mode and start building fast.
+
+The key insight is **sequential feature building with immediate verification**. I don't ask Claude Code to build the entire app at once. I build one feature at a time, verify it works, then move to the next. Each prompt builds on the working state of the previous one.
+
+```
+Build the team management feature:
+1. Server actions: createTeam, inviteTeamMember, removeTeamMember, updateTeamRole
+2. Team settings page with member list and invite form
+3. Team switcher component in the sidebar
+4. RBAC middleware: check team membership before accessing team resources
+
+Use the Prisma schema we already have. All mutations through server actions.
+Follow the existing patterns from the auth setup.
+```
+
+Claude Code generates the implementation. I use the desktop preview pane to verify the UI in real-time — I can see the team settings page rendering as Claude writes the components. When something looks off visually or structurally, I correct course immediately instead of discovering issues three features later.
+
+Here's the midday build sequence for the dashboard:
+
+| Time | Feature | Verification |
+|------|---------|-------------|
+| 10:00 | Team CRUD + settings page | Manual test: create team, invite member |
+| 10:45 | Dashboard layout + navigation | Visual check: responsive sidebar, team switcher |
+| 11:30 | Analytics data layer + charts | Seed data, verify chart renders |
+| 12:15 | Stripe integration + billing page | Test mode webhook, verify subscription flow |
+| 1:00 | Search, filters, data export | Manual test with realistic data set |
+| 1:45 | Email notifications (Resend) | Send test emails, check formatting |
+
+Each feature takes about 45 minutes: 15 minutes of prompting and generation, 15 minutes of reviewing the output, and 15 minutes of manual testing and minor adjustments.
+
+By 2:00 PM, I have a working app. Every feature functions on the happy path. The UI is clean. The data flows correctly. I could demo this to a client and they'd be impressed.
+
+But I would never ship it. Not yet.
+
+### Afternoon (2:00 PM – 6:00 PM): Engineering the Critical 30%
+
+This is where most vibe coding tutorials end and where most production incidents begin. The afternoon is about turning a prototype into a product.
+
+**Security Review (2:00 – 3:00 PM)**
+
+I start with a systematic [security audit](/blog/vibe-coding-security-audit-checklist). AI-generated code has predictable security gaps, and you need to check for every single one:
+
+- **Authorization checks**: Does every server action verify that the requesting user has permission? AI loves generating server actions that check authentication but skip authorization. The action confirms you're logged in but doesn't check whether you should access *this specific resource*.
+- **Input validation**: Is every user input validated with [Zod schemas](/blog/zod-typescript-validation-complete-guide) before hitting the database? AI often generates validations that look right but miss edge cases — like allowing negative numbers for quantity fields or accepting strings that are technically valid but semantically meaningless.
+- **SQL injection / Prisma safety**: Even with Prisma, it's possible to introduce raw queries that are vulnerable. I grep for every `$queryRaw` and `$executeRaw` in the codebase.
+- **API route protection**: Every API route needs auth middleware. I check that webhook endpoints validate signatures and that public endpoints are intentionally public.
+- **Environment variables**: No secrets in client-side code. No API keys in committed files.
+
+You also need to consider [prompt injection risks](/blog/prompt-injection-attacks-llm-security-guide) if your app processes any user-generated content through LLMs. AI-generated apps that include AI features create a nested risk that's easy to overlook.
+
+**Error Handling (3:00 – 4:00 PM)**
+
+AI generates optimistic code. It assumes API calls succeed, database writes work, and users provide valid input. Real apps need to handle reality:
+
+```tsx
+// What AI generates
+async function createTeam(name: string) {
+  const team = await prisma.team.create({ data: { name } });
+  return team;
+}
+
+// What production needs
+async function createTeam(name: string) {
+  const session = await auth();
+  if (!session?.user?.id) {
+    throw new AuthenticationError("Must be logged in to create a team");
+  }
+
+  const parsed = createTeamSchema.safeParse({ name });
+  if (!parsed.success) {
+    throw new ValidationError(parsed.error.flatten());
+  }
+
+  const existingTeams = await prisma.team.count({
+    where: { ownerId: session.user.id },
+  });
+  if (existingTeams >= TEAM_LIMIT) {
+    throw new LimitError("Maximum team limit reached");
+  }
+
+  try {
+    const team = await prisma.team.create({
+      data: {
+        name: parsed.data.name,
+        ownerId: session.user.id,
+        members: {
+          create: { userId: session.user.id, role: "OWNER" },
+        },
+      },
+    });
+    revalidatePath("/dashboard");
+    return { success: true, team };
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      if (error.code === "P2002") {
+        throw new ConflictError("A team with this name already exists");
+      }
+    }
+    throw new InternalError("Failed to create team");
+  }
+}
+```
+
+This is the code AI won't write unprompted. Auth checks, input validation, business logic limits, specific error handling for database constraints, path revalidation. Every server action needs this treatment.
+
+I add React Error Boundaries around every major UI section. I add loading states and skeleton screens. I add toast notifications for success and error states. These are the things users notice when they're missing.
+
+**Testing (4:00 – 5:00 PM)**
+
+I don't test everything. I test the things that would be embarrassing if they broke:
+
+- Auth flows: login, logout, session expiry, role changes
+- Payment flows: subscription create, update, cancel, webhook handling
+- Data boundaries: can user A see user B's data? (The answer should always be no.)
+- Form validation: empty inputs, extremely long inputs, special characters, injection attempts
+
+I let Claude Code generate the test boilerplate — that's prime vibe coding territory. But I write the assertions myself, because AI doesn't know which business rules matter most.
+
+**Accessibility and Polish (5:00 – 6:00 PM)**
+
+Quick pass through the entire app with keyboard navigation. Check that every interactive element has proper ARIA labels. Run Lighthouse. Fix the obvious issues. This doesn't need to be perfect for launch, but it needs to not be broken.
+
+### Evening (6:00 PM – 8:00 PM): Ship It
+
+Deployment should be boring. If your deploy process is exciting, something is wrong.
+
+```bash
+# Final build verification
+npm run build
+npm run lint
+npx tsc --noEmit
+
+# Environment variables on Vercel
+vercel env pull .env.local  # verify
+vercel --prod
+
+# Post-deploy verification
+# - Load the production URL
+# - Complete a full auth flow
+# - Create a team, invite a member
+# - Process a test payment
+# - Check that analytics events are recording
+```
+
+I spend 30 minutes running through every critical user flow on the production URL. Not staging. Production. With real Stripe test mode. With real email delivery. Because the gap between "works locally" and "works in production" is where apps go to die.
+
+## The Decision Framework: Vibe Code vs. Hand-Code
+
+After building dozens of apps this way, I've developed a clear framework for what to delegate to AI and what to write myself:
+
+**Vibe code (let AI generate):**
+- CRUD operations and data access layers
+- UI components and layouts
+- Form markup and basic client-side validation
+- Database schemas and migrations
+- Test boilerplate and fixture data
+- Configuration files and project setup
+- CSS and styling
+
+**Hand-code (write yourself or review line by line):**
+- Authentication and authorization logic
+- Payment processing and webhook handlers
+- Data access policies (who can read/write what)
+- Business logic with financial implications
+- Error handling for critical paths
+- Security middleware and input sanitization
+- Database indexes and query optimization
+
+The rule of thumb: if a bug in this code would lose money, leak data, or break trust, you write it yourself. Everything else is fair game for AI generation.
+
+## Common Mistakes That Kill One-Day Builds
+
+I've made all of these. Learn from my pain:
+
+**Skipping TypeScript strictness.** AI-generated code compiles under loose TypeScript settings but breaks under strict mode. Always use `strict: true` in your `tsconfig.json`. The type errors AI introduces are exactly the bugs you want to catch early.
+
+**No error boundaries.** A single unhandled exception in a React component crashes the entire page. AI rarely generates error boundaries unprompted. Add them around every feature boundary.
+
+**Trusting AI-generated auth.** I've seen Claude Code generate authentication middleware that checks for a valid session but doesn't verify the session belongs to a user who should access the requested resource. Auth is never a vibe coding task.
+
+**Not seeding realistic data.** AI-generated apps look great with three items in a list. They fall apart with 10,000. Always test with realistic data volumes before shipping.
+
+**Ignoring the build output.** Warnings are future bugs. If your build produces warnings, fix them before deploying. TypeScript warnings about unused variables are fine. Warnings about missing keys in lists or hydration mismatches are not.
+
+## The Morning-After Checklist
+
+Ship in the evening. Review the next morning. Here's my standing checklist for the day after a one-day build:
+
+- [ ] **Error monitoring**: Check Sentry or your error tracking tool. Any unhandled exceptions?
+- [ ] **Performance**: Run Lighthouse on key pages. Any scores below 80?
+- [ ] **Auth audit**: Try to access resources you shouldn't be able to. Test with expired sessions.
+- [ ] **Data integrity**: Run a few database queries. Are relationships consistent? Any orphaned records?
+- [ ] **Mobile testing**: Load every page on a real phone. Not just responsive mode — an actual device.
+- [ ] **Payment verification**: If you have Stripe, check the dashboard. Are webhooks succeeding? Any failed events?
+- [ ] **Dependency audit**: Run `npm audit`. Fix critical vulnerabilities.
+- [ ] **Backup**: Verify your database backup is configured and has a recent snapshot.
+
+This checklist has saved me from at least three production incidents. The morning-after perspective catches things that evening-brain missed.
+
+## The Bigger Picture
+
+One-day builds aren't about speed for speed's sake. They're about compressing the feedback loop between idea and reality. When you can go from concept to production in a day, you test ideas faster. You learn what users actually want instead of what you think they want. You fail cheaply instead of expensively.
+
+But speed without quality is just faster failure. The playbook works because it front-loads architecture, leverages AI for the mechanical 70%, and applies engineering discipline to the critical 30%. Skip any of those three parts and you get a demo, not a product.
+
+The best vibe coders I know aren't the ones who write the fanciest prompts. They're the ones who know exactly when to stop vibing and start engineering.
+
+That's the real playbook.
+
+## References
+
+### Sources
+- [Andrej Karpathy on Vibe Coding](https://x.com/karpathy/status/1886192184808149383) — the original tweet that started it all
+- [Claude Code Documentation](https://docs.anthropic.com/en/docs/claude-code) — official guide for Plan Mode and agent workflows
+- [Next.js 15 Documentation](https://nextjs.org/docs) — App Router, Server Actions, and deployment
+- [Prisma Documentation](https://www.prisma.io/docs) — type-safe database access and schema design
+- [Stripe Integration Guide](https://docs.stripe.com/payments) — payment processing and webhook handling
+
+### Further Reading
+- [The 70% Problem with LLM-Assisted Coding](https://addyo.substack.com/p/the-70-problem-hard-truths-about) — why AI gets you most of the way but not all the way
+- [OWASP Top 10 for LLM Applications](https://owasp.org/www-project-top-10-for-large-language-model-applications/) — security risks in AI-generated code
+- [Vercel Deployment Best Practices](https://vercel.com/docs/deployments/overview) — production deployment and monitoring
+- [React Error Boundaries](https://react.dev/reference/react/Component#catching-rendering-errors-with-an-error-boundary) — handling component-level failures gracefully
+
+---
+
+~Seb 👊

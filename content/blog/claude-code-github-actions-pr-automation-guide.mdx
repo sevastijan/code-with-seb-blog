@@ -1,0 +1,306 @@
+---
+title: 'Claude Code GitHub Actions: Automate PR Reviews, Issue Triage, and Code Fixes'
+date: '2026-04-20'
+category: 'AI'
+tags: ['claude-code', 'github-actions', 'ci-cd', 'code-review', 'automation']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: "The official claude-code-action costs $0.04 per PR review. At 20 PRs/day that's $24/month — less than one hour of developer time. Here's the complete setup: PR reviews, security scanning, issue triage, and the cost controls that prevent surprise bills."
+---
+
+I added Claude to our PR review pipeline three months ago. The first week, it caught a race condition in a WebSocket handler that three human reviewers missed. The second week, it flagged an N+1 query hiding behind a GraphQL resolver. The third week, my API bill was $180 because I forgot to set a token budget.
+
+This guide covers both sides: **how to automate your entire PR workflow with Claude Code GitHub Actions**, and how to keep costs predictable while doing it.
+
+## What You Get Out of the Box
+
+Anthropic ships two official GitHub Actions:
+
+1. **[`anthropics/claude-code-action@v1`](https://github.com/anthropics/claude-code-action)** — General-purpose action for PR reviews, issue triage, code implementation, and @claude mentions
+2. **[`anthropics/claude-code-security-review`](https://github.com/anthropics/claude-code-security-review)** — Security-focused analysis using Claude's semantic understanding to find vulnerabilities beyond pattern matching
+
+Both are on GitHub Marketplace. The fastest setup is running `/install-github-app` inside Claude Code — it generates the workflow files, sets up secrets, and configures permissions automatically.
+
+## Setup: From Zero to Automated PR Reviews in 10 Minutes
+
+### Step 1: Store Your API Key
+
+```bash
+# In your GitHub repo settings:
+# Settings → Secrets → Actions → New repository secret
+# Name: ANTHROPIC_API_KEY
+# Value: your API key
+```
+
+### Step 2: Create the Workflow
+
+```yaml
+# .github/workflows/claude-review.yml
+name: Claude Code Review
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  issue_comment:
+    types: [created]
+
+jobs:
+  review:
+    if: |
+      (github.event_name == 'pull_request') ||
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    steps:
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          model: claude-sonnet-4-6
+          max_tokens: 4096
+          timeout_minutes: 10
+```
+
+That's it. Every PR now gets an AI review. Every `@claude` comment in a PR gets a response.
+
+### Step 3: Add Cost Controls
+
+This is the step everyone skips — and regrets.
+
+```yaml
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          model: claude-sonnet-4-6
+          max_tokens: 4096
+          timeout_minutes: 10
+          # Cost controls
+          max_turns: 5            # Limit back-and-forth
+          allowed_tools: |        # Restrict what Claude can do
+            Read
+            Glob
+            Grep
+            Bash(git diff *)
+            Bash(git log *)
+```
+
+Without `max_turns`, Claude can loop through dozens of tool calls on a complex PR. Without `allowed_tools`, it might run tests, install dependencies, or explore the entire codebase. Both burn tokens fast.
+
+## Five Workflow Recipes
+
+### Recipe 1: Automated Code Review on Every PR
+
+```yaml
+- uses: anthropics/claude-code-action@v1
+  with:
+    anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+    model: claude-sonnet-4-6
+    direct_prompt: |
+      Review this PR. Focus on:
+      1. Logic errors and edge cases
+      2. Performance implications (N+1 queries, unnecessary re-renders)
+      3. Security issues (injection, XSS, auth bypasses)
+      4. API contract changes that could break consumers
+
+      Be specific. Reference line numbers. Skip style nitpicks —
+      the linter handles those.
+```
+
+Cost: ~$0.04 per review for a 400-line diff with Sonnet.
+
+### Recipe 2: Security Review for Critical Paths
+
+```yaml
+# Only runs when security-sensitive files change
+on:
+  pull_request:
+    paths:
+      - 'src/auth/**'
+      - 'src/api/**'
+      - 'src/middleware/**'
+      - '*.config.*'
+
+jobs:
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: anthropics/claude-code-security-review@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+```
+
+The security review action analyzes changed files for [prompt injection](/blog/prompt-injection-attacks-llm-security-guide), SQL injection, XSS, auth bypasses, and other OWASP Top 10 vulnerabilities. It understands context — not just pattern matching.
+
+**Important caveat:** This action is not hardened against prompt injection itself. Only use it to review trusted PRs. Enable "Require approval for all external contributors" in your repo settings.
+
+### Recipe 3: Issue Triage and Assignment
+
+```yaml
+on:
+  issues:
+    types: [opened]
+
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          direct_prompt: |
+            Analyze this issue. Determine:
+            1. Is it a bug, feature request, or question?
+            2. Which area of the codebase is affected?
+            3. Estimated complexity (small/medium/large)
+            4. Suggested labels
+
+            Add appropriate labels and post a summary comment.
+```
+
+### Recipe 4: Auto-Fix on @claude Mention
+
+```yaml
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  fix:
+    if: contains(github.event.comment.body, '@claude fix')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          model: claude-sonnet-4-6
+          allowed_tools: |
+            Read
+            Edit
+            Write
+            Bash(npm run lint)
+            Bash(npm test)
+```
+
+Comment `@claude fix this linting error` on a PR and Claude pushes a commit with the fix. It reads the code, makes the change, runs lint and tests, and commits if everything passes.
+
+### Recipe 5: Path-Specific Review Checklists
+
+```yaml
+- uses: anthropics/claude-code-action@v1
+  with:
+    anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+    direct_prompt: |
+      Review this PR using path-specific checklists:
+
+      For files in src/api/:
+      - [ ] Input validation with Zod
+      - [ ] Rate limiting on public endpoints
+      - [ ] Error responses follow { error, code } format
+
+      For files in src/components/:
+      - [ ] Accessibility: proper ARIA labels
+      - [ ] No inline styles — use Tailwind
+      - [ ] Loading and error states handled
+
+      Post a checklist comment with pass/fail for each item.
+```
+
+## Cost Management: The Numbers
+
+| Scenario | Model | Cost/Review | Monthly (20 PRs/day) |
+|----------|-------|-------------|---------------------|
+| Basic review (400-line diff) | Sonnet | ~$0.04 | ~$24 |
+| Deep review (1000-line diff) | Sonnet | ~$0.12 | ~$72 |
+| Security review | Sonnet | ~$0.08 | ~$48 |
+| Auto-fix (@claude fix) | Sonnet | ~$0.20 | Varies |
+| Issue triage | Haiku | ~$0.01 | ~$6 |
+
+### Cost control checklist
+
+1. **Use Sonnet, not Opus** — Sonnet handles reviews well at 1/5 the cost
+2. **Set `max_turns: 5`** — prevents runaway tool loops
+3. **Set `timeout_minutes: 10`** — hard kill switch
+4. **Restrict `allowed_tools`** — only give Claude what it needs
+5. **Use `paths` triggers** — don't review README changes with the security scanner
+6. **Set monthly budget alerts** in your Anthropic dashboard
+
+For deeper token management strategies, I covered [10 changes that cut my Claude Code bill by 70%](/blog/claude-code-token-optimization-bill-cut-guide).
+
+## Integrating with Your Existing CI/CD
+
+Claude Code Actions work alongside your existing pipeline. A practical setup:
+
+```yaml
+jobs:
+  # Standard CI runs first
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: npm ci && npm run lint && npm test
+
+  # Claude reviews only after CI passes
+  claude-review:
+    needs: lint-and-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          direct_prompt: |
+            CI passed. Focus your review on logic, architecture,
+            and security — not syntax or formatting.
+```
+
+This way Claude doesn't waste tokens reviewing code that fails lint. For more on building efficient [CI/CD pipelines with Claude Code](/blog/claude-code-headless-mode-cicd-automation-playbook), including the four flags every headless pipeline needs, I covered the full playbook separately.
+
+## Cloud Provider Authentication
+
+If you're on AWS, GCP, or Azure instead of Anthropic's API directly:
+
+```yaml
+# AWS Bedrock
+- uses: anthropics/claude-code-action@v1
+  with:
+    use_bedrock: true
+    aws_access_key_id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+    aws_secret_access_key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+    aws_region: us-east-1
+
+# Google Vertex AI
+- uses: anthropics/claude-code-action@v1
+  with:
+    use_vertex: true
+    gcp_project_id: ${{ secrets.GCP_PROJECT_ID }}
+    gcp_region: us-central1
+```
+
+## The Bottom Line
+
+Claude Code GitHub Actions is the highest-ROI integration in the Claude Code ecosystem. $24/month for automated PR reviews that catch real bugs, enforce team standards, and respond to `@claude` mentions.
+
+Start with Recipe 1 (basic review) and Recipe 2 (security review for critical paths). Add the others as your team gets comfortable with AI-assisted code review.
+
+The one thing I'd do differently? Set `max_turns` and `allowed_tools` from day one. My $180 bill taught me that lesson.
+
+## References
+
+### Sources
+- [Claude Code GitHub Actions — Official Docs](https://code.claude.com/docs/en/github-actions) - Setup guide and configuration reference
+- [anthropics/claude-code-action](https://github.com/anthropics/claude-code-action) - Official action repository with examples
+- [anthropics/claude-code-security-review](https://github.com/anthropics/claude-code-security-review) - Security-focused review action
+- [Claude Code Action — GitHub Marketplace](https://github.com/marketplace/actions/claude-code-action-official) - Marketplace listing
+
+### Further Reading
+- [Claude Code Headless Mode: The CI/CD Automation Playbook](/blog/claude-code-headless-mode-cicd-automation-playbook) - The four flags every headless pipeline needs
+- [Claude Code Token Optimization: How I Cut My Bill 70%](/blog/claude-code-token-optimization-bill-cut-guide) - Cost management strategies
+- [Prompt Injection Attacks: The SQL Injection of the AI Era](/blog/prompt-injection-attacks-llm-security-guide) - Security considerations for AI-powered review
+
+---
+
+~Seb 👊

@@ -1,0 +1,491 @@
+---
+title: "Claude Code Security Hardening: Permissions, Sandboxing, and Audit Trails for Enterprise"
+date: '2026-04-20'
+category: 'AI'
+tags: ['claude-code', 'security', 'enterprise', 'permissions', 'compliance']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: "Enterprises average 12 AI agents in their toolchains. Here's the security playbook for Claude Code: settings.json deny rules, managed policies, hook-based security gates, network sandboxing, audit trails, and the prompt injection mitigations your security team will ask about."
+---
+
+A junior developer on my team ran Claude Code in a monorepo last month. Within three minutes, it had read every `.env` file, executed a shell script it found in `scripts/`, and pushed a commit to a shared branch. Nothing malicious — Claude was trying to be helpful. But our security team saw the audit log and the meeting that followed lasted two hours.
+
+That meeting changed how I think about AI agents in enterprise environments. Traditional dev tools generate text. AI agents execute code. That distinction is everything.
+
+If your company runs Claude Code — or plans to — this is the security playbook I wish I had before that meeting.
+
+## Why AI Agent Security Is Different
+
+A linter reads your code and suggests fixes. A code completion tool generates snippets. Claude Code does something fundamentally different: it reads files, writes files, executes shell commands, makes network requests, and modifies your git history. It is not a suggestion engine. It is an autonomous actor with shell access.
+
+This means the threat model is different:
+
+- **Blast radius is real.** A misconfigured agent can delete files, overwrite production configs, or exfiltrate secrets — not because it is malicious, but because it is trying to solve the problem you gave it.
+- **Supply chain attacks get a new vector.** If Claude reads a malicious `CLAUDE.md` from a cloned repo, it follows those instructions. That is [prompt injection](/blog/prompt-injection-attacks-llm-security-guide) with code execution capabilities.
+- **Compliance scope expands.** When an AI agent accesses PII, generates code that handles health data, or writes to audited systems, your SOC 2 and HIPAA controls now need to account for a non-human actor.
+
+Traditional application security focuses on network boundaries and user permissions. AI agent security requires **tool-level access control** — deciding which tools the agent can use, on which files, with which commands.
+
+## The Permission System: settings.json
+
+Claude Code's first line of defense is its permission system, configured through `settings.json`. There are three levels, and understanding the hierarchy matters:
+
+1. **User settings** (`~/.claude/settings.json`) — per-developer preferences
+2. **Project settings** (`.claude/settings.json`) — checked into the repo
+3. **Managed settings** (`/etc/claude/managed-settings.json` on Linux/macOS) — organization-wide, cannot be overridden
+
+Each level can define `allowedTools` and `deniedTools` arrays. Deny always wins over allow. Managed settings always win over everything.
+
+### Basic Allow/Deny Rules
+
+Here is a minimal enterprise configuration:
+
+```json
+{
+  "permissions": {
+    "allowedTools": [
+      "Read",
+      "Grep",
+      "Glob",
+      "Edit",
+      "Write"
+    ],
+    "deniedTools": [
+      "Bash(rm -rf *)",
+      "Bash(git push --force*)",
+      "Bash(git reset --hard*)",
+      "Bash(chmod 777*)",
+      "Bash(curl * | bash)",
+      "Bash(wget * | bash)",
+      "Bash(sudo *)",
+      "Bash(DROP TABLE*)",
+      "Bash(shutdown*)",
+      "Bash(mkfs*)"
+    ]
+  }
+}
+```
+
+The pattern matching supports wildcards. `Bash(rm -rf *)` blocks any Bash command starting with `rm -rf`. You can also deny entire tool categories:
+
+```json
+{
+  "permissions": {
+    "deniedTools": [
+      "mcp__*"
+    ]
+  }
+}
+```
+
+This blocks all MCP server tool calls — useful if you want to enable MCP servers selectively rather than permissively.
+
+### Granular Bash Controls
+
+The Bash tool is the most dangerous surface. You can restrict it to specific commands:
+
+```json
+{
+  "permissions": {
+    "allowedTools": [
+      "Bash(npm run *)",
+      "Bash(npx *)",
+      "Bash(git status)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(ls *)",
+      "Bash(cat *)",
+      "Bash(node *)"
+    ]
+  }
+}
+```
+
+When you define `allowedTools` for Bash with specific patterns, Claude can only execute commands matching those patterns. Everything else is blocked. This is the whitelist approach, and it is significantly safer than the deny-list approach for production environments.
+
+## Managed Policies: Org-Wide Enforcement
+
+The real enterprise feature is managed settings. Placed at `/etc/claude/managed-settings.json` (or distributed via MDM on macOS), these settings cannot be overridden by any user or project configuration.
+
+```json
+{
+  "permissions": {
+    "deniedTools": [
+      "Bash(rm -rf *)",
+      "Bash(git push --force*)",
+      "Bash(git reset --hard*)",
+      "Bash(sudo *)",
+      "Bash(curl * | sh)",
+      "Bash(curl * | bash)",
+      "Bash(wget * | sh)",
+      "Bash(chmod 777*)",
+      "Bash(> /dev/sd*)",
+      "Bash(dd if=*)"
+    ],
+    "additionalDirectories": []
+  },
+  "env": {
+    "CLAUDE_CODE_MAX_TOKENS_PER_SESSION": "500000",
+    "CLAUDE_CODE_DISABLE_AUTO_APPROVE": "true"
+  }
+}
+```
+
+Distributing this via Puppet, Chef, Ansible, or Jamf ensures every developer machine enforces the same security baseline. The developer can still customize their personal `settings.json` — they just cannot undo the guardrails set by the managed policy.
+
+This is the same model browsers use for enterprise policy: Chrome has `managed-preferences`, Claude Code has `managed-settings.json`.
+
+## Hook-Based Security Gates
+
+Settings deny rules are pattern-matching on command strings. They catch the obvious cases but miss creative variations. Hooks give you programmatic control.
+
+I wrote a [complete guide to Claude Code hooks](/blog/claude-code-hooks-custom-agents-ai-pipelines-guide) covering all 24 lifecycle events, but for security hardening, you need three:
+
+### PreToolUse: The Security Gate
+
+A `PreToolUse` hook runs before every tool execution. Return exit code 2 to block. Here is a security gate that blocks access to sensitive files:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Read|Edit|Write",
+        "command": "/usr/local/bin/claude-security-gate.sh"
+      }
+    ]
+  }
+}
+```
+
+And the gate script:
+
+```bash
+#!/bin/bash
+# claude-security-gate.sh
+# Blocks read/write access to sensitive files
+
+INPUT=$(cat -)
+FILE_PATH=$(echo "$INPUT" | jq -r '.tool_input.file_path // .tool_input.path // empty')
+
+BLOCKED_PATTERNS=(
+  "\.env"
+  "\.env\."
+  "credentials"
+  "secrets"
+  "\.pem$"
+  "\.key$"
+  "id_rsa"
+  "id_ed25519"
+  "\.aws/config"
+  "\.ssh/config"
+  "kubeconfig"
+  "service.account"
+  "\.npmrc"
+  "\.pypirc"
+)
+
+for pattern in "${BLOCKED_PATTERNS[@]}"; do
+  if echo "$FILE_PATH" | grep -qiE "$pattern"; then
+    echo '{"decision": "block", "reason": "Security policy: access to sensitive files is blocked"}'
+    exit 2
+  fi
+done
+
+exit 0
+```
+
+Exit code 2 is critical. Exit code 0 means allow. Exit code 1 means non-blocking warning (logs to verbose, does not stop execution). I learned this the hard way — one digit cost me a week of debugging.
+
+### Bash Command Auditing Hook
+
+For Bash commands, a PreToolUse hook can inspect the actual command and apply more sophisticated logic than simple pattern matching:
+
+```bash
+#!/bin/bash
+# claude-bash-guard.sh
+
+INPUT=$(cat -)
+COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command // empty')
+
+# Block destructive commands (case-insensitive, handles pipes)
+DANGEROUS_PATTERNS=(
+  "rm\s+-rf\s+/"
+  "rm\s+-rf\s+\*"
+  "rm\s+-rf\s+\."
+  "git\s+push\s+.*--force"
+  "git\s+reset\s+--hard"
+  ">\s*/dev/sd"
+  "mkfs\."
+  "dd\s+if="
+  ":(){ :|:& };:"
+  "chmod\s+-R\s+777"
+  "curl.*\|\s*(ba)?sh"
+  "wget.*\|\s*(ba)?sh"
+  "npm\s+publish"
+  "docker\s+rm\s+-f"
+  "kubectl\s+delete"
+)
+
+for pattern in "${DANGEROUS_PATTERNS[@]}"; do
+  if echo "$COMMAND" | grep -qiE "$pattern"; then
+    echo '{"decision": "block", "reason": "Security policy: dangerous command blocked"}'
+    exit 2
+  fi
+done
+
+exit 0
+```
+
+This catches `git push origin main --force` where a simple deny rule looking for `git push --force*` would miss the flag ordering.
+
+### PostToolUse: Audit Trail
+
+A `PostToolUse` hook captures every action for compliance logging:
+
+```bash
+#!/bin/bash
+# claude-audit-log.sh
+
+INPUT=$(cat -)
+TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+SESSION_ID=$(echo "$INPUT" | jq -r '.session_id')
+TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name')
+TOOL_INPUT=$(echo "$INPUT" | jq -c '.tool_input')
+
+LOG_ENTRY=$(jq -nc \
+  --arg ts "$TIMESTAMP" \
+  --arg sid "$SESSION_ID" \
+  --arg tool "$TOOL_NAME" \
+  --arg input "$TOOL_INPUT" \
+  '{timestamp: $ts, session_id: $sid, tool: $tool, input: $input}')
+
+echo "$LOG_ENTRY" >> /var/log/claude-code/audit.jsonl
+
+exit 0
+```
+
+This produces a JSONL audit log that your SIEM can ingest. Each line records what tool was used, what input it received, when, and in which session. For SOC 2 controls, this is the evidence your auditor will ask for.
+
+## Network Sandboxing
+
+Claude Code makes outbound network requests for web searches, MCP server communication, and any `curl`/`wget` commands it executes. In enterprise environments, controlling this surface matters.
+
+### Approach 1: Firewall Rules
+
+At the network level, restrict the Claude Code process to approved endpoints:
+
+```bash
+# Allow Anthropic API
+iptables -A OUTPUT -p tcp -d api.anthropic.com --dport 443 -j ACCEPT
+
+# Allow your internal services
+iptables -A OUTPUT -p tcp -d internal.company.com --dport 443 -j ACCEPT
+
+# Block everything else for the claude process user
+iptables -A OUTPUT -m owner --uid-owner claude-service -j DROP
+```
+
+### Approach 2: Container Isolation
+
+Run Claude Code sessions in Docker containers with restricted networking:
+
+```dockerfile
+FROM node:20-slim
+
+# Install Claude Code
+RUN npm install -g @anthropic/claude-code
+
+# Copy managed settings
+COPY managed-settings.json /etc/claude/managed-settings.json
+
+# Non-root user
+RUN useradd -m developer
+USER developer
+
+WORKDIR /workspace
+```
+
+```bash
+docker run --rm -it \
+  --network=claude-restricted \
+  --read-only \
+  --tmpfs /tmp \
+  -v $(pwd):/workspace \
+  claude-hardened
+```
+
+The `--network=claude-restricted` flag assigns a Docker network with egress rules. The `--read-only` flag prevents writes outside mounted volumes. This is defense in depth — even if a hook fails to catch something, the container limits blast radius.
+
+## Secret Management
+
+Preventing Claude from accessing secrets is both a settings problem and a workflow problem.
+
+### File-Level Protection
+
+Use `.claudeignore` to make sensitive files invisible:
+
+```
+# .claudeignore
+.env
+.env.*
+*.pem
+*.key
+credentials/
+secrets/
+.aws/
+.ssh/
+**/service-account*.json
+```
+
+Combine with the PreToolUse hook from earlier for defense in depth. `.claudeignore` hides files from Claude's file discovery tools, and the hook blocks direct path access in case Claude infers a file path from context.
+
+### Environment Variable Hygiene
+
+Claude Code inherits the shell environment. If your terminal has `AWS_SECRET_ACCESS_KEY` or `DATABASE_URL` in the environment, Claude can read them via `env` or `printenv`.
+
+Mitigations:
+
+1. **Launch Claude from a clean shell.** Use `env -i PATH=$PATH HOME=$HOME claude` to strip environment variables.
+2. **Deny env inspection in Bash rules.** Add `Bash(env)`, `Bash(printenv*)`, `Bash(echo $*)` to `deniedTools` (though this is incomplete — a determined prompt injection can work around string-pattern denials).
+3. **Use a secret manager.** Applications should read secrets from Vault, AWS Secrets Manager, or 1Password CLI at runtime — not from `.env` files sitting on disk.
+
+## Prompt Injection in Enterprise Context
+
+Prompt injection is the most underestimated risk in enterprise AI agent deployment. I wrote a [detailed guide on prompt injection attacks](/blog/prompt-injection-attacks-llm-security-guide) covering the taxonomy and defenses, but here is the enterprise-specific angle.
+
+The attack surface for Claude Code includes:
+
+- **CLAUDE.md files in cloned repos.** When a developer clones a third-party repo that contains a [CLAUDE.md](/blog/claude-md-memory-persistent-context-guide) file, Claude follows those instructions. A malicious CLAUDE.md could instruct Claude to exfiltrate code, modify files outside the project, or disable safety checks.
+- **MCP server responses.** If an [MCP server](/blog/mcp-vs-a2a-ai-agent-protocols-guide-2026) returns crafted data containing prompt injection payloads, Claude may follow those instructions when processing the response.
+- **File contents.** If Claude reads a file that contains embedded instructions (a common technique in Markdown or comments), it may follow them.
+
+Enterprise mitigations:
+
+1. **Review CLAUDE.md in your CI pipeline.** Add a linting step that flags suspicious instructions in `.claude/` directories of third-party dependencies.
+2. **Use managed settings to restrict MCP servers.** Only allow approved MCP servers via `managed-settings.json`.
+3. **Isolate sessions by trust level.** Internal repos get full permissions. Third-party repos get read-only mode with no Bash access.
+
+## Managing MCP Server Permissions
+
+Every MCP server you connect to Claude Code expands the attack surface. Each server exposes tools — and each tool has its own security implications.
+
+Common MCP servers and their risk profiles:
+
+| Server | Tools Exposed | Risk Level | Mitigation |
+|--------|--------------|------------|------------|
+| Filesystem | read, write, delete | High | Restrict to project directory |
+| GitHub | create PR, merge, delete branch | High | Read-only token, scope to repos |
+| Postgres | query, execute | Critical | Read-only user, query timeout |
+| Slack | send message, read channels | Medium | Bot token with minimal scopes |
+| Browser | navigate, click, screenshot | High | Sandbox browser, block internal URLs |
+
+The principle is least privilege, applied per server:
+
+```json
+{
+  "mcpServers": {
+    "github": {
+      "command": "mcp-server-github",
+      "env": {
+        "GITHUB_TOKEN": "ghp_readonly_token_here"
+      }
+    }
+  },
+  "permissions": {
+    "deniedTools": [
+      "mcp__github__delete_*",
+      "mcp__github__merge_*",
+      "mcp__postgres__execute_*"
+    ]
+  }
+}
+```
+
+Block destructive MCP tools at the permission level. Give read-only tokens where possible. Audit MCP server tool calls through your PostToolUse hook.
+
+## Compliance Considerations
+
+### SOC 2
+
+SOC 2 Type II requires evidence of access controls, change management, and audit logging. For Claude Code:
+
+- **Access control:** Managed settings enforce who can use which tools. Document the policy and distribution mechanism.
+- **Change management:** Git commits by Claude Code should follow the same review process as human commits. Require PR reviews even for AI-authored changes.
+- **Audit logging:** The PostToolUse hook generates the evidence trail. Ship logs to your SIEM with retention matching your audit period.
+
+### HIPAA
+
+If Claude Code touches systems containing PHI (Protected Health Information):
+
+- **Minimum necessary access.** Restrict file access to only the directories needed for the task.
+- **No PHI in prompts.** Train developers to never paste patient data into Claude prompts. Use synthetic data.
+- **BAA coverage.** Verify that your Anthropic agreement covers HIPAA requirements if Claude processes any health-related data.
+
+### GDPR
+
+- **Data minimization.** Claude Code sends file contents and prompts to Anthropic's API. Ensure no PII is included in files Claude reads. Use `.claudeignore` to block files containing personal data.
+- **Right to erasure.** Understand Anthropic's data retention policies for API interactions. Document this in your data processing records.
+- **Data processing agreement.** Confirm your Anthropic contract includes appropriate DPA terms.
+
+## The Enterprise Onboarding Security Checklist
+
+When onboarding a team to Claude Code — and I cover the broader [team onboarding process here](/blog/claude-code-team-leads-onboarding-guide) — security setup should be non-negotiable before anyone runs their first session.
+
+### Before First Session
+
+- [ ] Deploy `managed-settings.json` to all developer machines via MDM/config management
+- [ ] Create and distribute `.claudeignore` template for your org
+- [ ] Set up audit log pipeline (PostToolUse hook → SIEM)
+- [ ] Define approved MCP servers and their permission scopes
+- [ ] Create the PreToolUse security gate script and distribute it
+- [ ] Document which repositories are approved for Claude Code use
+- [ ] Add CLAUDE.md linting to your CI pipeline for third-party deps
+
+### Per-Project Setup
+
+- [ ] Add `.claude/settings.json` to the repo with project-specific deny rules
+- [ ] Configure `.claudeignore` for sensitive files in this project
+- [ ] Set up git hooks to prevent commits to protected branches
+- [ ] Review and approve any project-specific MCP server connections
+- [ ] Verify that `draft: false` and auto-publish workflows cannot be triggered by Claude without review
+
+### Ongoing
+
+- [ ] Review audit logs weekly for anomalous tool usage
+- [ ] Update deny rules when new dangerous patterns are discovered
+- [ ] Rotate any tokens used by MCP servers on your standard schedule
+- [ ] Run periodic red-team exercises: can a crafted CLAUDE.md in a test repo bypass your controls?
+- [ ] Track Anthropic's security bulletins for new permission features
+
+## What This Is Really About
+
+The companies getting value from AI agents are not the ones running them without guardrails. They are the ones that treat AI agents like they treat any other privileged service account: least privilege, full audit trail, defense in depth.
+
+Claude Code is enormously powerful. That power is exactly why it needs the same security discipline you apply to your CI/CD pipelines, your database access, and your cloud infrastructure. The settings are there. The hooks are there. The managed policy system is there. You just have to wire them up.
+
+Your security team will thank you. Or, at minimum, your next meeting with them will be 90 minutes shorter than mine was.
+
+## References
+
+### Sources
+
+- [Claude Code Permissions & Security Documentation](https://docs.anthropic.com/en/docs/claude-code/security) — official permission model, settings hierarchy, and managed policies
+- [Claude Code Hooks Reference](https://docs.anthropic.com/en/docs/claude-code/hooks) — lifecycle events, exit codes, and JSON response format
+- [Claude Code Settings Configuration](https://docs.anthropic.com/en/docs/claude-code/settings) — settings.json schema and managed-settings.json distribution
+- [Anthropic Enterprise Security Overview](https://www.anthropic.com/security) — SOC 2 certification, data handling, and enterprise agreements
+- [OWASP Top 10 for LLM Applications](https://owasp.org/www-project-top-10-for-large-language-model-applications/) — prompt injection, insecure output handling, and agent risk taxonomy
+
+### Further Reading
+
+- [Claude Code Enterprise Administration Guide](https://docs.anthropic.com/en/docs/claude-code/enterprise) — MDM deployment, team management, and policy enforcement
+- [MCP Security Best Practices](https://modelcontextprotocol.io/docs/concepts/security) — securing Model Context Protocol server connections
+- [NIST AI Risk Management Framework](https://www.nist.gov/artificial-intelligence/ai-risk-management-framework) — federal guidelines for AI system governance
+- [SOC 2 Compliance for AI Systems](https://www.vanta.com/collection/soc-2/ai-systems) — mapping AI agent controls to SOC 2 criteria
+
+---
+
+~Seb 👊

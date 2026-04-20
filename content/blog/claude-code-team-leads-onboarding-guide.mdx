@@ -1,0 +1,327 @@
+---
+title: "Claude Code for Team Leads: Onboarding, Shared Config, and Multi-Developer Workflows"
+date: '2026-04-20'
+category: 'AI'
+tags: ['claude-code', 'team-management', 'developer-experience', 'onboarding', 'productivity']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: "Rolling out Claude Code to a team of 10+ developers without chaos requires shared CLAUDE.md, managed policies, permission presets, and a clear onboarding playbook. Here's the complete team setup guide — from /team-onboarding to cost allocation."
+---
+
+I rolled Claude Code out to a team of four in January. It went fine. Everyone figured it out in a day, picked their own style, and got productive by Thursday. Then I tried the same approach with a team of twelve and it was chaos within a week.
+
+Two developers had conflicting CLAUDE.md instructions. One person's hooks were overriding shared linting rules. Nobody knew what anyone else was spending. A junior dev accidentally let Claude push to main without review because nobody had configured permission guardrails. That week cost us roughly $600 in wasted tokens and one reverted production deploy.
+
+The problem wasn't Claude Code. The problem was treating a team tool like a solo tool. Once I built the onboarding system I'm about to describe, the next team of fifteen onboarded in two days with zero incidents. Here's the complete playbook.
+
+## Why Solo Setup Doesn't Scale
+
+When you use Claude Code alone, everything lives in your head. You know which files are important, what the coding conventions are, which commands are safe. You configure CLAUDE.md once, adjust it as you learn, and things just work.
+
+At two or three developers, informal knowledge transfer still works. Someone Slacks a screenshot of their CLAUDE.md, another person copies it, done.
+
+At ten developers, you need a system. At twenty-five, you need a policy. The jump isn't linear — it's a phase change. Here's what breaks:
+
+- **Configuration drift.** Each developer's CLAUDE.md diverges until Claude behaves differently for everyone on the same codebase.
+- **Permission gaps.** Without shared rules, some developers give Claude more access than your security posture allows.
+- **Cost blindness.** Nobody tracks spend until the monthly bill arrives and someone has burned $400 on a side experiment.
+- **Onboarding friction.** New hires spend their first day asking five different people how to configure Claude Code, getting five different answers.
+
+## The /team-onboarding Command
+
+Claude Code ships with `/team-onboarding` — a guided walkthrough that packages your team's entire setup into a replayable sequence. When a new developer joins the team, they run this command and get walked through every configuration step in the right order.
+
+But here's the thing most leads miss: `/team-onboarding` is only as good as the configuration it references. If your project doesn't have a shared CLAUDE.md, a settings.json with permission rules, and documented conventions, the command has nothing to onboard people into.
+
+So before you run `/team-onboarding`, you need to build the configuration stack. Let's do that.
+
+## The CLAUDE.md Hierarchy for Teams
+
+I wrote a [complete deep dive on CLAUDE.md and the memory system](/blog/claude-md-memory-persistent-context-guide), but the team angle is different from the solo angle. Here's the hierarchy that matters for multi-developer setups:
+
+### Layer 1: Project Root CLAUDE.md (Shared, Version Controlled)
+
+This file lives at the root of your repo and gets committed. Every developer on the team gets the same instructions. This is where you put:
+
+```markdown
+# CLAUDE.md
+
+## Project
+Node.js 20, TypeScript strict, Next.js 14 App Router, Postgres via Drizzle ORM.
+
+## Commands
+- Build: `npm run build`
+- Test: `npm test -- --watchAll=false`
+- Lint: `npm run lint`
+- Type check: `npx tsc --noEmit`
+
+## Architecture
+- src/app/ — App Router pages and layouts
+- src/components/ — Shared UI components (atomic design)
+- src/lib/ — Business logic, no framework imports
+- src/db/ — Drizzle schema and migrations
+
+## Rules
+- Always run lint before committing
+- Never modify migration files directly — use `npm run db:generate`
+- All new components need a co-located test file
+- Use server components by default, 'use client' only when needed
+- Error boundaries on every route segment
+```
+
+Keep this under 500 tokens. Every token here is loaded on every session for every developer — it adds up fast. If you want the math on why this matters for your bill, check my [token optimization guide](/blog/claude-code-token-optimization-bill-cut-guide).
+
+### Layer 2: Personal CLAUDE.md (Gitignored)
+
+Each developer can create `.claude/CLAUDE.md` in the project for their personal preferences. This file should be in `.gitignore`. It's where individual style goes:
+
+```markdown
+# .claude/CLAUDE.md (personal, gitignored)
+
+## My preferences
+- I prefer verbose git commit messages
+- When writing tests, use describe/it nesting style
+- Show me the diff before committing
+```
+
+The rule is simple: **shared behavior goes in the root CLAUDE.md. Personal taste goes in .claude/CLAUDE.md.** If two developers disagree about whether Claude should auto-commit or show a diff first, that's a personal preference — it goes in the personal file.
+
+### Layer 3: Global CLAUDE.md
+
+Each developer also has `~/.claude/CLAUDE.md` for cross-project preferences. This is entirely personal and never touches the repo. Remind your team that anything in the global file applies to every project they work on, so it should be minimal.
+
+## settings.json: Team Permission Guardrails
+
+This is where most team leads under-invest. `settings.json` lives at `.claude/settings.json` in your project root and defines what Claude can and cannot do. Commit this file.
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "Read",
+      "Glob",
+      "Grep",
+      "Bash(npm run lint)",
+      "Bash(npm run test*)",
+      "Bash(npm run build)",
+      "Bash(npx tsc --noEmit)"
+    ],
+    "deny": [
+      "Bash(rm -rf *)",
+      "Bash(git push --force*)",
+      "Bash(git reset --hard*)",
+      "Bash(DROP TABLE*)",
+      "Bash(npm publish*)"
+    ]
+  }
+}
+```
+
+The `allow` list is what Claude can run without asking. The `deny` list is what Claude cannot run at all, even if the developer approves it. Everything not in either list triggers a permission prompt.
+
+For teams, I recommend a strict default: allow only read operations and your standard build/test/lint commands. Deny anything destructive. Let individual developers expand their personal permissions in their own settings if they want, but the project-level deny list cannot be overridden.
+
+## Managed Policies for Enterprise Teams
+
+If you're on an enterprise plan, you get `managed-settings.json` — an organization-level config that administrators push to all developers. Unlike project settings, managed settings **cannot be overridden** by anyone, including the developer.
+
+This is where you enforce non-negotiable rules:
+
+```json
+{
+  "permissions": {
+    "deny": [
+      "Bash(curl * | bash)",
+      "Bash(wget * | bash)",
+      "Bash(git push --force*)",
+      "Bash(npm publish*)"
+    ]
+  },
+  "env": {
+    "CLAUDE_CODE_MAX_TOKENS_PER_SESSION": "500000",
+    "CLAUDE_CODE_DISABLE_AUTO_APPROVE": "true"
+  }
+}
+```
+
+The mental model: **managed settings are for security and budget, project settings are for workflow, personal settings are for taste.** Never mix these layers.
+
+## Cost Allocation: Tracking Per-Developer Spend
+
+This was the problem that blindsided me hardest. When the team bill arrived and it was $2,400 for the month, the first question from my manager was "who spent what?" and I had no answer.
+
+Here's how to set up cost visibility from day one:
+
+### Per-Developer Tracking
+
+Every developer should run `/cost` at the end of each day and log it. Better yet, build this into your workflow with [hooks](/blog/claude-code-hooks-custom-agents-ai-pipelines-guide) — a PostStop hook that appends the session cost to a shared CSV or posts it to a Slack channel.
+
+```bash
+# Example hook: log session cost on exit
+claude --print-cost >> ~/claude-costs.log
+```
+
+### Setting Budgets
+
+Set a per-developer daily budget. I use these tiers as starting points:
+
+| Role | Daily Budget | Rationale |
+|------|-------------|-----------|
+| Junior dev | $8–12 | Focused tasks, shorter sessions |
+| Senior dev | $15–25 | Architecture + implementation |
+| Tech lead | $20–30 | Reviews, planning, cross-cutting |
+| Occasional user | $5 | Quick lookups, small fixes |
+
+Use `CLAUDE_CODE_MAX_TOKENS_PER_SESSION` as a rough guardrail, but remember it caps tokens per session, not per day. For real budget enforcement, you need the admin dashboard on the enterprise plan or a wrapper script that checks daily totals before starting a new session.
+
+### What to Watch in the First Month
+
+Three signals that something is wrong:
+
+1. **One developer spending 3x the team average.** Usually means bloated context, not harder work. Help them trim their CLAUDE.md and add a .claudeignore.
+2. **High input tokens, low output tokens.** Context is being loaded but Claude isn't generating much. Check for an oversized CLAUDE.md or missing .claudeignore.
+3. **Consistent daily increase.** Often means the memory file (MEMORY.md) is growing unbounded. Set a size cap.
+
+## The Onboarding Checklist
+
+Here's the exact checklist I give every new developer. Each step takes about five minutes.
+
+### Day 1: Install and Configure (30 minutes)
+
+- [ ] Install Claude Code CLI: `npm install -g @anthropic-ai/claude-code`
+- [ ] Authenticate: `claude auth`
+- [ ] Clone the repo and open it: `cd your-repo && claude`
+- [ ] Run `/team-onboarding` — this walks through the project's shared config
+- [ ] Verify shared CLAUDE.md loads: ask Claude "What are the project rules?"
+- [ ] Create personal `.claude/CLAUDE.md` with individual preferences
+- [ ] Run `/cost` to establish a baseline
+
+### Day 1: First Productive Task (30 minutes)
+
+- [ ] Pick a small bug or task from the backlog
+- [ ] Complete it with Claude Code end-to-end
+- [ ] Run the build: `npm run build` (Claude should do this automatically per CLAUDE.md)
+- [ ] Submit a PR and note any friction
+- [ ] Run `/cost` again and log the session spend
+
+### Day 2: Review and Adjust
+
+- [ ] Review what worked and what didn't
+- [ ] Adjust personal CLAUDE.md based on experience
+- [ ] Learn three slash commands the team uses regularly
+- [ ] Pair with a teammate on a Claude Code session for 30 minutes
+
+After day two, most developers are self-sufficient. The ones who aren't usually have a configuration issue — their CLAUDE.md conflicts with the project one, or they haven't set up .claudeignore and are burning tokens reading node_modules.
+
+## Shared Skills and Slash Commands
+
+Skills are reusable instruction sets that any team member can invoke with a slash command. For team consistency, create shared skills in your repo's `.claude/skills/` directory and commit them.
+
+Examples that work well for teams:
+
+```markdown
+# .claude/skills/pr-review.md
+## /pr-review
+Review the current branch against main. Check for:
+- Type safety issues
+- Missing tests for new functions
+- Security: no secrets in code, no SQL injection, no XSS
+- Performance: no N+1 queries, no unnecessary re-renders
+Output a summary with severity levels: critical, warning, suggestion.
+```
+
+```markdown
+# .claude/skills/component-scaffold.md
+## /component-scaffold [name]
+Create a new React component with:
+- Component file: src/components/[name]/[name].tsx
+- Test file: src/components/[name]/[name].test.tsx
+- Index barrel: src/components/[name]/index.ts
+Follow atomic design. Server component by default.
+```
+
+When every developer uses the same `/pr-review` command, reviews become consistent. When everyone uses `/component-scaffold`, new components follow the same structure without anyone memorizing a template.
+
+For more advanced patterns — chaining skills, integrating them with CI, and building team-specific workflows — see my [guide on hooks and custom pipelines](/blog/claude-code-hooks-custom-agents-ai-pipelines-guide).
+
+## Common Team Conflicts and How to Resolve Them
+
+### "My CLAUDE.md says X, the shared one says Y"
+
+The hierarchy resolves this automatically — more specific files override broader ones. But if a developer's personal instructions contradict the shared project ones in a way that produces bad code, you have a conversation, not a configuration problem.
+
+Rule of thumb: if it affects code that gets committed, it belongs in the shared CLAUDE.md. If it affects how Claude talks to you, it's personal.
+
+### "Claude gives different answers to different people"
+
+This happens when personal CLAUDE.md files diverge significantly. The fix isn't to ban personal configuration — it's to make the shared configuration comprehensive enough that personal files only handle genuine preferences, not project rules.
+
+### "Someone keeps approving destructive commands"
+
+This is what the deny list in settings.json is for. If a developer keeps approving `git push --force`, add it to the project-level deny list. On enterprise, add it to managed settings so nobody can override it.
+
+### "We can't agree on coding style"
+
+Don't try to settle style debates in CLAUDE.md. Use a formatter (Prettier) and a linter (ESLint) with shared configs. Put `npm run lint` and `npm run format` in the shared CLAUDE.md as pre-commit requirements. Claude follows the tools, not opinions.
+
+## CI Integration
+
+Once your team is running Claude Code locally, the next step is integrating it into your CI pipeline. Claude Code can run headless in GitHub Actions for automated PR reviews, test generation, and code quality checks.
+
+I covered this in detail in my [GitHub Actions automation guide](/blog/claude-code-github-actions-pr-automation-guide), but the team-relevant piece is this: when Claude runs in CI, it uses the same shared CLAUDE.md and settings.json as your developers. One configuration, two environments. That consistency is the whole point of putting config in version control.
+
+## Scaling Tips: What Changes at Each Stage
+
+### 5 Developers
+
+At this size, informal coordination still works. One shared CLAUDE.md, a settings.json with basic deny rules, and a Slack channel for Claude Code tips. Total setup time: one hour.
+
+### 10 Developers
+
+You need the full onboarding checklist. Assign a "Claude Code champion" — one developer who maintains the shared config, updates skills, and helps new team members. Cost tracking becomes mandatory. Budget about two hours per month on configuration maintenance.
+
+### 25+ Developers
+
+Enterprise managed settings become essential. You need:
+
+- **Managed policies** that cannot be overridden — security and budget rules at the org level
+- **Team-specific CLAUDE.md files** — the backend team and frontend team likely need different instructions
+- **Cost dashboards** — not just per-developer, but per-team and per-project
+- **Skill libraries** — a curated set of team skills with an owner for each one
+- **Rotation for CLAUDE.md maintenance** — treat it like you treat on-call, someone is responsible for keeping it current each sprint
+- **Audit logs** — review what Claude is being asked to do, especially in sensitive repos
+
+The biggest mistake at this scale is letting configuration grow organically. Appoint an owner. Review the shared CLAUDE.md every sprint. Archive skills nobody uses. Keep the system lean.
+
+## What Good Looks Like
+
+After three months with fifteen developers using this system, here's where we landed:
+
+- **Onboarding time:** 90 minutes from first install to first PR
+- **Average daily spend:** $14 per developer
+- **Configuration drift incidents:** Zero since implementing shared settings.json
+- **Build-breaking Claude commits:** One in three months (down from four in the first week)
+
+The system isn't complicated. It's a shared CLAUDE.md under 500 tokens, a settings.json with clear permission boundaries, a few team skills, and a checklist that new developers follow on day one. The hard part isn't building it — it's maintaining the discipline to keep it simple as the team grows.
+
+Start with the checklist. Run `/team-onboarding` on your project. Fix the issues that surface in the first week. Everything after that is iteration.
+
+## References
+
+### Sources
+
+- [Claude Code CLI documentation — Anthropic](https://docs.anthropic.com/en/docs/claude-code)
+- [Claude Code configuration and settings](https://docs.anthropic.com/en/docs/claude-code/settings)
+- [Claude Code team setup and permissions](https://docs.anthropic.com/en/docs/claude-code/team-setup)
+
+### Further Reading
+
+- [CLAUDE.md & Memory: The Complete Guide to Persistent AI Context](/blog/claude-md-memory-persistent-context-guide)
+- [Claude Code Token Optimization: How I Cut My Bill 70%](/blog/claude-code-token-optimization-bill-cut-guide)
+- [Claude Code Hooks: Custom Agents and AI Pipelines](/blog/claude-code-hooks-custom-agents-ai-pipelines-guide)
+- [Claude Code GitHub Actions: PR Automation Guide](/blog/claude-code-github-actions-pr-automation-guide)
+
+---
+
+~Seb 👊

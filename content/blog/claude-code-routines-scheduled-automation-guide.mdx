@@ -1,0 +1,251 @@
+---
+title: 'Claude Code Routines: Your AI Agent Works While You Sleep'
+date: '2026-04-20'
+category: 'AI'
+tags: ['claude-code', 'automation', 'scheduled-tasks', 'routines', 'devops']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: "Claude Code Routines run on Anthropic's infrastructure — no laptop required. Schedule nightly issue triage, weekly doc updates, and PR monitoring that runs even when you're offline. Here's the complete setup from first routine to production pipeline."
+---
+
+I used to leave my MacBook open overnight running a Claude Code session that monitored our GitHub issues. If the WiFi hiccupped, the session died. If macOS updated, the session died. If the cat walked across the keyboard — you get it.
+
+Then Anthropic shipped Routines in April 2026, and the entire model changed. **Routines run on Anthropic's cloud infrastructure.** Your laptop can be closed, off, or at the bottom of a lake. The agent keeps working.
+
+This is the biggest paradigm shift in Claude Code since [headless mode](/blog/claude-code-headless-mode-cicd-automation-playbook). Here's how to set it up properly.
+
+## What Routines Actually Are
+
+A routine is a saved Claude Code task defined by three ingredients:
+
+1. **A prompt** — what you want Claude to do
+2. **A repository** — the codebase it has access to
+3. **Connectors** — external tools (GitHub, Slack, Linear, Asana)
+
+Once configured, the routine runs on its own — triggered by a schedule, an API call, or a GitHub webhook. No open terminal session. No active computer.
+
+### Routines vs Desktop Scheduled Tasks vs /loop
+
+Claude Code has three automation mechanisms. They serve different purposes:
+
+| Feature | Where it runs | Survives logout? | Best for |
+|---------|--------------|-----------------|----------|
+| `/loop` | Your terminal session | No | Polling during active work |
+| Desktop Scheduled Tasks | Your machine (local) | Only if machine is on | Daily local tasks |
+| **Routines** | Anthropic cloud | **Yes** | Production automation |
+
+If your task needs to run reliably regardless of your machine's state, use Routines. If you're polling something while actively coding, `/loop` is fine.
+
+## Setting Up Your First Routine
+
+### From the CLI
+
+```bash
+# Create a routine interactively
+claude routine create
+
+# Or with the schedule command
+/schedule
+```
+
+This walks you through selecting a repo, writing the prompt, choosing triggers, and connecting external tools.
+
+### From Claude Code Web
+
+If you're using [Claude Code on the web](https://claude.ai/code), the Routines UI is in the left sidebar under "Automations." Point-and-click setup with the same capabilities.
+
+### Routine Configuration
+
+A routine definition looks like this:
+
+```json
+{
+  "name": "nightly-issue-triage",
+  "prompt": "Review all GitHub issues opened in the last 24 hours. For each: add appropriate labels (bug, feature, question, docs), estimate complexity (small/medium/large), and post a triage comment with suggested next steps. If an issue is a duplicate, link to the original and add the 'duplicate' label.",
+  "repository": "myorg/myapp",
+  "connectors": ["github"],
+  "triggers": [
+    {
+      "type": "schedule",
+      "cron": "0 6 * * *"
+    }
+  ],
+  "model": "claude-sonnet-4-6",
+  "max_tokens": 8192
+}
+```
+
+## Five Production-Ready Routines
+
+### Routine 1: Nightly Issue Triage
+
+```
+Prompt: Review all GitHub issues opened in the last 24 hours.
+For each issue:
+1. Read the full description and any linked code
+2. Add labels: bug, feature, question, or docs
+3. Estimate complexity: small (<2hr), medium (2-8hr), large (>1 day)
+4. Post a triage comment with:
+   - Root cause hypothesis (for bugs)
+   - Suggested implementation approach (for features)
+   - Relevant code locations
+5. If duplicate, link original and label 'duplicate'
+
+Schedule: Daily at 6:00 AM UTC
+```
+
+This replaces the morning triage meeting for small teams. When your lead arrives, every new issue already has context, labels, and a suggested approach.
+
+### Routine 2: Weekly Documentation Sync
+
+```
+Prompt: Compare the current codebase against our documentation
+in docs/ and README.md. Find:
+1. New exported functions/components without docs
+2. Documented APIs whose signatures changed
+3. Removed features still mentioned in docs
+4. Missing environment variables in .env.example
+
+Create a PR with documentation updates for anything outdated.
+Title: "docs: weekly sync [date]"
+
+Schedule: Every Monday at 7:00 AM UTC
+```
+
+### Routine 3: Dependency Security Scan
+
+```
+Prompt: Run npm audit and analyze the results. For each
+vulnerability:
+1. Assess actual impact on our codebase (is the vulnerable
+   code path reachable?)
+2. Check if a patched version exists
+3. Test if upgrading breaks anything (run tests)
+
+If safe upgrades exist, create a PR. If breaking changes
+are required, create an issue with migration steps.
+
+Schedule: Every Wednesday at 3:00 AM UTC
+```
+
+### Routine 4: PR Stale Check and Nudge
+
+```
+Prompt: Find all open PRs older than 5 days without activity.
+For each:
+1. Check if CI is passing
+2. Check if there are unresolved review comments
+3. Post a friendly comment summarizing the PR status and
+   what's blocking merge
+4. If the PR has merge conflicts, note which files conflict
+
+Schedule: Daily at 9:00 AM UTC
+```
+
+### Routine 5: Performance Regression Monitor
+
+```
+Prompt: Pull the latest Lighthouse CI results from our
+main branch. Compare against last week's baseline. If any
+Core Web Vital regressed by more than 10%:
+1. Identify which commits landed between the two runs
+2. Analyze those commits for likely performance culprits
+3. Create an issue with findings and suggested fixes
+4. Tag with 'performance-regression' label
+
+Schedule: Daily at 5:00 AM UTC
+Trigger: Also on POST to /api/lighthouse-webhook
+```
+
+## Trigger Types
+
+### Schedule (Cron)
+
+```json
+{
+  "type": "schedule",
+  "cron": "0 6 * * 1-5"  // Weekdays at 6 AM
+}
+```
+
+Standard cron syntax. Runs on Anthropic infrastructure regardless of your machine state.
+
+### API Trigger
+
+```json
+{
+  "type": "api"
+}
+```
+
+Each routine gets a unique endpoint. Trigger it from anywhere:
+
+```bash
+curl -X POST https://api.claude.ai/routines/{routine_id}/run \
+  -H "Authorization: Bearer $ROUTINE_TOKEN" \
+  -d '{"context": "Triggered by deploy webhook"}'
+```
+
+This is how you chain routines into larger workflows — a deploy webhook triggers a post-deploy health check routine.
+
+### GitHub Webhook
+
+```json
+{
+  "type": "github_webhook",
+  "events": ["issues.opened", "pull_request.merged"]
+}
+```
+
+React to GitHub events without writing [GitHub Actions workflow files](/blog/claude-code-github-actions-pr-automation-guide). Simpler setup for common triggers.
+
+## Cost Management
+
+Routines use the same token-based pricing as Claude Code. A typical nightly triage routine scanning 5-10 issues costs $0.10-0.30 per run. At daily frequency, that's $3-9/month.
+
+**Cost control strategies:**
+
+1. **Use Sonnet for routine tasks** — Opus for complex reasoning only
+2. **Set `max_tokens` per routine** — prevent runaway sessions
+3. **Schedule during off-peak hours** — no cost difference, but less contention
+4. **Start with weekly frequency** and increase if the value is clear
+5. **Monitor with `/cost`** — track routine costs separately
+
+For the full token optimization playbook, see [how I cut my Claude Code bill by 70%](/blog/claude-code-token-optimization-bill-cut-guide).
+
+## When NOT to Use Routines
+
+**Use [GitHub Actions](/blog/claude-code-github-actions-pr-automation-guide) instead** when you need the action to run in your CI environment with access to your infrastructure, secrets, and build tools.
+
+**Use Desktop Scheduled Tasks instead** when the task needs access to local files, tools, or services not available in the cloud.
+
+**Use `/loop` instead** when you're actively monitoring something during a coding session and want real-time feedback.
+
+Routines are for **fire-and-forget automation** that doesn't depend on your local environment.
+
+## The Bottom Line
+
+Routines are Claude Code's answer to "I wish I could automate this, but it's not worth building a proper CI pipeline for it." Issue triage, doc sync, dependency scanning, stale PR nudges — these are the tasks that fall through the cracks because nobody wants to maintain a custom automation for each one.
+
+Set up two routines this week:
+1. **Nightly issue triage** — your team will notice immediately
+2. **Weekly dependency scan** — catches vulnerabilities before they become incidents
+
+Then expand from there. Your laptop will thank you for the sleep.
+
+## References
+
+### Sources
+- [Run Prompts on a Schedule — Official Docs](https://code.claude.com/docs/en/scheduled-tasks) - Scheduled tasks and routines documentation
+- [Claude Code Routines — Anthropic Announcement](https://9to5mac.com/2026/04/14/anthropic-adds-repeatable-routines-feature-to-claude-code-heres-how-it-works/) - Feature launch coverage
+- [Claude Code Can Now Do Your Job Overnight — The New Stack](https://thenewstack.io/claude-code-can-now-do-your-job-overnight/) - Production use cases and patterns
+
+### Further Reading
+- [Claude Code Headless Mode: The CI/CD Automation Playbook](/blog/claude-code-headless-mode-cicd-automation-playbook) - Headless mode for CI pipeline integration
+- [Claude Code GitHub Actions: Automate PR Reviews](/blog/claude-code-github-actions-pr-automation-guide) - GitHub-specific automation with Actions
+- [Claude Code Hooks & Custom Agents](/blog/claude-code-hooks-custom-agents-ai-pipelines-guide) - Building custom automation pipelines
+
+---
+
+~Seb 👊
