@@ -60,12 +60,12 @@ export function AboutAwwwards() {
 
             <div className="about-editorial-bio">
               <p>
-                <strong>Sebastian</strong> — Fractional CTO & AI specialist with 10+ years
+                <strong>Sebastian</strong> — Senior software developer & AI specialist with 10+ years
                 turning complex technical challenges into competitive advantages.
               </p>
               <p>
                 From startups to enterprises, I've shipped products that scale
-                and led teams that deliver.
+                and written code that ships.
               </p>
             </div>
 

@@ -138,7 +138,7 @@ export async function GET(req: NextRequest) {
                 codewithseb
               </div>
               <div style={{ fontSize: '14px', color: 'rgba(255,255,255,0.4)' }}>
-                Fractional CTO & AI Automation
+                Senior Software Dev & AI Specialist
               </div>
             </div>
           </div>

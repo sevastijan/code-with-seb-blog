@@ -1,13 +1,13 @@
 import type { Metadata } from 'next';
 
 export const metadata: Metadata = {
-  title: 'Fractional CTO — Strategic AI-Powered Technical Leadership',
+  title: 'Technical Consulting — Senior Engineering Judgment On Demand',
   description:
-    'Fractional CTO services for startups and scale-ups. AI strategy, team building, architecture decisions, and technical leadership — without the full-time cost.',
+    'Technical consulting for startups and scale-ups. Architecture review, AI strategy, code review, and senior engineering judgment — from someone who ships production code.',
   openGraph: {
-    title: 'Fractional CTO — Strategic AI-Powered Technical Leadership',
+    title: 'Technical Consulting — Senior Engineering Judgment On Demand',
     description:
-      'Fractional CTO services: AI strategy, team building, and architecture decisions without the full-time cost.',
+      'Technical consulting: architecture review, AI strategy, and code review from a senior software developer who ships production code.',
   },
 };
 

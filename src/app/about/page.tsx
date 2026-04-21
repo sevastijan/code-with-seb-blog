@@ -289,7 +289,7 @@ export default function AboutPage() {
                     <span className="abt-code-op">=</span>{' '}
                     <span className="abt-code-bracket">{'{'}</span>
                     <br />
-                    {'  '}<span className="abt-code-key">role</span>: <span className="abt-code-string">&quot;Fractional CTO&quot;</span>,
+                    {'  '}<span className="abt-code-key">role</span>: <span className="abt-code-string">&quot;Senior Software Dev&quot;</span>,
                     <br />
                     {'  '}<span className="abt-code-key">focus</span>: <span className="abt-code-string">&quot;AI + Web&quot;</span>,
                     <br />

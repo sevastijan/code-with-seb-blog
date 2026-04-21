@@ -34,13 +34,13 @@ const coreServices = [
   {
     id: '03',
     slug: 'consulting',
-    title: 'LEAD',
-    subtitle: 'Fractional CTO',
-    tagline: 'Vision that wins',
-    description: 'Strategic technology leadership without the full-time cost. AI strategy, team building, and architecture decisions.',
+    title: 'ADVISE',
+    subtitle: 'Technical Consulting',
+    tagline: 'Senior eyes on your code',
+    description: 'Senior engineering judgment on demand. Architecture review, AI strategy, and code review — from someone who ships production code every week.',
     color: '#8b5cf6',
-    features: ['Tech Strategy', 'AI Integration', 'Team Building', 'Architecture Review'],
-    stats: { value: '8+', label: 'Years Experience' },
+    features: ['Architecture Review', 'AI Integration', 'Code Review', 'Technical Strategy'],
+    stats: { value: '10+', label: 'Years Experience' },
   },
 ];
 

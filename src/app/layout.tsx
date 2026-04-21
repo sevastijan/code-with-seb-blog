@@ -49,13 +49,13 @@ const siteUrl = "https://codewithseb.com";
 export const metadata: Metadata = {
   metadataBase: new URL(siteUrl),
   title: {
-    default: "Code With Seb — Fractional CTO & AI Automation Expert",
+    default: "Code With Seb — Senior Software Developer & AI Specialist",
     template: "%s | Code With Seb",
   },
   description:
-    "Fractional CTO & AI automation expert. I help startups and scale-ups ship faster with AI-powered development, custom agents, and strategic technical leadership.",
+    "Senior software developer & AI specialist. I help startups and scale-ups ship faster with AI-powered development, custom agents, and hands-on engineering.",
   keywords: [
-    "fractional CTO",
+    "senior software developer",
     "AI automation",
     "AI agents",
     "web development",
@@ -78,12 +78,12 @@ export const metadata: Metadata = {
     locale: "en_US",
     url: siteUrl,
     siteName: "Code With Seb",
-    title: "Code With Seb — Fractional CTO & AI Automation Expert",
+    title: "Code With Seb — Senior Software Developer & AI Specialist",
     description:
-      "I help startups and scale-ups ship faster with AI-powered development, custom agents, and strategic technical leadership.",
+      "I help startups and scale-ups ship faster with AI-powered development, custom agents, and hands-on engineering.",
     images: [
       {
-        url: `/og?title=${encodeURIComponent("Code With Seb — Fractional CTO & AI Automation Expert")}`,
+        url: `/og?title=${encodeURIComponent("Code With Seb — Senior Software Developer & AI Specialist")}`,
         width: 1200,
         height: 630,
         alt: "Code With Seb",
@@ -92,10 +92,10 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: "summary_large_image",
-    title: "Code With Seb — Fractional CTO & AI Automation Expert",
+    title: "Code With Seb — Senior Software Developer & AI Specialist",
     description:
-      "I help startups and scale-ups ship faster with AI-powered development, custom agents, and strategic technical leadership.",
-    images: [`/og?title=${encodeURIComponent("Code With Seb — Fractional CTO & AI Automation Expert")}`],
+      "I help startups and scale-ups ship faster with AI-powered development, custom agents, and hands-on engineering.",
+    images: [`/og?title=${encodeURIComponent("Code With Seb — Senior Software Developer & AI Specialist")}`],
   },
   robots: {
     index: true,
@@ -118,9 +118,9 @@ const personSchema = {
   "@type": "Person",
   name: "Sebastian Sleczka",
   url: siteUrl,
-  jobTitle: "Fractional CTO & AI Automation Expert",
+  jobTitle: "Senior Software Developer & AI Specialist",
   description:
-    "Fractional CTO and AI automation expert helping startups ship faster with AI-powered development and strategic technical leadership.",
+    "Senior software developer and AI specialist helping startups ship faster with AI-powered development and hands-on engineering.",
   sameAs: [
     "https://github.com/sevastijan",
     "https://www.linkedin.com/in/sebastiansleczka/",
@@ -134,8 +134,8 @@ const personSchema = {
     "Next.js",
     "React",
     "TypeScript",
-    "Technical Leadership",
     "Software Architecture",
+    "Code Review",
   ],
 };
 
@@ -145,7 +145,7 @@ const websiteSchema = {
   name: "Code With Seb",
   url: siteUrl,
   description:
-    "Fractional CTO & AI automation expert. Blog about AI, web development, and building products.",
+    "Senior software developer & AI specialist. Blog about AI, web development, and building products.",
   author: { "@type": "Person", name: "Sebastian Sleczka" },
   potentialAction: {
     "@type": "SearchAction",
@@ -160,15 +160,15 @@ const businessSchema = {
   name: "Code With Seb",
   url: siteUrl,
   description:
-    "AI automation, web development, and fractional CTO services for startups and scale-ups.",
+    "AI automation, web development, and technical consulting for startups and scale-ups.",
   founder: { "@type": "Person", name: "Sebastian Sleczka" },
   areaServed: "Worldwide",
   serviceType: [
     "AI Automation",
     "AI Agent Development",
     "Web Application Development",
-    "Fractional CTO",
     "Technical Consulting",
+    "Architecture Review",
   ],
   priceRange: "$$$",
   address: {

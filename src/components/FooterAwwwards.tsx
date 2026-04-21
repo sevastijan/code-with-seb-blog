@@ -13,7 +13,7 @@ const aiServices = [
 const devServices = [
   { name: 'Web Development', href: '/services/development' },
   { name: 'Technical Architecture', href: '/services/development' },
-  { name: 'Fractional CTO', href: '/services/consulting' },
+  { name: 'Technical Consulting', href: '/services/consulting' },
   { name: 'Code Review', href: '/services/development' },
 ];
 

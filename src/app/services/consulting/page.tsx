@@ -16,9 +16,9 @@ const whatYouGet = [
   },
   {
     icon: Users,
-    title: 'Team Building & Leadership',
-    description: 'Hiring the right engineers, structuring teams for velocity, and creating a culture where good people want to stay. I\'ve built teams from 2 to 20+.',
-    details: ['Hiring process design & interviews', 'Team structure & org design', 'Engineering culture & practices', 'Performance frameworks'],
+    title: 'Code Review & Mentoring',
+    description: 'Senior eyes on your codebase and your team. I review PRs, pair on hard problems, and level up your engineers — without stepping on toes.',
+    details: ['PR review & feedback', 'Pair programming on hard problems', 'Engineering best practices', 'Mentoring mid-level engineers'],
   },
   {
     icon: FileSearch,
@@ -36,24 +36,24 @@ const whatYouGet = [
 
 const engagementModels = [
   {
-    title: 'Fractional CTO',
-    description: 'Ongoing technical leadership for your company. I join your team part-time, attend key meetings, make architecture decisions, and guide your engineering org.',
-    ideal: 'Startups that need senior technical leadership but aren\'t ready for a full-time CTO hire.',
+    title: 'Embedded Senior Dev',
+    description: 'I join your team part-time as a senior engineer. I ship code, review PRs, pair on hard problems, and mentor your team — all hands-on, no ivory tower.',
+    ideal: 'Teams that need a senior IC to raise the bar on code quality and unblock hard technical problems.',
     commitment: '10-20 hrs/week',
     duration: '3-12 months',
     color: '#8b5cf6',
   },
   {
     title: 'Advisory Retainer',
-    description: 'Strategic access on demand. Weekly or bi-weekly calls, async Slack access, and document reviews. Think of it as a CTO on speed dial.',
-    ideal: 'Founders who need a technical sounding board and occasional deep dives.',
+    description: 'Strategic access on demand. Weekly or bi-weekly calls, async Slack access, and document reviews. Think of it as a senior engineer on speed dial.',
+    ideal: 'Founders and teams that need a technical sounding board and occasional deep dives.',
     commitment: '4-8 hrs/month',
     duration: 'Ongoing',
     color: '#8b5cf6',
   },
   {
     title: 'Project-Based',
-    description: 'Focused engagement for a specific challenge: architecture review, AI strategy workshop, hiring sprint, or technology migration planning. AI-assisted analysis means I deliver in days, not weeks.',
+    description: 'Focused engagement for a specific challenge: architecture review, AI strategy workshop, code audit, or technology migration planning. AI-assisted analysis means I deliver in days, not weeks.',
     ideal: 'Companies facing a specific technical decision or transition.',
     commitment: 'Full focus',
     duration: '2-5 days',
@@ -65,12 +65,12 @@ const whoIWorkWith = [
   {
     icon: Building2,
     title: 'Funded Startups',
-    description: 'Seed to Series B companies that need technical leadership to match their ambition. I help you build the right thing, the right way, with the right team.',
+    description: 'Seed to Series B companies that need senior engineering judgment to match their ambition. I help you build the right thing, the right way, alongside your team.',
   },
   {
     icon: TrendingUp,
     title: 'Scale-ups',
-    description: 'Growing companies hitting technical growing pains. Architecture that worked at 10 users doesn\'t work at 10,000. I help you navigate that transition.',
+    description: 'Growing companies hitting technical growing pains. Architecture that worked at 10 users doesn\'t work at 10,000. I help you navigate that transition — with code, not slides.',
   },
   {
     icon: Scale,
@@ -80,37 +80,37 @@ const whoIWorkWith = [
   {
     icon: UserCheck,
     title: 'Non-Technical Founders',
-    description: 'You have the vision and domain expertise. I provide the technical judgment: what to build, who to hire, and how to avoid expensive mistakes.',
+    description: 'You have the vision and domain expertise. I provide the technical judgment: what to build, what to skip, and how to avoid expensive mistakes.',
   },
 ];
 
 const results = [
   { metric: '50+', label: 'Projects delivered', desc: 'Across AI, web, and mobile' },
-  { metric: '8+', label: 'Years in tech leadership', desc: 'From IC to team lead to CTO' },
-  { metric: '20+', label: 'Teams built & scaled', desc: 'From founding engineer to 20+ dev org' },
+  { metric: '10+', label: 'Years shipping code', desc: 'From junior dev to senior IC' },
+  { metric: '1000+', label: 'PRs reviewed', desc: 'Across startups and enterprise codebases' },
   { metric: '100+', label: 'AI automations shipped', desc: 'Agents, workflows, integrations' },
 ];
 
 const faqs = [
   {
-    q: 'What makes a Fractional CTO different from a consultant?',
-    a: 'A consultant gives advice and leaves. A Fractional CTO is embedded in your company — I attend your standups, review PRs, interview candidates, and make real-time decisions. I have skin in the game because my reputation is tied to your outcomes.',
+    q: 'How is this different from hiring a typical consultant?',
+    a: 'Most consultants give advice from the sidelines and leave. I work inside your codebase — I open PRs, review your team\'s code, pair on hard bugs, and sit in your standups if that\'s useful. Advice is cheap when nobody has to ship it. I do both.',
   },
   {
-    q: 'How do you handle conflicts with existing technical staff?',
-    a: 'With respect and transparency. I\'m not here to overrule your engineers — I\'m here to amplify them. I listen first, understand the history and constraints, and then propose changes collaboratively. The best technical leaders make everyone around them better.',
+    q: 'How do you work alongside existing engineers?',
+    a: 'As a peer, not as an overseer. I listen first, read the code, understand the history and constraints, and then propose changes collaboratively. The goal is to raise the bar on quality and unblock hard problems — not to take credit or override your team.',
   },
   {
-    q: 'What if we eventually hire a full-time CTO?',
-    a: 'That\'s the goal for most engagements. I help you define the role, source candidates, run the interview process, and then do a proper handoff. A good Fractional CTO builds the foundation so the full-time hire can hit the ground running.',
+    q: 'Do you also write code, or just review it?',
+    a: 'Both. I\'m a hands-on senior developer — reviewing code is a core part of the job, but I also ship production features, prototype AI integrations, and pair on the problems your team has been stuck on. If you just need a reviewer, that\'s fine too.',
   },
   {
-    q: 'Can you help with fundraising?',
-    a: 'I\'m not a fundraising advisor, but I regularly help with the technical side of investor conversations: building the tech narrative for pitch decks, demonstrating AI integration strategy, and preparing data rooms. Investors want to know the tech is solid and AI-forward — I help you prove it.',
+    q: 'Can you help with technical due diligence?',
+    a: 'Yes. I regularly help with the technical side of investor conversations: honest assessments of codebases, architecture risk reports, and AI integration readiness. Investors want to know the tech is solid — I help you prove it (or find out it isn\'t, before they do).',
   },
   {
     q: 'How quickly can you ramp up?',
-    a: 'Fast. AI-assisted codebase analysis means I understand your architecture in hours, not weeks. I typically spend 2-3 days in deep-dive mode, and by the end of the first week I\'m making meaningful contributions. By week 3, I\'m fully embedded.',
+    a: 'Fast. AI-assisted codebase analysis means I understand your architecture in hours, not weeks. I typically spend 2-3 days in deep-dive mode, and by the end of the first week I\'m opening meaningful PRs. By week 3, I\'m fully productive in your codebase.',
   },
 ];
 
@@ -157,7 +157,7 @@ export default function ConsultingServicePage() {
           className="srv-hero-giant"
           style={{ transform: `translate(${mousePos.x * -30}px, ${mousePos.y * -30}px)` }}
         >
-          <span className="srv-hero-giant-text" style={{ color: 'rgba(139, 92, 246, 0.03)' }}>CTO</span>
+          <span className="srv-hero-giant-text" style={{ color: 'rgba(139, 92, 246, 0.03)' }}>DEV</span>
         </div>
 
         <div className="container relative z-10">
@@ -172,20 +172,20 @@ export default function ConsultingServicePage() {
                 className="srv-hero-title-line srv-hero-title-line-1"
                 style={{ transform: `translate(${mousePos.x * 20}px, ${mousePos.y * 10}px)` }}
               >
-                Fractional
+                Technical
               </span>
               <span
                 className="srv-hero-title-line srv-hero-title-line-2"
                 style={{ transform: `translate(${mousePos.x * -15}px, ${mousePos.y * -8}px)` }}
               >
-                <span style={{ color: '#8b5cf6' }}>CTO</span>
+                <span style={{ color: '#8b5cf6' }}>Consulting</span>
               </span>
             </h1>
 
             <p className="srv-hero-subtitle">
-              Strategic technology leadership without the full-time cost.
+              Senior engineering judgment on demand — without a full-time hire.
               <br />
-              <span className="text-[var(--c-text-muted)]">Vision, architecture, and team building — on your terms.</span>
+              <span className="text-[var(--c-text-muted)]">Architecture, code review, and AI strategy — from someone who ships code.</span>
             </p>
 
             <div className="flex flex-wrap items-center gap-4 mt-8">
@@ -209,11 +209,11 @@ export default function ConsultingServicePage() {
           <div className="srv-process-header">
             <span className="label">The Challenge</span>
             <h2 className="srv-process-title">
-              You Need a CTO,
-              <span className="text-stroke"> Not a Hire</span>
+              You Need Senior Judgment,
+              <span className="text-stroke"> Not More Headcount</span>
             </h2>
             <p className="srv-derivative-desc" style={{ maxWidth: '680px', margin: '0 auto' }}>
-              Hiring a full-time CTO costs $200-400K+ and takes 3-6 months. You need the expertise now. With AI-powered analysis I ramp up in days, not months — delivering senior technical leadership at a fraction of the cost and time.
+              Hiring a senior engineer takes 3-6 months and $150-250K fully loaded. You need experienced judgment on specific problems — now, not next quarter. With AI-assisted codebase analysis I ramp up in days and contribute as a senior IC at a fraction of the cost.
             </p>
           </div>
 
@@ -243,11 +243,11 @@ export default function ConsultingServicePage() {
           <div className="srv-derivative-header">
             <span className="label">What You Get</span>
             <h2 className="srv-derivative-title">
-              Real
-              <span style={{ color: '#8b5cf6' }}> Leadership</span>
+              Hands-on
+              <span style={{ color: '#8b5cf6' }}> Engineering</span>
             </h2>
             <p className="srv-derivative-desc">
-              Not advice from the sidelines. Hands-on technical leadership embedded in your company.
+              Not advice from the sidelines. A senior developer embedded in your codebase and your team.
             </p>
           </div>
 
@@ -406,11 +406,11 @@ export default function ConsultingServicePage() {
         <div className="container relative z-10">
           <div className="srv-cta-content">
             <h2 className="srv-cta-title">
-              Need a
-              <span className="srv-cta-title-accent"> CTO?</span>
+              Need senior
+              <span className="srv-cta-title-accent"> engineering eyes?</span>
             </h2>
             <p className="srv-cta-desc">
-              Let&apos;s talk about where your company is and where you want to go.
+              Let&apos;s talk about the problem you&apos;re stuck on and where you want to go.
               <br />
               30-minute discovery call — no pitch, just clarity.
             </p>

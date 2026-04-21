@@ -54,7 +54,7 @@ export default function HomePage() {
             {/* Intro */}
             <ScrollFade delay={0}>
               <div className="mb-6 relative">
-                <span className="label">@codewithseb • Fractional CTO & AI Expert</span>
+                <span className="label">@codewithseb • Senior Software Developer & AI Specialist</span>
               </div>
             </ScrollFade>
 
@@ -75,11 +75,11 @@ export default function HomePage() {
               </div>
             </ScrollScale>
 
-            {/* Tagline - AI expert + CTO */}
+            {/* Tagline */}
             <ScrollFade delay={50}>
               <div className="max-w-lg mb-10">
                 <p className="text-xl md:text-2xl leading-relaxed">
-                  <span className="text-[var(--c-text)]">Fractional CTO & AI specialist.</span>
+                  <span className="text-[var(--c-text)]">Senior software developer & AI specialist.</span>
                   <span className="text-[var(--c-text-muted)]"> Turning complex tech into competitive advantage.</span>
                 </p>
               </div>
