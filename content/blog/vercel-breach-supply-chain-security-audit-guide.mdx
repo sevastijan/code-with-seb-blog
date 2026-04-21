@@ -1,0 +1,402 @@
+---
+title: "The Vercel Breach Playbook: How to Audit Your Next.js App's Supply Chain Security"
+date: '2026-04-22'
+category: 'Development'
+tags: ['security', 'supply-chain', 'nextjs', 'vercel', 'oauth']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: "The Vercel breach started with a browser extension. Not a code vulnerability — an OAuth token from an AI tool. Here's the practical supply chain security audit every Next.js team should run this week."
+---
+
+The Vercel breach didn't start with a zero-day. It didn't start with a misconfigured firewall or a SQL injection nobody patched. It started with a browser extension.
+
+Specifically, the Context.ai browser extension — an AI productivity tool — had been granted broad OAuth scopes by a Vercel employee. That compromised OAuth token gave attackers a foothold into Vercel's internal systems. From there, they moved laterally. The breach exposed source code, internal tooling, and potentially customer deployment metadata.
+
+If you're running a Next.js app on Vercel right now, the attack surface that enabled this breach probably exists in your organization too. Not because Vercel did something uniquely wrong — but because the supply chain attack vector they got hit with is the same one sitting in your team's browser profiles, your GitHub OAuth integrations, and your `.env` files right now.
+
+I spent the weekend after the disclosure running a full supply chain audit on every project I manage. Here's the playbook I used, turned into a step-by-step guide you can hand to your team lead on Monday morning.
+
+## The Attack Vector: Why Browser Extensions Are the New Supply Chain Risk
+
+Let's talk about what actually happened. A Vercel employee installed Context.ai, a browser extension designed to help with AI-assisted workflows. During setup, the extension requested OAuth permissions — likely read access to GitHub repositories, maybe Google Workspace data, potentially browser session tokens.
+
+This is the part that matters: **browser extensions operate with the full permissions of the logged-in user**. When you grant an extension OAuth access to your GitHub account, it gets the same scopes you have. If you're an org admin, that extension now has org admin access. If you have write access to production deployment configs, so does the extension.
+
+The traditional supply chain attack hits your `node_modules`. You worry about typosquatting on npm, malicious postinstall scripts, compromised maintainer accounts. That's still real — but the browser extension vector is arguably worse because:
+
+1. **No code review catches it.** Nobody reviews what extensions your team installs. There's no PR for "I added a Chrome extension."
+2. **OAuth scopes are sticky.** Once granted, permissions persist until explicitly revoked. Most people never audit their OAuth app connections.
+3. **The blast radius is huge.** A single compromised extension on a single engineer's browser can access every service that engineer is authenticated to — GitHub, Vercel, AWS console, Google Cloud, Slack, Notion, Linear, everything.
+
+This is the same class of risk I covered in the [AI tool security context](/blog/prompt-injection-attacks-llm-security-guide) — when you give a tool broad access to act on your behalf, you're trusting the entire supply chain behind that tool. The Context.ai extension wasn't malicious by design. But its OAuth tokens were valuable, and they were compromised.
+
+Now let's audit your stack.
+
+## Audit Step 1: Environment Variable Hygiene
+
+Start with the most obvious attack surface: your secrets.
+
+Open your Vercel dashboard right now. Go to Settings → Environment Variables. Look at every single entry. For each one, ask two questions:
+
+1. **Does this need to be here?** If it's a secret that's only used during local development, it shouldn't be in Vercel at all.
+2. **When was this last rotated?** If the answer is "when we set up the project," that's your first action item.
+
+Here's what should and shouldn't live in your Vercel dashboard:
+
+**Belongs in Vercel:**
+- Database connection strings (production only)
+- Third-party API keys that the server needs at runtime
+- Authentication secrets (NextAuth/Auth.js secret, JWT signing keys)
+- Webhook signing secrets
+
+**Does NOT belong in Vercel:**
+- Personal access tokens (GitHub PATs, npm tokens)
+- CI/CD tokens (these belong in GitHub Actions secrets)
+- Development-only keys (Stripe test keys, local database URLs)
+- Shared team credentials (these should be in a secrets manager like Vault or AWS Secrets Manager)
+
+A critical Next.js-specific point: **anything prefixed with `NEXT_PUBLIC_` is bundled into your client-side JavaScript**. It is not secret. It is literally shipped to every browser that loads your app. I still see teams putting API keys in `NEXT_PUBLIC_` variables because "the app needs it in the browser." If the browser needs it, the world has it. Design accordingly.
+
+```bash
+# Quick check: what's exposed client-side in your build?
+grep -r "NEXT_PUBLIC_" .env* --include="*.env*"
+grep -r "process.env.NEXT_PUBLIC_" src/ app/ --include="*.ts" --include="*.tsx"
+```
+
+The distinction between build-time and runtime environment variables in Next.js catches people constantly. Build-time variables (including all `NEXT_PUBLIC_` vars) get inlined during `next build`. Runtime variables are read when the server starts. If you rotate a build-time secret, you need to redeploy. If you rotate a runtime secret, you need to restart the server process. Vercel handles this reasonably well with its environment variable scoping (Production, Preview, Development), but only if you've set it up correctly.
+
+## Audit Step 2: Rotate All Secrets
+
+After the Vercel disclosure, the safe assumption is that any secret accessible through Vercel's infrastructure should be treated as potentially compromised. Yes, Vercel said the blast radius was limited. No, you should not trust that assessment when your production database credentials are on the line.
+
+Here's the rotation checklist:
+
+```markdown
+## Secret Rotation Checklist
+
+### Immediate (do today)
+- [ ] Database credentials (connection strings, passwords)
+- [ ] NextAuth / Auth.js SECRET
+- [ ] JWT signing keys
+- [ ] API keys for payment processors (Stripe, Paddle)
+- [ ] OAuth client secrets (Google, GitHub, etc.)
+- [ ] Webhook signing secrets
+
+### Within 48 hours
+- [ ] Third-party SaaS API keys (SendGrid, Resend, Twilio)
+- [ ] Cloud provider credentials (AWS access keys, GCP service accounts)
+- [ ] CDN and storage tokens (Cloudflare, S3 presigned URL secrets)
+- [ ] Analytics and monitoring tokens
+
+### Within one week
+- [ ] npm publish tokens
+- [ ] Docker registry credentials
+- [ ] SSH keys used in deployment
+- [ ] Any "legacy" secrets that "we should rotate eventually"
+```
+
+When you rotate, don't just change the value in the Vercel dashboard. Change it at the source first (e.g., regenerate the key in Stripe's dashboard), then update Vercel, then redeploy. If you update Vercel first, there's a window where the old key is revoked but the new one isn't deployed yet — and your app goes down.
+
+For teams managing multiple projects, this is where secret rotation automation becomes essential. Tools like [Doppler](https://www.doppler.com/), [Infisical](https://infisical.com/), or HashiCorp Vault can propagate rotated secrets across all your environments simultaneously. If you're still copy-pasting secrets between dashboards, the Vercel breach is your sign to stop.
+
+## Audit Step 3: Review OAuth Apps Connected to Your Org
+
+This is the step most teams skip, and it's the one that would have prevented the Vercel breach.
+
+Go to GitHub → Settings → Applications → Authorized OAuth Apps. Look at every single app listed there. For your organization, go to Organization Settings → Third-party access → OAuth application policy.
+
+You're looking for:
+
+- **Apps you don't recognize.** If you don't know what it is, revoke it.
+- **Apps with excessive scopes.** Does a code formatting tool really need `repo:write` access? Does an analytics dashboard need `admin:org`?
+- **Apps that haven't been used in months.** Stale authorizations are free attack surface.
+- **AI tools with broad permissions.** This is the exact vector that hit Vercel. Copilot, Cody, Cursor integrations, any AI tool that connects via OAuth.
+
+Do the same for Google Workspace: Google Account → Security → Third-party apps with account access.
+
+And for Vercel itself: Vercel Dashboard → Settings → Integrations. Review every connected integration.
+
+```markdown
+## OAuth Audit Checklist
+- [ ] GitHub personal OAuth apps (github.com/settings/applications)
+- [ ] GitHub organization OAuth policy (org settings → Third-party access)
+- [ ] Google Workspace third-party apps
+- [ ] Vercel integrations and connected apps
+- [ ] Slack app connections
+- [ ] Linear / Jira / project management tool integrations
+- [ ] Any SSO/SAML connected applications
+```
+
+For organizations, enable OAuth app restrictions at the GitHub org level. This requires admin approval before any OAuth app can access org data. Yes, it adds friction when someone wants to try a new tool. That friction is a feature, not a bug.
+
+## Audit Step 4: Audit Browser Extensions Across Your Team
+
+This is the hard one. You can't easily see what browser extensions your team members have installed. But you can establish a policy and run an audit.
+
+**For individuals**, open `chrome://extensions/` (or the equivalent in your browser). For each extension:
+
+1. Check its permissions. Click "Details" and look at "Site access" and "Permissions."
+2. Google the extension name plus "security" or "breach." Has it been compromised before?
+3. Check when it was last updated. Abandoned extensions are acquisition targets — bad actors buy them and push a malicious update.
+4. Ask yourself: do I actually use this? If not, remove it.
+
+**For teams**, here's the policy I now enforce:
+
+```markdown
+## Browser Extension Policy for Engineering Teams
+
+### Approved categories
+- Password managers (1Password, Bitwarden)
+- Ad blockers (uBlock Origin)
+- Accessibility tools
+- Company-approved dev tools only
+
+### Requires security review before install
+- Any AI assistant or copilot extension
+- Any extension requesting OAuth access to GitHub/Google/cloud providers
+- Any extension with "read and change all your data on all websites" permission
+
+### Banned
+- Extensions from unknown publishers with <1000 users
+- Extensions that haven't been updated in 12+ months
+- Any extension requesting permissions beyond its stated purpose
+```
+
+If your company uses managed Chrome profiles or an MDM solution, you can enforce extension allowlists at the organizational level. This is the single highest-ROI security control you can implement after the Vercel breach.
+
+Teams adopting [AI developer tools at scale](/blog/claude-code-team-leads-onboarding-guide) need to treat extension security as part of the onboarding checklist, not an afterthought.
+
+## Audit Step 5: Check Build Logs for Cached Credentials
+
+Vercel build logs can inadvertently contain secrets. This happens more often than you'd think:
+
+- A build script that `echo`s environment variables for debugging
+- A failed build that dumps the environment in an error trace
+- A dependency that logs its configuration at startup, including connection strings
+- Test runners that print API responses containing tokens
+
+Go to your Vercel dashboard, open the Deployments tab, and read through the build logs for your last five deployments. Search for patterns that look like secrets:
+
+```bash
+# Patterns to search for in build logs
+sk_live_     # Stripe live keys
+sk_test_     # Stripe test keys
+ghp_         # GitHub personal access tokens
+gho_         # GitHub OAuth tokens
+AKIA         # AWS access key IDs
+xoxb-        # Slack bot tokens
+SG.          # SendGrid API keys
+re_          # Resend API keys
+mongodb+srv  # MongoDB connection strings
+postgres://  # PostgreSQL connection strings
+```
+
+If you find any, those secrets are compromised. Rotate them immediately. Then fix the build script that leaked them.
+
+For Next.js apps specifically, watch out for `next.config.js` or `next.config.mjs` that passes secrets through `env` or `publicRuntimeConfig`:
+
+```javascript
+// DON'T DO THIS — secrets end up in build output
+module.exports = {
+  env: {
+    DATABASE_URL: process.env.DATABASE_URL, // This gets inlined!
+  },
+};
+
+// DO THIS — use serverRuntimeConfig for server-only secrets
+module.exports = {
+  serverRuntimeConfig: {
+    databaseUrl: process.env.DATABASE_URL,
+  },
+  publicRuntimeConfig: {
+    // Only non-secret values here
+    apiBaseUrl: process.env.NEXT_PUBLIC_API_URL,
+  },
+};
+```
+
+Better yet, skip `publicRuntimeConfig` entirely and use `NEXT_PUBLIC_` env vars directly. And access server-only secrets through `process.env` in Server Components, Route Handlers, and Server Actions — never through config that might get serialized to the client.
+
+## Audit Step 6: Review .env Files
+
+This is about understanding what lives where, and making sure nothing is in the wrong place.
+
+Your project should have a clear `.env` file hierarchy:
+
+```
+.env                  # Shared defaults (non-secret, committed)
+.env.local            # Local overrides (secret, gitignored)
+.env.development      # Development defaults (non-secret, committed)
+.env.production       # Production defaults (non-secret, committed)
+.env.production.local # Production secrets (gitignored, should not exist)
+```
+
+Run this check right now:
+
+```bash
+# Verify .env.local is gitignored
+grep ".env.local" .gitignore
+grep ".env*.local" .gitignore
+
+# Check if any .env.local files have been committed
+git log --all --diff-filter=A -- "*.env.local" ".env.local"
+
+# Check if secrets appear in committed .env files
+git log -p -- ".env" ".env.development" ".env.production" | grep -i "secret\|password\|token\|key"
+```
+
+If `git log` shows that `.env.local` was ever committed, those secrets are in your git history forever (unless you rewrite history with `git filter-branch` or BFG Repo Cleaner). Even if you deleted the file in a later commit, the secrets are recoverable from history. Rotate them.
+
+The same applies to hardened [enterprise security setups](/blog/claude-code-security-hardening-enterprise-guide) — if your AI tooling or automation ever writes secrets to files that get committed, your git history becomes a liability.
+
+Here's the mental model I use:
+
+- **`.env` (committed):** Variable names and non-secret defaults. `NEXT_PUBLIC_SITE_URL=http://localhost:3000`
+- **`.env.local` (gitignored):** Actual secrets for local dev. `DATABASE_URL=postgres://...`
+- **Vercel dashboard:** Production and preview secrets. Nothing else.
+- **Secrets manager:** Anything shared across multiple services or teams.
+
+If a value appears in both `.env.local` and the Vercel dashboard, make sure they're different values. Your local development should use test/sandbox credentials, never production keys.
+
+## The "Zero Trust for Dev Tools" Mindset
+
+The Vercel breach is a symptom of a larger problem: we trust our developer tools implicitly. We install extensions without reading permissions. We grant OAuth access without checking scopes. We paste production secrets into `.env.local` files on laptops with who-knows-what running in the background.
+
+Zero trust for dev tools means:
+
+1. **Every tool gets minimum viable permissions.** If an extension only needs to read the current page, it doesn't get access to all websites. If a GitHub integration only needs read access to one repo, it doesn't get org-wide write access.
+
+2. **Every permission grant has an expiration.** OAuth tokens should be rotated regularly. GitHub fine-grained personal access tokens let you set expiration dates — use them instead of classic PATs that never expire.
+
+3. **Every team member's access is auditable.** You should be able to answer: "What third-party tools have access to our GitHub org?" without asking each person individually.
+
+4. **Every secret has a rotation schedule.** Not "rotate when there's a breach." Rotate on a cadence — quarterly at minimum, monthly for high-value secrets.
+
+5. **Every new tool goes through a security review.** It doesn't have to be a formal 20-page assessment. A 15-minute checklist: What permissions does it need? Who maintains it? Has it had security incidents? What data does it access?
+
+## The Complete Supply Chain Security Checklist
+
+Print this. Hand it to every tech lead on your team. Run through it this week.
+
+```markdown
+# Next.js Supply Chain Security Audit Checklist
+
+## Environment Variables
+- [ ] Review all variables in Vercel dashboard
+- [ ] Remove any that aren't actively used
+- [ ] Confirm no NEXT_PUBLIC_ vars contain secrets
+- [ ] Verify build-time vs runtime variable usage is correct
+- [ ] Check that .env.local is gitignored
+- [ ] Confirm no secrets in committed .env files
+- [ ] Search git history for accidentally committed secrets
+
+## Secret Rotation
+- [ ] Rotate database credentials
+- [ ] Rotate authentication secrets (NextAuth, JWT keys)
+- [ ] Rotate payment processor API keys
+- [ ] Rotate OAuth client secrets
+- [ ] Rotate third-party SaaS API keys
+- [ ] Rotate cloud provider credentials
+- [ ] Set up rotation schedule (calendar reminders at minimum)
+
+## OAuth & Integrations
+- [ ] Audit GitHub authorized OAuth apps (personal)
+- [ ] Audit GitHub org OAuth application policy
+- [ ] Enable org-level OAuth app restrictions
+- [ ] Audit Google Workspace third-party app access
+- [ ] Audit Vercel integrations
+- [ ] Revoke any unused or unrecognized authorizations
+- [ ] Switch to fine-grained GitHub PATs with expiration dates
+
+## Browser Extensions
+- [ ] Audit all installed browser extensions (each team member)
+- [ ] Remove unused extensions
+- [ ] Establish extension approval policy
+- [ ] Configure extension allowlist (if using managed browsers)
+- [ ] Specifically review AI tool extensions and their OAuth scopes
+
+## Build & Deployment
+- [ ] Review last 5 build logs for leaked secrets
+- [ ] Check next.config.js for secrets passed through env/publicRuntimeConfig
+- [ ] Verify no secrets in Docker layers or build cache
+- [ ] Confirm CI/CD secrets are scoped to the pipeline, not the Vercel dashboard
+- [ ] Enable deploy protection rules in Vercel (require approval for production)
+
+## Ongoing
+- [ ] Schedule quarterly secret rotation
+- [ ] Schedule monthly OAuth audit
+- [ ] Add secret scanning to CI (GitHub secret scanning, GitGuardian, or TruffleHog)
+- [ ] Document the team's approved tool list
+- [ ] Include security audit in onboarding checklist
+```
+
+## Secret Rotation Automation: Tools and Patterns
+
+Manual rotation doesn't scale. Here are the tools worth evaluating:
+
+**Doppler** — Syncs secrets across Vercel, AWS, GitHub Actions, and local dev environments. Change a secret in Doppler, it propagates everywhere. Has audit logs showing who accessed what and when.
+
+**Infisical** — Open-source alternative to Doppler. Self-hostable if compliance requires it. Native Vercel integration.
+
+**HashiCorp Vault** — The enterprise standard. Dynamic secrets (generates short-lived database credentials on demand), automatic rotation, detailed audit trails. Overkill for small teams, essential for regulated industries.
+
+**GitHub Secret Scanning** — Free for public repos, available for private repos on GitHub Enterprise. Alerts you when a secret is committed. Also has push protection to block commits containing secrets before they hit the repo.
+
+**TruffleHog** — Scans git history, file systems, and S3 buckets for secrets. Run it in CI to catch leaks before they merge.
+
+For a lightweight automation pattern that works without additional tooling:
+
+```bash
+#!/bin/bash
+# rotate-secrets.sh — Run monthly via cron or CI
+# This script reminds and tracks, it doesn't auto-rotate
+# (auto-rotation requires service-specific API calls)
+
+ROTATION_LOG="./security/rotation-log.json"
+DAYS_THRESHOLD=90
+
+echo "Checking secret rotation dates..."
+
+# Check each secret's last rotation date from the log
+jq -r '.secrets[] | select(
+  (now - (.lastRotated | fromdateiso8601)) > ('$DAYS_THRESHOLD' * 86400)
+) | "OVERDUE: \(.name) — last rotated \(.lastRotated)"' "$ROTATION_LOG"
+```
+
+The real automation comes from using secrets managers that support programmatic rotation. For example, AWS Secrets Manager can automatically rotate RDS database passwords on a schedule. Stripe lets you roll API keys programmatically. The pattern is: store the secret in a manager that supports rotation, configure the rotation schedule, and have your deployment pull secrets from the manager rather than from hardcoded environment variables.
+
+## What This Breach Should Change About Your Process
+
+The Vercel breach wasn't exotic. It was a browser extension with too many permissions, combined with an OAuth token that had too much access, targeting an employee with access to sensitive systems. Every link in that chain exists in most engineering organizations.
+
+The fix isn't one technical control. It's a mindset shift:
+
+- **Supply chain isn't just npm packages.** It's every tool, extension, integration, and OAuth connection in your development workflow.
+- **Developer machines are part of the attack surface.** What's installed on your team's laptops matters as much as what's deployed on your servers.
+- **Convenience is the enemy of security.** Every "Sign in with GitHub" click, every "Allow this extension" prompt, every "just paste the production key into .env.local" shortcut is a potential breach vector.
+
+Run the audit. Rotate the secrets. Establish the policies. The checklist above takes a team of five about half a day. That's cheap compared to the alternative.
+
+The next supply chain attack won't look like the last one. But the fundamentals — least privilege, secret hygiene, regular audits, and a healthy distrust of every tool in your chain — protect you regardless of the vector.
+
+### Sources
+
+- [Vercel Security Incident Disclosure (April 2026)](https://vercel.com/blog/security-incident-april-2026) — Vercel's official statement on the breach timeline, scope, and remediation
+- [Context.ai Browser Extension OAuth Compromise Analysis](https://www.bleepingcomputer.com/news/security/context-ai-extension-oauth-compromise/) — Technical breakdown of the extension-based attack vector
+- [Next.js Environment Variables Documentation](https://nextjs.org/docs/app/building-your-application/configuring/environment-variables) — Official docs on build-time vs runtime env var handling
+- [GitHub Fine-Grained Personal Access Tokens](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#fine-grained-personal-access-tokens) — Setting up scoped, expiring tokens
+- [OWASP Supply Chain Security Guide](https://owasp.org/www-project-software-component-verification-standard/) — Framework for evaluating supply chain risks in software projects
+
+### Further Reading
+
+- [Vercel Security Breach: What Next.js Developers Need to Know](/blog/vercel-security-breach-nextjs-developer-guide) — Deep dive into the breach details and immediate impact on the Next.js ecosystem
+- [Claude Code Security Hardening for Enterprise](/blog/claude-code-security-hardening-enterprise-guide) — Permissions, sandboxing, and audit trail patterns for AI agents in production
+- [Prompt Injection Attacks: The SQL Injection of the AI Era](/blog/prompt-injection-attacks-llm-security-guide) — Why AI tools with broad access create new classes of security vulnerabilities
+- [Doppler Secrets Management](https://www.doppler.com/) — Centralized secret syncing across Vercel, AWS, and local environments
+- [TruffleHog by Truffle Security](https://github.com/trufflesecurity/trufflehog) — Open-source tool for detecting secrets in git history, filesystems, and cloud storage
+- [Google OAuth Token Best Practices](https://developers.google.com/identity/protocols/oauth2/policies) — Scoping, expiration, and lifecycle management for OAuth tokens
+
+---
+
+~Seb 👊

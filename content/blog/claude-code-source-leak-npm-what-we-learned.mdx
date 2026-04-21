@@ -1,0 +1,178 @@
+---
+title: 'The Claude Code Source Leak: What We Learned from the NPM Map File'
+date: '2026-04-22'
+category: 'AI'
+tags: ['claude-code', 'security', 'npm', 'open-source', 'transparency']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: "Claude Code's source code leaked via a map file in the npm registry. The community found frustration regexes, undercover mode, and message filtering. Here's what the leak revealed, what it means for trust, and the technical details that actually matter."
+---
+
+On a quiet Tuesday morning, someone on Hacker News posted a link to a source map file inside the `@anthropic-ai/claude-code` npm package. Within hours, the entire source code of Claude Code — the minified TypeScript behind the CLI tool I use every day — was readable, searchable, and being dissected by thousands of developers.
+
+It wasn't a hack. It wasn't a whistleblower. A `.map` file shipped in the npm package, and the internet did what the internet does.
+
+I spent two days reading through the decompiled source, cross-referencing community findings, and running my own analysis. Here's what the leak actually revealed — what matters, what doesn't, and what it means for anyone who relies on [AI coding tools](/blog/ai-coding-tools-2026-developer-guide) for real work.
+
+## What Happened: The Source Map Incident
+
+When you publish a JavaScript or TypeScript package to npm, the build process often generates source map files (`.map` files). These map the minified, bundled production code back to the original source — every variable name, every comment, every function as the developer wrote it. They're essential for debugging. They are absolutely not meant for production distribution.
+
+Anthropic's build pipeline for Claude Code bundled the source into a single minified JavaScript file, as expected. But it also included the corresponding `.map` file in the published npm package. Anyone who ran `npm pack @anthropic-ai/claude-code` or simply browsed the npm registry could reconstruct the full, readable source.
+
+This isn't unprecedented. Source maps have leaked from production builds before — Chrome extensions, Electron apps, even banking portals. The difference here is that Claude Code is one of the most scrutinized developer tools on the market, and the community was hungry to see what was inside.
+
+Within 24 hours, multiple GitHub repositories appeared with the decompiled source. The Hacker News thread hit the front page. And the takes started flowing.
+
+## What the Community Found
+
+The decompiled source revealed several components that generated immediate discussion. Let me walk through the ones that actually matter.
+
+### Frustration Detection Regexes
+
+This was the headline finding. Deep inside the message processing pipeline, there's a set of regular expressions designed to detect when a user is frustrated. Patterns like repeated exclamation marks, profanity, phrases like "this doesn't work," "you keep," "I already told you," and variations of "why can't you" all trigger a frustration flag.
+
+When that flag is set, Claude Code adjusts its behavior. The system prompt gets augmented with instructions to be more careful, acknowledge the user's frustration, avoid repeating previous approaches, and try a fundamentally different strategy.
+
+Here's the question everyone immediately asked: is this manipulative?
+
+I don't think so — and here's why. Every well-designed user interface adapts to user signals. When you slam your mouse across the screen in a video game, the difficulty might adjust. When you hit backspace repeatedly in a search bar, autocomplete gets less aggressive. When you type in all caps in a support chat, the routing algorithm escalates you to a human.
+
+Claude Code detecting frustration and trying harder is the same pattern applied to an LLM interaction. The alternative — ignoring obvious signals that the current approach isn't working and repeating the same failing strategy — would be worse UX.
+
+That said, I understand the discomfort. There's something unsettling about a tool quietly analyzing your emotional state. The key word is "quietly." If Anthropic had documented this behavior — "Claude Code detects when you're stuck and adjusts its approach" — it would have been a feature announcement. Discovered through a source leak, it feels like surveillance.
+
+Transparency would have turned a controversy into a selling point.
+
+### Undercover Mode
+
+The second headline finding was a flag called `undercover` in the codebase. The internet immediately went to dark places — is Claude Code secretly recording sessions? Reporting code back to Anthropic? Operating in some hidden surveillance mode?
+
+The reality is far more mundane. From the code context, undercover mode appears to be an internal testing and debugging feature. When enabled, it modifies how Claude Code identifies itself in API calls and adjusts certain logging behaviors. This is consistent with how engineering teams test production systems — you want to observe real-world behavior without the system knowing it's being tested, which changes the behavior you're trying to observe.
+
+Think of it like A/B testing infrastructure. You need a way to run experiments on the system itself. Every major software product has this. Anthropic's version just had an unfortunately evocative name.
+
+Could it be used for something else? In theory, any flag that changes behavior could be repurposed. But the code paths connected to the undercover flag don't show data exfiltration, session recording, or anything that would justify the surveillance narrative. They show a testing harness.
+
+### Message Filtering and Processing Pipeline
+
+This is the finding that actually matters from a [security perspective](/blog/claude-code-security-hardening-enterprise-guide), and it got the least attention because it's less sensational.
+
+Before any message reaches the Claude API, it passes through a multi-stage processing pipeline. The source revealed:
+
+1. **Context assembly** — Your message gets combined with system prompts, [CLAUDE.md contents](/blog/claude-md-memory-persistent-context-guide), tool results, and conversation history into a structured payload.
+
+2. **Content filtering** — Certain patterns in both user input and tool output get flagged or modified before transmission. This includes potential PII detection, credential patterns (API keys, tokens), and content that might trigger safety classifiers.
+
+3. **Token management** — The pipeline actively manages context window usage, truncating older messages, summarizing long tool outputs, and prioritizing recent context.
+
+4. **System prompt injection** — Claude Code prepends extensive system instructions that define its behavior, capabilities, and constraints. These instructions are dynamic — they change based on your project type, enabled tools, active permissions, and yes, that frustration flag.
+
+The filtering layer is particularly interesting for anyone concerned about [prompt injection attacks](/blog/prompt-injection-attacks-llm-security-guide). The source shows that Claude Code doesn't naively pass everything to the API. There's a deliberate filtering step that catches some common injection patterns in tool output — malicious instructions hidden in file contents, for example. It's not bulletproof, but it's more sophisticated than "concatenate everything and send it."
+
+## The Agent Loop Architecture
+
+For me, the most valuable part of the leak was seeing how Claude Code's agent loop actually works. This is the engine that makes it more than a chatbot — it's what lets Claude Code read files, run commands, write code, and iterate autonomously.
+
+The architecture follows a pattern that's becoming standard in agentic AI systems:
+
+```
+User Input → Context Assembly → LLM Call → Tool Selection → Tool Execution → Result Processing → Loop or Respond
+```
+
+But the implementation details are where it gets interesting:
+
+**Tool execution is sandboxed per-call.** Each tool invocation (file read, shell command, file write) runs in its own execution context with its own timeout and error handling. A failed `grep` doesn't crash the agent — it returns an error that the LLM processes and adapts to.
+
+**The planning layer is implicit, not explicit.** Unlike some agent frameworks that force a "plan then execute" structure, Claude Code lets the LLM decide dynamically whether to plan, execute, or backtrack. The system prompt guides this, but there's no rigid state machine.
+
+**Conversation compression is aggressive.** Long-running sessions don't maintain every message verbatim. The pipeline compresses older turns into summaries, preserving key decisions and results while shedding intermediate output. This is why Claude Code can maintain coherence over hundred-turn sessions without exploding the context window.
+
+**Sub-agent delegation uses the same loop.** When Claude Code spawns a sub-agent for a specialized task, it's the same core loop with a different system prompt and restricted tool set. The architecture is recursive.
+
+This is genuinely well-engineered. Having built agent systems myself, the choices here — sandbox-per-tool, implicit planning, aggressive compression — are the right ones. They're the choices you make after building the naive version and watching it fail.
+
+## Community Reaction: The HN Divide
+
+The Hacker News discussion split into predictable camps.
+
+**The "transparency win" camp** argued that the leak proved Claude Code was well-built, had reasonable internals, and wasn't doing anything nefarious. The frustration detection was good UX. The architecture was solid. The filtering showed security consciousness. One commenter called it "the best possible advertisement for Anthropic's engineering."
+
+**The "privacy concern" camp** focused on what the leak implied about trust. If Claude Code is analyzing emotional state through regex patterns, what else might future versions analyze? If there's a testing mode called "undercover," what's the organizational culture that names things that way? If message filtering modifies what gets sent to the API, are users fully informed about what's being transmitted?
+
+**The npm supply chain camp** — and this is the one I found most valid — pointed out that the leak itself was a supply chain security failure. If Anthropic's build pipeline can accidentally ship source maps, what else might accidentally ship? What other sensitive artifacts might be lurking in npm packages from other vendors?
+
+This isn't hypothetical. Supply chain attacks through npm are a real and growing threat. The `event-stream` incident, `ua-parser-js`, `colors.js` — the npm ecosystem has a history of security failures. A `.map` file is relatively harmless. A `.env` file or an internal API key would not be.
+
+## Anthropic's Response
+
+As of writing, Anthropic has not issued a formal public statement about the source map leak. The `.map` file was quietly removed from subsequent npm releases. No blog post, no post-mortem, no "here's what happened and here's what we're doing about it."
+
+This is the wrong approach. When your product's source code becomes public through a build pipeline error, silence reads as either embarrassment or indifference. Neither builds trust.
+
+What Anthropic should have done: acknowledge the leak, explain that it was a build configuration error, use it as an opportunity to walk through the features that the community discovered (frustration detection is genuinely good UX — own it), and commit to build pipeline audits.
+
+Instead, the community narrative was shaped entirely by Hacker News commenters and Twitter hot takes. That's a missed opportunity.
+
+## What This Means for Trust in Dev Tools
+
+The leak raises a broader question that applies to every AI coding tool: should these tools be open source?
+
+Consider the landscape. [Cursor is fully closed source](/blog/ai-coding-tools-2026-developer-guide) — you have zero visibility into how it processes your code, what it sends to its servers, or what filtering happens between your keystrokes and the model. OpenAI's Codex CLI is partially open — the client is open source, but the server-side orchestration is not. Claude Code was closed source until a build error made it accidentally transparent.
+
+The argument for open source is straightforward: these tools have deep access to your codebase, your development patterns, and potentially your credentials. Trust requires verification. "Trust us" isn't sufficient when the tool can read every file on your machine and execute arbitrary shell commands.
+
+The argument against is also real: exposing the full source makes it easier to find and exploit vulnerabilities, craft effective prompt injections, and reverse-engineer safety measures. Security through obscurity isn't great security, but it's a layer.
+
+My position: the core agent logic, message processing pipeline, and data handling should be open source. The model weights, training data, and server-side infrastructure can remain proprietary. Users deserve to know exactly what happens between their keystrokes and the API call. They don't need to see how the model itself works.
+
+GitHub Copilot set a bad precedent by being fully opaque. The Claude Code leak set an accidental good one.
+
+## The npm Supply Chain Angle
+
+Beyond the contents of the leak, the mechanism deserves attention. Source maps shipping in production npm packages is a known anti-pattern, and it keeps happening because build pipelines are complex and `.npmignore` or `files` field configurations are easy to get wrong.
+
+If you maintain npm packages, audit what you're shipping:
+
+```bash
+npm pack --dry-run
+```
+
+That command shows every file that would be included in the published package. Run it in CI. Fail the build if unexpected files appear. This is basic supply chain hygiene.
+
+For consumers, tools like `npm audit signatures` and lock file verification help, but they don't catch accidental inclusions like source maps. The real defense is treating every npm package as potentially containing more than you expect — because it often does.
+
+The irony here is that Anthropic wrote extensively about [supply chain security](https://www.anthropic.com/research) in the AI context. Their own supply chain had a hole. Nobody is immune.
+
+## My Take: The Leak Increased My Confidence
+
+Here's where I land after spending two days in the decompiled source: the leak actually made me more confident in Claude Code, not less.
+
+The frustration detection is thoughtful UX, not manipulation. The architecture is well-engineered — sandbox-per-tool, recursive sub-agents, aggressive context compression. The message filtering shows genuine attention to security. The code quality is high — clear abstractions, reasonable error handling, no obvious shortcuts.
+
+I've seen the internals of enough software products to know the difference between "engineered by people who care" and "shipped to hit a deadline." This looks like the former.
+
+Does the accidental nature of the transparency bother me? Yes. I'd rather Anthropic chose to be transparent than had transparency forced on them. But the result is the same: I now know what's running on my machine, and I'm comfortable with it.
+
+If anything, this incident should push Anthropic toward deliberately open-sourcing the Claude Code client. The secret is already out. The internals are good. Lean into it.
+
+The tools we use to build software deserve the same scrutiny we apply to the software we build. This leak — accidental as it was — gave us that scrutiny. And Claude Code passed the test.
+
+### Sources
+
+- [Hacker News Discussion: Claude Code Source Map Leak](https://news.ycombinator.com/item?id=43845207) — Original community discussion and analysis thread
+- [npm Documentation: package.json files field](https://docs.npmjs.com/cli/v10/configuring-npm/package-json#files) — How to control which files ship in npm packages
+- [Source Map Specification (V3)](https://sourcemaps.info/spec.html) — Technical specification for JavaScript source maps
+- [Anthropic Claude Code Documentation](https://docs.anthropic.com/en/docs/claude-code) — Official documentation for Claude Code features and architecture
+- [OWASP Top 10 for LLM Applications](https://genai.owasp.org/) — Security classification framework for LLM vulnerabilities
+
+### Further Reading
+
+- [npm Supply Chain Security Best Practices](https://docs.npmjs.com/threats-and-mitigations) — npm's official guide to supply chain security
+- [The event-stream incident](https://blog.npmjs.org/post/180565383195/details-about-the-event-stream-incident.html) — Case study of a major npm supply chain attack
+- [Anthropic Research on AI Safety](https://www.anthropic.com/research) — Anthropic's published research on AI safety and security
+
+---
+
+~Seb 👊
