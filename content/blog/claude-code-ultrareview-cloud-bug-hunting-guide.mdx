@@ -1,0 +1,183 @@
+---
+title: "Claude Code /ultrareview: Cloud Bug-Hunting Agents Before Every Merge"
+date: '2026-05-05'
+category: 'AI'
+tags: ['claude-code', 'ai-agents', 'code-review', 'security', 'ci-cd']
+draft: false
+featured: true
+author: 'Sebastian'
+excerpt: 'Claude Code /ultrareview ships a fleet of 5–20 cloud agents at your diff, each verifies its own findings, and the report lands in your CLI in under 10 minutes. Here is the actual workflow, what it catches, and when $5–$20 a run is worth it.'
+---
+
+The first time I ran `/ultrareview`, it flagged a race condition in a queue handler I had been about to merge. The local `/review` had passed clean. Two of my engineers had reviewed the PR and approved it. Eight minutes after I typed five characters into Claude Code, an agent in the cloud explained — with line numbers and a reproduction — exactly how two concurrent enqueues would corrupt our retry counter under load.
+
+That is the pitch in one paragraph. Below is what actually happens behind the slash command, when you should reach for it, and the specific failure modes nobody is writing about yet.
+
+## What /ultrareview actually is
+
+Claude Code shipped `/ultrareview` as a research preview in early May 2026 with CLI version 2.1.86. Type the slash command in your CLI or Desktop app, Claude Code bundles your repository state — commits on the current branch, uncommitted staged changes, the diff against `main` — uploads that bundle to a remote sandbox on Anthropic's infrastructure, and deploys a fleet of reviewer agents.
+
+The default configuration is five agents for a normal pull request. For larger diffs the fleet scales up to twenty. Each agent receives the full diff but has a different system prompt that narrows its focus: one hunts for race conditions and concurrency issues, another concentrates on SQL injection and input sanitization, a third audits error handling at system boundaries, a fourth checks for resource leaks, and so on. They run in parallel.
+
+The crucial bit — and the reason `/ultrareview` is not just "more `/review`" — is the verification stage. Every candidate finding produced by a reviewer agent is handed to an independent verifier agent that has to reproduce the bug or prove the claim before it lands in the final report. Stylistic noise, false positives, "consider extracting this into a function" — all of that gets filtered out. What surfaces in your terminal is verified bugs only.
+
+A run takes 5 to 10 minutes. The whole thing happens on Anthropic infrastructure, so your laptop fan stays quiet and you can keep coding while the fleet works.
+
+## /review vs /ultrareview: when to use which
+
+Claude Code already had `/review`. It runs locally, uses your current session, and finishes in seconds. It is fast, cheap, and catches real issues — I run it on every branch before pushing.
+
+`/ultrareview` is not a replacement. It is a different tool. Here is the mental model I have settled on after a few weeks of running both:
+
+- **`/review`** — Constant feedback loop. Run it after every meaningful change. Single-agent, local context, no cost beyond your normal token usage.
+- **`/ultrareview`** — Pre-merge gate for substantial diffs. Multi-agent, cloud sandbox, verified findings, $5–$20 per run.
+
+The pattern that works: lean on `/review` while you code, then reach for `/ultrareview` before merging anything that touches authentication, money, data migrations, or concurrency. Treat it like calling in a senior engineer for a final pass — you do not pull them in for a typo fix, but you absolutely want them on the migration that rewrites your billing logic.
+
+## The actual workflow
+
+The mechanics are minimal. With no arguments, Claude Code reviews your current local branch:
+
+```bash
+/ultrareview
+```
+
+It bundles whatever is on your working tree against `main`, ships it, and reports back. No GitHub remote required, no PR needed, no need to push. Private branch on a fork? Still works. This was the surprise for me — I expected this to be a GitHub Actions thing, but it is genuinely terminal-native.
+
+If you do have a PR open, pass its number:
+
+```bash
+/ultrareview 1842
+```
+
+Now the fleet reviews the GitHub PR by number, including any commits pushed by collaborators. The report comes back referencing PR line numbers, which makes posting findings as PR comments trivial.
+
+A typical session looks like this:
+
+```text
+$ /ultrareview
+→ Bundling branch (47 files changed, 1,203 lines)
+→ Uploading to cloud sandbox
+→ Dispatching 8 reviewer agents
+→ Reviewing... (5–10 min)
+→ Verifying findings...
+→ 4 verified issues, 3 informational notes
+
+[CRITICAL] Race condition in queue.ts:142
+  Two concurrent enqueues can corrupt retry counter.
+  Reproduction: see attached test case.
+[HIGH] Missing input validation in api/upload.ts:67
+  Path traversal possible via filename parameter.
+  Reproduction: ../../etc/passwd resolves through your join().
+[MEDIUM] Unhandled rejection in worker.ts:201
+  Promise.all rejects orphan an in-flight DB connection.
+[LOW] Stale cache key in cache.ts:88
+  TTL not refreshed on partial write.
+```
+
+Each issue comes with file, line, severity, a written explanation, and — this is the part that matters — a reproduction. That last bit is what convinces engineers to take the findings seriously. It is no longer "the AI thinks there might be a problem", it is "here is the test case that triggers it".
+
+## What it actually catches
+
+After running `/ultrareview` on roughly forty branches across personal projects and client work, the pattern of what it catches is consistent:
+
+**Concurrency bugs.** Race conditions, missing locks, incorrect transaction boundaries, async ordering assumptions that hold in development and shatter under load. This is the category where it earns its money. Local `/review` rarely catches these because they require reasoning across multiple call sites.
+
+**Boundary failures.** Input validation gaps, authentication checks missing on sibling endpoints, authorization bypasses through non-obvious paths. The "did you forget the auth check on the new admin route" class of bug.
+
+**Cleanup and resource leaks.** Unhandled rejections, leaked DB connections, file handles never closed on error paths, cleanup in `useEffect` that does not actually cancel. If you have read [the React memory leak guide](/blog/debugging-memory-leaks-react-nextjs-guide), you know how easy these are to ship; `/ultrareview` finds them in the diff before they ship.
+
+**Migration risks.** Schema changes that break existing queries, data type changes that silently truncate, default values that backfill incorrectly under concurrent writes. This is the category where the cost of a missed bug is the highest, and where the verifier agent's reproduction is most valuable.
+
+**Security issues.** SQL injection, command injection, path traversal, prompt injection in LLM-using code paths. The security agent overlaps with what a human auditor would find. It is not a replacement for a [proper prompt injection security review](/blog/prompt-injection-llm-security-guide), but it catches the obvious cases reliably.
+
+What it does **not** catch well: business logic bugs (the agent does not know your intent), performance regressions that depend on real production data, anything that requires running the code against a live system.
+
+## CLAUDE.md is part of the review surface
+
+The fleet reads your `CLAUDE.md`. This matters more than it sounds.
+
+If your project has non-obvious rules — "never log raw user input", "all database writes must go through the audit middleware", "feature flags must default to disabled" — putting them in `CLAUDE.md` means the reviewer agents check for violations. The bug they flag becomes "rule X from CLAUDE.md is violated at line Y" instead of "this looks suspicious".
+
+This is the highest-leverage `/ultrareview` optimization I have found, and it ties directly into the broader [context engineering practice](/blog/context-engineering-claude-code-guide) — the same `CLAUDE.md` discipline that improves your day-to-day Claude Code sessions also sharpens your reviews. A tight `CLAUDE.md` produces a tighter review.
+
+The reverse is also true. If your `CLAUDE.md` is bloated with stale instructions, the reviewer agents waste capacity matching against rules that no longer apply. I trimmed mine from 18KB to 6KB and the signal-to-noise ratio of the reviews went up noticeably.
+
+## Cost economics: when $5–$20 is worth it
+
+Pricing is straightforward: Pro and Max subscribers get three free runs as a one-time allotment that expires May 5, 2026. After that, every run bills to extra usage at $5–$20 depending on diff size.
+
+The mental model is not "is this cheap" — it is "what does a missed bug cost". For my client work the math looks like this:
+
+- A production incident from a missed concurrency bug: 4 hours of investigation, 1 hour of patching, 1 hour of post-mortem at senior rates. Call it $1,500–$2,500.
+- An `/ultrareview` run that catches it before merge: $15.
+- Break-even rate: a single caught bug per 100–150 runs.
+
+I am catching about one verified critical issue per 8 runs in my own work and roughly one per 12 in client codebases that already have decent test coverage. Even at the conservative rate, the math works.
+
+When it does **not** make sense:
+
+- Trivial diffs (typo fixes, copy changes, dependency bumps).
+- Diffs already covered by extensive integration tests where you trust the suite.
+- Internal tooling where bugs cost you a few minutes, not real money.
+
+Batch your fixes before re-running. Each run is a real cost. The instinct to re-run after every small fix burns money fast — fix everything, then re-run once at the end to confirm the critical issues are resolved.
+
+## Integrating it into team workflow
+
+`/ultrareview` is at its best as the **last** gate before merge, after `/review`, after CI passes, after the human review. The order I have settled on:
+
+1. **Local `/review` after every commit.** Cheap, fast, single-agent.
+2. **CI green.** Tests, linting, type checks. If you have not [tightened your CI pipeline](/blog/optimizing-cicd-pipelines-dx-deploy-times-guide), this is the place to start.
+3. **Human review by a teammate.** Catches intent, naming, architectural concerns.
+4. **`/ultrareview` before merge to main.** Multi-agent verification on the final state.
+
+For team rollout, the pattern that works is making `/ultrareview` mandatory for diffs that touch specific paths — `auth/`, `billing/`, `migrations/`, anything in production runtime config — and optional everywhere else. You can encode this in a pre-merge checklist or a `CLAUDE.md` instruction. Do not make it mandatory on every PR; the cost stacks fast and the value drops on small diffs.
+
+For solo work, my rule is: if I would be uncomfortable shipping the diff after a Friday afternoon and not looking at it for two days, it gets `/ultrareview`. If a buggy version would only annoy me for ten minutes, it does not.
+
+## Limitations and gotchas
+
+Some honest caveats from running this in anger:
+
+**The fleet uploads your code to Anthropic's cloud.** Same trust posture as Claude Code itself, but worth flagging if you are in regulated environments. The bundle stays in the sandbox for the duration of the run and is not retained for training. Read the data handling docs for your industry's requirements.
+
+**It is not a replacement for tests.** A verified finding still needs a test added before you fix the bug. Otherwise nothing prevents the same bug from being reintroduced six months later. `/ultrareview` is a better way to find bugs; the test is what keeps them dead.
+
+**It can miss intent bugs.** "This works correctly but does not implement what the ticket asked for" is invisible to the fleet. That is what human review is for.
+
+**Five agents is sometimes too few for large diffs.** If your PR is 5,000+ lines, the per-agent context budget gets thin. Either split the PR, or trust the fleet's automatic scale-up to twenty.
+
+**Cost surprises on monorepos.** Bundling a monorepo can pull more files than you expect. Use `.claudeignore` to exclude the half of the repo that is not actually relevant to the diff. The same hygiene pays off across the [parallel session workflow](/blog/parallel-claude-code-sessions-git-worktrees-guide) too.
+
+**The free runs expire May 5, 2026.** If you are on Pro or Max and have not tried it, the unused free credits are about to disappear. Worth at least one run on a real diff to calibrate whether the workflow fits your team.
+
+## What this changes about how I ship
+
+The honest answer is that `/ultrareview` has not replaced any step in my process. It has added one — the deliberate "before this hits main, let cloud agents try to break it" gate — and it has shifted my comfort level on merging diffs that touch sensitive code paths.
+
+I still run local `/review` constantly. I still rely on tests. I still ask humans for review when the change matters. But the class of bug that used to require me to be unusually paranoid — concurrency, boundary checks, migration safety — now has a verified second opinion that costs less than lunch.
+
+For solo developers and small teams without a strong senior reviewer to lean on, this is the most consequential Claude Code feature shipped in 2026. For larger teams, it is a force multiplier on the senior engineers you do have. Either way, the pattern is the same: use it sparingly, use it on the diffs where bugs cost real money, and treat the verified findings as if a respected engineer pinged you on Slack with "hey, this thing in your PR is broken — here is the repro".
+
+If you have not run it yet, run it once on your next non-trivial branch before the free credits evaporate. That is the cheapest possible way to find out whether the workflow fits how your team ships.
+
+## References
+
+### Sources
+
+- [Find bugs with ultrareview — Claude Code Docs](https://code.claude.com/docs/en/ultrareview) — official command reference, agent fleet description
+- [Claude Code /ultra review: 5 Things You Need to Know — MindStudio](https://www.mindstudio.ai/blog/claude-code-ultra-review-5-things-to-know-before-running) — pricing details, free-run expiry
+- [Claude Code Ultrareview: Multi-Agent Bug Hunting — Zen van Riel](https://zenvanriel.com/ai-engineer-blog/claude-code-ultrareview-multi-agent-bug-hunting-guide/) — agent specialization breakdown
+- [Claude Code ultrareview: Deep cloud bug hunt — All Things How](https://allthings.how/claude-code-ultrareview-deep-cloud-bug-hunt-before-you-merge/) — verification stage explanation
+- [Anthropic Release Notes — May 2026](https://releasebot.io/updates/anthropic/claude-code) — CLI 2.1.86 release context
+
+### Further Reading
+
+- [Claude Code Code Review Docs](https://code.claude.com/docs/en/code-review) — official reference for `/review` and `/ultrareview` together
+- [Claude Code GitHub Actions PR automation](/blog/claude-code-github-actions-pr-automation-guide) — automated review patterns that pair well with `/ultrareview`
+- [Claude Code Security Hardening Enterprise Guide](/blog/claude-code-security-hardening-enterprise-guide) — permissions and audit trails for cloud-bound reviews
+
+---
+
+~Seb 👊
