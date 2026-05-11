@@ -211,7 +211,7 @@ function buildConfirmationEmail(name: string): string {
               <table role="presentation" cellpadding="0" cellspacing="0">
                 <tr>
                   <td style="padding-right: 16px;">
-                    <a href="https://codewithseb.com" style="font-size: 12px; color: #ff3d00; text-decoration: none;">codewithseb.com</a>
+                    <a href="https://www.codewithseb.com" style="font-size: 12px; color: #ff3d00; text-decoration: none;">codewithseb.com</a>
                   </td>
                   <td style="padding-right: 16px; color: #333333;">|</td>
                   <td style="padding-right: 16px;">

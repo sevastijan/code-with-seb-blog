@@ -44,7 +44,7 @@ const playfair = Playfair_Display({
   style: ["normal", "italic"],
 });
 
-const siteUrl = "https://codewithseb.com";
+const siteUrl = "https://www.codewithseb.com";
 
 export const metadata: Metadata = {
   metadataBase: new URL(siteUrl),

@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import matter from 'gray-matter';
 
-const BASE_URL = 'https://codewithseb.com';
+const BASE_URL = 'https://www.codewithseb.com';
 
 export default function sitemap(): MetadataRoute.Sitemap {
   const postsDirectory = path.join(process.cwd(), 'content/blog');

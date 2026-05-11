@@ -10,7 +10,7 @@ export const metadata: Metadata = {
   description:
     'Practical insights on AI automation, web development, and technical leadership. Code examples, architecture patterns, and lessons from real projects.',
   alternates: {
-    canonical: 'https://codewithseb.com/blog',
+    canonical: 'https://www.codewithseb.com/blog',
   },
   openGraph: {
     title: 'Blog — AI, Development & Technical Leadership',
