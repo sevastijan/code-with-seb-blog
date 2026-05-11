@@ -1,0 +1,249 @@
+---
+title: 'The Multi-CLI Stack: Claude Code + Codex + Gemini in One Workflow'
+date: '2026-05-11'
+category: 'AI'
+tags: ['claude-code', 'codex', 'gemini-cli', 'multi-agent', 'orchestration']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: 'Every comparison post asks "Claude Code or Codex or Gemini?" The senior engineers I know answered that question by installing all three. Here is the multi-CLI stack: which CLI wins for what, the five composition patterns that actually work, and the orchestration tools (Roundtable, DevSquad, Mysti) doing the wiring for you.'
+---
+
+The most common AI coding question of 2026 is "which CLI should I pick — Claude Code, Codex, or Gemini?" The most useful answer is: that is the wrong question.
+
+The Pragmatic Engineer survey (Feb 2026, n=906) puts the framing plainly. Among developers using AI agents in production, **55% run multiple CLIs simultaneously**. Not "tried a few and picked one." Not "use one most days." Run them. Concurrently. With orchestration layers between them.
+
+After running this setup for six months — Claude Code as the primary, Codex for what Codex is genuinely best at, Gemini CLI for the one thing it dominates — here is the multi-CLI stack as it actually works in 2026, the five composition patterns that are worth knowing, and the orchestration tools (Roundtable AI, DevSquad, Mysti) doing the wiring for you.
+
+## Why "pick one" lost
+
+Three forces killed the single-CLI workflow in roughly the last twelve months:
+
+**Context budgets matter.** Claude Code with Opus is the best primary agent I have used. It is also the most expensive way to read 47 files just to answer "where is the auth middleware?" Burning Opus tokens on grep-equivalent work is bad economics. Gemini CLI's 1M context plus Google Search grounding does that job for a fraction of the cost.
+
+**Specialization gaps widened.** Codex hit 77.3% on Terminal-Bench 2.0 — meaningfully ahead of Opus 4.7 and Gemini 3.1 Pro on agentic terminal tasks. For CI/CD scripting and infra automation, Codex's sandbox model is the right tool, and using anything else is leaving accuracy on the table.
+
+**Tools converged on interoperability.** [MCP Apps shipped in January 2026](/blog/mcp-rce-vulnerability-200k-servers-anthropic-stance) as the first official MCP extension. Roundtable AI runs as an MCP server that any MCP-capable CLI can call. DevSquad ships as a Claude Code plugin that registers Codex and Gemini through MCP hooks. The friction of running three CLIs collapsed because they all speak the same coordination protocol.
+
+The result: composing beats picking. Not theoretically. Measurably.
+
+## What each CLI is actually best at (May 2026)
+
+Strip the marketing and the comparison posts. After running the real benchmarks I detailed in [my month-long head-to-head](/blog/claude-code-vs-cursor-vs-codex-honest-developer-comparison-2026), here is where each genuinely wins:
+
+**Claude Code (Opus 4.7) — primary agent.**
+- Complex multi-file refactors with cross-module invariants
+- Reasoning-heavy architecture work
+- Pre-merge review (especially with [/ultrareview's cloud fleet](/blog/claude-code-ultrareview-cloud-bug-hunting-guide))
+- Anything where the cost of a wrong answer is high
+
+**Codex — terminal and async specialist.**
+- CI/CD pipeline writing and debugging
+- Long-running async tasks you want a cloud VM for
+- Test generation with sandboxed verification
+- [The Spark variant for real-time targeted edits](/blog/gpt-5-3-codex-spark-1000-tokens-real-time-coding-guide)
+
+**Gemini CLI — context giant.**
+- Large-codebase exploration: "find every place that touches the billing API"
+- One-shot grep-equivalent searches across millions of tokens
+- Search-grounded freshness ("what is the current best practice for X")
+- Multimodal batch (PDFs, screenshots, mixed-input tasks)
+
+The pattern: **Claude Code is the brain, Codex is the hands, Gemini CLI is the eyes**. You stop arguing about which to use because the question dissolves into "what is this task asking me to do?"
+
+## Pattern 1: Manual parallel terminals (the simple version)
+
+Before you wire any orchestration, just run them in parallel with discipline. This is the pattern that 80% of senior engineers I have seen are running:
+
+```
+┌──────────────────────────────┬──────────────────────────────┐
+│ tmux pane 1: Claude Code     │ tmux pane 2: Gemini CLI      │
+│ ─────────────────────────────│ ─────────────────────────────│
+│ $ claude                     │ $ gemini                     │
+│ > implement the new          │ > read the entire auth       │
+│ > checkout flow              │ > module and summarize       │
+│                              │ > the contract               │
+└──────────────────────────────┴──────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│ tmux pane 3: Codex CLI                                      │
+│ ─────────────────────────────────────────────────────────── │
+│ $ codex --model gpt-5.3-codex                               │
+│ > generate exhaustive tests for the new checkout flow       │
+│ > use the contract from auth-summary.md                     │
+└─────────────────────────────────────────────────────────────┘
+```
+
+You paste outputs between panes by hand. Gemini summarizes the existing auth module → Claude Code uses that summary to implement → Codex generates tests against the new code. No orchestration software needed.
+
+This is identical in spirit to [running parallel Claude Code sessions in worktrees](/blog/parallel-claude-code-sessions-git-worktrees-guide) but with different models instead of identical ones. The discipline is the same: **role per pane, no cross-contamination, named output files for handoff**.
+
+The catch: it scales linearly with your attention. Three CLIs is the upper bound before you start losing track of what is running where.
+
+## Pattern 2: Claude Code as orchestrator (DevSquad, claude-delegator)
+
+DevSquad is a Claude Code plugin from `joshidikshant/devsquad` that turns Claude into an engineering manager. It hooks into Claude Code's tool execution and **physically intercepts work that should go to a cheaper agent**, redirecting it to Codex or Gemini CLI.
+
+The trigger logic is rule-based. After three file reads in a session, DevSquad prompts Claude to delegate further reads to Gemini. When tests are needed, work routes to Codex. Documentation writing goes to whichever CLI is cheapest for the moment.
+
+```bash
+# Install (Claude Code plugin)
+claude plugin add devsquad
+
+# Configure delegations in .claude/plugins/devsquad/config.json
+{
+  "delegationRules": {
+    "fileReads": { "afterCount": 3, "delegateTo": "gemini" },
+    "testGeneration": { "delegateTo": "codex" },
+    "documentation": { "delegateTo": "gemini" }
+  },
+  "savedContextThreshold": 0.7
+}
+```
+
+The genuinely smart thing DevSquad does is **runtime hook enforcement, not prompt-level guidance**. Earlier versions tried to tell Claude "please delegate" in CLAUDE.md. Claude ignored it. DevSquad replaced documentation-based enforcement with hooks that physically intercept tool calls and route them. The difference between "asking nicely" and "blocking the call" is the difference between a fun toy and a working orchestrator.
+
+A simpler alternative is `jarrodwatts/claude-delegator` — same idea, fewer features, easier setup. If you want to try delegation before committing to DevSquad's full machinery, start here.
+
+## Pattern 3: MCP-driven coordination (Roundtable AI)
+
+Roundtable AI from `askbudi/roundtable` is the cleanest MCP-based version. It runs as a local MCP server. Your primary CLI talks to it. It auto-discovers which other CLIs are installed and dispatches subtasks in parallel.
+
+```bash
+pip install roundtable-ai
+roundtable-ai --check   # detects installed CLIs
+
+# In Claude Code's .mcp.json:
+{
+  "mcpServers": {
+    "roundtable-ai": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["roundtable-ai@latest"],
+      "env": {
+        "CLI_MCP_SUBAGENTS": "codex,claude,cursor,gemini"
+      }
+    }
+  }
+}
+```
+
+After this, Claude Code has tools like `roundtable.delegate(agent, task)` available. Tell Claude "use Gemini to map the auth module, then use Codex to write tests for the result, then synthesize." Claude calls Roundtable, Roundtable runs the sub-agents in parallel, results come back as a single response.
+
+The advantage over DevSquad: **explicit delegation under your control**. DevSquad delegates automatically based on heuristics. Roundtable delegates when you ask. For tasks where you want predictable routing, Roundtable is the cleaner abstraction.
+
+Same caveat as any MCP server: it runs locally, so [the STDIO RCE concerns I covered in the MCP vulnerability post](/blog/mcp-rce-vulnerability-200k-servers-anthropic-stance) apply. Vet the source before running.
+
+## Pattern 4: Debate-and-synthesize (Mysti, claude-octopus)
+
+A different composition pattern: **multiple CLIs analyze the same code, debate, synthesize**. Mysti from `DeepMyst/Mysti` does this as a VS Code extension. Pick two or three agents (Claude, Codex, Gemini, plus 9 other providers Mysti supports). They each propose, debate, and converge.
+
+The data is genuinely better than single-model review. Anecdotal HN threads from Feb-Apr 2026 consistently report **~30% more bugs caught by ensemble debate** vs. any single model. Mysti's "auto-convergence" exits the discussion early once agents reach consensus, so you do not pay for endless back-and-forth.
+
+```bash
+# Install Mysti from VS Code marketplace
+# Configure agents in Mysti settings:
+# - Claude Code (subscription)
+# - Codex (Pro)
+# - Gemini CLI (free)
+# Mode: Brainstorm → Debate → Synthesize
+```
+
+When to use: **pre-merge security review on critical paths**. Auth code. Payment code. Data migration scripts. Anything where "looks correct" is not enough and you want three different failure-mode lenses pointing at the same diff.
+
+When not to use: routine implementation. The debate latency makes it slow, and the consensus is often "the obvious thing." Reserve it for high-stakes.
+
+A simpler alternative if you do not want VS Code: `nyldn/claude-octopus` runs up to 8 models on the same research/design/coding task from the CLI. Same idea, terminal-native.
+
+## Pattern 5: Pipe-based one-shot delegation
+
+The most underused pattern, and the one I reach for most often. All three CLIs run in **headless / non-interactive mode**, so you can pipe between them:
+
+```bash
+# Gemini does the exploration
+gemini --headless "list all files that import the legacy AuthProvider" > files.txt
+
+# Claude Code does the actual refactor against that file list
+claude --headless "migrate every file in files.txt to NextAuth v6" --files files.txt
+
+# Codex generates the tests with verification in its sandbox
+codex --headless --sandbox "generate and run tests for the migrated files in files.txt"
+```
+
+This is **shell-script-level orchestration with no software in the middle**. Works on day one, breaks rarely, scales as far as your shell does. The token economics are great because each step uses the cheapest tool for the work, and there is no MCP server overhead.
+
+The downside: it is purely sequential and not interactive. For tasks that need a human in the loop ("does this look right?"), you want one of the previous patterns. For batch / scheduled / CI work, pipe-based is the right answer. This is exactly the [headless mode pattern I covered for CI/CD](/blog/claude-code-headless-mode-cicd-automation-playbook), generalized across providers.
+
+## The token economics that justify the setup
+
+A concrete weekly example from my own usage:
+
+| Task type | Single-CLI (Claude only) | Multi-CLI | Savings |
+|---|---|---|---|
+| File exploration (47 files) | 95K Opus tokens (~$1.40) | 95K Gemini tokens (~$0.05) | $1.35 |
+| Test generation (12 files) | 145K Opus tokens (~$2.20) | 145K Codex tokens (~$0.95) | $1.25 |
+| Architecture refactor | 280K Opus tokens (~$4.20) | 280K Opus tokens (~$4.20) | $0 |
+| Routine implementation | 180K Opus tokens (~$2.70) | 180K Sonnet/Codex (~$1.10) | $1.60 |
+| Documentation write | 60K Opus tokens (~$0.90) | 60K Gemini tokens (~$0.03) | $0.87 |
+
+For one engineer working steadily: **~$25-40/week saved** on token spend by routing work to the right CLI. That is real money on team budgets, and it does not require sacrificing quality — the quality on each task type is the same or better because each is using the right tool.
+
+DevSquad shows you the running savings counter inline. Watching it tick up is a quietly satisfying way to confirm the pattern is paying off.
+
+## The stack I actually run
+
+After six months of iteration, here is the configuration on my machine in May 2026:
+
+1. **Claude Code with Opus 4.7** — primary agent, the one I talk to. Always running.
+2. **DevSquad plugin** — auto-delegates file reads, doc writing, and test generation. Saves the cheap work from burning Opus tokens.
+3. **Codex CLI in second tmux pane** — for terminal-heavy work, CI scripts, async background tasks. Manually invoked.
+4. **Gemini CLI in third tmux pane** — for codebase exploration on large repos, Google Search grounding when I need fresh information.
+5. **Roundtable MCP server** — registered in Claude Code's `.mcp.json` for explicit "use this CLI for this subtask" calls.
+6. **Mysti as a VS Code extension** — invoked specifically for pre-merge review on auth, payments, and migration code. Not on routine work.
+
+Daily flow: I describe what I want to Claude Code. Claude either does it directly or delegates (via DevSquad heuristics) or I explicitly route it (via Roundtable). When I am reviewing a critical PR, I invoke Mysti to get the multi-model lens. When I want to run a long async job, I switch to Codex.
+
+No single CLI does all the work. Each does what it is best at. The orchestration layer makes the handoffs feel seamless instead of feeling like context switching.
+
+## What breaks
+
+Three failure modes to map out, because they will bite you:
+
+**Context-handoff loss.** When CLI A passes context to CLI B (via DevSquad or Roundtable), some information is lost in summarization. If the task depends on a subtle detail in the upstream context, the downstream CLI may miss it. Mitigation: structured handoff documents (`auth-contract.md`, `migration-plan.md`) instead of free-form context passing. Use named files as the boundary.
+
+**Authentication sprawl.** Three CLIs means three logins, three subscription tiers, three sets of rate limits. The annual cost of Claude Code Max + ChatGPT Pro + Gemini Advanced is non-trivial (~$840/year combined). Track usage and decide quarterly if you need all three at the highest tier. Gemini CLI's generous free tier is often enough.
+
+**Debugging across CLIs.** When something goes wrong, you have to figure out which CLI did the bad thing. Roundtable's logs help. DevSquad's delegation log helps. But you will still occasionally find yourself reading three terminal histories trying to reconstruct what happened. Single-CLI workflows are easier to debug; multi-CLI workflows are faster to run.
+
+## The macro trend
+
+The pragmatic engineering pattern in 2026 looks more like Unix than like a monolith. **Small, specialized tools, composed with explicit interfaces, doing one thing well.** Each CLI is an excellent specialist. The orchestration layer (MCP-based, plugin-based, or pipe-based) makes them feel like a single system.
+
+Cursor's bet was "one IDE for everything." Antigravity's bet is ["one agent-first surface for everything"](/blog/google-antigravity-gemini-3-agentic-ide-developer-review). The multi-CLI stack's bet is the opposite: **don't try to make one tool do everything; compose three specialists and let the orchestrator handle handoffs**.
+
+After six months running it, I think this is the bet that wins for serious work. Not because any one CLI is bad, but because no single one is good at everything, and the orchestration overhead is now small enough to disappear. Composition won.
+
+The right question for May 2026 is not "which CLI should I install." It is "what does my orchestration layer look like." Start with manual tmux panes. Add DevSquad when context starts mattering. Add Roundtable when you want explicit routing. Add Mysti when you need multi-model debate on critical code. By the end of the year, the question of "Claude Code vs. Codex vs. Gemini" will sound as dated as "vim vs. emacs vs. nano" sounds today.
+
+## References
+
+### Sources
+
+- [Mysti — AI Coding Dream Team | GitHub (DeepMyst/Mysti)](https://github.com/DeepMyst/Mysti) — multi-model debate-and-synthesize implementation
+- [DevSquad — Claude Code Plugin | GitHub (joshidikshant/devsquad)](https://github.com/joshidikshant/devsquad) — hook-enforced delegation between Claude, Codex, and Gemini
+- [Roundtable AI MCP Server | GitHub (askbudi/roundtable)](https://github.com/askbudi/roundtable) — zero-config MCP server for multi-CLI orchestration
+- [claude-delegator | GitHub (jarrodwatts/claude-delegator)](https://github.com/jarrodwatts/claude-delegator) — minimal Claude Code delegation to Codex/Gemini
+- [Show HN: Mysti debate among Claude, Codex, Gemini | Hacker News](https://news.ycombinator.com/item?id=46365105) — discussion of ensemble debate effectiveness
+- [Show HN: DevSquad — Claude Code Plugin | Hacker News](https://news.ycombinator.com/item?id=47180142) — hook-enforced delegation discussion
+- [Show HN: Roundtable MCP | Hacker News](https://news.ycombinator.com/item?id=45374908) — MCP-based orchestration discussion
+- [The Code Agent Orchestra | AddyOsmani](https://addyosmani.com/blog/code-agent-orchestra/) — multi-agent composition patterns
+
+### Further Reading
+
+- [Claude Code vs Cursor vs Codex — Honest Developer Comparison 2026](/blog/claude-code-vs-cursor-vs-codex-honest-developer-comparison-2026) — the underlying single-CLI benchmarks that justify role-specialization
+- [Claude Code Headless Mode CI/CD Playbook](/blog/claude-code-headless-mode-cicd-automation-playbook) — non-interactive mode that powers Pattern 5
+- [Google Antigravity — Agent-First IDE Review](/blog/google-antigravity-gemini-3-agentic-ide-developer-review) — contrast: the "one agent-first surface" bet
+- [Parallel Claude Code Sessions with Git Worktrees](/blog/parallel-claude-code-sessions-git-worktrees-guide) — same orchestration discipline with identical models instead of distinct CLIs
+
+---
+
+~Seb 👊
