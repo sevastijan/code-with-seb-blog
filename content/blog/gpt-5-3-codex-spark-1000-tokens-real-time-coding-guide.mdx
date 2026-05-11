@@ -1,0 +1,183 @@
+---
+title: 'GPT-5.3-Codex-Spark: 1000 Tokens/Sec Real-Time Coding — What Actually Changes'
+date: '2026-05-11'
+category: 'AI'
+tags: ['codex', 'openai', 'ai-coding', 'cerebras', 'developer-tools']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: 'GPT-5.3-Codex-Spark runs 15× faster than the flagship Codex — but scores 19 points lower on SWE-Bench Pro. Here is when 1000 tokens/sec actually wins, where it bites you, and the hybrid workflow that captures the speed without the accuracy tax.'
+---
+
+The first time I watched Codex-Spark stream code at 1000 tokens per second, I laughed out loud. The second time, I watched it confidently invent an API endpoint that did not exist. Both reactions are the right reactions.
+
+GPT-5.3-Codex-Spark is real, it is fast, and it changes how the human-AI loop feels. It also costs you ~19 points on SWE-Bench Pro versus the flagship GPT-5.3-Codex, and that gap shows up exactly where you would expect it to. If you are about to plug Spark into your daily flow, here is what actually changes, what does not, and the workflow that gets you the speed without paying the accuracy tax.
+
+## What Codex-Spark actually is (and is not)
+
+OpenAI shipped Codex-Spark on February 12, 2026 as a research preview for ChatGPT Pro users in the Codex app, CLI, and VS Code extension. It is **a smaller variant of GPT-5.3-Codex**, not a distilled clone. The headline numbers:
+
+- **~1000+ tokens/sec** generation speed (flagship Codex runs ~65-70 tok/s)
+- **128k context window** (vs. 400k on the flagship)
+- **Text-only** — no image or audio modalities
+- Served on **Cerebras Wafer-Scale Engine 3**, not on standard GPU clusters
+
+That last point is the interesting one. This is the first OpenAI model that runs on non-Nvidia inference hardware in production, and the latency profile is fundamentally different from what you get on H100s or B200s.
+
+The pitch is "real-time coding." The reality is that Spark redefines what "real-time" means for an LLM: the model finishes a 500-line file before you finish reading the first function.
+
+## Why Cerebras matters (it is not just a faster GPU)
+
+The Cerebras WSE-3 is one chip with **4 trillion transistors and 900,000 cores etched onto a single silicon wafer**. It carries **44 GB of on-chip SRAM** and pushes **21 PB/s of memory bandwidth**. That last number is the key.
+
+On a GPU, inference latency is dominated by moving weights between HBM and the compute units. The WSE-3 sidesteps that entirely because the weights sit in SRAM millimeters from the cores, and execution runs layer-by-layer across the whole wafer. The result is **10-70× faster inference** than equivalent GPU setups, and for a model the size of Codex-Spark, you get sustained throughput above 1000 tok/s without batching tricks.
+
+This is not a "we optimized the model" story. It is a "we changed the substrate" story. And that distinction matters because it means Spark's speed advantage cannot be eroded by competitors shipping a slightly leaner model on H100s. The hardware moat is real.
+
+## The benchmark reality nobody puts on the launch slide
+
+OpenAI's launch post leans on the speed number. The benchmarks tell the full story:
+
+| Benchmark | GPT-5.3-Codex | Codex-Spark | Delta |
+|---|---|---|---|
+| SWE-Bench Pro | ~72% | ~56% | -16 pts |
+| Terminal-Bench 2.0 | ~77.3% | ~58.4% | -19 pts |
+| Generation speed | ~65-70 tok/s | 1000+ tok/s | 15× |
+| Context window | 400k | 128k | -3.1× |
+
+A 19-point drop is not "slightly less accurate." That is **the difference between a model that fixes a bug and a model that confidently introduces a new, subtler one**. In my own testing, Spark hallucinates routine things that flagship Codex gets right: fabricated API endpoints, phantom npm package names, and invented function parameters in libraries it should know.
+
+The Hacker News thread on Spark's launch had the cleanest framing I have seen: OpenAI "traded brains for speed." They did not build a faster smart model. They built a less capable fast one. Pretending otherwise is how you ship broken PRs.
+
+This is not a knock on the model — Spark is a deliberate engineering choice along a frontier nobody else is exploring. It just means the framing in most launch coverage is wrong. Spark is **a tier**, not a replacement.
+
+## Where Spark genuinely wins
+
+The places where 1000 tok/s changes the game are exactly the places where the accuracy penalty is cheapest to absorb:
+
+- **Targeted edits in a file you already understand.** Rename a variable across 200 lines. Convert a switch statement to a lookup table. Inline a helper. You read the diff faster than Spark generated it, and you would have caught any subtle break before saving.
+- **Unit test generation against existing code.** Spark drafts the test, you run it, the test either passes or fails. Cheap verification, near-zero hallucination risk because the input file constrains it.
+- **Regex and syntax mechanical work.** Building a regex from examples. Generating boilerplate matchers. Converting JSON to TypeScript types. The kind of task where speed dominates because the correct answer is a function of the input you provided.
+- **Frontend prototyping loops.** Spark generates a component variant, you see it in the browser, you redirect. The interrupt-and-redirect interaction pattern that Cerebras documents in their best-practices guide only works when the loop is short enough to interrupt.
+- **Iterative refinement of code you are actively reading.** Reshaping logic in a function you have open. Spark's output arrives so fast you can treat it like a smart autocomplete on steroids — accept, reject, redirect mid-stream.
+
+The throughline is that Spark wins when **the cost of a wrong answer is low and verification is fast**. Same conditions where a fast junior engineer wins. Different conditions where you would never put a junior engineer.
+
+## Where Spark bites you
+
+Equally important to map out the failure modes, because Spark is silent about its limits:
+
+- **Multi-file refactors with cross-module invariants.** Spark has 128k context vs. flagship's 400k. The smaller window plus the lower reasoning quality means it will miss a call site, get the type contract subtly wrong, or generate the right change in 9 of 10 files and a confidently broken one in the 10th.
+- **Library APIs it hasn't been trained on deeply.** This is where the hallucination problem is worst. Spark will generate code against an SDK that compiles, runs, and silently does the wrong thing because the function signature is invented.
+- **Anything that requires reading a codebase before writing.** Spark is tuned to start emitting tokens. It does not pause to grep, list, or explore the way flagship Codex does in agentic mode. If your task needs context-gathering, you have to do it for it.
+- **Debugging non-trivial errors.** A 19-point reasoning drop on Terminal-Bench is a polite way of saying "give it a stack trace and watch it propose the wrong fix faster than you can read it."
+- **Default working style is lightweight.** Spark makes minimal, targeted edits and **does not run tests unless you ask**. The flagship's agentic loop will verify; Spark will not, unless you wire that in. This is by design — it is what makes Spark feel real-time — but it shifts the verification cost back to you.
+
+The pattern: anywhere the value of a single token is high, Spark is the wrong model.
+
+## The hybrid workflow that actually works
+
+Cerebras and OpenAI both nudge toward the same answer in their docs, and after a few weeks of running it, I agree: **plan with flagship Codex, implement with Spark**. The split looks like this:
+
+1. **Codex 5.3 produces the plan.** Multi-step breakdown, file map, type signatures, test cases, edge cases to handle. This is where you want the reasoning budget.
+2. **Spark executes one step at a time.** Each step is small enough that Spark cannot meaningfully hallucinate around it.
+3. **Tests written first**, run after each Spark step. Spark does not auto-verify, so the test suite is your verification layer.
+4. **Drop back to flagship Codex** the moment a step requires reading code beyond the current file, or the moment a Spark output fails a test it cannot explain.
+
+Concretely, in the Codex CLI this looks like:
+
+```bash
+# Plan with flagship (reasoning model)
+codex plan --model gpt-5.3-codex \
+  "Migrate auth middleware from session cookies to JWT. Output: file map, type signatures, test cases."
+
+# Implement each step with Spark
+codex implement --model gpt-5.3-codex-spark \
+  --plan plan.md \
+  --tests-first \
+  --auto-run-tests
+```
+
+The same pattern works in the VS Code extension by switching models mid-conversation. The Codex app exposes both in the model picker.
+
+What this captures is the **interrupt-and-redirect** interaction pattern that Spark was designed for. You are not waiting for the model to think. You are watching it work, and steering when it drifts. It is the closest any LLM has come to feeling like pair programming rather than batch generation.
+
+## How Spark fits next to Claude Code, Cursor, and Gemini CLI
+
+A natural question if you are already running [Claude Code as your primary agent](/blog/claude-code-vs-cursor-vs-codex-honest-developer-comparison-2026): does Spark change that calculus?
+
+Short answer: **no, but it adds a new tier**. The current speed-tier landscape looks like:
+
+- **Heavy reasoning** — Claude Opus 4.7 (1M context), GPT-5.3-Codex (400k), Gemini 3 Pro (1M). Where you want them: complex refactors, debugging, architecture, anything agentic.
+- **Mid tier** — Claude Sonnet 4.6, GPT-5.3 base, Gemini 3 Flash. Daily driver for most coding tasks.
+- **Speed tier** — Claude Haiku 4.5, **Codex-Spark**. Real-time loops, targeted edits, prototyping.
+
+Codex-Spark is the first model where the speed tier is **fast enough that the interaction model fundamentally changes**. Haiku 4.5 is fast and great for cheap tasks, but you still wait. Spark you do not wait for. That is the only category Spark currently owns.
+
+If your stack is already Claude Code-centric, the practical move is to add Codex via Pro and use it specifically for the interrupt-and-redirect loop on tasks that fit Spark's profile. Do not try to replace Claude Code with Codex — that is a different conversation about agent ergonomics, not raw model speed.
+
+## Setting it up (Codex CLI, VS Code, app)
+
+Spark is gated to **ChatGPT Pro** users. Free Codex CLI access via OAuth or API does not include Spark as of May 2026 — you need the Pro account.
+
+```bash
+# Update Codex CLI to latest
+npm install -g @openai/codex-cli@latest
+
+# Confirm Spark is in the model list
+codex models list
+
+# Set Spark as default for short tasks
+codex config set default-model gpt-5.3-codex-spark
+
+# Or invoke per-command
+codex --model gpt-5.3-codex-spark "rename helper to formatter across this file"
+```
+
+VS Code: install the latest **Codex extension**, sign in with your Pro account, then switch the model in the chat panel header.
+
+Codex app: same model switcher in the conversation header. The desktop app on Windows now uses a native PowerShell sandbox, no WSL required.
+
+One gotcha I hit early: **Spark uses no tools by default in the app**. If you want it to run tests or read files, you have to enable the toolset explicitly. This is the trade-off for "near-instant" — the moment you turn on file-system tool use, you eat the round-trip latency and Spark stops feeling magical. Decide per-task.
+
+## What I would not use Spark for
+
+To save you the experimentation: I would not use Codex-Spark for any of these, full stop.
+
+- Production migration code that touches more than three files.
+- Anything where a hallucinated dependency name would land in a `package.json`.
+- Generating tests as the source of truth before writing code (tests need correctness; Spark gives speed).
+- Debugging a stack trace from a framework Spark has not seen extensively (Bun internals, newer Next.js canaries).
+- Any agentic task that requires the model to choose tools and verify its own output. Use the flagship.
+
+If you stay inside Spark's competence envelope, the speed is transformative. If you push outside it, you will spend more time fixing Spark's confident mistakes than you saved generating them.
+
+## The bigger picture
+
+Codex-Spark is interesting beyond Spark itself. It is OpenAI publicly committing to the idea that **smaller, faster, hardware-co-designed models are a real frontier**, not a step down from the flagship. The Cerebras partnership is the second-order signal — OpenAI is willing to ship a model whose moat depends on hardware they do not own.
+
+If that pattern continues, expect a **2026 reshuffle** where the meaningful axis is not "biggest context window" or "highest SWE-Bench score." It is going to be **speed-per-dollar per task tier**, with each lab shipping a speed-tier model on specialized inference hardware. Spark is the first move. Claude Haiku on Trainium2 or Gemini Flash on TPU v6 are plausible next ones.
+
+Until then, Spark is the only model that makes interrupt-and-redirect feel like an actual interaction pattern instead of a fantasy. That is worth the Pro account and the time to wire it into a hybrid loop. Just keep flagship Codex one keypress away.
+
+## References
+
+### Sources
+
+- [Introducing GPT-5.3-Codex-Spark | OpenAI](https://openai.com/index/introducing-gpt-5-3-codex-spark/) — official launch post with capability framing
+- [How Codex Spark Changes The Way You Code | Cerebras](https://www.cerebras.ai/blog/codex-spark-best-practices) — interrupt-and-redirect interaction pattern and hybrid workflow guidance
+- [Codex 5.3 vs. Codex Spark: Speed vs. Intelligence | Turing College](https://www.turingcollege.com/blog/codex-5-3-vs-codex-spark-speed-vs-intelligence) — benchmark deltas and when-to-use breakdown
+- [GPT-5.3-Codex-Spark Benchmark | Remio](https://www.remio.ai/post/gpt-5-3-codex-spark-benchmark-1000-tokens-sec-speed-vs-accuracy-trade-offs) — SWE-Bench Pro and Terminal-Bench accuracy numbers
+- [Cerebras WSE-3 Third-Generation Superchip | IEEE Spectrum](https://spectrum.ieee.org/cerebras-chip-cs3) — wafer-scale architecture and inference advantages
+- [Cerebras Wafer-Scale AI Real-Time Inference | Intelligent Living](https://www.intelligentliving.co/cerebras-wafer-scale-ai-2100-tokens/) — memory bandwidth and on-chip SRAM details
+- [Codex Changelog | OpenAI Developers](https://developers.openai.com/codex/changelog) — Codex CLI, app, and extension release notes
+
+### Further Reading
+
+- [Claude Code vs Cursor vs Codex — Honest Developer Comparison 2026](/blog/claude-code-vs-cursor-vs-codex-honest-developer-comparison-2026) — broader context on where Codex fits in the agent ecosystem
+- [Claude Opus 4.7 Developer Review — What's Changed](/blog/claude-opus-4-7-developer-review-whats-changed) — comparison point on the heavy-reasoning side
+- [AI Coding Tools 2026 — Developer Guide](/blog/ai-coding-tools-2026-developer-guide) — the broader tooling landscape
+
+---
+
+~Seb 👊
