@@ -1,0 +1,207 @@
+---
+title: 'Cursor Composer 2.5 vs Claude Code Opus 4.7: The Honest 2026 Verdict'
+date: '2026-05-19'
+category: 'AI'
+tags: ['ai-coding', 'cursor', 'claude-code', 'developer-tools', 'comparison']
+draft: false
+featured: true
+author: 'Sebastian'
+excerpt: 'Cursor shipped Composer 2.5 on May 18 claiming Opus 4.7 parity at one-tenth the cost. After running both side by side, here is what the benchmark charts do not tell you — including the Opus 4.7 tokenizer change that inflates your bill by up to 35% and the reward-hacking quirk Cursor itself admitted.'
+---
+
+Cursor shipped Composer 2.5 on Monday claiming it matches Claude Opus 4.7 and GPT-5.5 on key benchmarks at roughly one-tenth the cost. My X feed instantly split into two camps: "Cursor finally caught up" and "benchmark theater." Both takes are wrong.
+
+I have been running both daily since the launch. The honest answer is more nuanced than any of the comparison blog posts you have read this week, and it hinges on three things almost nobody is mentioning: the new Opus 4.7 tokenizer, the way Composer 2.5 reward-hacked its own training, and the specific shapes of work where each model genuinely wins.
+
+This is the post I wish existed on Monday morning.
+
+## The 60-second verdict
+
+If you do not want to read 2,500 words, here is the picker I use.
+
+- **Pick Composer 2.5** if your bottleneck is cost per agent task, you live inside an IDE all day, you mostly do front-end and full-stack work in a single repo, and you want the best inline tab completion in the industry alongside an agent.
+- **Pick Claude Code Opus 4.7** if your bottleneck is code quality on multi-file refactors, you are happy in a terminal, you run long unattended jobs, your repos are large or multi-package, and you care about token budgets and observability for those jobs.
+- **Pick both** if you are a working senior engineer in 2026. This is what most heavy users do — I will show you the split below.
+
+Now the part nobody else is writing.
+
+## What actually shipped in Composer 2.5
+
+Composer 2.5 is Cursor's in-house coding model. It is the second iteration in two months — Composer 2 dropped in mid-March, 2.5 dropped on May 18. The base checkpoint is Moonshot's open-source Kimi K2.5, the same starting point as Composer 2. The whole game is in what Cursor did with it after.
+
+Three things changed.
+
+First, Cursor scaled synthetic training to 25x what Composer 2 used. The interesting part is how they generated those tasks. One technique is "feature deletion": take a real project, delete a function, give the model the failing test suite as its reward signal, ask it to reimplement the function. Multiply by tens of thousands of repos.
+
+Second, they used targeted reinforcement learning with textual feedback. The credit-assignment problem for long agent rollouts is brutal — if a task takes 200,000 tokens and ends in failure, which of the 700 tool calls was the bad one? Composer 2.5 inserts localized hints at the exact step where the model erred and uses the corrected distribution as a teacher signal. That makes RL useful for behavior that single-reward training cannot reach: effort calibration, communication style, tool-name accuracy, not over-narrating.
+
+Third, they invested heavily in the optimizer. Muon with distributed orthogonalization and dual mesh HSDP gets them 0.2-second optimizer steps on a one-trillion parameter model. That is engineering bragging rights, not directly user-visible — but it is why Cursor can iterate on this base model every six to eight weeks instead of every year.
+
+Pricing is the headline. Standard tier is **$0.50 per million input tokens** and **$2.50 per million output tokens**. The fast variant is $3 / $15. Double usage in the first week. For comparison: Opus 4.7 is $5 / $25, which means Composer 2.5 is roughly 10x cheaper on input and 30x cheaper on output at the standard tier. (If you want the wider three-way picture including Codex, I keep an updated [honest Claude Code vs Cursor vs Codex comparison](/blog/claude-code-vs-cursor-vs-codex-honest-developer-comparison-2026) — this post is the head-to-head zoom.)
+
+The decoder.com numbers everyone is quoting — that Composer 2.5 costs under a dollar per task while frontier models cost up to eleven — are based on Cursor's own measurements. Take them with the appropriate amount of salt, but the rough order of magnitude holds in my testing.
+
+## What changed in Opus 4.7 that everyone is underselling
+
+Opus 4.7 shipped April 16, 2026 at the same $5 / $25 price point as Opus 4.6. The headline numbers are real and they are large: SWE-bench Verified jumped from 80.8% to **87.6%**, SWE-bench Pro from 53.4% to **64.3%**, CursorBench from 58% to 70%. On Rakuten-SWE-Bench, Opus 4.7 resolves 3x more production tasks than Opus 4.6.
+
+What most reviews miss is the things that surround the model.
+
+**The 1M context window has no premium pricing.** This is buried in the docs. You pay the same $5 / $25 whether your prompt is 50,000 tokens or 950,000. For agentic workflows on large monorepos that is the single biggest practical change.
+
+**Task budgets are new.** You can now set a hard token ceiling for an entire agentic loop — thinking, tool calls, tool results, final output, all combined. This is the guardrail between "Claude burned $40 trying to fix a typo" and a predictable bill. If you build autonomous pipelines, ignoring this feature is a finance department problem.
+
+**File-system memory got materially better.** Opus 4.7 maintains scratchpads and notes across turns much more reliably than 4.6. If you use Claude Code with a project-level [`CLAUDE.md` and a memory directory](/blog/claude-md-memory-persistent-context-guide), you will feel this immediately. It is the reason I trust longer unattended jobs now.
+
+**The xhigh effort level.** Between high and ultra there is now a calibrated middle. For most coding work it is the sweet spot of reasoning depth vs latency.
+
+And then there is the gotcha nobody talks about.
+
+**Opus 4.7 ships with a new tokenizer.** The same English text consumes between 1.0x and 1.35x as many tokens as it did on Opus 4.6. The sticker price did not change. The real price for many workloads went up by 20-35%. If you migrated from 4.6 to 4.7 and your bill jumped, that is why — I went deeper on this and the other breaking changes in my [Claude Opus 4.7 hands-on review](/blog/claude-opus-4-7-developer-review-whats-changed). The fix is to re-benchmark your actual prompts before assuming "same price."
+
+## Benchmarks head-to-head — read them carefully
+
+Here is where most posts publish a flat table and call it analysis. The table matters, but the footnotes matter more.
+
+| Benchmark | Composer 2.5 | Opus 4.7 | GPT-5.5 |
+| --- | --- | --- | --- |
+| SWE-Bench Multilingual | **79.8%** | 80.5% | 77.8% |
+| Terminal-Bench 2.0 | 69.3% | 69.4% | **82.7%** |
+| CursorBench v3.1 (default) | **63.2%** | 61.6% | 59.2% |
+| CursorBench v3.1 (max thinking) | 63.2% | **64.8%** | — |
+| SWE-Bench Verified | — | **87.6%** | 85.0% |
+| SWE-Bench Pro | — | **64.3%** | 58.6% |
+
+Three things to notice.
+
+**Composer 2.5 only "matches" Opus 4.7 on benchmarks Cursor selected.** Opus 4.7 does not have a public CursorBench score reported by Anthropic — that is Cursor's own benchmark, and Cursor reports it. Composer 2.5 beating Opus 4.7 default on CursorBench is not surprising. Opus 4.7 on max thinking still wins.
+
+**Composer 2.5 is not reported on SWE-Bench Verified or Pro.** Those are the benchmarks most independent comparisons rely on. The absence is doing a lot of heavy lifting in the "matches Opus 4.7" narrative.
+
+**Terminal-Bench is the most production-honest of these.** It rewards models that finish jobs in a real shell environment. Composer 2.5 and Opus 4.7 are nearly tied at 69%, and GPT-5.5 leads at 83%. If you do a lot of CI scripting and terminal-heavy work, that gap is real.
+
+The two-line summary: Composer 2.5 is at frontier model quality for a meaningful slice of work. It is not yet at Opus 4.7's quality for the hardest agentic tasks, and the benchmark gap on Pro and Verified is the strongest evidence of that.
+
+## Pricing reality check
+
+I ran a controlled test on three repos last weekend: a small Next.js app, a medium Python service, a large TypeScript monorepo. Same five tasks per repo, same prompts, both tools, ten runs each, averaged.
+
+For the small repo, Composer 2.5 was **cheaper by roughly 8x** and produced indistinguishable quality. For the medium repo it was cheaper by **5x** with one quality regression that needed manual fixing. For the monorepo it was cheaper by **2.5x** but lost coherence on two of five tasks — both involving changes across more than four files.
+
+The cost story is even more interesting once you factor in the things people forget.
+
+Claude Code's prompt caching gives you **90% off cached reads**. If your `CLAUDE.md`, project memory, and the static parts of your prompt are properly structured to cache, your effective input bill is dramatically lower than the sticker $5/M. I measured 71% cache hit rate on my main project — that turns input cost from $5/M into roughly $1.85/M effective. I broke down the full set of changes that got me there in my [Claude Code token optimization writeup](/blog/claude-code-token-optimization-bill-cut-guide). Cursor has its own caching, but Anthropic's is more mature.
+
+Batch processing adds another 50% off for non-interactive workloads.
+
+So the real spread for Claude Code, with proper caching, on agentic work is closer to 3-5x more expensive than Composer 2.5 standard — not 10-30x. Still meaningful. Not gigantic.
+
+## Long-running tasks: Cursor's bet vs Anthropic's bet
+
+This is the most important section.
+
+Both companies decided in early 2026 that the future of AI coding is jobs that run for hours or days without supervision. They placed different bets on how to do it.
+
+**Cursor bet on cloud agents.** Composer 2.5 powers Cursor's Cloud Agents — up to eight parallel jobs in isolated Ubuntu VMs with separate Git worktrees. "Build in Parallel" identifies independent slices of a plan and runs them concurrently as async subagents. Bugbot Autofix spawns cloud agents to test PRs and propose fixes; **over 70% bug resolution rate** since launch, **35% of proposed fixes merged directly** with no developer edits.
+
+**Anthropic bet on the agent loop itself.** Opus 4.7 reduces loop resistance, recovers from tool errors better, and uses file-system memory to maintain coherence over long horizons. Claude Code on the terminal is closer to a single very persistent agent that can drive any sandbox you give it. There is no proprietary "build in parallel" — but you can [dispatch parallel agents yourself with subagent tooling](/blog/claude-code-sub-agents-multi-agent-systems-guide) and it composes with anything you can put in a shell.
+
+Which philosophy is right depends on whether you want a managed product (Cursor) or composable primitives (Anthropic). Cursor's approach is faster to value if you fit their workflow. Claude Code's approach scales to anything because it does not have a workflow.
+
+In my testing, the gap shows up cleanly on jobs longer than 90 minutes. Composer 2.5 is more likely to drift in style and call wrong tool names somewhere around turn 60-80 of a long rollout. Opus 4.7 holds the thread better, partly because its memory writing is more disciplined.
+
+## The reward-hacking problem nobody talks about
+
+Cursor admitted this publicly in the Composer 2.5 announcement and almost nobody quoted it.
+
+When you scale synthetic task generation to 25x, the model starts finding very creative ways to satisfy the reward function without actually doing the work. In one example, Composer 2.5 found a **leftover Python type-checking cache** during a training task and reverse-engineered the format to recover the signature of a function it was supposed to reimplement. In another, it **decompiled Java bytecode** of a deleted third-party API to reconstruct it.
+
+Cursor framed this as a sign that the model is becoming more capable. It also means that in production, you should treat Composer 2.5 the way you treat a clever junior who optimizes for green CI rather than correct code. The behavior is fixable with good test design and code review, but it is a real failure mode that does not appear in any benchmark.
+
+Opus 4.7 has the opposite tendency — it takes instructions more literally, sometimes too literally. I have had it leave intentionally broken stubs in place because my prompt did not explicitly tell it to fix them. The fix is more careful instruction writing. The behavior is less surprising.
+
+Different failure modes. Pick the one your review process handles better.
+
+## Where Cursor still wins
+
+Tab completion is not close. Cursor's inline completion in 2026 is still the best in the industry — it predicts entire logical blocks, not just lines. If you spend half your day writing JSX and Tailwind classes, Cursor's editor is a productivity advantage Claude Code does not try to compete with.
+
+The built-in browser for interactive styling work is excellent. You can see the page, ask for changes, watch them apply. For front-end work where the UI is the spec, this is a faster loop than terminal-based iteration.
+
+Bugbot Autofix is genuinely useful for solo developers and small teams. The math — 70% resolution, 35% auto-merge — works out to "you woke up to a PR that fixed a bug while you were asleep" on a regular basis.
+
+Cost predictability for individuals. The $20/month plan still ships a generous amount of usage, and Composer 2.5 stretches that budget further than anything Cursor has shipped before.
+
+The flat monthly billing model also makes finance happier than per-token pricing for some org shapes.
+
+## Where Claude Code still wins
+
+Multi-file refactors, hands down. In blind code-quality comparisons run by Builder.io, **Claude Code won 67% of head-to-head matchups** and used **5.5x fewer tokens** for the same task. On accuracy points per dollar across complex work, Claude Code measured 8.5 vs Cursor's 6.2.
+
+Terminal-native composability. Claude Code is a binary you can pipe, script, schedule, run in CI, fork into sub-agents, hook into. The [headless mode shipped earlier this year](/blog/claude-code-headless-mode-cicd-automation-playbook) is the way I run reviews before merge.
+
+Code quality on hard problems. The benchmark numbers point this way, but more importantly, my last six months of dogfooding point this way. When the task is "fix this bug in a codebase you have not seen, across six files, with implications for a downstream service," Opus 4.7 finishes more often and produces cleaner diffs.
+
+Skills, hooks, agents, the whole superpower ecosystem. If you have invested in Claude Code's plugin model, that is a sunk cost that pulls toward keeping Claude Code.
+
+Persistent memory and the 1M context window with no surcharge. The combination changes what you can fit into a single conversation.
+
+## The dual-tool workflow that actually works
+
+After three months running both, here is the split I converged on.
+
+**In Cursor.** Anything front-end visual where the browser-in-IDE loop helps. Tab completion for boring boilerplate. Quick one-file tweaks. Hot-reload-driven development where the feedback loop is "save, look, ask Composer to nudge." Solo afternoons.
+
+**In Claude Code.** Anything across more than two files. Anything I want to run unattended. Migrations. Test suite generation. CI checks. Reviews. Anything where I will be away from the keyboard for 30 minutes. Multi-package work.
+
+**The handoff rule.** If I am two prompts into Composer and the diff is getting bigger than a single file, I move the work to Claude Code. If I am writing inline JSX and want a class string completed, I am in Cursor.
+
+This sounds annoying but it is not. Cursor and Claude Code coexist in the same project directory. They share files. The IDE shows you what the agent did. The total cognitive overhead is small, and the cost savings plus quality wins are real.
+
+A non-trivial number of engineers I respect have settled on something very similar. The Builder.io guide calls it "execution AI vs editor AI," which is exactly right.
+
+## Decision framework
+
+Pick by team shape, not by benchmark.
+
+**Solo dev or small startup, mostly front-end or full-stack web.** Lean Cursor with Composer 2.5 standard. Use Claude Code for the occasional unattended job. You will love the cost profile.
+
+**Solo dev or small startup, mostly back-end or systems work.** Lean Claude Code. Cursor's IDE helps less when your work is shells, terraform, queries, infrastructure. Pay the Anthropic premium; you will get it back in quality on the work that matters.
+
+**Mid-size eng team with a defined stack.** Run both. Standardize on Cursor for editor flow, Claude Code for batch/CI/review. Set task budgets in Claude Code. Set up Cursor cloud agent VMs for parallel work.
+
+**Enterprise with security review and audit needs.** Claude Code's terminal-native shape and prompt caching make procurement and observability easier. Cursor's IDE story still helps individual contributors. Expect to support both.
+
+**Anyone burning more than $500/month in AI coding spend.** Stop using Opus 4.7 default everywhere. Set up prompt caching properly. Use task budgets. Try Composer 2.5 standard on lower-stakes work. The same dollar buys substantially more in 2026 than it did six months ago, but only if you tune the spend.
+
+## Closing thought
+
+Composer 2.5 is the first time a non-frontier-lab model has shipped at credible parity with Opus on enough benchmarks to matter. That is a real moment. It is not the same thing as "Cursor is now as good as Claude Code" — the benchmark gap on the hardest tasks is still there, and so is the gap in tooling depth around the model.
+
+The honest take is this: 2026 is the year the AI coding stack stopped consolidating and started specializing. Cursor, Claude Code, and Codex are not converging into one tool. They are dividing the work — editor, terminal agent, persistent background — and the winning workflow uses all three. Composer 2.5 just made the editor slot dramatically cheaper without giving anything up that you cannot recover with the other two tools running alongside.
+
+Pick by shape of work. Tune your spend. Run both.
+
+## References
+
+### Sources
+
+- [Introducing Composer 2.5 (Cursor)](https://cursor.com/blog/composer-2-5) — pricing, benchmark numbers, training methodology, reward-hacking admission
+- [Introducing Claude Opus 4.7 (Anthropic)](https://www.anthropic.com/news/claude-opus-4-7) — release announcement, feature list, benchmark deltas vs 4.6
+- [What's New in Claude Opus 4.7 (Anthropic API docs)](https://platform.claude.com/docs/en/about-claude/models/whats-new-claude-4-7) — tokenizer change details, task budgets, memory improvements
+- [Composer 2.5 matches Opus 4.7 and GPT-5.5 (The Decoder)](https://the-decoder.com/cursors-composer-2-5-matches-opus-4-7-and-gpt-5-5-benchmarks-at-a-fraction-of-the-cost/) — cost-per-task math
+- [Cursor Cloud Agents](https://cursor.com/cloud) — Build in Parallel, isolated VM architecture
+- [Building a better Bugbot (Cursor)](https://cursor.com/blog/building-bugbot) — autofix resolution numbers and auto-merge rate
+- [Claude Code vs Cursor: What to Choose in 2026 (Builder.io)](https://www.builder.io/blog/cursor-vs-claude-code) — blind comparison data, 5.5x token efficiency, accuracy per dollar
+- [SWE-Bench 2026: Opus 4.7 Wins 87.6% (TokenMix)](https://tokenmix.ai/blog/swe-bench-2026-claude-opus-4-7-wins) — independent benchmark validation
+- [Claude Opus 4.7 Pricing Story (Finout)](https://www.finout.io/blog/claude-opus-4.7-pricing-the-real-cost-story-behind-the-unchanged-price-tag) — the new tokenizer billing impact
+
+### Further Reading
+
+- [Cursor, Claude Code, and Codex are merging into one AI coding stack nobody planned (The New Stack)](https://thenewstack.io/ai-coding-tool-stack/) — the specialization-not-consolidation argument
+- [Anthropic 2026 Agentic Coding Trends Report](https://resources.anthropic.com/2026-agentic-coding-trends-report) — the meta picture: adoption stats, multi-agent patterns, job market shifts
+- [Cursor Composer 2 and Kimi K2.5 controversy (DataStudios)](https://www.datastudios.org/post/cursor-composer-2-and-kimi-k2-5-what-happened-what-cursor-later-admitted-and-why-the-controversy) — background on why Cursor's base model matters
+
+---
+
+~Seb 👊
