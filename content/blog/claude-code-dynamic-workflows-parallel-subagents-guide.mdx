@@ -1,0 +1,172 @@
+---
+title: 'Claude Code Dynamic Workflows: Hundreds of Subagents, Hands-On'
+date: '2026-06-08'
+category: 'AI'
+tags: ['claude-code', 'claude', 'anthropic', 'ai-agents', 'developer-tools']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: "Opus 4.8 shipped dynamic workflows in Claude Code — one session that spawns up to 1,000 parallel subagents and verifies them against your test suite. I ran it on a real migration. Here is what it actually is, the numbers that matter, and when it quietly drains your budget."
+---
+
+The first time I typed the word "workflow" into Claude Code after updating to Opus 4.8, it did not answer me. It wrote a JavaScript program, handed it to a runtime, and spun up forty-something subagents that started chewing through my codebase in the background while the chat stayed responsive. Ninety seconds later I had a single consolidated report instead of a forty-message transcript.
+
+That is the whole pitch for **Claude Code dynamic workflows**, and it is also where most of the breathless coverage stops. "1,000 parallel agents!" makes a great headline. It makes a worse mental model. I spent the last week running dynamic workflows on a real migration, watching the token meter, and figuring out where they actually pay off versus where they just set money on fire. Here is what I found.
+
+## What Actually Shipped on May 28
+
+Anthropic released [Claude Opus 4.8](/blog/claude-opus-4-7-developer-review-whats-changed) (model ID `claude-opus-4-8`) on May 28, 2026, and the headline developer feature is dynamic workflows in Claude Code. The model itself is a modest step over 4.7 — 88.6% on SWE-bench Verified (up from 87.6%), 69.2% on SWE-bench Pro, 74.6% on Terminal-Bench 2.1, and a notable claim that it is "around four times less likely than its predecessor to allow flaws in code it has written to pass unremarked." That last one matters more than the benchmark deltas, and I will come back to it.
+
+But the capability that changes how you work is the orchestration layer. So let me be precise about what a dynamic workflow *is*, because the marketing language obscures it.
+
+A dynamic workflow is **a JavaScript script that Claude writes for you and a separate runtime executes in the background.** That is it. Claude reads your natural-language request, authors an orchestration script, and the runtime runs that script — spawning subagents, collecting their structured output, and folding everything into one answer. Your chat session never blocks. Intermediate results live in script variables, not in Claude's context window, which is the actual reason this scales: the orchestrator never has to hold 40 agents' worth of output in its own head.
+
+This is not "Claude got smarter at multitasking." It is closer to Claude becoming a build system that compiles your intent into a parallel job graph.
+
+## The Real Numbers Nobody Puts in the Headline
+
+The "1,000 subagents" figure is real but misleading. Here are the constraints that actually govern what you can do:
+
+- **Up to 1,000 total agents** per workflow execution — this is a lifetime cap across the whole run, a runaway-loop backstop, not a target.
+- **Maximum 16 running concurrently** (specifically `min(16, cores - 2)`). The other 984 queue up and run as slots free.
+- **Each subagent gets its own context window.** This is the point. Forty agents reading forty different modules do not pollute each other or the orchestrator.
+- **Results are verified before they are merged.** The runtime gates each unit of work, typically against your test suite, before folding it in.
+
+So when someone says they "ran 200 agents," what happened is 200 tasks flowed through a pool of ~14 concurrent workers. Wall-clock time is governed by the slowest chain of dependent work, not by 200-way parallelism. Understanding that is the difference between using this tool well and being shocked at your bill.
+
+It needs Claude Code v2.1.154 or later, and it is available on all paid plans plus the Anthropic API, Bedrock, Vertex AI, and Microsoft Foundry. It is still a **research preview**, which shows.
+
+## Three Ways to Trigger It
+
+There is no separate command to "enable" workflows. You invoke them one of three ways:
+
+1. **Say "workflow" in a prompt.** Claude Code highlights the keyword and writes an orchestration script. This is the explicit, on-demand path.
+2. **Run `/deep-research`.** A built-in workflow that fans out web searches, fetches sources, cross-checks claims, and synthesizes a cited report.
+3. **Set `/effort ultracode`.** This makes the workflow path the *default* — Claude authors and runs a workflow for every substantive task in the session. Powerful and expensive; treat it like sudo.
+
+The keyword trigger is the one I use most, because it keeps me in control of *when* the fan-out happens. Ultracode mode is genuinely useful for a "go audit this entire repo and do not come back until it is exhaustive" session, but I would not leave it on by accident.
+
+## Anatomy of a Workflow Script
+
+The thing I appreciate most, having dug in, is that the orchestration is not a black box. The script Claude writes is plain JavaScript with a handful of primitives. Here is a trimmed version of one Claude generated for me when I asked it to review every changed file in a branch across multiple dimensions:
+
+```javascript
+export const meta = {
+  name: 'review-changes',
+  description: 'Review changed files across dimensions, verify each finding',
+  phases: [{ title: 'Review' }, { title: 'Verify' }],
+}
+
+const DIMENSIONS = [
+  { key: 'bugs', prompt: 'Find correctness bugs in the diff...' },
+  { key: 'perf', prompt: 'Find performance regressions in the diff...' },
+  { key: 'security', prompt: 'Find security issues in the diff...' },
+]
+
+// Each dimension's findings get verified the moment that review finishes —
+// no waiting for the slowest reviewer before verification starts.
+const results = await pipeline(
+  DIMENSIONS,
+  d => agent(d.prompt, { label: `review:${d.key}`, phase: 'Review', schema: FINDINGS }),
+  review => parallel(review.findings.map(f => () =>
+    agent(`Adversarially verify this finding: ${f.title}`, {
+      phase: 'Verify',
+      schema: VERDICT,
+    }).then(v => ({ ...f, verdict: v }))
+  ))
+)
+
+const confirmed = results.flat().filter(Boolean).filter(f => f.verdict?.isReal)
+return { confirmed }
+```
+
+The primitives that matter:
+
+- **`agent(prompt, opts)`** spawns one subagent. With a `schema`, it is forced to return validated structured data, so you get objects back, not prose you have to parse.
+- **`pipeline(items, ...stages)`** runs each item through all stages independently, with no barrier between them. Item A can be in stage 3 while item B is still in stage 1.
+- **`parallel(thunks)`** runs tasks concurrently but *waits for all of them* — a barrier. Use it only when you genuinely need every result together (deduping across a full set, early-exit on zero findings).
+- **`phase(title)`** and **`log(message)`** drive the progress display you watch while it runs.
+
+The reason `pipeline` is the default and `parallel` is the exception is latency. A barrier makes your fast workers idle while they wait for the slowest one. The whole point of this architecture is to *not* waste wall-clock, and the scripts reflect that. If you have ever hand-rolled [multi-agent systems with manual subagents](/blog/claude-code-sub-agents-multi-agent-systems-guide), this is the same idea with the orchestration boilerplate generated for you and a real concurrency scheduler underneath.
+
+## The Four Phases: Plan, Distribute, Verify, Integrate
+
+Under the marketing, every serious workflow follows the same shape:
+
+1. **Plan** — the orchestrator decomposes your objective into independent units. The quality of this step is everything. Bad decomposition (units that depend on each other) destroys the parallelism.
+2. **Distribute** — one subagent per unit, fanned out across the concurrency pool, each with a clean context window.
+3. **Verify** — results are gated *before* they are merged. For code, that means running your existing test suite. For research, it means an adversarial cross-check.
+4. **Integrate** — the runtime folds verified results into one coherent output and reports back.
+
+The verify step is the part that earns its keep, and it is why Opus 4.8's "4× less likely to let flaws pass" claim matters. The canonical demo Anthropic leaned on is the Bun project's migration — roughly 750,000 lines of Zig ported to Rust in 11 days, with 99.8% of the existing test suite passing from first commit to merge. The test suite *was* the quality bar. That is the same engineering bet behind [Anthropic's whole Bun acquisition play](/blog/anthropic-bun-acquisition-claude-code-strategy): if your tests are good, you can let a swarm of agents loose and let the suite catch what they get wrong.
+
+Which leads directly to the catch.
+
+## When Dynamic Workflows Actually Pay Off
+
+After a week, my rule is simple: **dynamic workflows pay off when the work is genuinely parallel and independently verifiable.** Concretely, that means:
+
+- **Large migrations** — bump a framework major version across hundreds of files, replace a deprecated API call site by call site, port a module.
+- **Codebase-wide audits** — find every place a pattern occurs, flag every untyped export, hunt a class of bug across the whole tree.
+- **Mechanical refactors at scale** — apply strict type annotations or fix lint violations across thousands of files.
+- **Cross-checked research** — the `/deep-research` use case, where independent searches and adversarial verification beat one linear pass.
+
+The common thread: the units do not depend on each other, and there is an objective gate (tests, a type-checker, a linter) to verify each one. If your test coverage is thin, the verify phase is verifying nothing, and you are just parallelizing the generation of plausible-looking mistakes.
+
+## When It Just Burns Money
+
+Here is the part the tutorials skip. One widely-shared report described a pipeline burning **62 million tokens in 24 hours and draining a $2,500 monthly budget in a single day.** That is not a bug. That is dynamic workflows working exactly as designed, pointed at the wrong problem.
+
+The cost math is brutal once you internalize it. A single agentic job already averages around 96,000 tokens before it produces an answer. Now spawn 200 of them, each re-sending accumulated context on every tool call, some of them stuck in retry loops adding 2–5K tokens per failed attempt. The shared concurrency pool does not save you here — total token spend is the *sum* of every agent's work, not the wall-clock-parallel slice you experience.
+
+Dynamic workflows are a bad fit when:
+
+- **The task is sequential.** If step 2 needs step 1's output, you get no parallelism and pay the orchestration overhead for nothing.
+- **The work is small.** Spinning up a workflow to touch three files is like booking a freight train to move a couch.
+- **You lack a verification gate.** No tests, no type-checker, no objective signal — the verify phase is theater.
+- **You have not set a budget cap.** This is non-negotiable. The token economics of agents are the single biggest operational risk in agentic coding right now, and I covered the cost-control levers in depth in my [Claude Code token optimization guide](/blog/claude-code-token-optimization-bill-cut-guide).
+
+Set per-user budget caps, lean on prompt caching for the system instructions every subagent shares, and route grunt work to a cheaper tier where the workflow lets you. Opus 4.8's new fast mode ($10/$50 per million tokens, 2.5× speed, and notably 3× cheaper than fast mode on previous models) is for latency-sensitive interactive work, *not* for blasting through a 1,000-agent migration — use regular pricing ($5/$25 per million) there.
+
+## Gotchas From a Week of Use
+
+A few things that bit me or that I had to learn:
+
+- **Worktree isolation is expensive.** When agents mutate files in parallel, the runtime can give each its own git worktree to avoid conflicts. It works, but it costs ~200–500ms of setup plus disk per agent. Only reach for it when agents genuinely write to the same files concurrently; otherwise it is pure overhead.
+- **Decomposition quality is your job to shape.** If Claude's plan creates units that secretly depend on each other, you will see it stall or produce inconsistent results. A sharper prompt that names the independent boundaries ("one agent per route file," "one agent per package") produces dramatically better plans.
+- **Silent truncation reads as completeness.** A workflow that caps coverage at "top 50 files" and does not tell you *looks* like it audited everything. Ask the workflow to log what it dropped. If it does not, assume it cut corners.
+- **It is a research preview, and it shows.** I hit a couple of cases where a subagent's structured output failed validation and the whole branch dropped to null silently. Filter for nulls and sanity-check counts; do not assume every spawned agent contributed.
+- **Context engineering still matters.** The orchestrator keeps intermediate results out of its context, but each subagent still needs a tight, well-scoped prompt. The same [context engineering discipline](/blog/context-engineering-claude-code-guide) that makes a single Claude Code session efficient makes a 200-agent workflow tractable.
+
+## How This Compares to Rolling Your Own
+
+Before 4.8, the way you got parallelism was [manual subagents](/blog/claude-code-sub-agents-multi-agent-systems-guide) — you, the human, deciding what to dispatch and stitching the results together by hand. That still works and is still the right call for a handful of clearly-defined independent tasks where you want tight control.
+
+Dynamic workflows win when the fan-out is large enough that hand-orchestrating it is the bottleneck. The runtime gives you a real concurrency scheduler, structured-output validation, automatic verification gating, and a journal you can resume from if a run dies halfway. You are trading fine-grained manual control for scale and a deterministic execution model. For a 600-file migration, that trade is obvious. For "review these two functions," it is not.
+
+## My Verdict
+
+Dynamic workflows are the most significant change to how I use Claude Code since subagents landed, and the framing that helped me most was to stop thinking "AI doing many things at once" and start thinking "a compiler that turns my intent into a verified parallel job." Once you hold it that way, the right uses become obvious: big, independent, test-gated work. So do the wrong ones.
+
+The capability is genuinely impressive and the verification-first design is the right instinct. But it hands you a much bigger gun, and the recoil is measured in dollars. Set a budget cap before your first real run, make sure your test suite is the quality bar you think it is, and start with a scoped migration rather than turning on ultracode and walking away. Do that, and the first time you watch 40 agents close out a refactor that would have taken you a day, it genuinely feels like the future arrived early.
+
+If you have not updated yet: get to Claude Code v2.1.154+, type "workflow" in front of your next big mechanical task, and watch what it writes. Just keep one eye on the meter.
+
+## References
+
+### Sources
+- [Introducing Claude Opus 4.8 — Anthropic](https://www.anthropic.com/news/claude-opus-4-8) — release details, benchmarks, and the honesty/alignment claims
+- [Introducing dynamic workflows in Claude Code — Anthropic](https://claude.com/blog/introducing-dynamic-workflows-in-claude-code) — the canonical feature announcement
+- [Orchestrate subagents at scale with dynamic workflows — Claude Code Docs](https://code.claude.com/docs/en/workflows) — the script primitives, concurrency caps, and trigger methods
+- [Anthropic releases Opus 4.8 with new 'dynamic workflow' tool — TechCrunch](https://techcrunch.com/2026/05/28/anthropic-releases-opus-4-8-with-new-dynamic-workflow-tool/) — launch context and availability
+- [Opus 4.8 Made Claude Smarter. Token Discipline Got Urgent. — The New Stack](https://thenewstack.io/opus-4-8-claude-smarter-token-discipline-urgent/) — the 62M-token cautionary case and cost framing
+- [Claude Opus 4.8 Benchmarks Explained — Vellum](https://www.vellum.ai/blog/claude-opus-4-8-benchmarks-explained) — benchmark breakdown vs 4.7
+
+### Further Reading
+- [Dynamic Workflows: How to Orchestrate 1,000 Subagents on a Real Codebase — Build This Now](https://www.buildthisnow.com/blog/guide/development/claude-code-dynamic-workflows) — a worked migration example end to end
+- [Context Engineering for AI Coding Agents — Fundesk](https://www.fundesk.io/context-engineering-techniques-ai-coding-agents-2026) — the cost levers that keep big workflows affordable
+- [Create custom subagents — Claude Code Docs](https://code.claude.com/docs/en/sub-agents) — for when manual control beats a full workflow
+
+---
+
+~Seb 👊
