@@ -1,0 +1,103 @@
+---
+title: 'The Uncomfortable Truths About AI Coding Agents in 2026'
+date: '2026-06-08'
+category: 'AI'
+tags: ['ai-agents', 'developer-experience', 'ai-coding-tools', 'tech-debt', 'opinion']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: "Adoption is at 84%, trust is at 29% and falling, and Uber burned its full-year AI budget by April. I use these tools every day and I am not here to bash them — but the demo never shows you the bill, the review burden, or the security debt. Here are the truths nobody puts in the keynote."
+---
+
+There is a thread that keeps resurfacing on Hacker News in 2026 titled "Some uncomfortable truths about AI coding agents," and every time it climbs the front page the comments split into the same two camps: people who think AI coding agents are a miracle, and people who have shipped the code those agents wrote and then had to maintain it.
+
+I live in the second camp, but I am not a skeptic. I use Claude Code and Cursor every single day. They are genuinely the biggest change to my job in a decade. That is exactly why the marketing irritates me — the demos show a clean prompt producing a working feature in ninety seconds, and they never show you what happens in month two. So let me show you that part. Here are the uncomfortable truths, each one backed by data I did not want to be true.
+
+## Truth #1: You Are Not Reducing Work, You Are Moving It Downstream
+
+The pitch is that AI lets you produce more code, faster. That part is real. The lie of omission is what happens to all that code afterward.
+
+James Shore put the math better than anyone: an AI coding agent only actually helps if it **reduces your maintenance costs by the same rate it increases your output.** And it doesn't. If you double your output and double the volume of code you have to maintain, you haven't doubled your costs — two times two means you have *quadrupled* your maintenance burden. Code is a liability you pay for every month it exists, not an asset you bank once.
+
+The empirical data backs this up brutally. One large-scale study found AI-assisted developers produce commits at **three to four times the rate** of their peers. Sounds like a win — until you read the next line: by year two, unmanaged AI-generated code drives maintenance costs to **four times** traditional levels as technical debt compounds. 75% of tech leaders already expect moderate-to-severe technical debt by the end of 2026 specifically because of how fast AI-assisted code is shipping.
+
+You didn't eliminate the work. You time-shifted it three months into the future and handed it to whoever is on call.
+
+## Truth #2: The Trust Gap Is Widening, Not Closing
+
+Everyone assumed trust would rise as the models got better. The opposite happened.
+
+In 2024, around 40% of developers trusted AI output. By 2026, with objectively far more capable models, that number has *fallen* to **29%**. Adoption over the same period climbed to 84%. Read those two numbers together: developers are using these tools more while trusting them less. Only **3% of developers say they "highly trust" AI-generated code**, and **71% refuse to merge AI code without a manual review**.
+
+That is not irrational fear. It is calibrated experience. The models got better at producing code that *looks* right, which makes the cases where it is subtly wrong harder to catch, not easier. Trust didn't fall because the tools got worse. It fell because developers learned exactly how the tools fail.
+
+## Truth #3: You Got Promoted to Reviewer, and Nobody Asked You
+
+Here is the truth that hit me personally. The fun part of this job — for me, anyway — was writing code. Solving the puzzle. The AI agent took that part and handed me back the part I like least: reviewing someone else's code, all day, forever, where "someone else" never learns and never gets tired of making the same plausible mistakes.
+
+The numbers confirm it is not just a vibe. After AI adoption, experienced core developers ended up **reviewing 6.5% more code** while their own original code productivity **dropped 19%**. A widely-cited study found that developers who *felt* faster with AI were actually measurably slower once you counted the time spent finding errors, steering the model, and waiting on it. And **70% of developers now say maintaining the test suite is a bigger burden than writing the code itself.**
+
+I covered the data behind the "AI isn't replacing developers" reality in [a separate piece on what the numbers actually say](/blog/ai-agents-not-replacing-developers-real-data), and this is the flip side of that coin: the job didn't disappear, it mutated into something a lot of us did not sign up for.
+
+## Truth #4: Security Debt Is the Bill Nobody Reads
+
+This is the one that should scare you, and it is the most aggressively ignored in the demos.
+
+Veracode tested over 100 LLMs on security-sensitive coding tasks and found **45% of AI-generated code samples introduce an OWASP Top 10 vulnerability.** Broader studies put it higher: 68–73% of AI-generated code contains security vulnerabilities that *pass unit tests* but fail under real-world conditions. AI-generated code is now producing 10,000+ new security findings per month, roughly 10x the rate of late 2024.
+
+And remember Truth #1's velocity multiplier? It compounds here in the worst way. That Fortune 50 study found AI-assisted developers commit at 3–4x the rate but introduce security findings at **10x the rate** — a remediation gap organizations are openly admitting they cannot keep up with. On top of that, **43% of AI-generated code changes need debugging in production**, according to a 2026 survey.
+
+The tools are getting better here, to be fair. Anthropic claims Opus 4.8 is "around four times less likely than its predecessor to allow flaws in code it has written to pass unremarked," and that is a genuinely important direction. But "four times less likely to be silently wrong" is a long way from "trustworthy," and it is shipping into codebases that already have a 10x finding rate baked in.
+
+## Truth #5: The Economics Do Not Care How Excited You Are
+
+The demo runs one prompt. Your org runs ten thousand a day, and the bill arrives whether the output was useful or not.
+
+The cautionary tales of 2026 are not hypothetical. **Uber reportedly burned through its full-year AI budget by April** after heavy adoption of agentic tools. **Amazon had to shut down an internal token-tracking leaderboard ("Kirorank")** because employees were gaming it — racking up costs by using agents excessively just to top the board. These are companies with serious FinOps discipline, and agentic coding still blew past their guardrails.
+
+The mechanism is the agent loop itself. Each reasoning step re-sends accumulated context on every tool call, so a session that starts at 5K tokens per call can hit 200K per call by the end. Stuck loops are the silent killer: one analysis of 220 stuck agent sessions found repetitive failure adds 2–5K tokens per attempt, so after 15 iterations you have burned 30–75K tokens on a problem the agent was never going to solve. I went deep on the controls that actually contain this in my [Claude Code token optimization guide](/blog/claude-code-token-optimization-bill-cut-guide), and the new [dynamic workflows that spawn hundreds of parallel subagents](/blog/claude-code-dynamic-workflows-parallel-subagents-guide) make the ceiling dramatically higher — one reported pipeline burned 62 million tokens in a single day. The capability is real. So is the invoice.
+
+This is also why the "agents work for you 24/7 while you sleep" framing deserves the [reality check I gave it earlier](/blog/ai-agents-work-24-7-reality-check) — an agent running unattended overnight is also *spending* unattended overnight.
+
+## Truth #6: "Almost Right" Is More Expensive Than "Wrong"
+
+This is the subtle one, and it is the root cause under most of the above.
+
+Code that is obviously wrong is cheap. It fails to compile, the test goes red, you move on in thirty seconds. Code that is *almost* right is the expensive kind — it compiles, it passes the happy-path test, it looks like what you would have written, and it is wrong in a way you only discover at 2am three weeks later. Developers in the 2026 surveys named "near-correct answers and time-consuming debugging" as their single biggest day-to-day pain point, ahead of outright failures.
+
+LLMs are optimized to produce plausible output. Plausibility is precisely the property that makes "almost right" the default failure mode. The better the model gets at looking right, the more this specific cost grows — which loops us right back to Truth #2.
+
+## So Why Do I Still Use Them Every Day?
+
+Because none of this adds up to "don't use AI coding agents." It adds up to "use them like the powerful, expensive, error-prone tools they are, not like the magic the keynote sold you."
+
+Here is the posture that has actually worked for me:
+
+- **Treat output as a draft from a fast junior, never as a merge candidate.** The 71% who refuse to merge without review are right. Be one of them.
+- **Point agents at work that has a hard verification gate** — strong tests, a type-checker, a linter. Where the gate is weak, the agent's value collapses and its risk spikes.
+- **Budget caps are not optional.** Set them before your first big run, not after the Uber-shaped surprise.
+- **Spend your saved time on review and architecture, not on more generation.** The output was never the bottleneck. Judgment is, and it is becoming [the actual hireable skill](/blog/frontend-developer-2026-skills-ai-and-low-code-cant-replace).
+- **Keep the velocity multiplier honest.** If you are committing 3x faster, your review, testing, and security processes need to scale 3x too — or you are just leveraging up your future debt.
+
+The uncomfortable truth under all the uncomfortable truths is the most boring one: these tools amplify whatever discipline you already had. A team with great tests, tight review, and real cost controls gets a genuine superpower. A team without them gets the same chaos as before, just delivered four times faster and billed by the token.
+
+The demo will never tell you that. Now you know.
+
+## References
+
+### Sources
+- [You Need AI That Reduces Your Maintenance Costs — James Shore](https://www.jamesshore.com/v2/blog/2026/you-need-ai-that-reduces-your-maintenance-costs) — the maintenance-cost math that frames the whole piece
+- [Some uncomfortable truths about AI coding agents — Hacker News](https://news.ycombinator.com/item?id=47545748) — the recurring discussion that prompted this
+- [AI Coding Assistant Stats 2026: 84% Adoption, 29% Trust — Uvik](https://uvik.net/blog/ai-coding-assistant-statistics/) — the adoption/trust gap numbers
+- [43% of AI-generated code changes need debugging in production — VentureBeat](https://venturebeat.com/technology/43-of-ai-generated-code-changes-need-debugging-in-production-survey-finds) — production failure rate
+- [AI code accelerates production failures and spending — The Register](https://www.theregister.com/ai-ml/2026/05/20/ai-code-boom-drives-production-failures-higher-spending/5243787) — review burden, test maintenance, Uber/Amazon cost examples
+- [AI-Generated Code Vulnerability Surge — Cloud Security Alliance](https://labs.cloudsecurityalliance.org/research/csa-research-note-ai-generated-code-vulnerability-surge-2026/) — OWASP and security-finding data
+
+### Further Reading
+- [AI's impact on software engineers in 2026 (Part 2) — The Pragmatic Engineer](https://newsletter.pragmaticengineer.com/p/ai-impact-on-software-engineers-part-2) — a balanced industry-wide read
+- [Closing the Developer AI Trust Gap — Stack Overflow](https://stackoverflow.blog/2026/02/18/closing-the-developer-ai-trust-gap/) — what would have to change for trust to recover
+- [Debt Behind the AI Boom: A Large-Scale Empirical Study — arXiv](https://arxiv.org/html/2603.28592v2) — the academic backing for the tech-debt claims
+
+---
+
+~Seb 👊
