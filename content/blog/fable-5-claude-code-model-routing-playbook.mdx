@@ -1,0 +1,154 @@
+---
+title: 'Fable 5 as Orchestrator: A Claude Code Model-Routing Playbook'
+date: '2026-07-07'
+category: 'AI'
+tags: ['claude-code', 'claude', 'ai-models', 'cost-optimization', 'subagents']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: "Running Fable 5 as your daily driver burns money on work Haiku does fine. Here is the three-tier routing setup I use in Claude Code, with configs and real cost math."
+---
+
+I ran Claude Fable 5 as my main Claude Code model for exactly one week. The work was excellent. The bill was not. Most of what it did that week — renaming files, running tests, writing boilerplate, grepping through directories — did not need a Mythos-class model at $10/$50 per million tokens. It needed a fast, cheap model with good instructions.
+
+That is the whole idea behind **claude code model routing**: pay Fable 5 prices for judgment, and Haiku prices for keystrokes. The community converged on this architecture within days of the July 1 relaunch, but everyone describes it in a paragraph and nobody shows the actual setup. This is the complete playbook I run daily — configs, workflow overrides, and the cost math that justifies it.
+
+## The Principle: Judgment vs Keystrokes
+
+Every coding session mixes two kinds of work. **Judgment work** — architecture decisions, migration planning, gnarly debugging, final review — is where model capability translates directly into outcomes. **Keystroke work** — applying a planned refactor across 40 files, writing tests from a spec, formatting, searching — is mechanical execution of decisions already made.
+
+The mistake is letting one model do both. Route judgment to the top tier and keystrokes to the cheap tiers, and the expensive model's share of your token spend collapses without the quality of decisions changing at all.
+
+The three-tier split that works:
+
+| Role | Model | Price (per MTok) | Does |
+|---|---|---|---|
+| Commander | `claude-fable-5` | $10 / $50 | Planning, architecture, review, hard debugging |
+| Hands | `claude-sonnet-5` | $3 / $15 | Implementation, tests, refactors from a plan |
+| Chores | `claude-haiku-4-5` | $1 / $5 | Search, classification, formatting, simple edits |
+
+Sonnet 5 is the workhorse here for a reason: it reaches near-Opus quality on coding tasks at less than a third of Opus pricing, which makes it the default executor rather than a compromise.
+
+## The Claude Code Setup
+
+Three places control which model runs what: the main conversation, subagent definitions, and workflow scripts.
+
+### 1. Main loop = Fable 5
+
+The main conversation is your commander — it holds the full context, makes the plan, and delegates. Set it once:
+
+```
+/model claude-fable-5
+```
+
+The main loop should be the *smallest* consumer of output tokens in this setup. If Fable 5 is writing your code line by line, the routing has failed.
+
+### 2. Subagents carry their own model
+
+Every subagent definition in `.claude/agents/*.md` takes a `model` field in its frontmatter. This is where the routing actually lives — the commander delegates by agent type, and the agent type pins the tier:
+
+```markdown
+---
+name: implementer
+description: Writes code from an explicit plan. Use for any change already specified.
+model: sonnet
+tools: Read, Edit, Write, Bash, Grep, Glob
+---
+
+You implement precisely what the plan specifies. Do not redesign,
+do not expand scope. If the plan is ambiguous, stop and report
+the ambiguity instead of guessing.
+```
+
+```markdown
+---
+name: chore-runner
+description: Mechanical tasks - search, rename, format, run tests and report results.
+model: haiku
+tools: Read, Bash, Grep, Glob
+---
+
+Execute the task exactly as given and report results tersely.
+No analysis, no suggestions.
+```
+
+Notice what I did *not* create: a `reviewer` agent on Haiku. Review is judgment work — it stays with the commander, or gets its own Fable 5/Opus-tier agent for large diffs.
+
+### 3. Workflows override per call
+
+If you use Opus 4.8-style dynamic workflows (they work with Fable 5 as the orchestrating session too), the `agent()` call takes a per-agent `model` option:
+
+```javascript
+// Fan out mechanical analysis to the cheap tier,
+// keep synthesis on the session model (Fable 5)
+const findings = await parallel(files.map(f => () =>
+  agent(`Summarize the public API surface of ${f}`, {
+    model: "haiku",
+    effort: "low",
+  })
+));
+const design = await agent(
+  `Given these API surfaces, design the unified interface: ${JSON.stringify(findings)}`
+  // no model override — inherits Fable 5
+);
+```
+
+The default is to omit `model` so agents inherit the session model — override *downward* deliberately, never reflexively. I covered the workflow mechanics in my [dynamic workflows deep dive](/blog/claude-code-dynamic-workflows-parallel-subagents-guide); the routing layer composes directly on top of it.
+
+## The Cost Math on a Real Task
+
+Last week I ran a dependency-injection refactor across a mid-size TypeScript service — 60+ files touched, tests updated, one architectural decision about scoping. Token distribution with routing on:
+
+- **Commander (Fable 5):** planning, two mid-course corrections, final review — ~14% of total tokens
+- **Hands (Sonnet 5):** all file edits and test updates — ~71% of tokens
+- **Chores (Haiku 4.5):** discovery greps, test runs, lint fixes — ~15% of tokens
+
+Blended cost came out around **$0.31 per million-token-equivalent of what an all-Fable run would have billed at $1.00** — roughly a 3x reduction, on a task where the output diff was indistinguishable from the all-Fable dry run I did for comparison. The judgment calls — the scoping decision, catching a circular dependency the plan missed — all happened on Fable 5, which is exactly where you want your $50/MTok going.
+
+This is the same `opusplan` principle I used to [cut my Claude Code bill by 70%](/blog/claude-code-token-optimization-bill-cut-guide), with a new rung on top: the ladder is now four models tall, and the top rung is twice as expensive as the old one, which makes routing discipline more valuable, not less.
+
+## Failure Modes I Hit
+
+**Under-routing hard work.** My first version sent debugging to Sonnet 5 by default. On a genuinely nasty race condition, the Sonnet agent burned four round trips flailing — more tokens than Fable 5 would have used solving it in one. The rule I settled on: *first attempt* on anything diagnostic goes to the commander; only delegate debugging after the root cause is known and the fix is mechanical.
+
+**Switching models mid-session instead of delegating.** Prompt caches are model-scoped. If you `/model` back and forth in one session, every switch invalidates the cached prefix and you re-pay full input price on the whole conversation. Subagents do not have this problem — the main session's cache stays intact while the subagent builds its own. Delegate; do not toggle.
+
+**Forgetting refusal asymmetry.** Fable 5 carries safety classifiers that the other tiers do not. If your work is security-adjacent, the commander can hit false-positive refusals on planning prompts — I covered the handling in my [Fable 5 migration review](/blog/claude-fable-5-developer-review-migration-guide). Wire up the server-side fallback to Opus 4.8 on the commander's API path and the architecture degrades gracefully.
+
+**Over-instructing cheap agents.** Haiku 4.5 with a tight, single-purpose prompt is reliable. Haiku with a sprawling prompt full of judgment calls is a coin flip. The routing only works if the task decomposition genuinely strips the judgment out of delegated work — that is the commander's job, and it is why the commander needs to be the smart one.
+
+## When Single-Model Is Right
+
+Routing is not free — it costs orchestration overhead, and each delegation re-establishes context the main session already had. Skip it when:
+
+- **The session is short.** A 20-minute bugfix session has no token volume to optimize
+- **The work is uniformly hard.** A research-heavy debugging afternoon is all judgment; there is nothing to route down
+- **You are on a subscription, not API billing.** Under a Max plan the marginal token cost is zero until you hit limits — though Fable 5 draws down weekly usage faster than Opus 4.8, so routing still stretches your quota after the July 7 inclusion-window change
+
+## The Checklist
+
+1. Main loop on `claude-fable-5`, and keep its output share small
+2. `implementer` agent on `sonnet`, `chore-runner` on `haiku` — model pinned in frontmatter
+3. Review and diagnostics stay on the commander; delegate fixes, not diagnoses
+4. Workflow `agent()` calls: override model downward deliberately, inherit by default
+5. Never `/model`-toggle mid-session — delegate to a subagent instead (cache survives)
+6. Server-side fallback to Opus 4.8 on the commander path if your domain risks refusals
+7. Watch the ratio: if the top tier exceeds ~20% of tokens, your decomposition is leaking keystrokes upward
+
+The uncomfortable truth about Fable 5 is that its price is the feature: it forces you to ask which parts of your workflow actually need frontier judgment. In my case the answer was about 15% — and the other 85% got cheaper and faster the day I stopped pretending otherwise.
+
+## References
+
+### Sources
+- [Claude Fable 5 and Claude Mythos 5 — Anthropic](https://www.anthropic.com/news/claude-fable-5-mythos-5) - Fable 5 capabilities and pricing
+- [Fable Is Back. Here's How to Actually Code With It — Wavect](https://wavect.io/blog/coding-with-claude-fable-5/) - community routing patterns post-relaunch
+- [Claude Fable 5 Agent Functions: Multi-Agent Workflow Guide — YouMind](https://youmind.com/landing/x-viral-articles/claude-fable-5-agent-guide) - the commander/hands/chores framing
+- [Models overview — Claude Platform Docs](https://platform.claude.com/docs/en/about-claude/models/overview) - model IDs and per-tier pricing
+
+### Further Reading
+- [Claude Fable 5 Model Review — CodeRabbit](https://www.coderabbit.ai/blog/fable-5-model-review) - independent take on where Fable 5 earns its premium
+- [Claude Code documentation — subagents](https://docs.anthropic.com/en/docs/claude-code) - the agent frontmatter reference, including the model field
+
+---
+
+~Seb 👊
