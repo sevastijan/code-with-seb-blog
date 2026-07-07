@@ -1,0 +1,166 @@
+---
+title: 'Multi-Day Autonomous Agents: Fable 5 + Managed Agents Guide'
+date: '2026-07-07'
+category: 'AI'
+tags: ['claude', 'managed-agents', 'autonomous-agents', 'claude-api', 'ai-agents']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: "I gave Fable 5 a rubric and a container and checked in twice a day. Here is the full Managed Agents setup - outcomes, graders, event streams - with working code."
+---
+
+The longest I have ever let an AI agent run unattended before last month was about forty minutes, and I babysat the terminal the whole time. Two weeks ago I kicked off a session on a Friday afternoon, checked it twice over the weekend, and collected a finished data-pipeline migration on Monday morning — tests passing, a written changelog, and a self-review against the acceptance criteria I had defined up front.
+
+Two things made that possible, and neither works well alone. **Claude Fable 5** is the first model I trust to stay coherent across millions of tokens of autonomous work. **Claude Managed Agents** is the harness that makes multi-day runs operationally sane — server-managed sessions, a container workspace, and a grading loop that iterates against your definition of done. This is the complete setup, with working code.
+
+## Why Fable 5 Changes the Calculus
+
+Long-horizon autonomy has always failed the same way: the agent starts strong, accumulates context debt, and somewhere around hour two begins confidently doing the wrong thing. More capable models moved that cliff further out; Fable 5 is the first one where — in my runs — the cliff effectively stopped being the binding constraint. Anthropic's launch benchmarks point the same direction (Stripe compressing months of a 50M-line migration into days), and my smaller-scale experience matches: the model plans across stages, delegates to sub-agents, verifies its own work, and course-corrects without me in the loop.
+
+But a capable model in a fragile harness still fails — on process, not intelligence. If your "harness" is a while-loop in a script on your laptop, a dropped connection at 2 AM ends the run. That is the problem Managed Agents actually solves: Anthropic runs the agent loop *and* hosts the container where tools execute, so the run survives your laptop closing.
+
+## Managed Agents in Five Minutes
+
+Four objects matter:
+
+- **Agent** — a persisted, versioned config (model, system prompt, tools). Created **once**, referenced by ID forever
+- **Environment** — a reusable container template (networking policy, cloud or self-hosted)
+- **Session** — one run: references the agent + environment, gets its own container, streams events
+- **Events** — the bidirectional protocol: you send `user.message` / `user.define_outcome`, the agent streams back messages, tool calls, and status transitions
+
+The mistake everyone makes on day one: putting `model` and `system` on the session. They live on the agent object — the session only takes a pointer. Create the agent in a setup script, store the ID, and never call `agents.create()` in your request path.
+
+```python
+import anthropic
+
+client = anthropic.Anthropic()
+
+# ONE-TIME SETUP — run once, save the IDs
+environment = client.beta.environments.create(
+    name="migration-env",
+    config={"type": "cloud", "networking": {"type": "unrestricted"}},
+)
+
+agent = client.beta.agents.create(
+    name="Migration Agent",
+    model="claude-fable-5",
+    system="You are a senior engineer executing long-running migrations. "
+           "Verify your work against the test suite after every stage.",
+    tools=[{"type": "agent_toolset_20260401"}],  # bash, read, write, edit, glob, grep, web
+)
+print(agent.id, environment.id)  # store these
+```
+
+## The Key Move: Outcomes, Not Prompts
+
+For multi-day work, do not kick the session off with a chat message. Send a **`user.define_outcome`** event instead: a task description plus a **rubric** — explicit, gradeable criteria for "done." A separate grader model (independent context window) scores each iteration against your rubric and feeds per-criterion gaps back to the agent, which revises until the rubric passes or `max_iterations` runs out.
+
+The rubric is where the quality of your weekend is decided. Vague criteria ("code should be clean") produce noisy grading loops; checkable criteria produce convergence:
+
+```python
+RUBRIC = """
+## Acceptance criteria
+1. All 214 existing tests pass (`npm test` exit code 0)
+2. No remaining imports from `legacy/db` anywhere under `src/`
+3. New adapter module has unit tests covering the 4 public methods
+4. CHANGELOG.md has an entry describing the migration and any behavior changes
+5. A MIGRATION_NOTES.md exists listing every file touched and why
+"""
+
+session = client.beta.sessions.create(
+    agent={"type": "agent", "id": AGENT_ID, "version": AGENT_VERSION},
+    environment_id=ENV_ID,
+    title="Legacy DB adapter migration",
+    resources=[{
+        "type": "github_repository",
+        "url": "https://github.com/you/service",
+        "authorization_token": GITHUB_TOKEN,
+        "checkout": {"type": "branch", "name": "migration/db-adapter"},
+    }],
+)
+print(f"Trace: https://platform.claude.com/workspaces/default/sessions/{session.id}")
+
+client.beta.sessions.events.send(
+    session_id=session.id,
+    events=[{
+        "type": "user.define_outcome",
+        "description": "Migrate all data access from legacy/db to the new adapter pattern.",
+        "rubric": {"type": "text", "content": RUBRIC},
+        "max_iterations": 5,
+    }],
+)
+```
+
+Two details that saved me pain: the agent starts working on receipt of the outcome event — do **not** also send a "please begin" message. And print the Console trace URL immediately; watching tool calls stream in the browser beats parsing events when you just want to peek.
+
+## Following the Run (Without Babysitting It)
+
+For a multi-day run you will connect, disconnect, and reconnect many times. The SSE stream has **no replay** — on every reconnect, fetch history first and dedupe by event ID, or you will silently miss whatever happened overnight:
+
+```python
+def catch_up_and_tail(client, session_id):
+    stream = client.beta.sessions.events.stream(session_id=session_id)
+    seen = set()
+    for ev in client.beta.sessions.events.list(session_id=session_id).data:
+        seen.add(ev.id)
+        handle(ev)                     # replay history
+    for ev in stream:                  # then tail live
+        if ev.id in seen:
+            continue
+        seen.add(ev.id)
+        handle(ev)
+        if ev.type == "session.status_terminated":
+            break
+        if ev.type == "session.status_idle" and ev.stop_reason.type != "requires_action":
+            break                      # end_turn or retries_exhausted — actually done
+```
+
+That last condition is the gotcha that bites everyone: sessions go `idle` *transiently* — between tool batches, or while waiting for a tool confirmation. Breaking on the first `idle` makes you think a two-day run finished in twenty minutes. Only `idle` with a terminal `stop_reason` means done.
+
+The grader's verdicts arrive as `span.outcome_evaluation_end` events — `satisfied`, `needs_revision`, `max_iterations_reached`, or `failed` — each with a per-criterion explanation. Those explanations are the best debugging signal in the whole system: when my run stalled at iteration three, the grader's note ("criterion 5: MIGRATION_NOTES.md lists files but not reasons") told me exactly what the agent was missing.
+
+For true multi-day cadence I stopped holding streams open at all and registered a **webhook** for `session.status_idled` — Anthropic POSTs to my endpoint when the agent needs something, and a small handler pings me on Slack. Polling a stream for 60 hours is the wrong shape; being woken when the run needs a human is the right one.
+
+## Collecting the Deliverables
+
+The agent writes artifacts to `/mnt/session/outputs/` in its container; after the run they are downloadable through the Files API, scoped to the session:
+
+```python
+files = client.beta.files.list(
+    scope_id=session.id,
+    betas=["managed-agents-2026-04-01"],  # needed alongside the Files beta
+)
+for f in files.data:
+    client.beta.files.download(f.id).write_to_file(f.filename)
+```
+
+Code changes land in the mounted repo itself — the agent commits and pushes via `bash`, with the GitHub token injected through an Anthropic-side proxy so it never exists inside the container. That detail matters more than it sounds: nothing the agent writes or executes can read the credential, which is the right default for an agent you are deliberately not watching.
+
+## What It Cost
+
+My weekend migration: roughly 39M input tokens (heavily cache-discounted — Managed Agents does prompt caching and context compaction automatically) and 2.1M output tokens on Fable 5, plus grader overhead. Call it **~$140 all-in** at the $10/$50 rates I broke down in my [Fable 5 review](/blog/claude-fable-5-developer-review-migration-guide). Against the alternative — my own week of evenings — the math is not close. But it also means an unattended runaway is a real budget risk: set `max_iterations` conservatively, and remember the same [model-routing logic](/blog/fable-5-claude-code-model-routing-playbook) applies inside CMA too — routine sessions do not need a Fable 5 agent config.
+
+## When Not to Use This
+
+- **Tight feedback-loop work** — interactive coding sessions belong in Claude Code, not a server-side session you steer by events
+- **Tasks under an hour** — the setup overhead (environment, rubric-writing) only amortizes on long runs
+- **Work you cannot write a rubric for** — if you cannot define "done" as checkable criteria, the grading loop degrades to vibes, and you should be in the loop yourself instead
+- **Anything security-adjacent on Fable 5** — the classifier false-positive risk I covered in the migration review applies to every one of the thousands of requests a long run makes; configure the agent with Opus 4.8 for those domains
+
+The pattern that emerged for me: Claude Code for the work I do *with* the model, Managed Agents + outcomes for the work I hand *to* it. Fable 5 is what made the second category real — and a well-written rubric is what makes it safe to sleep through.
+
+## References
+
+### Sources
+- [Claude Fable 5 and Claude Mythos 5 — Anthropic](https://www.anthropic.com/news/claude-fable-5-mythos-5) - long-horizon autonomy claims and launch benchmarks
+- [Managed Agents overview — Claude Platform Docs](https://platform.claude.com/docs/en/managed-agents/overview) - architecture: agents, sessions, environments, containers
+- [Define outcomes — Claude Platform Docs](https://platform.claude.com/docs/en/managed-agents/define-outcomes.md) - the define_outcome event, rubrics, and grader semantics
+- [Events and streaming — Claude Platform Docs](https://platform.claude.com/docs/en/managed-agents/events-and-streaming.md) - reconnect/dedupe pattern and idle stop reasons
+
+### Further Reading
+- [Managed Agents webhooks — Claude Platform Docs](https://platform.claude.com/docs/en/managed-agents/webhooks.md) - replacing held-open streams with push notifications for long runs
+- [Claude Fable 5 Model Review — CodeRabbit](https://www.coderabbit.ai/blog/fable-5-model-review) - independent perspective on Fable 5's autonomous coding behavior
+
+---
+
+~Seb 👊
