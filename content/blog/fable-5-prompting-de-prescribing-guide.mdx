@@ -1,0 +1,144 @@
+---
+title: 'Your Opus Prompts Are Hurting Fable 5: A De-Prescribing Guide'
+date: '2026-07-07'
+category: 'AI'
+tags: ['claude', 'prompt-engineering', 'ai-models', 'claude-api', 'agentic-coding']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: "I deleted a third of my system prompt and Fable 5 got better. Why prescriptive prompts backfire on stronger models, with before/after rewrites you can steal."
+---
+
+The single highest-impact change I made to my Claude Fable 5 setup was deleting things. Not adding a clever new instruction, not a better example — deleting. A third of my carefully-tuned system prompt, forty-something lines of step-by-step scaffolding accumulated across two years of model generations, and the output got measurably better the day it was gone.
+
+This is not a hot take; it is in Anthropic's own migration guide, in one dry sentence most people scroll past: *prompts written for prior models are often too prescriptive and reduce output quality*. Everyone reads it, nods, and keeps shipping their Opus-era prompts to `claude-fable-5` unchanged. This is the practical version of that sentence — the **fable 5 prompting** changes that actually moved my outputs, with before/after rewrites you can steal.
+
+## Why Your Prompts Are Prescriptive in the First Place
+
+Every prescriptive line in your system prompt is a scar from a weaker model. You added "First, list all affected files. Second, make a plan. Third, ..." because some model two years ago skipped planning. You added "CRITICAL: You MUST use the search tool" because a model under-triggered it. You added "After every 3 tool calls, summarize progress" because a model went silent for ten minutes.
+
+None of those lines describe your actual requirements. They describe *workarounds* — process crutches for models that could not be trusted to derive the process from the goal. That distinction is the whole guide: **requirements survive model upgrades; workarounds expire**. The problem is that they do not expire gracefully. A strong instruction-follower does not ignore your obsolete crutches — it obeys them.
+
+## The Mechanism: Obedience Is the Bug
+
+Fable 5 follows instructions more faithfully than any model I have used. That is mostly wonderful and occasionally the exact problem. When you enumerate steps for a model that plans better than your enumeration, three failure modes show up:
+
+1. **Your steps become a ceiling.** The model executes your seven steps and stops — even when step four surfaced something that should have changed the plan. You specified a procedure, so it ran the procedure
+2. **Forced behaviors overtrigger.** "ALWAYS search before answering" produces searches on questions the model knows cold. "If in doubt, use X" produces X constantly, because a literal reader can always construct doubt
+3. **Defensive filters work too well.** Tell it "only report high-severity issues" in a code-review prompt and it will investigate thoroughly, find everything, and then *silently withhold* the findings it judges below your bar. Your measured recall drops while the model's actual bug-finding improved
+
+That third one is the sneakiest — I watched a review harness "get worse" on Fable 5 until I realized precision had gone up and the conservative-reporting instruction was eating the recall.
+
+## Before / After: The Rewrites
+
+### Step enumeration → goal plus constraints
+
+```markdown
+# BEFORE (Opus-era)
+When refactoring:
+1. First list every file that imports the module
+2. Then create a migration plan and show it to me
+3. Then update files one at a time, running tests after each
+4. Then update the documentation
+
+# AFTER (Fable 5)
+Refactor with the test suite green at every commit. Don't batch
+unrelated changes. Documentation counts as part of the change,
+not a follow-up.
+```
+
+The before-version encodes a *procedure*; the after-version encodes what I actually care about (safety, atomicity, completeness) and lets the model sequence the work — including doing things my enumeration never anticipated, like discovering the docs referenced a code path that no longer existed.
+
+### Aggressive tool nudges → trigger conditions
+
+```markdown
+# BEFORE
+CRITICAL: You MUST use the search tool. Default to searching.
+If in doubt, search.
+
+# AFTER
+Search when the answer depends on information that may have
+changed since your training - versions, prices, current events.
+Answer directly when it doesn't.
+```
+
+Conditions, not commandments. The model gets the *when*, which is the only part it was ever missing.
+
+### Forced narration → silence defaults
+
+```markdown
+# BEFORE
+After every 3 tool calls, post a progress summary.
+
+# AFTER
+(delete it entirely — then, if the default narration is too chatty:)
+Default to silence between tool calls. Write one sentence when you
+find something, change direction, or hit a blocker. Full summary at
+the end only.
+```
+
+Fable 5 narrates well on its own; the forced-cadence line just adds noise on top.
+
+### The code-review recall trap
+
+```markdown
+# BEFORE
+Be conservative. Only report high-severity issues. Don't nitpick.
+
+# AFTER
+Report every issue you find, including ones you're uncertain about,
+each with a confidence level and severity estimate. A downstream
+filter handles ranking - your job here is coverage.
+```
+
+Move the filtering out of the finding step. Even if the "downstream filter" is just you skimming the list, coverage-then-filter beats asking a literal-minded model to self-censor.
+
+## What to Keep — and What to Add
+
+De-prescribing is not prompt minimalism. Two categories of instruction get *more* valuable on Fable 5, because it follows them so well:
+
+**Behavioral contracts.** Communication style, tone, output shape — the model is highly responsive to an explicit style section, so invest there instead of fighting output format downstream. Same for autonomy boundaries: "for minor choices, pick a reasonable option and note it; for destructive actions, ask first" does more useful work than any process scaffolding ever did.
+
+**Grounding requirements.** One line I added rather than removed: *"Before reporting progress, audit each claim against a tool result from this session; if something is not yet verified, say so."* That is not process prescription — it is an evidence standard, and it applies no matter how the model chooses to work.
+
+The test I use for every surviving line: **does this describe an outcome I require, or a method I assumed?** Outcomes stay. Methods go — and the same test applies to context you *feed* the model, which is why my [CLAUDE.md files got shorter](/blog/claude-md-memory-persistent-context-guide) too: project constraints stayed, step-by-step "how to work in this repo" recipes went.
+
+## The A/B Method
+
+Do not de-prescribe on faith — the whole point is that prompt intuitions built on old models are stale. My process, one workload at a time:
+
+1. Snapshot the current prompt as the control
+2. Build the variant: delete every step-enumeration, forced-trigger, and cadence instruction; keep constraints and style
+3. Run both against the same 10-15 representative tasks (real ones from your history, not synthetic)
+4. Compare on outcome quality *and* token spend — de-prescribed prompts frequently cost less, because the model stops performing rituals
+
+On my main coding workload the de-prescribed variant won 11 of 14 tasks and drew on average 9% fewer tokens. The three losses shared a pattern worth knowing: they were tasks where my old scaffolding encoded *genuine domain knowledge* (a deploy-order constraint, a naming convention with a non-obvious reason). Those lines went back in — rewritten as constraints with the *why* attached, not as steps. Fable 5 does noticeably better when it knows the reason behind a rule; a constraint with a rationale gets applied with judgment, a bare rule gets applied literally.
+
+The same audit applies to [Claude Code skills](/blog/claude-code-skills-reusable-ai-workflows-guide): skills written as rigid step recipes for older models constrain Fable 5 the same way system prompts do. State the goal and the constraints; let the model bring the procedure — it will even update its own approach mid-task from what it learns, which no frozen recipe can do.
+
+## The Checklist
+
+1. Grep your prompts for `First,` / `Then,` / `Step 1` — every hit is a de-prescribing candidate
+2. Grep for `CRITICAL`, `MUST`, `ALWAYS`, `If in doubt` — rewrite as trigger conditions or delete
+3. Delete forced-cadence lines (progress summaries, "check in every N")
+4. Review-style prompts: move severity/confidence filtering downstream of finding
+5. Keep constraints, style contracts, autonomy boundaries, evidence standards — add rationale to rules that survive
+6. A/B against real tasks; expect to restore a few lines as *constraints with reasons*
+7. Re-run the audit on skills and CLAUDE.md, not just API system prompts
+
+Two years of prompt engineering taught us to write procedures because models could not plan. That era's muscle memory is now the overhead. The prompts that get the most out of Fable 5 read less like runbooks and more like the brief you would give a senior engineer: here is the goal, here are the constraints, here is why they matter — go.
+
+## References
+
+### Sources
+- [Migration guide — Claude Platform Docs](https://platform.claude.com/docs/en/about-claude/models/migration-guide) - the "too prescriptive" guidance and recommended prompt snippets for Fable 5
+- [Introducing Claude Fable 5 and Claude Mythos 5 — Claude Platform Docs](https://platform.claude.com/docs/en/about-claude/models/introducing-claude-fable-5-and-claude-mythos-5) - behavioral shifts vs prior models
+- [Claude Fable 5: What Changed, and How to Stop Prompting It Like Opus — Ken Huang](https://kenhuangus.substack.com/p/claude-fable-5-what-changed-and-how) - independent take on the prompting shift
+
+### Further Reading
+- [Claude Fable 5 Benchmarks and Prompting Guide — Agentpedia](https://agentpedia.codes/blog/claude-fable-5-benchmark-prompting-guide) - broader prompting patterns for the Claude 5 family
+- [Claude prompt engineering documentation — Anthropic](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/overview) - the baseline techniques that still apply
+
+---
+
+~Seb 👊
