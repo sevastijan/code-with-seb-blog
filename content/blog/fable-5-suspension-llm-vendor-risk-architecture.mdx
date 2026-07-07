@@ -1,0 +1,119 @@
+---
+title: 'When Your AI Model Vanishes: Vendor Risk After Fable 5'
+date: '2026-07-07'
+category: 'Architecture'
+tags: ['architecture', 'ai-models', 'vendor-risk', 'claude', 'resilience']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: "On June 12 the US government made claude-fable-5 disappear for nineteen days. If your pipeline hard-pins one model, this is the architecture wake-up call."
+---
+
+On June 12, 2026, a production model endpoint stopped existing. Not degraded, not rate-limited, not deprecated-with-a-migration-window. Gone — for every customer, in every region, for nineteen days. And the reason was not an outage: the United States government imposed export controls on Claude Fable 5, and its vendor had no compliant way to keep serving it.
+
+If you architect systems that depend on LLMs, this event belongs in your threat model, because **llm vendor risk** just acquired a failure mode nobody's runbook covered: *regulatory disappearance*. This post is the architecture retrospective — what happened, why the standard mitigations mostly would not have helped, and the specific patterns that separate teams that shrugged from teams that scrambled.
+
+## What Actually Happened
+
+The compressed timeline:
+
+- **June 9** — Anthropic launches Claude Fable 5, its most capable generally available model, alongside the restricted Claude Mythos 5
+- **June 12** — Amazon researchers demonstrate a jailbreak that gets Fable 5 to identify software vulnerabilities and demonstrate exploitation. The US government imposes export controls the same day, requiring access restrictions by nationality. Anthropic, having no way to verify nationality in real time, suspends both models **globally**
+- **June 26-30** — Controls lifted after government review of retrained safeguards
+- **July 1** — Access restored, with stricter classifiers and, notably, more false positives on routine coding work
+
+Three days of availability, nineteen days of absence, and a changed model on return. I covered the developer-facing details in my [Fable 5 migration review](/blog/claude-fable-5-developer-review-migration-guide); this post is about what the event means for how you build.
+
+## Why This Failure Mode Is Different
+
+We already knew how to think about model lifecycle risk. Deprecations come with months of notice and a retirement date. Outages last hours and resolve themselves. Price changes grandfather existing traffic. Every one of those has a known shape, and teams plan for them — loosely, but they plan.
+
+Regulatory pull is shaped differently on every axis that matters:
+
+| Axis | Deprecation | Outage | Regulatory pull |
+|---|---|---|---|
+| Warning | Months | None | None |
+| Duration | Permanent, scheduled | Hours | **Indefinite, unknowable** |
+| Scope | One model, gradual | Usually partial | Total, instant, global |
+| Model on return | n/a | Unchanged | **Possibly changed** |
+
+That last row deserves emphasis. The Fable 5 that came back on July 1 was not the Fable 5 that left — its classifiers were retrained and its false-positive rate on systems-level code went up. Teams that A/B-validated their workloads in early June were running on stale validation in July. A model disappearing is a problem; a model *silently returning different* breaks the assumption that validation is durable.
+
+## Lesson 1: Model IDs Are Config, Not Code
+
+The teams that shrugged on June 12 had one thing in common: switching models was a config change, not a deploy. The teams that scrambled had `"claude-fable-5"` as a string literal in forty places, some of them in services owned by people on vacation.
+
+The minimal pattern costs nothing:
+
+```yaml
+# model-config.yaml — every workload declares its ladder, not a model
+workloads:
+  code-review:
+    primary: claude-fable-5
+    fallback: claude-opus-4-8      # tested, not aspirational
+    floor: claude-sonnet-5         # below this, degrade the feature
+  classification:
+    primary: claude-haiku-4-5
+    fallback: claude-sonnet-5
+```
+
+Two words in that snippet carry all the weight. **Tested**: a fallback you have never run traffic through is a hope, not a fallback — the API differences between tiers (thinking configs, sampling params) mean an untested switch can trade an unavailable model for a 400-ing one. **Floor**: knowing the point below which you would rather turn the feature off than serve degraded output is a product decision, and June 12 is a bad day to be making it for the first time.
+
+## Lesson 2: Degradation Tiers, Not Binary Failover
+
+"Fallback" understates what you actually need, because capability is not binary. My post-suspension setup defines three explicit operating modes per workload:
+
+1. **Full capability** — primary model, all features
+2. **Degraded** — fallback model; long-horizon tasks get shorter, review depth drops, and the system *says so* (a metadata flag downstream consumers can read)
+3. **Floor** — cheapest viable model or feature-off, for the scenario where a whole vendor is unreachable
+
+The middle tier is the one everyone skips and the one that mattered in June. Fable 5's own API design endorses this pattern now — the server-side `fallbacks` parameter re-serves refused requests on Opus 4.8 within the same call. That handles per-request refusals; your architecture needs the same idea one level up, for per-model absence.
+
+## Lesson 3: Multi-Provider Hedges Less Than You Think
+
+The reflexive answer to vendor risk is "use two providers." The suspension exposed the limit of that reflex: Fable 5 was unavailable on the Claude API, on Amazon Bedrock, on Google Cloud, and on Microsoft Foundry *simultaneously* — because the restriction attached to the **model**, not the serving infrastructure. Provider diversity hedges provider failures: billing disputes, regional outages, API deprecations. It does nothing for model-level regulatory action, safety recalls, or capability changes.
+
+What actually hedges model-level risk is **model diversity** — a tested path to a different model family or tier. And here is the uncomfortable trade: cross-model portability costs you capability, because prompts tuned for one frontier model [underperform when ported naively](/blog/fable-5-prompting-de-prescribing-guide), and features like Fable-grade long-horizon autonomy have no drop-in equivalent. You cannot abstract your way to zero switching cost. You can only decide, per workload, how much capability you are willing to lose in an emergency — which is exactly the floor-tier decision from Lesson 2.
+
+## Lesson 4: Monitor for Absence and for Change
+
+June and July taught two monitoring lessons that standard dashboards miss:
+
+**Absence is not an error spike.** A vanished model produces 404s/400s you will notice — but the subtler version is Fable 5's everyday behavior: safety refusals arrive as *successful* HTTP 200 responses, and post-relaunch, silent fallbacks to Opus 4.8 mean requests succeed while a different model answers. Track *which model actually served each request* (`response.model`, fallback markers in `usage`) as a first-class metric, or you will not know your own system's composition.
+
+**Change is not an incident.** The July 1 model behaved differently from the June 9 model under the same ID. A small **canary suite** — a dozen representative prompts run daily per workload, scored against golden expectations — is cheap insurance. Mine flagged the increased refusal rate on security-adjacent prompts within a day of the relaunch, before any human noticed it in production traffic.
+
+## Lesson 5: Regulatory Risk Is Now in the Threat Model
+
+The precedent is the point. Before June 12, "the government makes a commercial model illegal to serve overnight" was a hypothetical for policy people. It is now an observed event with a repeat probability well above zero — frontier capability and regulatory attention scale together, and the next generation of models will be more capable, not less.
+
+For most teams this does not mean new tooling; it means an honest answer to one question per critical workload: *if this model is gone tomorrow morning, indefinitely, what happens?* If the answer is "config change, degraded tier, feature flag" you are done. If the answer involves the phrase "we would need to figure out" — that is the work.
+
+## The Playbook
+
+1. Every workload declares primary / fallback / floor in config; switching requires no deploy
+2. Fallback paths run real traffic periodically (1% shadow or a weekly drill) — untested fallbacks are fiction
+3. Per-tier request builders handle the API differences, so a model switch cannot introduce 400s
+4. Track served-model composition (`response.model`, fallback markers) as a dashboard metric
+5. Run daily canary suites per workload; alert on drift, not just failures
+6. Define degraded-mode product behavior *now* (shorter outputs? feature off? user-visible notice?)
+7. For multi-day autonomous runs, checkpoint externally — a [Managed Agents session](/blog/fable-5-managed-agents-multi-day-autonomous-guide) survives your laptop dying, but nothing survives its model being pulled mid-run
+8. Revisit the ladder quarterly: tiers move, prices change, and the [right model per workload](/blog/claude-5-family-model-selection-guide) is not a one-time decision
+
+Nineteen days after making the most capable model on the market disappear, the industry mostly memory-holed the event because it ended well. Do not. It was the cheapest possible lesson in a risk category that is only going to grow — paid for, this once, by someone else.
+
+## References
+
+### Sources
+- [Redeploying Claude Fable 5 — Anthropic](https://www.anthropic.com/news/redeploying-fable-5) - the official timeline: export controls, suspension, retrained classifiers
+- [Claude Fable 5 and Claude Mythos 5 — Anthropic](https://www.anthropic.com/news/claude-fable-5-mythos-5) - launch context and safeguard design
+- [Anthropic releases Mythos-like AI model to the public — CNBC](https://www.cnbc.com/2026/06/09/anthropic-mythos-claude-fable-5.html) - launch coverage
+- [Claude Fable relaunch disappoints users with nerfed performance — BleepingComputer](https://www.bleepingcomputer.com/news/artificial-intelligence/claude-fable-relaunch-disappoints-users-with-nerfed-performance/) - the changed-on-return behavior reports
+
+### Further Reading
+- [Anthropic's Claude Fable 5 is a version of Mythos the public can access — TechCrunch](https://techcrunch.com/2026/06/09/anthropics-claude-fable-5-is-a-version-of-mythos-the-public-can-access-today/) - the Fable/Mythos capability-tier background
+- [Migration guide — Claude Platform Docs](https://platform.claude.com/docs/en/about-claude/models/migration-guide) - the per-tier API differences your fallback builders need to handle
+
+---
+
+~Seb 👊
