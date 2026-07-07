@@ -1,0 +1,165 @@
+---
+title: 'Fable 5 Vision Pipelines: Dense Docs, Bad Scans, Real OCR'
+date: '2026-07-07'
+category: 'AI'
+tags: ['claude', 'vision', 'ocr', 'claude-api', 'document-processing']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: "Fable 5 reads rotated, blurry scans by cropping its way to an answer. Working pipelines for dense PDFs and degraded inputs, plus the image-token math that triples your bill."
+---
+
+The document that broke my extraction pipeline last year was a warehouse delivery note: photographed at an angle, slightly blurred, stamped over the totals, rotated ninety degrees. Traditional OCR returned confetti. The vision model of the time returned a confident hallucination, which is worse. We routed those documents to a human queue, and the human queue is where they stayed.
+
+Last week I re-ran that exact document through Claude Fable 5. It did something I had not seen a model do unprompted: it wrote a short script to rotate the image, cropped the stamped region, re-examined the crop at full resolution, and returned the correct totals with a note about which digit it was least confident in. That behavior — *working* the image instead of glancing at it — is the real story of the **claude vision api** in 2026, and it changes which document workloads are automatable. Here are the pipelines I run, with the cost math nobody mentions until the invoice arrives.
+
+## What Actually Changed
+
+Three shifts, compounding:
+
+**High-resolution input.** Fable 5 (like Opus 4.8 and Sonnet 5) accepts images up to 2576 pixels on the long edge — up from the 1568px ceiling of the 4.6 era. For dense documents this is the difference between reading a table and guessing at one: 8-point footnote text survives at 2576px and dissolves at 1568px.
+
+**Pixel-true coordinates.** Coordinates the model returns map 1:1 to your actual image pixels — no scale-factor math. If you build bounding-box workflows (highlight the clause, click the button), the fragile conversion layer just disappears.
+
+**Tool-assisted seeing.** This is the Fable 5-specific part: it is explicitly trained to use bash and cropping tools on flipped, blurry, and noisy inputs. Give it code execution alongside the image and it stops being a single-glance describer — it rotates, crops, enhances, and re-reads. Anthropic demoed the ceiling of this by having Fable 5 complete Pokémon FireRed vision-only; the boring enterprise version is that a stamped-over delivery note stops needing a human.
+
+## Pipeline 1: Dense PDFs with Verifiable Citations
+
+For contracts, reports, and filings, the killer feature is not extraction — it is extraction you can *check*. Enable citations on the document block and every claim comes back with page-anchored provenance:
+
+```python
+import anthropic, base64
+
+client = anthropic.Anthropic()
+
+with open("q2-contract.pdf", "rb") as f:
+    pdf_b64 = base64.standard_b64encode(f.read()).decode()
+
+response = client.messages.create(
+    model="claude-fable-5",
+    max_tokens=16000,
+    messages=[{
+        "role": "user",
+        "content": [
+            {
+                "type": "document",
+                "source": {"type": "base64", "media_type": "application/pdf", "data": pdf_b64},
+                "citations": {"enabled": True},
+            },
+            {"type": "text", "text": "List every termination condition, its notice period, and any penalties."},
+        ],
+    }],
+)
+
+for block in response.content:
+    if block.type == "text":
+        print(block.text)
+        for c in (block.citations or []):
+            print(f"   ↳ p.{c.start_page_number}: “{c.cited_text[:80]}…”")
+```
+
+The `page_location` citations turn "the model said so" into "page 14, second paragraph" — which is the difference between a demo and something legal will sign off on. Limits worth knowing: 32 MB per request, up to 600 PDF pages (100 on 200K-context models), and if you query the same document repeatedly, upload it once via the Files API instead of re-sending base64 every call.
+
+## Pipeline 2: Degraded Inputs — Let the Model Work the Image
+
+For the ugly stuff — phone photos, faxes (they still exist), stamped and skewed scans — the pattern is: **image + code execution + a goal, not instructions**. Do not tell it to rotate; tell it what you need and let it decide the image needs rotating:
+
+```python
+response = client.messages.create(
+    model="claude-fable-5",
+    max_tokens=16000,
+    tools=[{"type": "code_execution_20260120", "name": "code_execution"}],
+    messages=[{
+        "role": "user",
+        "content": [
+            {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": scan_b64}},
+            {"type": "text", "text":
+                "Extract vendor, date, line items, and total. The scan quality is poor - "
+                "verify anything uncertain by examining regions closely before answering, "
+                "and flag any field you cannot read with confidence."},
+        ],
+    }],
+)
+```
+
+Watching the tool trace on my delivery-note test: it loaded the image with PIL, detected the rotation, cropped the totals region to examine the overstamped digits at full res, and cross-checked the line-item sum against the printed total before answering. That last step — arithmetic verification, unprompted — caught a misread digit in one of my test documents. The prompt matters less than the *absence* of prompt: over-specifying the procedure gets you a worse result than stating the goal, for the same reason [prescriptive prompts backfire everywhere else](/blog/fable-5-prompting-de-prescribing-guide) on this model.
+
+## The Token Math That Triples Your Bill
+
+Here is the part everyone discovers on the invoice. A full-resolution image on the high-res models can cost up to **~4,784 image tokens — roughly 3x** the ~1,600-token cap of the previous generation. Multiply by Fable 5's $10/MTok input pricing and by a pipeline processing 50,000 pages a month, and "just send everything at native res" becomes a five-figure decision.
+
+The discipline that keeps it sane:
+
+- **Downsample deliberately, not by default.** Clean digital PDFs of normal-sized text read fine at ~1568px. Reserve native resolution for dense tables, small print, and degraded inputs — the cases that actually use the fidelity
+- **Measure, don't assume.** Run `count_tokens` on a representative sample of your real documents at each candidate resolution. My invoice corpus: 1.9x average token increase at native res, not 3x — but my contracts corpus hit the cap on nearly every page
+- **Batch what isn't urgent.** Document backlogs are the perfect Batches API workload: 50% off everything, and nobody is waiting on the response
+
+## Which Model: The Rejection-Rate Router
+
+Fable 5 is the accuracy ceiling, not the default. Sonnet 5 has the same 2576px high-res support at $3/$15 (intro $2/$10), and on clean-to-decent documents I measure no meaningful quality gap. My production routing is embarrassingly simple:
+
+1. **Everything goes to Sonnet 5 first**, with instructions to flag low-confidence fields
+2. **Documents with flagged fields or failed validation route to Fable 5** with code execution enabled
+3. **Still-uncertain documents go to the human queue** — which is now ~4% of volume instead of the ~20% my old pipeline rejected
+
+That 16-point difference is the entire business case, and it comes from Fable 5 handling exactly the degraded slice that used to define the human queue. Paying the premium on 100% of volume would be routing malpractice — the same [escalation-tier logic](/blog/claude-5-family-model-selection-guide) as everywhere else in the family.
+
+One wrinkle from the [Fable 5 operational story](/blog/claude-fable-5-developer-review-migration-guide): vision workloads rarely trip its safety classifiers, but "rarely" is not "never" (chemistry papers, security screenshots). Keep the server-side fallback to Opus 4.8 configured; note Opus tops out at the same high-res input, so the fallback degrades gracefully.
+
+## Structured Extraction, Enforced
+
+Free-text extraction is for demos. Production pipelines want schemas, and `output_config.format` guarantees parseable output — no "the model added a friendly preamble" parsing failures at 2 AM:
+
+```python
+response = client.messages.create(
+    model="claude-sonnet-5",  # volume tier first, remember
+    max_tokens=4096,
+    messages=[...],  # image content as above
+    output_config={"format": {"type": "json_schema", "schema": {
+        "type": "object",
+        "properties": {
+            "vendor": {"type": "string"},
+            "total": {"type": "string"},
+            "line_items": {"type": "array", "items": {"type": "object",
+                "properties": {"desc": {"type": "string"}, "amount": {"type": "string"}},
+                "required": ["desc", "amount"], "additionalProperties": False}},
+            "low_confidence_fields": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["vendor", "total", "line_items", "low_confidence_fields"],
+        "additionalProperties": False,
+    }}},
+)
+```
+
+The `low_confidence_fields` array is the load-bearing part — it is what makes the rejection-rate router possible. Make the model report its own uncertainty as data, and your routing logic stays three lines long.
+
+One incompatibility to know: citations and structured outputs cannot be combined in one request (the API returns a 400). Dense-PDF-with-citations and schema-enforced extraction are two calls, not one.
+
+## The Checklist
+
+1. Send native resolution only where fidelity pays: dense tables, small print, degraded scans
+2. `count_tokens` on real documents before committing to a resolution policy
+3. Sonnet 5 first, Fable 5 for the flagged slice, humans for the remainder
+4. Degraded inputs: image + code execution + goal — let the model crop and rotate itself
+5. Citations for verifiability, structured outputs for parseability — separate calls
+6. Batches API for backlogs (50% off)
+7. Files API for documents you query more than once
+8. Keep the Opus 4.8 fallback configured even for vision
+
+Eighteen months ago my rule was "vision models describe images; OCR reads documents; neither is trustworthy alone." Fable 5 collapsed that distinction — not by having sharper eyes, but by being willing to pick the image up, turn it around, and look twice. The pipelines that win with it are the ones built around that behavior: route by confidence, verify by citation, and save the expensive glance for the documents that need it.
+
+## References
+
+### Sources
+- [Claude Fable 5 and Claude Mythos 5 — Anthropic](https://www.anthropic.com/news/claude-fable-5-mythos-5) - state-of-the-art vision claims and the Pokémon FireRed vision-only run
+- [Introducing Claude Fable 5 and Claude Mythos 5 — Claude Platform Docs](https://platform.claude.com/docs/en/about-claude/models/introducing-claude-fable-5-and-claude-mythos-5) - high-res vision support and image token costs
+- [Vision — Claude Platform Docs](https://platform.claude.com/docs/en/build-with-claude/vision.md) - supported formats, size limits, resolution behavior
+- [PDF support — Claude Platform Docs](https://platform.claude.com/docs/en/build-with-claude/pdf-support.md) - page limits, request size, citations on documents
+
+### Further Reading
+- [Citations — Claude Platform Docs](https://platform.claude.com/docs/en/build-with-claude/citations.md) - page_location citation format for document provenance
+- [Token counting — Claude Platform Docs](https://platform.claude.com/docs/en/build-with-claude/token-counting.md) - measuring image token costs before they surprise you
+
+---
+
+~Seb 👊
