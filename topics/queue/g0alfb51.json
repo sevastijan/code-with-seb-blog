@@ -1,0 +1,119 @@
+{
+  "id": "g0alfb51",
+  "createdAt": "2026-07-09T00:00:00Z",
+  "updatedAt": "2026-07-09T00:00:00Z",
+  "status": "published",
+  "niche": "ai-tooling",
+  "research": {
+    "title": "How /goal Works in Claude Fable 5",
+    "trendScore": 80,
+    "sources": ["user-request"],
+    "whyTrending": "Fable 5 launch interest; users asking how goal-directed commands work in Claude Code",
+    "relatedTopics": ["claude-code", "fable-5", "agentic-workflows"]
+  },
+  "seo": {
+    "primaryKeyword": "claude code goal command",
+    "secondaryKeywords": [
+      "claude code /goal",
+      "how does /goal work in claude code",
+      "claude code goal vs loop",
+      "fable 5 goal command",
+      "keep claude code running until done"
+    ],
+    "estimatedVolume": 4500,
+    "estimatedDifficulty": 25,
+    "suggestedTitle": "Claude Code /goal Command: How It Works with Fable 5",
+    "suggestedSlug": "claude-code-goal-command-fable-5-guide"
+  },
+  "competitors": {
+    "analyzedUrls": [
+      "https://code.claude.com/docs/en/goal",
+      "https://www.mindstudio.ai/blog/claude-code-goal-command-autonomous-tasks",
+      "https://www.xda-developers.com/finally-understood-claude-code-goal-command/",
+      "https://medium.com/@jason.croucher/claude-code-goal-a-field-guide-with-games-f6f3b617ce5b",
+      "https://venturebeat.com/orchestration/claude-codes-goals-separates-the-agent-that-works-from-the-one-that-decides-its-done"
+    ],
+    "gaps": [
+      "Most articles rehash the docs; few explain the evaluator's architecture (separate small model, no tool access) and its failure modes",
+      "No decision framework for /goal vs /loop vs Stop hook vs auto mode",
+      "Little on cost control: token spend, turn caps, the $6k overnight-loop cautionary tale",
+      "Almost nothing on condition-writing patterns with concrete good/bad examples",
+      "Non-interactive/CI usage (claude -p \"/goal ...\") barely covered"
+    ],
+    "strengths": [
+      "Official docs are thorough and current",
+      "XDA piece frames the mental-model mistake well (treating /goal like a prompt)"
+    ],
+    "averageWordCount": 1600,
+    "commonStructure": ["What is /goal", "Basic usage", "Examples", "Tips", "Conclusion"]
+  },
+  "deepResearch": {
+    "officialSources": [
+      {
+        "url": "https://code.claude.com/docs/en/goal",
+        "facts": [
+          "Requires Claude Code v2.1.139+",
+          "Sets a completion condition; after each turn a small fast model (defaults to Haiku) checks whether the condition holds; 'no' returns a reason that guides the next turn; 'yes' clears the goal",
+          "/goal is a wrapper around a session-scoped prompt-based Stop hook",
+          "Evaluator does not run commands or call tools — it only judges what Claude surfaced in the conversation",
+          "Condition max 4,000 characters; one goal per session; setting a goal starts a turn immediately",
+          "/goal with no args shows status (condition, duration, turns evaluated, token spend, latest evaluator reason); /goal clear (aliases: stop, off, reset, none, cancel)",
+          "Goal restored on --resume/--continue but turn count, timer, token baseline reset",
+          "Works non-interactively: claude -p \"/goal <condition>\" runs the loop to completion",
+          "Requires accepted trust dialog; unavailable with disableAllHooks or allowManagedHooksOnly",
+          "Evaluation tokens billed on the small fast model, typically negligible",
+          "Comparison: /goal (next turn when previous finishes, stops when evaluator says condition met) vs /loop (time interval) vs Stop hook (your own script/prompt decides)",
+          "Auto mode is complementary: approves tool calls within a turn; /goal starts new turns"
+        ]
+      }
+    ],
+    "expertInsights": [
+      "XDA: most common mistake is treating /goal like a prompt — vague conditions ('production-ready', 'clean', 'optimized') can't be verified",
+      "Docs: a good condition has one measurable end state, a stated check (e.g. 'npm test exits 0'), and constraints ('no other test file is modified')",
+      "Bound runaway goals with a turn/time clause in the condition itself, e.g. 'or stop after 20 turns'",
+      "Evaluator blind spot: if Claude claims tests pass without running them, the evaluator may wrongly say yes — condition should force observable proof",
+      "VentureBeat: the significance is separating the agent that works from the agent that decides it's done",
+      "Without auto mode the loop stalls on permission prompts — /goal + auto mode go together for unattended runs"
+    ],
+    "commonProblems": [
+      "Vague/subjective conditions that never resolve to yes/no",
+      "Conditions with no observable output for the evaluator to verify",
+      "No turn/time bound — no built-in token budget",
+      "Overly broad goals that stall; better to chain smaller sequential goals",
+      "Forgetting auto mode, so the run blocks on tool approvals"
+    ],
+    "statistics": [
+      "Cautionary tale: unbounded overnight looping (via scheduled runs, not /goal itself) produced a $6,000 bill, amplified by context growth and the prompt-cache TTL change from 1h to 5min (makeuseof.com)"
+    ],
+    "codeExamples": [
+      "/goal all tests in test/auth pass and the lint step is clean",
+      "claude -p \"/goal CHANGELOG.md has an entry for every PR merged this week\"",
+      "/goal every call site of fetchUser compiles against the v2 API, npm test exits 0, and no snapshot files are modified — or stop after 25 turns"
+    ]
+  },
+  "strategy": {
+    "angle": "Everyone rehashes the docs; we explain /goal as an architecture — the agent that works is deliberately separated from the model that decides it's done — and show exactly how that judge fails, what it costs, and how to write conditions it can actually verify",
+    "title": "How Claude Code's /goal Command Actually Works (and When It Backfires)",
+    "excerpt": "Claude Code's /goal command keeps Fable 5 working until a separate model confirms the job is done. Here is how the evaluator actually works, how to write conditions it can verify, and the failure modes that turn an unattended run into a very expensive one.",
+    "hooks": [
+      "Contrarian: /goal is not a prompt — treating it like one is the #1 reason goals never terminate",
+      "Architecture: the model doing the work never gets to grade its own homework — a separate Haiku evaluator decides completion",
+      "Cautionary stat: one dev's unbounded overnight loop produced a $6,000 bill — /goal without a turn cap has no built-in budget either"
+    ],
+    "targetWordCount": 2100,
+    "outline": [
+      "Hook: the 'continue' tax — babysitting long agent runs",
+      "What /goal does in one turn-by-turn loop",
+      "The architecture: worker vs judge (Stop hook wrapper, Haiku evaluator, no tool access)",
+      "Writing conditions that resolve: good vs bad examples, the 3-part anatomy",
+      "/goal vs /loop vs Stop hook vs auto mode: decision table",
+      "Cost control: turn caps, token spend, the $6k cautionary tale",
+      "Running headless: claude -p with /goal in CI",
+      "Failure modes and gotchas: evaluator blind spots, resume behavior, trust dialog, hooks settings",
+      "A pre-flight checklist before you walk away"
+    ],
+    "tags": ["claude-code", "ai-agents", "fable-5", "automation", "developer-tools"],
+    "slug": "claude-code-goal-command-fable-5-guide"
+  },
+  "content": null
+}

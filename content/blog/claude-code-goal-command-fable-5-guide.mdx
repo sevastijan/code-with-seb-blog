@@ -1,0 +1,175 @@
+---
+title: "Claude Code /goal: How It Works and When It Backfires"
+date: '2026-07-09'
+category: 'AI'
+tags: ['claude-code', 'ai-agents', 'fable-5', 'automation', 'developer-tools']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: "Claude Code's /goal command keeps Fable 5 working until a separate model confirms the job is done. How the evaluator works — and when it backfires."
+---
+
+For months my most-typed prompt in Claude Code was a single word: "continue". Long refactors, test-suite migrations, backlog grinding — the model would finish a turn, stop, and wait for me to nudge it forward. I was paying a babysitting tax on every session, and the going rate was my attention.
+
+The `/goal` command removes that tax, but not the way most write-ups suggest. It's not "a prompt that makes Claude keep going." It's an architectural change: **the model doing the work no longer decides when the work is done**. A second, separate model does. Understanding that split is the difference between a goal that terminates cleanly and one that spins until you Ctrl+C it at 2 a.m.
+
+I've been running `/goal` on real work since Fable 5 relaunched with it — migrations, doc-driven implementations, issue-queue grinding. This is everything I know about how the Claude Code goal command works under the hood, how to write conditions that actually resolve, and where it bites.
+
+## What /goal does, turn by turn
+
+The mechanics are simple to state:
+
+1. You run `/goal` followed by a completion condition — up to 4,000 characters of plain language.
+2. A turn starts immediately, with the condition itself as the directive. No separate prompt needed.
+3. When the turn ends, a **small fast model** (Haiku by default) reads your condition plus the conversation so far and returns a yes-or-no decision with a short reason.
+4. On "no", Claude starts another turn — and the evaluator's reason is injected as guidance for what to do next.
+5. On "yes", the goal clears itself and an "achieved" entry lands in the transcript.
+
+That's the whole loop. While it runs, a `◎ /goal active` indicator shows elapsed time, and `/goal` with no arguments shows the condition, turn count, token spend, and the evaluator's most recent verdict. `/goal clear` (or `stop`, `off`, `cancel`) kills it early.
+
+```text
+/goal all tests in test/auth pass and the lint step is clean
+```
+
+One goal per session. Setting a new one replaces the old one. And it needs Claude Code v2.1.139 or later — if you're on an older build, that's the first thing to check.
+
+## The architecture: worker vs judge
+
+Here's the part that most coverage skips, and it's the part that actually matters.
+
+Under the hood, `/goal` is a wrapper around a session-scoped **prompt-based Stop hook**. Every time the main model finishes a turn, the hook fires, sends your condition and the conversation to the configured small fast model, and acts on the answer. You could build the same thing yourself with a Stop hook in your settings file — `/goal` just makes it a one-liner scoped to the current session.
+
+Why does the split matter? Because agents grading their own homework is exactly how you get "I've completed the task!" on top of a broken build. Fable 5 is [good at judging its own work mid-task](/blog/claude-fable-5-developer-review-migration-guide) — but "am I done?" is a question with a built-in conflict of interest. The model that has been grinding for forty minutes *wants* to be done. A fresh evaluator with no stake in the outcome, seeing only the evidence in the transcript, is a much harder sell.
+
+The judge has two properties you must internalize:
+
+- **It never runs commands.** The evaluator has no tool access. It can only judge what the working model has *surfaced in the conversation* — test output, build logs, file listings that actually appeared in the transcript.
+- **It's a small model.** Haiku by default — whatever your provider's "small fast model" is configured to, the same tier I route mechanical work to in my [model-routing playbook](/blog/fable-5-claude-code-model-routing-playbook). Evaluation tokens are billed on that model and are typically negligible next to main-turn spend — but the judge is not going to do deep inference for you. It pattern-matches evidence against your condition.
+
+Both properties point at the same conclusion: **your condition is only as good as the proof it forces into the transcript.**
+
+## Writing conditions that actually resolve
+
+The single most common mistake — the one I made in my first week — is treating `/goal` like a prompt. It isn't. A prompt describes work; a condition describes a **verifiable end state**. If your condition can't resolve to a clean yes or no, the loop has no exit.
+
+These never terminate well:
+
+```text
+/goal the app is production-ready
+/goal the codebase is clean and well-organized
+/goal performance is optimized
+```
+
+"Production-ready" doesn't produce output. There is no command whose exit code proves that claim, so the evaluator either stalls the loop forever or — worse — says yes on vibes.
+
+A condition that holds up across many turns has three parts:
+
+1. **One measurable end state** — a test result, a build exit code, a file count, an empty queue.
+2. **A stated check** — *how* Claude should prove it, so the evidence lands in the transcript: "`npm test` exits 0", "`git status` is clean".
+3. **Constraints that matter** — anything that must not change on the way there.
+
+Here's what that looks like on a real migration:
+
+```text
+/goal every call site of fetchUser compiles against the v2 API,
+npm test exits 0 with no skipped tests, npx tsc --noEmit is clean,
+and no snapshot files are modified — or stop after 25 turns
+```
+
+The stated check is doing the heavy lifting. Because the condition names the commands, the working model runs them each turn, their output appears in the conversation, and the judge has something concrete to verify. Without it, Claude might say "I believe the tests pass now" — and an evaluator that can't run commands may take its word for it. That's the evaluator's biggest blind spot, and your condition is the only defense.
+
+Notice the last clause too: `or stop after 25 turns`. There's no built-in token budget on a goal. Claude reports progress against a turn clause each turn and the evaluator judges it from the conversation — so a bound written into the condition is the cheapest insurance you can buy.
+
+### Good targets for /goal
+
+The docs' examples map well to what I've seen work in practice:
+
+- Migrating a module to a new API until every call site compiles and tests pass
+- Implementing a design doc until all acceptance criteria hold
+- Splitting a large file into focused modules until each is under a size budget
+- Working through a labeled issue backlog until the queue is empty
+
+The pattern: substantial work, mechanical verification. If you can't name the command that proves completion, either break the goal into smaller sequential goals that build on each other, or don't use `/goal` for it.
+
+## /goal vs /loop vs Stop hook vs auto mode
+
+Claude Code now has several ways to keep a session running, and they answer different questions:
+
+| Approach | Next turn starts when | Stops when |
+| --- | --- | --- |
+| `/goal` | The previous turn finishes | A separate model confirms the condition is met |
+| `/loop` | A time interval elapses | You stop it, or Claude decides the work is done |
+| Stop hook | The previous turn finishes | Your own script or prompt decides |
+| Auto mode | — (single turn) | Claude judges the work done |
+
+The way I pick between them:
+
+- **`/goal`** when there's a verifiable end state and the work should run back-to-back. Session-scoped, zero setup.
+- **`/loop`** when the trigger is time, not completion — polling a deploy, checking CI every few minutes.
+- **A custom Stop hook** when you need the goal-style check across *every* session, or when the check should be deterministic — a script that literally runs the test suite and greps the result beats a model's judgment every time. `/goal` is the session-scoped convenience version of exactly this.
+- **Auto mode** is not an alternative — it's the complement. Auto mode approves tool calls *within* a turn; `/goal` starts *new* turns. Run `/goal` without auto mode and the loop stalls at the first permission prompt, waiting for an OK that never comes. For genuinely unattended runs you want both.
+
+If your long-running work doesn't fit a session at all — nightly jobs, multi-day autonomous projects — that's a different tool category; I covered it in my guide to [Fable 5 managed agents and multi-day sessions](/blog/fable-5-managed-agents-multi-day-autonomous-guide).
+
+## The money question
+
+A goal keeps running until the condition is met or you clear it. Read that again as a billing statement.
+
+The cautionary tale that made the rounds: a developer configured Claude Code to re-run every 30 minutes overnight without a real stopping condition and woke up to a **$6,000 bill**. That was a scheduled loop rather than `/goal`, but the failure mode transfers directly — an unbounded agent loop whose context balloons every turn, re-uploading hundreds of thousands of tokens per request, amplified when Anthropic quietly cut the default prompt-cache TTL from one hour to five minutes.
+
+`/goal` gives you better guardrails than a cron job, but only if you use them:
+
+- **Put a turn or time clause in the condition.** `or stop after 20 turns` is one sentence and it caps the worst case.
+- **Check spend mid-run.** `/goal` with no args shows cumulative token spend and turns evaluated. On anything long, glance at it.
+- **Prefer several small goals over one giant one.** "Rebuild the entire auth module" is hard to evaluate and easy to stall on; three sequential goals with crisp checks each terminate on their own and give you natural checkpoints. This is the same [state-the-goal-and-constraints discipline](/blog/fable-5-prompting-de-prescribing-guide) that makes Fable 5 prompts work — the constraint clauses are where your budget lives.
+
+## Running headless
+
+`/goal` isn't interactive-only. It works in non-interactive mode, the desktop app, and Remote Control. With `-p`, setting a goal runs the whole loop to completion in a single invocation:
+
+```bash
+claude -p "/goal CHANGELOG.md has an entry for every PR merged this week"
+```
+
+That one line is a complete autonomous job: it starts working immediately, self-evaluates after every turn, and exits when the condition holds. Wrap it in CI, a git hook, or a scheduled task and you have goal-driven automation without writing a harness. Ctrl+C interrupts it early. Just remember the cost section above applies double when nobody's watching the terminal.
+
+## Gotchas that will bite you exactly once
+
+A few behaviors that aren't obvious until they happen to you:
+
+- **Resume semantics.** A goal that was still active when a session ended is restored on `--resume` or `--continue` — the condition carries over, but the turn count, timer, and token-spend baseline all **reset**. If your condition says "stop after 20 turns," a resume quietly gives it 20 fresh ones.
+- **Trust and hooks settings.** Because the evaluator rides the hooks system, `/goal` only runs in workspaces where you've accepted the trust dialog, and it's unavailable when `disableAllHooks` is set at any settings level or `allowManagedHooksOnly` is set in managed settings. The command tells you why instead of failing silently — but if you're rolling Claude Code out to a team with managed settings, know that you may be turning `/goal` off.
+- **`/clear` clears the goal too.** Starting a new conversation removes any active goal. Obvious in hindsight; surprising mid-workflow.
+- **The evaluator's reason is steering, not decoration.** Each "no" verdict feeds back into the next turn as guidance. If the loop seems stuck circling the wrong thing, read the latest reason in `/goal` status — it usually reveals that your condition emphasizes something you didn't intend.
+
+## Pre-flight checklist
+
+Before you set a goal and walk away:
+
+1. Can I name the **command whose output proves completion**? If not, rewrite the condition or don't use `/goal`.
+2. Does the condition state **how to check** ("npm test exits 0"), not just what should be true?
+3. Are the **do-not-touch constraints** in there ("no snapshot files modified")?
+4. Is there a **turn or time cap**?
+5. Is **auto mode on**, so the loop won't stall on permission prompts?
+6. On resume: do I remember the **turn counter reset**?
+
+`/goal` is the first mainstream implementation of an idea that's been floating around agent design for a while: separate the agent that works from the agent that decides it's done. It won't make Fable 5 smarter — the model was already capable of long autonomous runs. What it does is make *termination* trustworthy enough that you can actually leave. Write conditions like contracts, cap your downside, and the "continue" tax is gone for good.
+
+## References
+
+### Sources
+
+- [Keep Claude working toward a goal — Claude Code Docs](https://code.claude.com/docs/en/goal) - the full mechanics: evaluator behavior, Stop hook implementation, resume semantics, requirements
+- [I finally understood Claude Code's /goal command after realizing I was using it completely wrong — XDA](https://www.xda-developers.com/finally-understood-claude-code-goal-command/) - the "treating /goal like a prompt" failure mode
+- [Claude Code's '/goals' separates the agent that works from the one that decides it's done — VentureBeat](https://venturebeat.com/orchestration/claude-codes-goals-separates-the-agent-that-works-from-the-one-that-decides-its-done) - the worker/judge framing
+- [Someone left Claude Code running overnight, and it cost $6,000 — MakeUseOf](https://www.makeuseof.com/someone-left-claude-code-running-overnight-and-it-cost-6000/) - the unbounded-loop cost case study
+
+### Further Reading
+
+- [Prompt-based hooks — Claude Code Docs](https://code.claude.com/docs/en/hooks-guide#prompt-based-hooks) - build your own Stop hook when you outgrow /goal's session-scoped check
+- [Run a prompt repeatedly with /loop — Claude Code Docs](https://code.claude.com/docs/en/scheduled-tasks#run-a-prompt-repeatedly-with-%2Floop) - the time-interval sibling of /goal
+- [Claude Code /goal: A Field Guide with Games — Jason Croucher](https://medium.com/@jason.croucher/claude-code-goal-a-field-guide-with-games-f6f3b617ce5b) - creative stress-tests of the evaluator
+
+---
+
+~Seb 👊
