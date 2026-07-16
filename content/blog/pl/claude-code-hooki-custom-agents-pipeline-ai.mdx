@@ -1,0 +1,605 @@
+---
+title: 'Claude Code Hooks i Custom Agents: buduj pipeline AI, które działają same'
+date: '2026-03-26'
+category: 'AI'
+tags: ['claude-code', 'ai-automation', 'developer-tools', 'hooks', 'productivity']
+draft: false
+featured: false
+author: 'Sebastian'
+enSlug: 'claude-code-hooks-custom-agents-ai-pipelines-guide'
+excerpt: '24 hooki cyklu życia, 4 typy handlerów, custom agents — każdy tutorial omawia je osobno. Oto jak połączyć je w samodzielne pipeline, które automatycznie pilnują jakości.'
+---
+
+Spędziłem cały tydzień na debugowaniu hooka, który powinien zająć mi 20 minut. Hook miał blokować niebezpieczne komendy Bash — `rm -rf`, `DROP TABLE`, klasykę gatunku. Napisałem skrypt, przetestowałem go ręcznie, skonfigurowałem matcher. Wszystko wyglądało idealnie.
+
+Poza tym, że Claude i tak dalej wykonywał niebezpieczne komendy. Bez błędu, bez ostrzeżenia. Po prostu... nic się nie działo.
+
+Winowajca? Użyłem `exit 1` zamiast `exit 2`. W hookach Claude Code kod wyjścia 1 oznacza "ostrzeżenie nieblokujące" — loguje się w trybie verbose i kontynuuje. Kod wyjścia 2 oznacza "faktycznie to zablokuj". Jedna cyfra. Jeden tydzień mojego życia.
+
+To doświadczenie nauczyło mnie czegoś ważnego: **hooki to najpotężniejsza i najbardziej niezrozumiana funkcja w Claude Code.** Każdy wie o [skills](/blog/claude-code-skills-reusable-ai-workflows-guide) i [subagentach](/blog/claude-code-sub-agents-multi-agent-systems-guide). Ale to hooki są warstwą automatyzacji, która zmienia Claude'a z asystenta, którego musisz pilnować, w pipeline pilnujący własnej jakości.
+
+Pozwól, że oszczędzę ci moich błędów.
+
+## Model mentalny hooka
+
+Pomyśl o hookach jak o middleware dla twojego asystenta AI. Tak jak middleware w Express przechwytuje żądania HTTP, hooki Claude Code przechwytują zdarzenia cyklu życia — zanim uruchomią się narzędzia, po wprowadzeniu zmian, gdy zaczyna się sesja, gdy agenci kończą pracę.
+
+```
+User Prompt
+    │
+    ▼
+┌─────────────────┐
+│ UserPromptSubmit │ ← Hook może modyfikować lub blokować
+└────────┬────────┘
+         │
+         ▼
+    Claude myśli...
+         │
+         ▼
+┌─────────────────┐
+│   PreToolUse    │ ← Hook może pozwolić/odmówić/modyfikować
+└────────┬────────┘
+         │
+         ▼
+    Narzędzie działa
+         │
+         ▼
+┌─────────────────┐
+│  PostToolUse    │ ← Hook może dodać kontekst
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│      Stop       │ ← Hook może zmusić Claude'a do kontynuacji
+└─────────────────┘
+```
+
+Każdy hook otrzymuje wejście w formacie JSON przez stdin, wraz z kontekstem sesji: `session_id`, `cwd`, `permission_mode` oraz pola specyficzne dla zdarzenia. Każdy hook odpowiada poprzez kody wyjścia (proste) lub wyjście JSON (zaawansowane).
+
+## Wszystkie 24 zdarzenia hooków (pogrupowane wg momentu wywołania)
+
+Na marzec 2026 Claude Code udostępnia 24 zdarzenia cyklu życia. Oto jak o nich myślę — pogrupowane według tego, którą fazę pracy przechwytują:
+
+### Cykl życia sesji
+
+| Zdarzenie | Kiedy | Zastosowanie |
+|-------|------|----------|
+| **SessionStart** | Sesja się zaczyna/wznawia | Ładowanie zmiennych środowiskowych, nawiązywanie połączeń |
+| **SessionEnd** | Sesja się kończy | Sprzątanie, raportowanie zużycia |
+| **CwdChanged** | Zmiana katalogu roboczego | Ponowna walidacja kontekstu projektu |
+| **ConfigChange** | Zmiana settings.json w trakcie sesji | Przeładowanie konfiguracji na gorąco |
+
+### Przetwarzanie wejścia
+
+| Zdarzenie | Kiedy | Zastosowanie |
+|-------|------|----------|
+| **UserPromptSubmit** | Zanim Claude przetworzy twój prompt | Walidacja wejścia, wzbogacanie promptu |
+| **InstructionsLoaded** | Ładowanie CLAUDE.md lub plików z regułami | Audyt aktywnych instrukcji |
+
+### Wykonywanie narzędzi
+
+| Zdarzenie | Kiedy | Zastosowanie |
+|-------|------|----------|
+| **PreToolUse** | Przed każdym wywołaniem narzędzia | Bramki bezpieczeństwa, walidacja |
+| **PostToolUse** | Po udanym wywołaniu narzędzia | Auto-formatowanie, lint, logowanie |
+| **PostToolUseFailure** | Po nieudanym wywołaniu narzędzia | Śledzenie błędów, logika automatycznego ponawiania |
+| **PermissionRequest** | Pojawia się dialog uprawnień | Automatyczne zatwierdzanie/odmowa wg reguł |
+
+### Cykl życia agenta
+
+| Zdarzenie | Kiedy | Zastosowanie |
+|-------|------|----------|
+| **SubagentStart** | Powstaje subagent | Konfiguracja, alokacja zasobów |
+| **SubagentStop** | Subagent kończy pracę | Sprzątanie, walidacja wyników |
+| **TaskCreated** | Zadanie utworzone przez TaskCreate | Śledzenie zadań, powiadomienia |
+| **TaskCompleted** | Zadanie oznaczone jako ukończone | Raportowanie postępu |
+| **TeammateIdle** | Agent w zespole przechodzi w stan bezczynności | Zarządzanie zasobami |
+
+### Zarządzanie kontekstem
+
+| Zdarzenie | Kiedy | Zastosowanie |
+|-------|------|----------|
+| **PreCompact** | Przed kompaktowaniem kontekstu | Zapis krytycznego stanu |
+| **PostCompact** | Po kompaktowaniu | Przywrócenie stanu, walidacja kontekstu |
+| **WorktreeCreate** | Utworzono worktree Git | Konfiguracja izolowanego środowiska |
+| **WorktreeRemove** | Usunięto worktree Git | Sprzątanie |
+
+### Komunikacja
+
+| Zdarzenie | Kiedy | Zastosowanie |
+|-------|------|----------|
+| **Notification** | Claude wysyła powiadomienie | Własne trasowanie powiadomień |
+| **Stop** | Claude kończy odpowiadać | Wymuszenie kontynuacji, kontrola jakości |
+| **StopFailure** | Tura kończy się z powodu błędu API | Obsługa błędów, fallback |
+| **Elicitation** | Serwer MCP prosi o dane wejściowe | Własna obsługa wejścia |
+| **ElicitationResult** | Użytkownik odpowiada na prompt MCP | Przetwarzanie odpowiedzi |
+| **FileChanged** | Zmiana obserwowanego pliku na dysku | Hot reload, wyzwalanie przebudowy |
+
+Zdarzenia, których będziesz używać w 90% przypadków: **PreToolUse**, **PostToolUse**, **Stop** i **UserPromptSubmit**. Opanuj te cztery, zanim zabierzesz się za resztę.
+
+## 4 typy handlerów
+
+Każde zdarzenie hooka może wyzwalać jeden lub więcej handlerów. Claude Code oferuje cztery typy, każdy z innymi kompromisami:
+
+### 1. Command Hooks (skrypty powłoki)
+
+Koń pociągowy. Uruchamia komendę powłoki, czyta JSON ze stdin, komunikuje się przez kody wyjścia.
+
+```json
+{
+  "type": "command",
+  "command": ".claude/hooks/validate-bash.sh",
+  "timeout": 10
+}
+```
+
+**Kiedy używać:** operacje na plikach, szybka walidacja, integracja z istniejącymi narzędziami CLI.
+
+### 2. HTTP Hooks (webhooki)
+
+Wysyła zdarzenie w formacie JSON metodą POST na wskazany URL. Idealne do zewnętrznych integracji.
+
+```json
+{
+  "type": "http",
+  "url": "http://localhost:8080/hooks/pre-tool-use",
+  "headers": {
+    "Authorization": "Bearer $MY_TOKEN"
+  },
+  "allowedEnvVars": ["MY_TOKEN"],
+  "timeout": 30
+}
+```
+
+**Kiedy używać:** powiadomienia na Slacku, zewnętrzne logowanie, dashboardy zespołowe, wyzwalacze CI/CD. Pełną konfigurację GitHub Actions i zadań zaplanowanych znajdziesz w moim [poradniku CI/CD dla trybu headless](/blog/claude-code-headless-mode-cicd-automation-playbook) — hooki plus `claude -p` to stack automatyzacji, który faktycznie sprawdza się na produkcji.
+
+### 3. Prompt Hooks (ewaluacja LLM)
+
+Wysyła prompt do modelu Claude w celu podjęcia jednoturowej decyzji tak/nie.
+
+```json
+{
+  "type": "prompt",
+  "prompt": "Is this Bash command safe to run in production? $ARGUMENTS",
+  "model": "haiku"
+}
+```
+
+**Kiedy używać:** rozmyta walidacja tam, gdzie reguły trudno zakodować (np. "czy ta zmiana w kodzie ma sens?").
+
+### 4. Agent Hooks (weryfikacja przez subagenta)
+
+Powołuje pełnego subagenta z dostępem do narzędzi, by zweryfikować warunki.
+
+```json
+{
+  "type": "agent",
+  "prompt": "Read the test files and verify this change has test coverage: $ARGUMENTS",
+  "model": "sonnet",
+  "timeout": 60
+}
+```
+
+**Kiedy używać:** złożona walidacja wymagająca czytania plików, analizy kodu lub wieloetapowego rozumowania. To najpotężniejszy typ handlera — i najdroższy.
+
+### Porównanie kosztów handlerów
+
+| Typ | Opóźnienie | Koszt w tokenach | Złożoność |
+|------|---------|------------|------------|
+| Command | ~50ms | Za darmo | Niska |
+| HTTP | ~200ms | Za darmo | Średnia |
+| Prompt | ~2s | ~$0.001 | Niska |
+| Agent | ~15s | ~$0.01-0.05 | Wysoka |
+
+**Zasada kciuka:** zacznij od command hooków. Sięgaj po prompt/agent hooki tylko wtedy, gdy skrypty powłoki nie potrafią wyrazić danej logiki.
+
+## 5 wzorców produkcyjnych, które naprawdę mają znaczenie
+
+### Wzorzec 1: Auto-formatowanie przy każdej edycji
+
+Najbardziej wpływowy hook, jaki możesz skonfigurować. Zero wysiłku, ogromny zysk w spójności.
+
+```json
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "npx prettier --write \"$TOOL_INPUT_FILE_PATH\" 2>/dev/null; exit 0",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+`exit 0` na końcu jest kluczowe — hooki PostToolUse z niezerowym kodem wyjścia niczego nie blokują, ale dodają szum do kontekstu Claude'a.
+
+### Wzorzec 2: Bramka bezpieczeństwa dla niebezpiecznych komend
+
+To ten, który mnie ugryzł. Oto poprawna wersja:
+
+```bash
+#!/bin/bash
+# .claude/hooks/block-dangerous.sh
+
+INPUT=$(cat)
+COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command // empty')
+
+# Blokuj destrukcyjne wzorce
+if echo "$COMMAND" | grep -iE '\b(rm\s+-rf|DROP\s+TABLE|DELETE\s+FROM|TRUNCATE|FORMAT)\b' > /dev/null; then
+  echo "BLOCKED: Destructive command detected: $COMMAND" >&2
+  exit 2  # EXIT 2 = BLOKADA. Nie exit 1!
+fi
+
+exit 0
+```
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/block-dangerous.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+### Wzorzec 3: Automatyczne testy po zmianach w kodzie
+
+Uruchamiaj testy automatycznie, gdy tylko Claude zmodyfikuje plik źródłowy:
+
+```bash
+#!/bin/bash
+# .claude/hooks/auto-test.sh
+
+INPUT=$(cat)
+FILE_PATH=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty')
+
+# Uruchamiaj testy tylko dla plików źródłowych
+if [[ "$FILE_PATH" == *.ts ]] || [[ "$FILE_PATH" == *.tsx ]]; then
+  # Znajdź powiązany plik testowy
+  TEST_FILE="${FILE_PATH%.ts}.test.ts"
+  TEST_FILE="${TEST_FILE%.tsx}.test.tsx"
+
+  if [ -f "$TEST_FILE" ]; then
+    RESULT=$(npx vitest run "$TEST_FILE" --reporter=json 2>&1)
+    if [ $? -ne 0 ]; then
+      echo "Tests failed for $TEST_FILE" >&2
+      echo "$RESULT" | tail -20 >&2
+      # Nie rób exit 2 — chcemy, by Claude zobaczył błąd i go naprawił
+      exit 0
+    fi
+  fi
+fi
+
+exit 0
+```
+
+Uwaga: to wykorzystuje PostToolUse, a nie PreToolUse, ponieważ chcemy, by testy uruchamiały się *po* zakończeniu edycji.
+
+### Wzorzec 4: Śledzenie kosztów
+
+Śledź zużycie tokenów w różnych sesjach za pomocą HTTP hooka:
+
+```json
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://localhost:3001/api/claude-usage",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Zdarzenie Stop zawiera `last_assistant_message` — sparsuj je, by oszacować tokeny i koszty. Ja uruchamiam prosty serwer Express, który loguje do SQLite. Po miesiącu będziesz mieć realne dane o tym, gdzie ucieka twój budżet.
+
+### Wzorzec 5: Powiadomienie na Slacku po zakończeniu
+
+Powiadom swój zespół, gdy Claude skończy długie zadanie:
+
+```json
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -X POST -H 'Content-Type: application/json' -d '{\"text\":\"Claude finished a task in '\"$PWD\"'\"}' $SLACK_WEBHOOK_URL",
+            "async": true,
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Flaga `async: true` jest kluczowa — wysyła powiadomienie bez blokowania odpowiedzi Claude'a.
+
+## Pułapka kodu wyjścia (i inne haczyki)
+
+Ta sekcja istnieje, bo zmarnowałem całe dni, ucząc się tego na własnej skórze.
+
+### Haczyk #1: Exit 1 ≠ Exit 2
+
+| Kod wyjścia | Efekt |
+|-----------|--------|
+| **0** | Sukces. Sparsuj stdout w poszukiwaniu JSON. Kontynuuj. |
+| **1** | Błąd nieblokujący. Widoczny tylko w trybie verbose. **NIE blokuje.** |
+| **2** | **Błąd blokujący. Zatrzymuje akcję. Przekazuje stderr do Claude'a.** |
+
+Jeśli twoja bramka bezpieczeństwa używa `exit 1`, jest to ostrzeżenie, którego nikt nie widzi. Potrzebujesz `exit 2`. Ma to szczególne znaczenie, gdy bronisz się przed [atakami prompt injection](/blog/prompt-injection-llm-security-guide) — zablokowana akcja, która w rzeczywistości nie blokuje, jest gorsza niż brak zabezpieczenia.
+
+### Haczyk #2: Zachowanie Exit 2 zależy od zdarzenia
+
+Exit 2 nie zawsze oznacza "blokuj". Zależy to od zdarzenia:
+
+- **PreToolUse, PermissionRequest, UserPromptSubmit:** blokuje akcję
+- **Stop, SubagentStop:** każe Claude'owi kontynuować (zapobiega zatrzymaniu)
+- **PostToolUse, Notification:** tylko pokazuje stderr, niczego nie blokuje
+- **InstructionsLoaded, StopFailure:** kod wyjścia całkowicie ignorowany
+
+### Haczyk #3: Nieskończone pętle w hooku Stop
+
+Hook Stop, który zwraca exit 2, mówi Claude'owi "nie zatrzymuj się, pracuj dalej". Ale jeśli Claude nie ma już nic do zrobienia, próbuje się zatrzymać ponownie... wyzwalając hooka ponownie... w nieskończoność.
+
+Rozwiązanie: sprawdź pole `stop_hook_active`:
+
+```bash
+#!/bin/bash
+INPUT=$(cat)
+STOP_HOOK_ACTIVE=$(echo "$INPUT" | jq -r '.stop_hook_active // false')
+
+if [ "$STOP_HOOK_ACTIVE" = "true" ]; then
+  # Już jesteśmy w ponowieniu hooka stop, pozwól mu się zatrzymać
+  exit 0
+fi
+
+# Tutaj twoja właściwa logika walidacji zatrzymania
+exit 0
+```
+
+### Haczyk #4: Hooki działają synchronicznie
+
+Każdy hook dodaje opóźnienie. Hook, który zajmuje 5 sekund, działa przez 5 sekund przed każdym dopasowanym użyciem narzędzia. Zaplanuj maksymalnie 500ms dla hooków PreToolUse, inaczej twój workflow będzie się wlókł.
+
+### Haczyk #5: Wymagany restart sesji
+
+Zmiany w hookach w `settings.json` wymagają pełnego restartu sesji. Nie ma komendy `/reload` dla hooków (stan na marzec 2026). Oszczędź sobie zamieszania — zrestartuj sesję po edycji konfiguracji hooków.
+
+## Łączenie hooków i custom agents: samowalidujące się pipeline
+
+Tu robi się ciekawie. Hooki i custom agents to nie tylko dwie osobne funkcje — składają się w coś większego.
+
+### Wzorzec: agent z wbudowanymi bramkami jakości
+
+Utwórz custom agenta, który ma hooki wpisane w swoją definicję:
+
+```markdown
+---
+name: safe-deployer
+description: Deploys code changes with built-in safety validation
+tools: Bash, Read, Grep, Glob
+model: sonnet
+hooks:
+  PreToolUse:
+    - matcher: "Bash"
+      hooks:
+        - type: command
+          command: ".claude/hooks/validate-deploy-command.sh"
+  PostToolUse:
+    - matcher: "Bash"
+      hooks:
+        - type: command
+          command: ".claude/hooks/verify-deploy-health.sh"
+  Stop:
+    - hooks:
+        - type: prompt
+          prompt: "Review the deployment steps taken so far. Were all safety checks passed? Is the deployment complete and healthy? Respond with continue if more work is needed. $ARGUMENTS"
+---
+
+You are a deployment specialist. When deploying:
+1. Run pre-deploy checks (tests, lint, type-check)
+2. Execute the deployment
+3. Verify health endpoints respond
+4. Report deployment status
+
+Never skip pre-deploy checks. Never deploy without running tests first.
+```
+
+Ten agent nie może przypadkowo pominąć kontroli bezpieczeństwa — hooki wymuszają je niezależnie od tego, co mówi prompt systemowy. LLM może być kreatywny co do tego, *jak* wdraża, ale zabezpieczenia są zakodowane na sztywno.
+
+### Wzorzec: walidacja przez agenta wyzwalana hookiem
+
+Użyj agent hooka (typu handlera) do złożonej walidacji PreToolUse:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "agent",
+            "prompt": "A file is about to be modified. Read the file at the path specified in tool_input, check if it contains API keys, secrets, passwords, or credentials. If it does, respond with 'BLOCKED: file contains secrets'. Context: $ARGUMENTS",
+            "model": "haiku",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+To powołuje agenta Haiku, który faktycznie *czyta plik* przed zezwoleniem na edycję — czego prosty skrypt powłoki nie potrafi zrobić efektywnie dla wszystkich typów plików. Jeśli budujesz aplikacje w stylu vibe coding, to dokładnie ten rodzaj zabezpieczenia, który zapobiega [katastrofom bezpieczeństwa, które audytowałem w kodzie generowanym przez AI](/blog/vibe-coding-security-audit-checklist).
+
+### Wzorzec: orkiestrator pipeline'u
+
+Połącz hooki na poziomie sesji z custom agents, by zbudować pełny pipeline:
+
+```json
+{
+  "hooks": {
+    "SubagentStart": [
+      {
+        "matcher": "code-reviewer",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo 'Starting code review at $(date)' >> .claude/logs/pipeline.log"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "code-reviewer",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/post-review-actions.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+To loguje, kiedy startuje agent code-reviewer, i wyzwala działania następcze (otwarcie PR, uruchomienie CI, powiadomienie Slacka), gdy kończy pracę. Ten rodzaj orkiestracji pipeline'u to właśnie to, co umożliwia [5-dniowe sprinty automatyzacji AI](/blog/5-day-ai-automation-sprint-workflow-guide) — budujesz zabezpieczenia raz i wykorzystujesz je ponownie w kolejnych projektach.
+
+## Wydajność: utrzymywanie hooków poniżej 500ms
+
+Hooki domyślnie działają synchronicznie. Oto jak utrzymać ich szybkość:
+
+1. **Używaj `async: true`** dla hooków nieblokujących (powiadomienia, logowanie)
+2. **Utrzymuj skrypty powłoki minimalne** — unikaj ciężkich operacji w PreToolUse
+3. **Cache'uj kosztowne sprawdzenia** — zapisuj wyniki do pliku tymczasowego, sprawdzaj mtime przed ponownym uruchomieniem
+4. **Używaj jq efektywnie** — przekazuj potokiem raz, wyciągaj wiele pól: `jq '{name: .tool_name, cmd: .tool_input.command}'`
+5. **Mierz wszystko** — dodaj `time` do komend hooków podczas developmentu:
+
+```bash
+# Debug: zmierz czas wykonania hooka
+START=$(date +%s%N)
+# ... logika twojego hooka ...
+END=$(date +%s%N)
+echo "Hook took $(( (END - START) / 1000000 ))ms" >&2
+```
+
+## Kiedy NIE używać hooków
+
+Hooki są potężne, ale nie zawsze są właściwym narzędziem:
+
+| Scenariusz | Użyj zamiast tego |
+|----------|-------------|
+| Wielokrotnie używany workflow z wieloma krokami | **[Skills](/blog/claude-code-skills-reusable-ai-workflows-guide)** — zachowują kontekst |
+| Jednorazowa transformacja promptu | **Reguły w CLAUDE.md** — prościej, bez kodu |
+| Izolowane zadanie ze świeżym kontekstem | **[Subagent](/blog/claude-code-sub-agents-multi-agent-systems-guide)** — osobne okno kontekstu |
+| Złożona koordynacja wieloagentowa | **[Zespoły agentów](/blog/claude-code-remote-control-dispatch-guide)** — dedykowana orkiestracja |
+| Coś, co wymaga ludzkiego osądu | **PermissionRequest** — po prostu zapytaj |
+
+**Heurystyka decyzyjna:** jeśli automatyzacja musi *przechwytywać i modyfikować* zachowanie Claude'a w konkretnych punktach cyklu życia, użyj hooków. Jeśli musi *nauczyć* Claude'a, jak coś robić, użyj skills. Jeśli musi *izolować* pracę, użyj subagentów.
+
+## Złóżmy to w całość
+
+Oto moja produkcyjna konfiguracja — hooki, które uruchamiam w każdym projekcie:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/block-dangerous.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/check-secrets.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/auto-format.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/notify-complete.sh",
+            "async": true
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Cztery hooki. Dwie bramki bezpieczeństwa (blokowanie niebezpiecznych komend, sprawdzanie sekretów), jedna bramka jakości (auto-formatowanie), jedno udogodnienie (powiadomienie). Ta konfiguracja wyłapuje 90% problemów, zanim staną się kłopotem.
+
+Zacznij tutaj. Dodawaj złożoność dopiero wtedy, gdy będziesz jej potrzebować. Najlepszy system hooków to taki, który działa niewidzialnie i nigdy nie każe ci o sobie myśleć — dopóki nie uratuje cię przed katastrofą.
+
+## References
+
+### Źródła
+- [Claude Code Hooks Reference](https://code.claude.com/docs/en/hooks) - oficjalna dokumentacja wszystkich 24 zdarzeń hooków i typów handlerów
+- [Claude Code Sub-agents Documentation](https://code.claude.com/docs/en/sub-agents) - oficjalny przewodnik po YAML frontmatter custom agentów i hookach w agentach
+- [Claude Code Hooks Mastery](https://github.com/disler/claude-code-hooks-mastery) - społecznościowe przykłady kontroli subagentów i hooków zarządzania sesją
+- [5 Production Hooks From Scratch](https://blakecrosley.com/blog/claude-code-hooks-tutorial) - praktyczny tutorial o kodach wyjścia i wzorcach debugowania
+
+### Dalsza lektura
+- [Automate Workflows With Hooks](https://code.claude.com/docs/en/hooks-guide) - oficjalny przewodnik krok po kroku po tworzeniu pierwszych hooków
+- [Claude Code Skills Documentation](https://code.claude.com/docs/en/skills) - kiedy używać skills, a kiedy hooków
+- [Claude Code Hooks Collection](https://github.com/karanb192/claude-code-hooks) - gotowe do skopiowania hooki do bezpieczeństwa, automatyzacji i powiadomień
+
+---
+
+~Seb 👊
