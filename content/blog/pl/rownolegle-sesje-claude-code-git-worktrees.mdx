@@ -1,0 +1,304 @@
+---
+title: 'Równoległe sesje Claude Code z git worktrees: produkcyjna konfiguracja'
+date: '2026-04-19'
+category: 'AI'
+tags: ['claude-code', 'git-worktrees', 'parallel-development', 'productivity', 'developer-workflow']
+draft: false
+featured: false
+author: 'Sebastian'
+enSlug: 'parallel-claude-code-sessions-git-worktrees-guide'
+excerpt: 'Zespół Anthropic wskazuje 10-15 równoległych sesji Claude jako swoją najważniejszą wskazówkę na produktywność. Wszyscy kiwają głową, nikt nie tłumaczy jak. Oto produkcyjna konfiguracja.'
+---
+
+Pewien inżynier, którego znam w średniej wielkości fintechu, prowadzi jednocześnie sześć sesji Claude Code. Jedna pisze testy dla nowego endpointu płatności. Jedna refaktoryzuje serwis powiadomień. Jedna szkicuje migrację. Jedna przegląda wczorajszy PR. Dwie są w trybie planowania nad zadaniami na jutro. Dostarcza mniej więcej z 3x moją wydajnością, a wcale nie pisze na klawiaturze szybciej.
+
+To wzorzec git worktrees, a wewnętrzny zespół Anthropic nazywa go swoją najważniejszą wskazówką na produktywność. Każdy tutorial opisuje mechanikę, a żaden nie opisuje systemu. Produkcyjna konfiguracja równoległa to nie „otwórz trzy terminale". To architektura workflow z konkretnymi kompromisami, które gryzą w konkretny sposób.
+
+Oto czego nauczył mnie rok prowadzenia równoległych sesji Claude — łącznie ze strategią merge'owania, która zapobiega konfliktom, kadencją przeglądów, która zapobiega dryfowaniu, oraz tym, dlaczego sześć sesji to prawdopodobnie za dużo jak na Ciebie.
+
+## Co właściwie dają Ci git worktrees
+
+Git worktree to powiązany katalog roboczy repozytorium. Jeden katalog `.git`, wiele wyewidencjonowanych na dysku branchy, każdy w swoim własnym folderze.
+
+```bash
+# Z Twojego głównego repo
+git worktree add ../my-app-feature-auth feature/auth
+git worktree add ../my-app-bugfix-ssr bugfix/ssr-hydration
+
+# Teraz masz trzy katalogi:
+# ~/code/my-app              (branch main)
+# ~/code/my-app-feature-auth (branch feature/auth)
+# ~/code/my-app-bugfix-ssr   (branch bugfix/ssr-hydration)
+```
+
+W przeciwieństwie do przełączania branchy, nic się nie odmontowuje. Możesz otworzyć wszystkie trzy w osobnych oknach edytora, uruchomić testy we wszystkich trzech jednocześnie i uruchomić sesję Claude Code w każdym z nich — a wszystkie wskazują na te same metadane `.git`.
+
+Claude Code dodał pełne wsparcie za pomocą flagi `-w` pod koniec 2025 roku:
+
+```bash
+claude -w feature/refactor-billing "Refactor the billing module"
+```
+
+To tworzy odizolowany worktree w `.claude/worktrees/feature-refactor-billing/`, wyewidencjonowuje nowy branch i uruchamia sesję ograniczoną w całości do tego katalogu. Sprzątanie jest o jedną komendę stąd.
+
+## Problem pojedynczej sesji
+
+Zanim zrozumiesz konfigurację równoległą, zrozum, co ona rozwiązuje.
+
+Pojedyncza, długo działająca sesja Claude ma pułap kontekstu. Gdy jesteś już 40 minut w środku, kontekst to ponad 60 tys. tokenów nagromadzonej wymiany zdań. Model zaczyna popełniać drobne błędy, których nie popełniłby na starcie — myli powiązane nazwy funkcji, zapomina, że wczoraj już naprawił ten bug, ponownie czyta pliki, które już przeczytał.
+
+Zwykłe obejścia — `/compact`, `/clear` — albo tracą szczegóły, albo zmuszają Cię do ponownego tłumaczenia. Równoległe sesje to trzecia opcja: nie pozwól żadnemu pojedynczemu kontekstowi urosnąć w pierwszej kolejności.
+
+Każda sesja jest krótka. Każda sesja ma określony zakres. Każda sesja jest zabijana i zastępowana, a nie przedłużana. Obciążenie poznawcze przenosi się z „co powiedziałem Claude w tej sesji" na „jakie zadania mam w toku".
+
+## Konfiguracja dwóch sesji (Twój pierwszy krok)
+
+Zacznij tutaj. Nie zaczynaj od sześciu.
+
+```bash
+# W terminalu 1, sesja „robocza"
+cd ~/code/my-app
+claude
+
+# W terminalu 2, sesja „przeglądowa"
+cd ~/code/my-app
+git worktree add ../my-app-review
+cd ../my-app-review
+claude
+```
+
+Reguła zaangażowania: sesja robocza edytuje, sesja przeglądowa przegląda commity, które sesja robocza produkuje. Gdy praca commituje, przegląd pobiera zmiany, przegląda diff, zostawia notatki. Praca uwzględnia notatki. Pętla.
+
+To minimalna działająca konfiguracja równoległa i natychmiast podwaja wydajność, ponieważ:
+
+1. Nigdy nie czekasz, aż Claude pomyśli. Gdy praca działa, Ty czytasz wyniki przeglądu.
+2. Przegląd wychwytuje dryf, którego własna „ostateczna kontrola" pracy by nie wychwyciła, ponieważ przegląd ma świeży kontekst bez zaangażowania w pracę.
+3. Kontekst każdej sesji pozostaje zwięzły — praca skupia się na implementacji, przegląd skupia się na ocenie.
+
+Jeśli nie zrobisz nic innego z tego artykułu, zrób to. A potem spróbuj wytrzymać bez tego jeden dzień.
+
+## Wzorzec czterech sesji
+
+Gdy rytm dwóch sesji stanie się naturalny, kolejnym stabilnym punktem są cztery. Nie trzy. Trzy jest niestabilne, ponieważ rodzi „trzecią rzecz", która nie pasuje do cyklu praca/przegląd.
+
+```
+┌───────────────────────┬───────────────────────┐
+│  Session A: Feature   │  Session B: Feature   │
+│  (current work)       │  (next work)          │
+│                       │                       │
+│  Branch: feat/a       │  Branch: feat/b       │
+│  Mode: implementing   │  Mode: planning       │
+├───────────────────────┼───────────────────────┤
+│  Session C: Review    │  Session D: Background│
+│  (PR review, notes)   │  (tests, audits)      │
+│                       │                       │
+│  Branch: main         │  Branch: main         │
+│  Mode: reviewing      │  Mode: batch tasks    │
+└───────────────────────┴───────────────────────┘
+```
+
+Każda ćwiartka ma swoją rolę. Feature A to Twój główny fokus. Feature B jest gotowe-w-planowaniu, więc gdy A trafia na produkcję, nie próżnujesz. C przegląda ukończoną pracę. D uruchamia długie zadania (generowanie testów, audyty zależności, generowanie dokumentacji), które blokowałyby A, gdyby dzieliły kontekst.
+
+To, co sprawia, że to działa, to **dyscyplina ról**. Każda sesja ma jedno zadanie. W chwili gdy Session A zaczyna dryfować w refaktoryzację kodu Session B, zatrzymujesz się. Commitujesz to, co bezpieczne, resetujesz Session A, restartujesz na temat. Równoległe sesje zawodzą, gdy zlewają się ze sobą.
+
+## Układ tmux, który działa
+
+Model terminal-na-sesję załamuje się pod własnym ciężarem powyżej dwóch okien. Użyj multipleksera. Oto układ tmux, na którym wylądowałem po wypróbowaniu sześciu wariantów:
+
+```bash
+# ~/.tmux/claude-parallel.sh
+#!/usr/bin/env bash
+SESSION="claude-parallel"
+
+tmux new-session -d -s $SESSION -n work
+
+# Panel 0 (górny-lewy): implementacja Feature A
+tmux send-keys -t $SESSION:work "cd ~/code/app-a && claude" C-m
+
+# Panel 1 (górny-prawy): planowanie Feature B
+tmux split-window -h -t $SESSION:work
+tmux send-keys -t $SESSION:work "cd ~/code/app-b && claude --permission-mode plan" C-m
+
+# Panel 2 (dolny-lewy): przegląd
+tmux select-pane -t 0
+tmux split-window -v -t $SESSION:work
+tmux send-keys -t $SESSION:work "cd ~/code/app-review && claude" C-m
+
+# Panel 3 (dolny-prawy): tło
+tmux select-pane -t 2
+tmux split-window -h -t $SESSION:work
+tmux send-keys -t $SESSION:work "cd ~/code/app-bg && claude" C-m
+
+tmux attach-session -t $SESSION
+```
+
+Uruchom raz, zawsze dostań ten sam układ. Pamięć mięśniowa staje się workflow. Mam to podpięte pod skrót klawiszowy. Sam Claude Code obsługuje izolację sesji per panel.
+
+## Strategia merge'owania, która zapobiega konfliktom
+
+Najczęstszym trybem awarii równoległych worktrees nie jest produktywność — to piekło merge'owania, gdy dwie sesje edytują nakładający się kod. Zapobiegaj mu na granicy, a nie w momencie merge'owania.
+
+**Reguła 1: Wyznaczaj zakres worktrees według modułu, a nie według zadania.**
+
+```
+feat/billing-*    → zawsze w billing-worktree
+feat/auth-*       → zawsze w auth-worktree
+feat/ui-*         → zawsze w ui-worktree
+```
+
+Zadania w tym samym module dzielą worktree (sekwencyjnie). Zadania między modułami trafiają do równoległych worktrees. Dwie sesje Claude nigdy nie będą edytować tego samego pliku, ponieważ granica systemu plików temu zapobiega.
+
+(Jeśli spinanie tego ręcznie wydaje się zbyt uciążliwe, [Google Antigravity natywnie dostarcza ten sam model równoległych przestrzeni roboczych](/blog/google-antigravity-gemini-3-agentic-ide-developer-review) — rozgałęzia, izoluje i orkiestruje przepływy zatwierdzeń za Ciebie, kosztem działania na Gemini 3.1 Pro zamiast Opus.)
+
+**Reguła 2: Rebasuj, nie merge'uj, pomiędzy worktrees.**
+
+```bash
+# W worktree feat/a, gdy main się posunął naprzód
+git fetch origin
+git rebase origin/main
+```
+
+Merge'e tworzą commity merge'ujące, które zanieczyszczają historię i dezorientują Claude, gdy czyta `git log`. Rebase'y utrzymują historię każdego worktree liniowo od main. Rozumowanie Claude o historii jest znacznie lepsze przy liniowych łańcuchach.
+
+**Reguła 3: Commituj na granicach sesji.**
+
+Za każdym razem, gdy sesja się kończy — a nie za każdym razem, gdy Claude się zatrzymuje — commitujesz. Niezacommitowane zmiany to jedyny stan, który nie przetrwa resetu sesji. Spraw, by ten stan był malutki.
+
+## Kadencja przeglądów: tik co 20 minut
+
+Sesja przeglądowa potrzebuje bicia serca. Bez niego „przegląd" staje się „kiedy sobie przypomnę", czyli nigdy.
+
+Moja kadencja: co 20 minut sesja przeglądowa robi jedną rzecz:
+
+1. `git fetch --all` — pobierz wszelkie nowe commity z bratnich worktrees
+2. Sprawdź `git log` pod kątem commitów od ostatniego przeglądu
+3. Uruchom `git diff <last-reviewed-commit>..<latest>` dla każdego commita
+4. Zapytaj Claude: „Przejrzyj ten diff. Co on faktycznie zmienił? Czy są oczywiste problemy?"
+5. Jeśli są problemy, dodaj adnotacje i odeślij z powrotem do sesji autorskiej
+
+Dwadzieścia minut to rytm, który pasuje do tempa, w jakim dobrze zaprogramowana sesja Claude produkuje porcje warte commita. Szybciej i przegląd wyprzedza pracę. Wolniej i praca dryfuje bez informacji zwrotnej.
+
+To niemal dokładnie odwzorowuje rytm przeglądów z mojego [produkcyjnego przewodnika po trybie planowania](/blog/claude-code-plan-mode-ultraplan-production-guide) — dodaj adnotacje i odeślij. Mechanika jest ta sama; różni się tylko kanał.
+
+## Liczba 18% wzrostu wydajności
+
+Twierdzenie, które zobaczysz w tej przestrzeni: zespoły używające tego wzorca raportują 18% poprawę wydajności. Wpis Mindstudio o równoległych sesjach cytuje tę liczbę. Jest prawdziwa, ale też myląca.
+
+18% jest mierzone względem sekwencyjnej pracy w pojedynczej sesji na zadaniach, które da się czysto zrównoleglić. Gdy zadań nie da się czysto zrównoleglić — jeśli dotykają tego samego modułu, jeśli jedno blokuje drugie architektonicznie, jeśli dzielą krytyczną zależność — równoległe sesje albo wychodzą na zero, albo idą wolniej z powodu narzutu merge'owania.
+
+Zadania, które zrównoleglają się czysto:
+
+- Niezależne funkcje w różnych modułach
+- Generowanie testów dla istniejącego kodu
+- Aktualizacje dokumentacji
+- Audyty zależności
+- Refaktoryzacje zawarte w pojedynczym module
+
+Zadania, które nie:
+
+- Zmiany architektoniczne obejmujące całą bazę kodu
+- Poprawki bugów, gdzie źródłowa przyczyna jest niepewna
+- Cokolwiek wymagającego wspólnej dyskusji projektowej
+
+Podziel swój backlog według zdolności do zrównoleglenia, zanim podzielisz swoje sesje. Mnożnik jest prawdziwy, ale nie uniwersalny.
+
+## Gdzie odpadają koła
+
+Próbowałem sześciu sesji. Próbowałem ośmiu. Doszedłem do dziewięciu podczas szalonego tygodnia i dostarczyłem mniej, niż zrobiłem w dobrze prowadzonym dniu z trzema sesjami. Tryby awarii, w kolejności, w jakiej uderzają:
+
+**4 sesje:** kolejka przeglądów zaczyna się zapychać. Sesje robocze produkują szybciej, niż przegląd może wchłonąć.
+
+**5 sesji:** zaczynasz gubić rachubę, który branch jest do czego. Potrzebujesz spisanej listy — arkusza lub pliku tekstowego — „co robi sesja N w tej chwili".
+
+**6 sesji:** konflikty merge'owania stają się cotygodniowe, a nie rzadkie. Dwie sesje, które „nie powinny" się nakładać, jednak się nakładają, bo ludzki orkiestrator przeoczył granicę modułu.
+
+**7+ sesji:** jesteś teraz kierownikiem projektu, a nie inżynierem. Większość Twojego czasu schodzi na przełączanie między sesjami, a nie na produkowanie czy przeglądanie. Produktywność na sesję się załamuje.
+
+Praktyczny pułap dla większości programistów to **2–4 sesje**. Powyżej tego potrzebujesz albo drugiego człowieka (partnera do przeglądów), albo wyspecjalizowanego narzędzia jak [sub-agenci Claude Code](/blog/claude-code-sub-agents-multi-agent-systems-guide) do delegowania w ramach jednej orkiestrującej sesji.
+
+## Implikacje kosztowe
+
+Równoległe sesje mnożą wydatki na tokeny. Cztery sesje to nie czterokrotny koszt — złożony, bliżej pięciokrotności, ponieważ każda sesja ma własny narzut kontekstu, który nie amortyzuje się między sesjami.
+
+Jeśli oszczędzasz budżet, zajrzyj do [poradnika optymalizacji tokenów](/blog/claude-code-token-optimization-bill-cut-guide). W szczególności `opusplan` staje się nie do negocjacji na tej skali — sam Opus w czterech sesjach szybko robi się drogi.
+
+Jedna praktyczna sztuczka: użyj Haiku do sesji przeglądowej. Przegląd to głównie czytanie i komentowanie, a nie rozumowanie. Haiku obsługuje komentarze do diffów za ułamek kosztu Sonneta.
+
+```bash
+# Panel przeglądowy, używający Haiku
+claude --model claude-haiku-4-5-20251001
+```
+
+Sesje robocze zostają na Sonnecie. Sesja tłowa uruchamia Haiku do zadań wsadowych. Sesja planowania używa Opus na krótko. Wybór modelu według roli, a nie domyślnie.
+
+## Higiena sesji między worktrees
+
+Kilka praktyk, które zapobiegają powolnemu rozpadowi:
+
+**Zabijaj sesje, które utknęły.** Sesja, która kręci się nad tym samym problemem od 10 minut, jest martwa. Uruchom świeżą z innym ujęciem. Nie wskrzeszaj.
+
+**Zapisuj notatki z sesji do współdzielonego pliku.** `~/code/.claude-notes.md` z liniami w stylu „Session A: implementacja częściowych zwrotów w billingu, oczekiwanie na wyjaśnienie API dostawcy płatności". Gdy przełączasz kontekst między panelami, nie gubisz wątku.
+
+**Sprzątaj worktrees co tydzień.**
+
+```bash
+git worktree list
+git worktree remove ../my-app-feature-old
+git worktree prune
+```
+
+Nieaktualne worktrees gromadzą niezacommitowany stan, dezorientują widok repo Claude i zjadają miejsce na dysku.
+
+**Nie współdziel katalogów `.claude/` między worktrees.** Każdy worktree powinien mieć własny `.claude/settings.local.json`, jeśli masz konfigurację per-zadanie. Bazowy `.claude/` w katalogu głównym jest w porządku.
+
+## Kiedy nie zrównoleglać
+
+Nie każde zadanie na tym korzysta. Oznaki, że powinieneś działać sekwencyjnie:
+
+- Uczysz się nowej bazy kodu. Wiele sesji rozdziela Twoją uwagę na kontekst, którego jeszcze nie zbudowałeś.
+- Zadanie jest małe. 15-minutowa poprawka buga nie potrzebuje narzutu orkiestracji.
+- Debugujesz. Debugowanie potrzebuje głębokiej, jednowątkowej uwagi; równoległe sesje przerywają flow.
+- Zadania są sprzężone architektonicznie. Implementowanie X i Y, gdzie X zależy od Y, jest sekwencyjne niezależnie od tego, ile sesji uruchomisz.
+
+Zrównoleglanie to narzędzie do wydajności. Dla pracy wrażliwej na opóźnienia jest szumem.
+
+## Wdrażanie kolegi z zespołu
+
+Jeśli chcesz przedstawić to koledze, nie przytłaczając go:
+
+1. Tydzień 1: tylko dwie sesje. Praca + przegląd. Bez wymyślnego tmux.
+2. Tydzień 2: dodaj sesję planowania na jutrzejszą pracę. Teraz trzy.
+3. Tydzień 3: dodaj sesję tłową do zadań wsadowych. Teraz cztery.
+4. Tydzień 4: przejrzyj, co działa, wyrzuć to, co nie.
+
+Pomiń kroki, a wyda się to zbyt dużym narzutem jak na zysk. Zrobione stopniowo, każdy krok w mierzalny sposób oszczędza czas, zanim dodasz kolejny.
+
+## Co to odblokowuje
+
+Głębsza zmiana to ta, której nie przewidziałem. Równoległe sesje zmieniają sposób, w jaki myślę o zadaniach.
+
+Wcześniej każde zadanie było rzeczą do przemęczenia. Teraz każde zadanie jest rzeczą do przypisania sesji z określonym zakresem, planem przeglądu i granicą merge'owania. Myślę o swojej pracy w kategoriach kolejek i przekazań, tak jak systemy produkcyjne myślą o pracy.
+
+To nie jest uniwersalnie lepsze. Dla pracy twórczej, eksploracyjnej, zanurzenie w pojedynczej sesji to wciąż właściwy kształt. Ale dla 70% inżynierii, którą jest „zamień tę specyfikację w działający kod", równoległe worktrees zmieniają ekonomię.
+
+Dwie sesje, kadencja przeglądów co dwadzieścia minut, rebase-a-nie-merge, zakres według modułu. To cały playbook. Zacznij tam. Skaluj, gdy poczujesz, że potrzebujesz więcej, a nie dlatego, że ktoś w sieci robi sześć.
+
+## References
+
+### Źródła
+
+- [Mastering Git Worktrees with Claude Code](https://medium.com/@dtunai/mastering-git-worktrees-with-claude-code-for-parallel-development-workflow-41dc91e645fe) — kanoniczny przewodnik po wzorcu worktree
+- [Claude Code Worktrees: Parallel Sessions Without Conflicts](https://claudefa.st/blog/guide/development/worktree-guide) — strategie merge'owania i unikanie konfliktów
+- [Claude Code Git Worktrees Pattern](https://www.mindstudio.ai/blog/what-is-claude-code-git-worktree-pattern-parallel-feature-branches) — badanie 18% wzrostu wydajności i metodologia
+- [Running Multiple Claude Code Sessions in Parallel](https://dev.to/datadeer/part-2-running-multiple-claude-code-sessions-in-parallel-with-git-worktree-165i) — produkcyjne konfiguracje tmux
+- [Claude Code Common Workflows](https://code.claude.com/docs/en/common-workflows) — oficjalna dokumentacja flagi `-w`
+
+### Dalsza lektura
+
+- [CLAUDE.md Productivity Stack](https://botmonster.com/posts/claude-md-productivity-stack-custom-commands-git-worktrees-agent-rules/) — skille i hooki nałożone na worktrees
+- [Parallel Vibe Coding with Git Worktrees](https://www.dandoescode.com/blog/parallel-vibe-coding-with-git-worktrees) — filmy i zrzuty ekranu z workflow
+- [Using Git Worktrees for Parallel AI Development](https://stevekinney.com/courses/ai-development/git-worktrees) — kurs z konfiguracją krok po kroku
+
+---
+
+~Seb 👊
