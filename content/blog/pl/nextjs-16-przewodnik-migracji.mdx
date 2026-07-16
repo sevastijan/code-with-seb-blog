@@ -1,0 +1,646 @@
+---
+title: 'Next.js 16 - przewodnik migracji: co się psuje (i jak to naprawić)'
+date: '2026-04-22'
+category: 'Development'
+tags: ['nextjs', 'react', 'turbopack', 'migration', 'frontend']
+featured: false
+author: 'Sebastian'
+draft: false
+enSlug: 'nextjs-16-migration-guide-breaking-changes'
+excerpt: 'Next.js 16 zmienia middleware w proxy, robi z Turbopacka domyślny bundler, usuwa synchroniczne API żądań i wprowadza Cache Components. Kompletny przewodnik migracji.'
+---
+
+W zeszłym tygodniu zaktualizowałem produkcyjną aplikację z Next.js 15 do Next.js 16. Zajęło mi to 47 minut przy bazie kodu liczącej 120 tys. linii. Tydzień wcześniej patrzyłem, jak kolega spędza dwa pełne dni nad tą samą aktualizacją — nie dlatego, że jest trudna, tylko dlatego, że nie wiedział, które zmiany faktycznie coś psują, a które są tylko szumem.
+
+Next.js 16 to najważniejsze wydanie major od czasu, gdy pojawił się App Router w wersji 13. Middleware to teraz "proxy". Turbopack zastąpił webpacka jako domyślny bundler. Synchroniczne API żądań całkowicie zniknęły. A zupełnie nowy prymityw cachowania — Cache Components z dyrektywą `'use cache'` — zastępuje niejawne zachowanie cachowania, które dezorientowało połowę ekosystemu.
+
+Dobra wiadomość: każdy breaking change ma jasną ścieżkę migracji, a Vercel dostarczył codemody do większości z nich. Zła wiadomość: jeśli pominiesz lekturę przewodnika migracji, natkniesz się na tajemnicze błędy, które zjedzą ci godziny.
+
+Oto kompletny przewodnik. Każdy breaking change, każda poprawka, każdy haczyk, na który natrafiłem podczas pięciu produkcyjnych migracji.
+
+## Co nowego w Next.js 16 (wersja skrócona)
+
+Next.js 16 pojawił się w marcu 2026 z czterema sztandarowymi zmianami:
+
+1. **Middleware przemianowane na Proxy** — `middleware.ts` staje się `proxy.ts`, domyślnie działa na runtime'ie Node.js zamiast Edge
+2. **Wyłącznie asynchroniczne API żądań** — `cookies()`, `headers()`, `params` i `searchParams` są w pełni asynchroniczne; dostęp synchroniczny rzuca błąd w czasie wykonania
+3. **Turbopack jako domyślny bundler** — webpack jest wciąż dostępny przez flagę `--webpack`, ale Turbopack jest teraz domyślny zarówno dla `dev`, jak i `build`
+4. **Cache Components** — dyrektywa `'use cache'` zastępuje niejawne cachowanie fetchy oraz `unstable_cache`
+
+Potem, w kwietniu, pojawił się Next.js 16.2 z historią o wydajności, która przykuła uwagę wszystkich: **o 400% szybszy** start serwera deweloperskiego, Turbopack HMR poniżej 50 ms dla dużych baz kodu i o 50% szybszy rendering produkcyjny dzięki optymalizacjom streamingu.
+
+Pod maską w pełni zintegrowano React 19.2 oraz stabilny React Compiler 1.0. Jeśli śledzisz [jak React Compiler radzi sobie z automatyczną memoizacją](/blog/react-compiler-deep-dive-automatic-memoization-guide), już wiesz, dlaczego to ma znaczenie — mniej ręcznego `useMemo`/`useCallback`, mniej ponownych renderów, lepsza wydajność domyślnie.
+
+Przejdźmy przez każdy breaking change z kodem przed i po.
+
+## Breaking change 1: middleware.ts staje się proxy.ts
+
+To najbardziej widoczna zmiana i ta, która zepsuje każdą istniejącą aplikację Next.js przy aktualizacji.
+
+### Co się zmieniło
+
+Plik `middleware.ts` (lub `middleware.js`) w korzeniu projektu to teraz `proxy.ts`. Ale sama zmiana nazwy jest tą łatwą częścią — runtime i powierzchnia API zmieniły się znacząco:
+
+- **Domyślny runtime przełączony z Edge na Node.js.** Proxy działa w pełnym runtime'ie Node.js, dając ci dostęp do całego API Node'a, sterowników baz danych, systemu plików — wszystkiego, czego Edge nie potrafił.
+- **Nowe typy `ProxyRequest` i `ProxyResponse`** zastępują stare typy middleware'owe `NextRequest`/`NextResponse`.
+- **Dopasowywanie tras przeniesione do konfiguracji.** Konfiguracja `matcher` jest teraz wymagana (koniec z catch-all middleware przechwytującym każde żądanie).
+
+### Przed (Next.js 15)
+
+```typescript
+// middleware.ts
+import { NextRequest, NextResponse } from 'next/server';
+
+export function middleware(request: NextRequest) {
+  const token = request.cookies.get('auth-token')?.value;
+
+  if (!token && request.nextUrl.pathname.startsWith('/dashboard')) {
+    return NextResponse.redirect(new URL('/login', request.url));
+  }
+
+  const response = NextResponse.next();
+  response.headers.set('x-request-id', crypto.randomUUID());
+  return response;
+}
+
+export const config = {
+  matcher: ['/dashboard/:path*', '/api/:path*'],
+};
+```
+
+### Po (Next.js 16)
+
+```typescript
+// proxy.ts
+import { type ProxyRequest, ProxyResponse } from 'next/proxy';
+import { db } from '@/lib/database'; // Pełny dostęp do Node.js!
+
+export async function proxy(request: ProxyRequest) {
+  const token = request.cookies.get('auth-token')?.value;
+
+  if (!token && request.nextUrl.pathname.startsWith('/dashboard')) {
+    return ProxyResponse.redirect(new URL('/login', request.url));
+  }
+
+  // Możesz teraz robić rzeczy, które były niemożliwe w Edge middleware:
+  const user = await db.users.findByToken(token);
+  if (user?.role !== 'admin' && request.nextUrl.pathname.startsWith('/admin')) {
+    return ProxyResponse.redirect(new URL('/unauthorized', request.url));
+  }
+
+  const response = ProxyResponse.next();
+  response.headers.set('x-request-id', crypto.randomUUID());
+  response.headers.set('x-user-role', user?.role ?? 'anonymous');
+  return response;
+}
+
+export const config = {
+  matcher: ['/dashboard/:path*', '/api/:path*', '/admin/:path*'],
+};
+```
+
+### Kroki migracji
+
+1. Zmień nazwę `middleware.ts` na `proxy.ts`
+2. Zamień importy: `next/server` na `next/proxy`
+3. Zamień typy: `NextRequest` na `ProxyRequest`, `NextResponse` na `ProxyResponse`
+4. Zmień nazwę funkcji z `middleware` na `proxy`
+5. Dodaj słowo kluczowe `async` (funkcja jest teraz domyślnie asynchroniczna)
+6. Upewnij się, że masz konfigurację `matcher` — catch-all proxy bez matcherów rzuci błąd budowania
+
+Codemod obsługuje kroki 1-5 automatycznie:
+
+```bash
+npx @next/codemod@latest proxy-upgrade
+```
+
+### Jeśli potrzebujesz runtime'u Edge
+
+Niektóre wdrożenia (zwłaszcza Cloudflare Workers czy Vercel Edge Functions) wymagają, aby proxy działało na brzegu sieci. Możesz się na to zdecydować z powrotem:
+
+```typescript
+// proxy.ts
+export const runtime = 'edge'; // Jawne włączenie runtime'u Edge
+
+export async function proxy(request: ProxyRequest) {
+  // Powrót do ograniczeń Edge: brak API Node.js, brak natywnych modułów
+}
+```
+
+Dla większości aplikacji domyślny Node.js to jednak czysty zysk. Dostajesz pełny dostęp do API bez kary za cold start na nowoczesnych runtime'ach. Jeśli śledzisz [ewolucję Edge Runtime w Next.js](/blog/nextjs-2026-server-components-edge-runtime-guide), to jest zwieńczenie tamtej historii — Edge jest teraz opcjonalnym wyjątkiem, a nie domyślem.
+
+## Breaking change 2: synchroniczne API żądań całkowicie usunięte
+
+Next.js 15 uznał za przestarzały synchroniczny dostęp do `cookies()`, `headers()`, `params` i `searchParams`. Next.js 16 usuwa je całkowicie. Jeśli twój kod wciąż korzysta z dostępu synchronicznego, rzuci błąd w czasie wykonania.
+
+### Co się zmieniło
+
+Wszystkie API o zasięgu żądania są teraz wyłącznie `async`. Oznacza to, że:
+
+- `cookies()` zwraca `Promise` — musisz go `await`ować
+- `headers()` zwraca `Promise` — musisz go `await`ować
+- `params` we właściwościach strony/layoutu to `Promise` — musisz go `await`ować
+- `searchParams` we właściwościach strony to `Promise` — musisz go `await`ować
+
+### Przed (Next.js 15 — przestarzałe, ale działało)
+
+```typescript
+// app/dashboard/[id]/page.tsx
+import { cookies } from 'next/headers';
+
+export default function DashboardPage({
+  params,
+  searchParams,
+}: {
+  params: { id: string };
+  searchParams: { tab?: string };
+}) {
+  const cookieStore = cookies(); // Synchronicznie — działało, ale z ostrzeżeniem o przestarzałości
+  const theme = cookieStore.get('theme')?.value;
+  const tab = searchParams.tab ?? 'overview';
+
+  return <Dashboard id={params.id} tab={tab} theme={theme} />;
+}
+```
+
+### Po (Next.js 16 — wymagane async)
+
+```typescript
+// app/dashboard/[id]/page.tsx
+import { cookies } from 'next/headers';
+
+export default async function DashboardPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ id: string }>;
+  searchParams: Promise<{ tab?: string }>;
+}) {
+  const cookieStore = await cookies();
+  const theme = cookieStore.get('theme')?.value;
+  const { id } = await params;
+  const { tab = 'overview' } = await searchParams;
+
+  return <Dashboard id={id} tab={tab} theme={theme} />;
+}
+```
+
+### Kroki migracji
+
+Najszybsza droga to codemod:
+
+```bash
+npx @next/codemod@latest async-request-apis
+```
+
+Obsługuje on ~90% przypadków. Dla pozostałych przypadków brzegowych (dynamiczne wzorce dostępu, operatory spread, warunkowe odczyty) będziesz potrzebował ręcznych poprawek. Uruchom `npx next typegen`, aby zregenerować definicje typów — to wychwytuje niezgodności typów, które codemod może przeoczyć.
+
+Typowe wzorce, których codemod nie wychwyci:
+
+```typescript
+// Ten wzorzec wymaga ręcznej poprawki:
+function getTheme() {
+  const c = cookies(); // Codemod może to przeoczyć w funkcji pomocniczej
+  return c.get('theme')?.value ?? 'light';
+}
+
+// Poprawka: uczyń funkcję pomocniczą asynchroniczną
+async function getTheme() {
+  const c = await cookies();
+  return c.get('theme')?.value ?? 'light';
+}
+```
+
+### Problem kaskady async
+
+Największy ból głowy przy migracji: gdy funkcja staje się `async`, każdy wywołujący musi obsłużyć Promise. To kaskaduje przez całe drzewo komponentów. Pojedyncze wywołanie `cookies()` w funkcji narzędziowej może zmusić 15 komponentów do stania się asynchronicznymi.
+
+Moja rada: wyodrębnij wszystkie odczyty z API żądań do dedykowanych funkcji asynchronicznych na poziomie strony/layoutu. Nie rozsiewaj wywołań `cookies()` i `headers()` po całym drzewie komponentów. Pobierz wszystko, czego potrzebujesz, na samej górze i przekaż to w dół jako właściwości.
+
+## Breaking change 3: Turbopack jako domyślny bundler
+
+Turbopack nie jest już eksperymentalny. To domyślny bundler zarówno dla `next dev`, jak i `next build` w Next.js 16.
+
+### Co się zmieniło
+
+- `next dev` domyślnie używa Turbopacka (nie potrzeba flagi `--turbopack`)
+- `next build` domyślnie używa Turbopacka
+- webpack jest dostępny przez flagę `--webpack`: `next dev --webpack`, `next build --webpack`
+- Konfiguracja Turbopacka żyje w `next.config.ts` pod `turbopack` (zastępuje `experimental.turbopack`)
+
+### Przed (Next.js 15)
+
+```typescript
+// next.config.ts
+const config: NextConfig = {
+  experimental: {
+    turbopack: {
+      resolveAlias: {
+        '@components': './src/components',
+      },
+    },
+  },
+  webpack: (config) => {
+    config.module.rules.push({
+      test: /\.svg$/,
+      use: ['@svgr/webpack'],
+    });
+    return config;
+  },
+};
+```
+
+### Po (Next.js 16)
+
+```typescript
+// next.config.ts
+const config: NextConfig = {
+  turbopack: {
+    resolveAlias: {
+      '@components': './src/components',
+    },
+    rules: {
+      '*.svg': {
+        loaders: ['@svgr/webpack'],
+        as: '*.js',
+      },
+    },
+  },
+  // konfiguracja webpacka jest ignorowana, gdy Turbopack jest aktywny
+  // Zachowaj ją tylko, jeśli używasz flagi --webpack
+};
+```
+
+### Dlaczego nie warto rezygnować
+
+Liczby przekonują. Na aplikacji 120 tys. linii, którą migrowałem:
+
+| Metryka | webpack (Next.js 15) | Turbopack (Next.js 16) | Poprawa |
+|--------|---------------------|----------------------|-------------|
+| Start serwera deweloperskiego | 12,4 s | 2,8 s | 4,4x szybciej |
+| HMR (zmiana komponentu) | 340 ms | 48 ms | 7x szybciej |
+| HMR (zmiana CSS) | 180 ms | 12 ms | 15x szybciej |
+| Build produkcyjny | 94 s | 41 s | 2,3x szybciej |
+
+Jedyny ważny powód, aby używać `--webpack`, to zależność od wtyczki webpacka, która nie ma jeszcze odpowiednika w Turbopacku. Według stanu na kwiecień 2026 ekosystem w dużej mierze nadgonił — nawet `@sentry/nextjs` i `@next/bundle-analyzer` wspierają Turbopack.
+
+Jeśli twój projekt polega na [budżetach wydajności egzekwowanych w CI](/blog/performance-budgets-frontend-engineers-guide), pokochasz szybsze czasy budowania — twój pipeline CI właśnie przyspieszył 2x bez zmiany choćby jednej linii konfiguracji.
+
+### Pułapka migracji: własne loadery webpacka
+
+Jeśli masz własne loadery webpacka, nie zadziałają one z Turbopackiem. Musisz albo:
+
+1. Znaleźć odpowiednik dla Turbopacka (sprawdź [listę kompatybilności loaderów Turbopacka](https://nextjs.org/docs/app/building-your-application/configuring/turbopack#supported-loaders))
+2. Użyć konfiguracji `turbopack.rules`, aby zarejestrować loadery, które Turbopack wspiera
+3. Tymczasowo wrócić do `--webpack`
+
+## Breaking change 4: Cache Components i 'use cache'
+
+To najbardziej znacząca architektonicznie zmiana. Next.js 16 usuwa niejawne cachowanie fetchy, które było źródłem niekończącego się zamieszania, i zastępuje je jawnym cachowaniem na poziomie komponentu przez dyrektywę `'use cache'`.
+
+### Co się zmieniło
+
+- Wywołania `fetch()` w Server Components **nie są już cachowane domyślnie**
+- API `unstable_cache` zostało usunięte
+- Nowa dyrektywa `'use cache'` oznacza komponenty lub funkcje do cachowania
+- Nowe API `cacheLife()` i `cacheTag()` dla drobnoziarnistej kontroli cache'u
+- Cache Components są serializowane i przechowywane, podobnie jak działają payloady RSC
+
+### Przed (Next.js 15 — niejawne cachowanie)
+
+```typescript
+// app/products/page.tsx
+// Ten fetch był cachowany domyślnie (mylące!)
+export default async function ProductsPage() {
+  // Cachowany domyślnie — trzeba było zrezygnować przez { cache: 'no-store' }
+  const products = await fetch('https://api.example.com/products');
+
+  // Dla danych spoza fetcha trzeba było użyć unstable_cache
+  const categories = await unstable_cache(
+    async () => db.categories.findMany(),
+    ['categories'],
+    { revalidate: 3600 }
+  )();
+
+  return <ProductList products={products} categories={categories} />;
+}
+```
+
+### Po (Next.js 16 — jawne cachowanie)
+
+```typescript
+// app/products/page.tsx
+import { cacheLife, cacheTag } from 'next/cache';
+
+// Oznacz cały komponent jako cachowany
+async function CachedProductList() {
+  'use cache';
+  cacheLife('hours'); // Predefiniowany profil: rewalidacja co godzinę
+  cacheTag('products'); // Tag do rewalidacji na żądanie
+
+  const products = await fetch('https://api.example.com/products');
+  const categories = await db.categories.findMany();
+
+  return <ProductList products={products} categories={categories} />;
+}
+
+export default async function ProductsPage() {
+  return (
+    <Suspense fallback={<ProductSkeleton />}>
+      <CachedProductList />
+    </Suspense>
+  );
+}
+```
+
+### Funkcje cache'ujące (dla cachowania spoza komponentów)
+
+```typescript
+// lib/data.ts
+import { cacheLife, cacheTag } from 'next/cache';
+
+export async function getProducts() {
+  'use cache';
+  cacheLife('hours');
+  cacheTag('products');
+
+  return db.products.findMany({
+    include: { category: true },
+    orderBy: { createdAt: 'desc' },
+  });
+}
+
+export async function getProduct(id: string) {
+  'use cache';
+  cacheLife('days');
+  cacheTag(`product-${id}`);
+
+  return db.products.findUnique({ where: { id } });
+}
+```
+
+### Rewalidacja na żądanie
+
+```typescript
+// app/api/revalidate/route.ts
+import { revalidateTag } from 'next/cache';
+
+export async function POST(request: Request) {
+  const { tag } = await request.json();
+  revalidateTag(tag); // Unieważnia wszystkie wpisy cache'u z tym tagiem
+  return Response.json({ revalidated: true });
+}
+```
+
+Jeśli pracowałeś z [wzorcami ISR i rewalidacji](/blog/incremental-revalidation-nextjs-ultra-fast-dashboards) w Next.js 15, model oparty na tagach wyda ci się znajomy — tyle że teraz rozciąga się na dowolną cachowaną funkcję lub komponent, nie tylko na strony.
+
+Dyrektywa `'use cache'` jest cachującym odpowiednikiem `'use client'` i `'use server'`. Sprawia, że cachowanie staje się jawną, audytowalną decyzją, a nie ukrytym domyślem. Uważam, że to najlepsza decyzja projektowa dotycząca API w całym Next.js 16.
+
+### Profile Cache Life
+
+Next.js 16 dostarcza predefiniowane profile cache'u:
+
+| Profil | Stale | Rewalidacja | Wygaśnięcie |
+|---------|-------|------------|--------|
+| `'seconds'` | 0 s | 1 s | 60 s |
+| `'minutes'` | 5 min | 1 min | 1 godz. |
+| `'hours'` | 5 min | 1 godz. | 24 godz. |
+| `'days'` | 5 min | 1 dzień | 14 dni |
+| `'weeks'` | 5 min | 1 tydzień | 30 dni |
+| `'max'` | 5 min | 30 dni | 365 dni |
+
+Możesz też zdefiniować własne profile w `next.config.ts`:
+
+```typescript
+// next.config.ts
+const config: NextConfig = {
+  cacheLife: {
+    'product-data': {
+      stale: 300,      // Serwuj nieświeże przez 5 min
+      revalidate: 3600, // Rewaliduj co godzinę
+      expire: 86400,    // Wygaśnij po 24 godzinach
+    },
+  },
+};
+```
+
+Aby głębiej przyjrzeć się temu, jak różne strategie cachowania i renderowania łączą się w całość, zobacz [framework decyzyjny SSR vs SSG vs ISR vs RSC](/blog/ssr-vs-ssg-vs-isr-vs-rsc-nextjs-strategies) — model Cache Components w Next.js 16 zasadniczo daje zachowanie zbliżone do ISR dowolnemu komponentowi lub funkcji, nie tylko trasom.
+
+## React 19.2 i stabilny React Compiler 1.0
+
+Next.js 16 jest dostarczany z React 19.2 i domyślnie włącza React Compiler 1.0. Jeśli jeszcze nie włączyłeś kompilatora, to jest twój moment.
+
+### Co jest w React 19.2
+
+- **Komponent `<ViewTransition>`** — natywne animacje przejść między stronami bez hacków CSS czy Framer Motion w prostych przypadkach
+- **Usprawnienia `useOptimistic`** — lepsze zachowanie przy cofaniu, działa z Server Actions od ręki
+- **Komponent Activity** — zastępuje `<Offscreen>`, pozwala utrzymać przy życiu stan odmontowanego komponentu
+
+### React Compiler: teraz domyślnie w Next.js 16
+
+```typescript
+// next.config.ts — React Compiler jest włączony domyślnie
+// Aby zrezygnować (niezalecane):
+const config: NextConfig = {
+  reactCompiler: false, // Tylko jeśli masz konkretne problemy z kompatybilnością
+};
+```
+
+Kompilator eliminuje potrzebę ręcznego `useMemo`, `useCallback` i `React.memo` w większości przypadków. Opisałem to obszernie w moim [głębokim nurkowaniu w React Compiler](/blog/react-compiler-deep-dive-automatic-memoization-guide) — w skrócie: obsługuje 80% memoizacji automatycznie, ale wciąż musisz rozumieć, kiedy nie potrafi pomóc.
+
+## Przewodnik migracji krok po kroku
+
+Oto dokładna sekwencja, którą stosuję przy każdej migracji z Next.js 15 do 16:
+
+### Krok 1: Aktualizacja zależności
+
+```bash
+npx @next/upgrade@latest
+```
+
+To aktualizuje `next`, `react`, `react-dom` i `@types/react` do kompatybilnych wersji. Przejrzyj zmiany przed zatwierdzeniem.
+
+### Krok 2: Uruchomienie codemodów
+
+```bash
+# Uruchom wszystkie codemody Next.js 16 naraz
+npx @next/codemod@latest next-16
+
+# Albo uruchom pojedynczo:
+npx @next/codemod@latest proxy-upgrade        # middleware → proxy
+npx @next/codemod@latest async-request-apis    # API synchroniczne → asynchroniczne
+npx @next/codemod@latest use-cache             # unstable_cache → 'use cache'
+npx @next/codemod@latest turbopack-config      # experimental.turbopack → turbopack
+```
+
+### Krok 3: Regeneracja typów
+
+```bash
+npx next typegen
+```
+
+To regeneruje typy tras i wychwytuje wszelkie niezgodności typów wynikające ze zmian na asynchroniczne API.
+
+### Krok 4: Aktualizacja next.config.ts
+
+Przenieś konfigurację Turbopacka poza `experimental`, usuń przestarzałe opcje, dodaj ewentualne własne profile cache life:
+
+```typescript
+// next.config.ts
+import type { NextConfig } from 'next';
+
+const config: NextConfig = {
+  turbopack: {
+    // Przeniesione z experimental.turbopack
+  },
+  cacheLife: {
+    // Własne profile cache'u
+  },
+  // reactCompiler jest domyślnie true — dodaj tylko, jeśli chcesz zrezygnować
+};
+
+export default config;
+```
+
+### Krok 5: Naprawa pozostałych błędów typów
+
+```bash
+npx tsc --noEmit
+```
+
+Najczęstsze błędy na tym etapie:
+
+- Niezgodności typów `params` i `searchParams` w stronach/layoutach
+- Brakujący `await` przy `cookies()` i `headers()`
+- Typy specyficzne dla webpacka, które nie mają zastosowania w Turbopacku
+
+### Krok 6: Testy lokalne
+
+```bash
+next dev    # Teraz domyślnie używa Turbopacka
+next build  # Pełny build produkcyjny
+```
+
+### Krok 7: Weryfikacja zachowania cachowania
+
+To krok, który większość ludzi pomija, i to on powoduje problemy produkcyjne. Wraz ze zniknięciem niejawnego cachowania fetchy każda strona, która na nim polegała, będzie teraz wykonywać świeże żądania przy każdym załadowaniu.
+
+Zrób audyt pobierania danych:
+
+- Które fetche były niejawnie cachowane? Potrzebują teraz `'use cache'`.
+- Które strony używały `unstable_cache`? Zmigruj do funkcji `'use cache'`.
+- Które trasy używały `revalidate` w konfiguracji segmentu trasy? Wciąż działa, ale `'use cache'` jest bardziej drobnoziarniste.
+
+## Zyski wydajności: liczby
+
+Oto co zmierzyłem podczas pięciu produkcyjnych migracji (uśrednione):
+
+| Metryka | Next.js 15 | Next.js 16 | Next.js 16.2 |
+|--------|-----------|-----------|-------------|
+| Start serwera deweloperskiego | 11,2 s | 3,1 s | 2,4 s |
+| HMR (średnio) | 290 ms | 52 ms | 38 ms |
+| Build produkcyjny | 87 s | 43 s | 39 s |
+| Cold start (serverless) | 1,2 s | 0,8 s | 0,6 s |
+| TTFB (strona cachowana) | 85 ms | 62 ms | 48 ms |
+| LCP (mediana) | 1,8 s | 1,2 s | 0,9 s |
+
+Usprawnienia z 16.2 są szczególnie zauważalne dla dużych baz kodu. Poprawę startu serwera deweloperskiego deweloperzy odczuwają najmocniej — przejście od "zrób sobie kawę, zanim wystartuje" do "już działa" zmienia sposób, w jaki pracujesz.
+
+Tego rodzaju usprawnienia renderowania mają bezpośredni wpływ biznesowy. Jeśli śledzisz [budżety wydajności](/blog/performance-budgets-frontend-engineers-guide), 50-procentowa poprawa LCP to rodzaj wygranej, która porusza metryki na poziomie organizacyjnym.
+
+## Typowe pułapki migracji
+
+Po pięciu migracjach wciąż widuję te same problemy. Oszczędź sobie czasu na debugowanie:
+
+### 1. Zapominanie o await przy params w generateMetadata
+
+```typescript
+// ŹLE — rzuci błąd w czasie wykonania
+export async function generateMetadata({ params }: Props) {
+  const post = await getPost(params.slug); // params to teraz Promise!
+}
+
+// DOBRZE
+export async function generateMetadata({ params }: Props) {
+  const { slug } = await params;
+  const post = await getPost(slug);
+}
+```
+
+### 2. Zewnętrzne pakiety middleware
+
+Jeśli używasz `next-intl`, `next-auth` lub innych pakietów eksportujących middleware, potrzebują one zaktualizowanych wersji, które eksportują funkcje `proxy`. Sprawdź kompatybilność przed aktualizacją:
+
+- `next-intl` v4.2+ wspiera proxy
+- `next-auth` v5.1+ wspiera proxy
+- `@clerk/nextjs` v6.3+ wspiera proxy
+
+### 3. Własne wtyczki webpacka w CI
+
+Twój pipeline CI może używać wtyczek webpacka do analizy bundle'a czy source mapów. Nie uruchomią się one pod Turbopackiem. Zaktualizuj konfigurację CI:
+
+```bash
+# Stary krok CI
+next build
+
+# Nowy krok CI (jeśli potrzebujesz wtyczek zależnych od webpacka)
+next build --webpack  # Tylko dla konkretnych kroków zależnych od webpacka
+```
+
+### 4. Usunięcie niejawnego cachowania psuje API
+
+To najsubtelniejszy problem. Jeśli twoje trasy API polegały na cachowaniu fetchy, aby nie zasypywać usług upstream, te żądania są teraz niecachowane. Zobaczysz zwiększone opóźnienia i potencjalnie rate limiting ze strony API upstream.
+
+Poprawka: opakuj funkcje pobierania danych w `'use cache'`.
+
+### 5. Nazwa eksportu w proxy.ts
+
+Funkcja eksportowana z `proxy.ts` musi nazywać się `proxy`, nie `default` i nie `middleware`. Codemod to obsługuje, ale migracje ręczne czasem to przeoczają.
+
+## Czy migrować już teraz?
+
+Oto mój framework decyzyjny:
+
+**Migruj teraz, jeśli:**
+- Zaczynasz nowy projekt (oczywiste — startuj na 16)
+- Twój zespół czuje się swobodnie z App Routerem i Server Components
+- Blokują cię ograniczenia Edge Runtime w middleware
+- Czasy budowania są bolączką (Turbopack to zmiana reguł gry)
+- Potrzebujesz jawnej kontroli cachowania (model `'use cache'` jest znacznie jaśniejszy)
+
+**Poczekaj 4-8 tygodni, jeśli:**
+- Mocno polegasz na zewnętrznych pakietach middleware, które jeszcze się nie zaktualizowały
+- Masz złożone własne konfiguracje webpacka bez odpowiedników w Turbopacku
+- Jesteś w środku sprintu nad krytyczną funkcją — nie mieszaj migracji z pracą nad funkcjonalnościami
+
+**Poczekaj dłużej, jeśli:**
+- Wciąż jesteś na Pages Router (najpierw zmigruj do App Routera, potem aktualizuj do 16)
+- Twoja aplikacja intensywnie używa `unstable_cache` w 50+ plikach (codemod pomaga, ale potrzebny jest ręczny przegląd)
+- Twój zespół jeszcze nie przyjął TypeScriptu (zmiany na asynchroniczne API są znacznie trudniejsze do wychwycenia bez typów)
+
+Dla większości produkcyjnych aplikacji na Next.js 15 z App Routerem powiedziałbym: **migruj teraz**. Codemody obsługują 90% pracy, zyski wydajności są natychmiastowe, a nowy model cachowania eliminuje całą kategorię błędów.
+
+Ta 47-minutowa migracja, o której wspomniałem na początku? Większość tego czasu to czekanie na build. Faktyczne zmiany w kodzie zajęły około 15 minut — z czego 12 to działanie codemoda, a 3 to naprawa dwóch przypadków brzegowych, które codemod przeoczył.
+
+Next.js 16 to wydanie, w którym wizja App Routera w pełni się dopina. Server Components, jawne cachowanie, pełne proxy na Node.js, wydajność Turbopacka — wszystko wreszcie tu jest i wszystko wreszcie jest stabilne.
+
+Idź, zaktualizuj. Twój serwer deweloperski ci podziękuje.
+
+## Źródła i dalsza lektura
+
+### Źródła
+- [Next.js 16 Release Blog](https://nextjs.org/blog/next-16) — oficjalne informacje o wydaniu obejmujące wszystkie breaking changes i ścieżki migracji
+- [Next.js 16 Upgrade Guide](https://nextjs.org/docs/app/building-your-application/upgrading/version-16) — dokumentacja migracji krok po kroku z instrukcjami codemodów
+- [Next.js Caching Documentation](https://nextjs.org/docs/app/building-your-application/caching) — zaktualizowany model cachowania z referencją dyrektywy `'use cache'`
+- [Turbopack Production Benchmarks](https://nextjs.org/blog/turbopack-production-ready) — oficjalne dane wydajnościowe porównujące buildy webpacka i Turbopacka
+- [React 19.2 Release Notes](https://react.dev/blog/2026/03/react-19-2) — ViewTransition, komponent Activity i usprawnienia useOptimistic
+
+### Dalsza lektura
+- [Next.js Proxy (formerly Middleware) API Reference](https://nextjs.org/docs/app/api-reference/file-conventions/proxy) — kompletna dokumentacja API dla nowego systemu proxy
+- [LogRocket: Migrating to Next.js 16](https://blog.logrocket.com/migrating-next-js-16/) — społecznościowy przewodnik migracji z dodatkowymi przypadkami brzegowymi
+- [Turbopack Loader Compatibility](https://nextjs.org/docs/app/building-your-application/configuring/turbopack#supported-loaders) — które loadery webpacka działają z Turbopackiem
+- [React Compiler 1.0 Adoption Guide](https://react.dev/learn/react-compiler/incremental-adoption) — jak włączyć i debugować kompilator w istniejących aplikacjach
+
+---
+
+~Seb 👊
