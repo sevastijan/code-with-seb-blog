@@ -1,0 +1,289 @@
+---
+title: 'Budowa własnego CLI i generatorów kodu'
+date: '2025-11-02'
+category: 'Development'
+tags: ['frontend', 'cli', 'typescript', 'nodejs', 'automation', 'code-generator', 'react', 'developer-productivity', 'plopjs', 'commanderjs']
+featured: false
+author: 'Sebastian'
+draft: false
+enSlug: 'building-your-own-cli-and-code-generators'
+excerpt: 'Zbuduj własne CLI i generatory kodu w Node.js oraz TypeScript, aby automatyzować komponenty, hooki, testy i scaffolding — przyspiesz swój workflow 3×.'
+---
+
+# Wprowadzenie
+
+Nowoczesny frontend jest pełen powtarzalnych zadań — od tworzenia nowych komponentów po scaffolding całych projektów. Badania pokazują, że programiści spędzają nawet 30% swojego czasu na rutynowych, ręcznych czynnościach, co prowadzi do wypalenia i utraty produktywności. Nawet doświadczeni inżynierowie nie są na to odporni; kod boilerplate i workflow oparty na kopiuj-wklej zwiększają obciążenie poznawcze oraz ryzyko błędów. Innymi słowy, każda minuta poświęcona na żmudną konfigurację to minuta niepoświęcona na kreatywne rozwiązywanie problemów. Rozwiązanie? Automatyzacja jako dźwignia. Traktując własny interfejs wiersza poleceń (CLI) jak „wewnętrznego członka zespołu”, który zajmuje się boilerplate'em, uwalniasz się, by skupić się na wartościowej pracy inżynierskiej. W tym artykule pokażę, jak budowa własnych narzędzi CLI i generatorów kodu (z użyciem Node.js, TypeScript oraz nowoczesnych bibliotek do scaffoldingu) może radykalnie przyspieszyć Twoją pracę — często ją potrajając — bez utraty jakości czy spójności.
+
+# Problem z ręcznym scaffoldingiem
+
+Spójrzmy prawdzie w oczy: ręczne tworzenie plików i folderów dla każdej nowej funkcji czy komponentu jest żmudne i podatne na błędy. Wyobraź sobie na przykład dodanie nowego komponentu React do aplikacji. Twój „rytuał” może obejmować utworzenie pliku komponentu, pliku ze stylami, pliku testowego, aktualizację pliku index oraz podłączenie importów — za każdym razem. Zespoły często tracą godziny na wielokrotne odtwarzanie tej samej podstawowej struktury. Niektórzy programiści radzą sobie, kopiując i wklejając z podobnego komponentu, ale to wprowadza własne problemy (przemycane przestarzałe wzorce albo źle nazwane zmienne). To podejście kopiuj-wklej jest znanym antywzorcem: zduplikowany kod zwiększa ryzyko niespójności i błędów, a każda zmiana wymaga aktualizacji w wielu miejscach. Bez automatyzacji struktura plików jednego inżyniera może różnić się od struktury innego, co prowadzi do rozbieżnych konwencji w całej bazie kodu. Krótko mówiąc, ręczny scaffolding nie tylko Cię spowalnia, ale też rodzi niespójność i dług techniczny. Im bardziej rośnie Twój projekt, tym bardziej te drobne nieefektywności i rozbieżności kumulują się w poważne bóle głowy związane z utrzymaniem.
+
+# Fundamenty: jak działają CLI
+
+Zanim zabierzemy się za budowanie własnego, rozwiejmy tajemnicę tego, czym właściwie jest narzędzie CLI. W swojej istocie CLI to po prostu program, który przyjmuje tekstowe wejście (przez argumenty wiersza poleceń lub prompty) i produkuje tekstowe wyjście (do terminala). W Node.js oznacza to, że Twój skrypt może odczytywać `process.argv` (tablicę argumentów) oraz używać `console.log` lub innych strumieni, aby wchodzić w interakcję z użytkownikiem. Napisanie podstawowego CLI od zera obejmuje parsowanie tych argumentów, obsługę wejścia/wyjścia użytkownika oraz wykonanie odpowiedniej logiki. Na szczęście nie musimy obsługiwać wszystkich tych niskopoziomowych szczegółów ręcznie — różne biblioteki ułatwiają budowanie solidnych CLI w JavaScript/TypeScript.
+
+**Commander.js** oraz **Yargs** to dwie popularne biblioteki do parsowania i obsługi poleceń. Commander.js jest w szczególności jednym z najczęściej używanych frameworków CLI dla Node, oferującym czyste API do definiowania poleceń, opcji i podkomend. Automatycznie parsuje flagi i generuje tekst pomocy, dzięki czemu możesz skupić się na tym, co Twoje polecenia mają robić. Yargs pełni podobną rolę — jest znany z intuicyjnej składni, która sprawia, że tworzenie poleceń CLI to „bułka z masłem”. Obie biblioteki pomagają zamienić surowe wejścia typu `node myTool.js --flag` value w łatwe w użyciu obiekty i callbacki JavaScript.
+
+Dla CLI, które potrzebują interaktywnego wejścia (na przykład pytania użytkownika, którego szablonu użyć lub jak coś nazwać), Inquirer.js jest naturalnym wyborem. Inquirer pozwala definiować prompty, quizy i potwierdzenia w terminalu, oferując przyjazny UX w stylu kreatora. Zamiast wymuszać tuzin flag wiersza poleceń, możesz prowadzić użytkowników krok po kroku za pomocą pytań — przydatne przy złożonym scaffoldingu, gdzie nie każdy pamięta dokładne flagi.
+
+Jeśli chodzi o wyjście w terminalu, **Chalk** to prosta, lecz skuteczna biblioteka do dodawania koloru i stylu do tekstu Twojego CLI. Pozwala wypisywać komunikaty na przykład na zielono dla sukcesu lub na czerwono dla błędów, dzięki czemu logi i prompty stają się znacznie łatwiejsze do odczytania na pierwszy rzut oka. Odrobina koloru w wyjściu CLI poprawia użyteczność, podkreślając ważne informacje (pomyśl o tym, jak git koloruje diffy albo jak narzędzia testujące pokazują nieudane testy na czerwono).
+
+Na koniec mamy prawdziwy majstersztyk generowania kodu: Plop.js (oraz podobne narzędzia do scaffoldingu). Plop to „framework mikrogeneratorów”, który działa jak klej między promptami a plikami szablonów. Możesz myśleć o Plopie jak o zestawie narzędzi stworzonym specjalnie do budowania generatorów kodu — pozwala definiować generatory, które zadają serię pytań, a następnie tworzą pliki na podstawie szablonów Handlebars. W praktyce używanie Plopa przypomina magię: dostarczasz szablon (z placeholderami na nazwy itd.), uruchamiasz `run plop`, odpowiadasz na kilka pytań, a on wypisuje za Ciebie nowe pliki. Zgodnie z jego dokumentacją Plop „oszczędza Twój czas i pomaga budować nowe pliki ze spójnością”. Zobaczymy przykład tego w akcji za chwilę, ale warto zaznaczyć, że Plop pod maską używa Inquirera do promptów oraz Handlebars do szablonowania — co pokazuje, jak wszystkie te biblioteki mogą współpracować w harmonii.
+
+## Wzorce UX i dobre praktyki CLI
+
+Projektowanie CLI to nie tylko funkcjonalność, ale też doświadczenie programisty. Kilka wskazówek może sprawić, że Twoje wewnętrzne narzędzie stanie się znacznie przyjemniejsze w użyciu:
+
+### Zapewnij dobre wartości domyślne
+
+Gdy tylko to możliwe, zakładaj rozsądne wartości domyślne, tak aby użytkownik nie musiał wprowadzać ani pamiętać każdego szczegółu. Na przykład Twój generator może domyślnie tworzyć wrapper `div` dla komponentu, chyba że podano `--element span`. Dobre wartości domyślne zmniejszają obciążenie poznawcze użytkowników (zwłaszcza nowicjuszy), jednocześnie zachowując elastyczność.
+
+### Wspieraj flagi dla automatyzacji
+
+Każdy interaktywny prompt w Twoim CLI powinien być również sterowalny przez flagi wiersza poleceń. Dzięki temu CLI może działać w skryptach lub środowiskach CI bez interwencji człowieka. Na przykład, jeśli Twoje narzędzie zwykle pyta „Dołączyć test jednostkowy? (t/n)”, udostępnij też flagę taką jak `--with-test`, aby pominąć prompt w trybie nieinteraktywnym. Co ważne, polecenie interaktywne nie powinno zastępować skryptowego — doświadczeni użytkownicy lub procesy budowania wolą flagi nieinteraktywne, gdy już je poznają. W praktyce oferuj oba tryby: interaktywny dla odkrywalności oraz flagi dla szybkości/automatyzacji.
+
+### Czytelna pomoc i błędy
+
+Trzymaj się konwencji Uniksa dla składni poleceń i dołącz opcję `--help`, która jasno wymienia wszystkie polecenia i opcje. Narzędzia takie jak Commander/Yargs automatycznie generują wyjście pomocy, ale Ty powinieneś napisać opisowy tekst dla każdego polecenia i flagi. Obsługuj też nieprawidłowe wejście z gracją — jeśli użytkownik wpisze nieznaną podkomendę lub przekaże błędne parametry, wypisz pomocny błąd lub sugestię (na przykład Git zasugeruje najbliżej pasujące polecenie, jeśli popełnisz literówkę). Te detale sprawiają, że Twoje CLI wydaje się dopracowane i oszczędzają użytkownikom zamieszania.
+
+Wykorzystując powyższe biblioteki i trzymając się tych zasad UX, możesz zbudować CLI, które jest zarazem potężne i przyjazne dla programisty. Teraz połączmy te elementy w konkretnym przykładzie.
+
+# Przykład krok po kroku: „Generator komponentów React”
+
+Aby zilustrować ten proces, zbudujemy proste narzędzie CLI o nazwie DevTool, które potrafi wygenerować komponent React ze wszystkimi dodatkami. Wyobraź sobie uruchomienie polecenia:
+
+```
+npx devtool generate component Button --with-test --with-story
+```
+
+To powinno natychmiast wygenerować nowy komponent `<Button>` w Twoim projekcie, kompletny z plikiem komponentu React, plikiem testowym, historyjką Storybook oraz plikiem barrel `index.ts`, który go eksportuje. Pod maską nasze CLI użyje szablonów, aby wypełnić każdy plik kodem boilerplate (instrukcje importu, podstawowa struktura komponentu React itd.), wstrzykując nazwę komponentu tam, gdzie trzeba. Celem jest, aby coś, co wcześniej zajmowało 10–15 minut (tworzenie plików, pisanie boilerplate'u, podłączanie eksportów), teraz zajmowało kilka sekund.
+
+## Struktura projektu
+
+Załóżmy, że nasz projekt CLI ma folder o nazwie `/templates` zawierający pliki szablonów dla każdego artefaktu. Na przykład `/templates/component.hbs` może być szablonem Handlebars dla kodu JSX/TSX komponentu, z placeholderami takimi jak `{{name}}` na nazwę komponentu. Moglibyśmy mieć również `/templates/component.test.hbs` oraz `/templates/component.stories.hbs`. Będziemy też mieli moduł polecenia (skoro używamy TypeScript, być może `/commands/generate.ts`), w którym definiujemy logikę polecenia generate.
+
+W kodzie naszego CLI (uproszczonym dla zwięzłości) użylibyśmy Commandera do zdefiniowania polecenia i opcji oraz modułu `fs` z Node (lub nawet API Plopa) do tworzenia plików:
+
+```typescript
+#!/usr/bin/env node
+import { program } from 'commander'
+import * as fs from 'fs'
+import * as path from 'path'
+import * as Handlebars from 'handlebars'
+
+program
+  .command('generate <type> <name>')
+  .description('Generate a new component or other scaffold')
+  .option('--with-test', 'Include a test file')
+  .option('--with-story', 'Include a Storybook file')
+  .action((type, name, options) => {
+    if (type === 'component') {
+      const compDir = `src/components/${name}`
+      fs.mkdirSync(compDir, { recursive: true })
+      // Odczytaj i skompiluj szablon komponentu:
+      const templateText = fs.readFileSync(
+        path.join(__dirname, '../templates/component.hbs'),
+        'utf8'
+      )
+      const compile = Handlebars.compile(templateText)
+      fs.writeFileSync(
+        path.join(compDir, `${name}.tsx`),
+        compile({ name }) // wygeneruj Component.tsx
+      )
+      if (options.withTest) {
+        const testTemplate = fs.readFileSync(
+          path.join(__dirname, '../templates/component.test.hbs'),
+          'utf8'
+        )
+        fs.writeFileSync(
+          path.join(compDir, `${name}.test.tsx`),
+          Handlebars.compile(testTemplate)({ name })
+        )
+      }
+      if (options.withStory) {
+        const storyTemplate = fs.readFileSync(
+          path.join(__dirname, '../templates/component.stories.hbs'),
+          'utf8'
+        )
+        fs.writeFileSync(
+          path.join(compDir, `${name}.stories.tsx`),
+          Handlebars.compile(storyTemplate)({ name })
+        )
+      }
+      // Utwórz index.ts, który eksportuje komponent
+      fs.writeFileSync(path.join(compDir, `index.ts`), `export { default } from './${name}';\n`)
+      console.log(`✔ Scaffolded component '${name}' in ${compDir}`)
+    } else {
+      console.error(`Unknown generate type: ${type}`)
+    }
+  })
+
+program.parse(process.argv)
+```
+
+Powyższy fragment ma charakter poglądowy: w prawdziwym narzędziu mógłbyś wydzielić generowanie plików do osobnej funkcji lub użyć biblioteki takiej jak Plop, aby obsłużyć szablonowanie bardziej elegancko. Kluczowy wniosek dotyczy tego, jak CLI przyjmuje wejścia (nazwę komponentu i flagi) i wykorzystuje je do wyprodukowania wielu plików wyjściowych o spójnej zawartości.
+
+Użycie generatora CLI do wygenerowania nowego komponentu o nazwie „Button”. Narzędzie pyta o nazwę komponentu, a następnie tworzy pliki (tutaj plik HTML, SCSS oraz JS dla komponentu) z zieloną fajką powodzenia dla każdego z nich. W naszym przypadku po uruchomieniu `devtool generate component Button --with-test --with-story` zobaczyłbyś potwierdzenie utworzonych plików, a struktura Twojego projektu zawierałaby teraz:
+
+```
+src/components/Button/
+├── Button.tsx
+├── Button.test.tsx
+├── Button.stories.tsx
+└── index.ts
+
+```
+
+Wszystkie te pliki zawierałyby już kod startowy. Na przykład Button.tsx mógłby mieć podstawowy boilerplate komponentu React z `function Button(props) { ... } export default Button`; oraz być może jakiś import CSS — cokolwiek zdefiniował Twój szablon. Button.test.tsx mógłby zawierać podstawowy szkielet testu Jest (upewniający się, że komponent renderuje się bez awarii), a Button.stories.tsx boilerplate historyjki Storybook.
+
+Co kluczowe, cały ten boilerplate jest generowany dokładnie tak, jak chce tego Twój zespół, w kilka sekund, jednym poleceniem CLI. Nie ma szukania starego komponentu do skopiowania, nie ma zapominania o aktualizacji importu — CLI zajmuje się powtarzalnymi rzeczami. To nie tylko oszczędza czas, ale też zapewnia, że każdy nowy komponent trzyma się tych samych konwencji (co ułatwia przeglądy kodu i onboarding).
+
+# Poza komponentami: skalowanie Twojego CLI
+
+Gdy już zbudujesz prosty generator dla jednego przypadku użycia, łatwo rozszerzyć tę ideę na inne części Twojego frontendowego workflow. Po co poprzestawać na komponentach? Dobrze zaprojektowane CLI potrafi wygenerować wszystko, co powtarzalne:
+
+## Slice'y lub moduły
+
+Jeśli Twoja aplikacja korzysta z architektury modularnej (na przykład „slice'y” Reduxa lub context providery), możesz zautomatyzować tworzenie nowego modułu z plikami akcji, reducera i typów za jednym zamachem. To zapewnia, że nowe moduły mają standardową konfigurację (a może nawet same się rejestrują w centralnej konfiguracji store'a).
+
+## Hooki i narzędzia
+
+Zmęczony pisaniem tego samego boilerplate'u dla własnych hooków React? Generator mógłby tworzyć nowy plik hooka z szablonem zawierającym nagłówek z komentarzem, podstawowy zarys funkcji oraz towarzyszący plik testowy. To samo dotyczy funkcji narzędziowych czy klas — za każdym razem, gdy zauważysz wzorzec, możesz go zautomatyzować.
+
+## Serwisy lub klienty API
+
+Dla zespołów konsumujących API rozważ generowanie kodu klienta API. Na przykład, mając specyfikację OpenAPI (Swagger), mógłbyś zeskryptować tworzenie typowanych funkcji serwisowych lub użyć istniejących narzędzi, aby je wygenerować. To może zamienić zadanie, które normalnie zajmuje godziny (wypisywanie wszystkich wywołań fetch i transformacji danych), w szybki, zautomatyzowany krok. Wiele organizacji już to robi z OpenAPI Generator lub podobnymi narzędziami, integrując je z procesem budowania, tak aby endpointy API były zawsze aktualne w postaci kodu. Dlaczego nie podpiąć tego do Twojego CLI? Jedno polecenie mogłoby pobrać najnowszą specyfikację API i wygenerować cały kod klienta — oszczędzając godziny i unikając błędu ludzkiego. (W istocie sam OpenAPI Generator pozwala na własne szablony dokładnie w tym celu, więc możesz go zintegrować, aby produkował kod pasujący do stylu Twojego projektu.)
+
+## Dokumentacja i konfiguracja
+
+Niektóre zespoły generują nawet dokumentację w markdown, pliki konfiguracyjne lub skrypty konfiguracji środowiska za pomocą CLI. Na przykład mógłbyś stworzyć polecenie takie jak `devtool create env staging`, aby automatycznie wygenerować plik .env.staging z placeholderami lub wartościami domyślnymi, upewniając się, że żaden wymagany klucz nie zostanie pominięty. Albo wygenerować dokumentację API w Markdown z komentarzy lub szablonów.
+
+W miarę jak Twoje CLI rośnie, powinieneś pomyśleć o architekturze i łatwości utrzymania:
+
+## Architektura pluginów
+
+Jeśli przewidujesz wiele generatorów lub poleceń, zaprojektuj swoje CLI w modularny sposób. Jednym podejściem jest użycie podkomend (np. `devtool generate component`, `devtool generate hook`, `devtool deploy` itd.) i rozdzielenie logiki na różne pliki lub moduły. Frameworki takie jak Oclif (od Salesforce) lub Gluegun mogą tu pomóc. Oclif dostarcza strukturę do budowania aplikacji CLI z wieloma poleceniami, a nawet pluginami. Gluegun podobnie wspiera tworzenie pluginów CLI i punktów rozszerzeń. Na przykład mógłbyś mieć rdzeń CLI i pozwolić różnym zespołom dodawać własne generatory jako pluginy (może zespół design systemu doda plugin do generowania nowych tokenów motywu itd.). W ten sposób Twoje CLI może skalować się razem z organizacją — nie jest monolitem, który może edytować tylko jedna osoba, lecz platformą, do której inni mogą wnosić wkład (z granicami utrzymującymi porządek).
+
+## Integracja z monorepo
+
+Jeśli działasz w środowisku monorepo (używając narzędzi takich jak Nx lub Turborepo), możesz już mieć generowanie kodu za pośrednictwem tych frameworków. Nx ma na przykład koncepcję generatorów (dawniej schematics w Angularze) do scaffoldingu bibliotek i modułów. Wciąż możesz zbudować własne CLI albo na ich bazie, albo obok nich. Kluczem jest zapewnienie, że Twoje CLI wie o strukturze repozytorium. Możesz na przykład musieć wskazać, do którego pakietu lub aplikacji mają trafić pliki. To mógłby być dodatkowy prompt lub flaga (jak `--scope admin-app`, aby wygenerować wewnątrz konkretnego projektu). Zysk jest ogromny: Twoje wewnętrzne CLI może stać się ujednoliconym interfejsem, który opakowuje generatory Nx, Plopa i własną logikę, ukrywając złożoność przed programistami. Jest całkiem wykonalne, aby `devtool` orkiestrowało wiele leżących u podstaw narzędzi — na przykład wywołując generator Nx, a następnie uruchamiając szablon Plopa — tak aby pojedyncze polecenie tworzyło nowy mikrofrontend ze wszystkimi wymaganymi, zarejestrowanymi elementami.
+
+## Konfiguracja i szablony
+
+W miarę dodawania kolejnych szablonów rozważ wyniesienie konfiguracji na zewnątrz. Być może wprowadzisz plik konfiguracyjny (np. `.devtoolrc.json` lub sekcję w `package.json`), w którym zespoły mogą określać pewne wartości domyślne lub ścieżki dla generatorów. Na przykład konfiguracja mogłaby definiować, że generatory komponentów działają w `src/components` (na wypadek, gdyby niektóre projekty miały inną strukturę). Mogłaby też pozwalać na domyślne włączanie pewnych funkcji. To sprawia, że Twoje narzędzie staje się bardziej elastyczne i możliwe do zastosowania w wielu projektach bez zmian w kodzie. Ponadto, jeśli różne zespoły chcą nieco innych szablonów, możesz pozwolić CLI ładować pliki szablonów ze skonfigurowanego katalogu — dzięki czemu jeden projekt mógłby nadpisać domyślny szablon komponentu własnym (podobnie jak open-source'owe generatory kodu pozwalają na nadpisanie szablonów).
+
+Główną ideą jest traktowanie Twojego CLI jak produktu: modularyzuj je, uczyń konfigurowalnym i udokumentuj dla swojego zespołu. Gdy ludzie zobaczą, ile czasu to oszczędza, zaczną sugerować nowe funkcje — „a czy może generować całą stronę z trasą i wpisem w nawigacji?” — i będziesz zadowolony, jeśli architektura jest zorganizowana pod rozszerzanie.
+
+# Przypadki użycia z prawdziwego świata
+
+Korzyści z własnych CLI i generatorów kodu nie są jedynie teoretyczne. Wiele zespołów wdrożyło je, aby rozwiązać codzienne problemy w rozwoju oprogramowania. Oto kilka scenariuszy, w których automatyzacja błyszczy:
+
+## Szybszy onboarding i spójna architektura
+
+Gdy nowy programista dołącza do zespołu, jednym z wyzwań jest zrozumienie i przestrzeganie konwencji projektu. CLI może te konwencje enkapsulować. Zamiast pisać dokumentację w stylu „aby dodać nową funkcję, wykonaj te 10 kroków”, dostarczasz polecenie, które to robi. To redukuje zamieszanie i minimalizuje czas onboardingu, ponieważ nowy programista nie musi ręcznie konfigurować boilerplate'u ani zastanawiać się, czy zrobił to poprawnie. Każda funkcja czy komponent utworzone przez CLI trzymają się tej samej struktury, co oznacza, że baza kodu pozostaje jednolita, niezależnie od tego, kto w zespole dodał kod.
+
+## Design systemy i biblioteki UI
+
+Utrzymywanie design systemu wiąże się z tworzeniem wielu podobnych komponentów (przycisków, pól formularza, kart itd.) o spójnej strukturze. Własny generator jest tu nieoceniony. Możesz wymusić, aby każdy nowy komponent UI w bibliotece miał tę samą konfigurację plików: plik komponentu, snippet README lub dokumentacji, historyjkę Storybook, testy oraz może wpis w indeksie komponentów. Dzięki generatorowi projektanci i programiści mogą dodawać komponenty bez obaw o pominięcie pliku czy zepsucie struktury. Jak zauważa jeden z przewodników po design systemach, skonfigurowanie szablonów i promptów z Plop.js pozwala z łatwością generować komponenty, gwarantując, że każdy trzyma się zdefiniowanej struktury. Ta spójność jest kręgosłupem niezawodnego design systemu.
+
+## Kod klienta API ze specyfikacji
+
+Integracja z API często wymaga pisania mnóstwa kodu boilerplate do wywoływania endpointów i obsługi odpowiedzi. Istnieją narzędzia (takie jak OpenAPI Generator czy Swagger Codegen) do automatyzacji tego, ale możesz je opakować we własnym CLI dla wygody. Na przykład wewnętrzne narzędzie mogłoby pobrać najnowszy schemat API i wygenerować klienty API w TypeScript lub hooki React do pobierania danych. W rezultacie dodanie nowego endpointu API staje się trywialnym zadaniem — możliwym do wykonania przez inżynierów niefrontendowych lub automatycznie jako część wdrożenia backendu. To zapewnia, że Twój frontend jest zawsze zsynchronizowany z backendem i eliminuje godziny ręcznego pisania wywołań HTTP. (W istocie niektóre zespoły raportowały, że konfiguracja boilerplate'u API, która wcześniej zajmowała godziny, może zostać skrócona do minut dzięki automatyzacji.)
+
+## DevOps i konfiguracja środowiska
+
+Inżynierowie frontendu żonglują też plikami konfiguracyjnymi, skryptami budowania i zmiennymi środowiskowymi. CLI może i to zautomatyzować. Trzeba dodać nową konfigurację środowiska? Uruchom `devtool init-env prod` i pozwól, aby utworzyło plik `.env.prod` ze wszystkimi wymaganymi kluczami wypełnionymi wartościami domyślnymi lub placeholderami. Albo użyj CLI do generowania snippetów YAML pipeline'ów CI/CD, plików Dockerfile dla nowych serwisów, czy nawet boilerplate'u dla infrastruktury chmurowej (niektóre zespoły mają CLI, które generują moduły Terraform lub AWS CDK dla nowej aplikacji). Choć te zadania mogą wykraczać poza „frontend”, przyczyniają się do płynniejszego doświadczenia programisty na wszystkich frontach.
+
+## Spójność między zespołami
+
+W dużej organizacji możesz mieć wiele zespołów frontendowych, każdy z własnymi projektami. Dzieląc się narzędziami CLI lub przynajmniej szablonami, zapewniasz propagację dobrych praktyk. Na przykład, jeśli firma przyjmuje nową bibliotekę testową lub podejście do logowania, aktualizacja szablonów generatora oznacza, że każdy nowy kod domyślnie trzyma się nowej praktyki. To subtelny, lecz potężny sposób na egzekwowanie standardów bez uciążliwych przeglądów kodu. Inżynierowie naturalnie idą ścieżką najmniejszego oporu — jeśli najłatwiejszym sposobem na stworzenie czegoś jest CLI, które produkuje ustandaryzowany kod, zrobią właśnie to, zamiast wynajdywać koło na nowo.
+
+We wszystkich tych przypadkach wspólnym mianownikiem jest ograniczenie żmudnej pracy. Automatyzacja zajmuje się powtarzalnym scaffoldingiem, dzięki czemu programiści mogą skupić się na ciekawych częściach: implementowaniu funkcji, dopracowywaniu UX, naprawianiu błędów — a nie tworzeniu folderów i kopiowaniu boilerplate'u. A ponieważ automatyzacja jest dostosowana do Twoich wewnętrznych potrzeb (w przeciwieństwie do uniwersalnego, zewnętrznego narzędzia), może ewoluować razem z Twoimi projektami.
+
+# Mierzenie wpływu
+
+Ważne jest, aby skwantyfikować ROI z wprowadzenia własnego CLI i generatorów, zwłaszcza jeśli musisz uzasadnić początkową inwestycję czasu przed zespołem lub kierownictwem. Na szczęście korzyści stają się bardzo namacalne.
+
+## Czas zaoszczędzony na funkcję
+
+Zacznij od zmierzenia, ile zwykle zajmowało wykonanie pewnych zadań ręcznie (powiedzmy, utworzenie nowego komponentu lub przygotowanie nowej strony). Po wprowadzeniu CLI zmierz ponownie. Wiele zespołów odkrywa dramatyczne usprawnienia — to, co kiedyś było półdniową konfiguracją, może stać się 10-minutową operacją. W jednym z przykładów zespół zredukował czas scaffoldingu funkcji z około 3 godzin do około 15 minut, automatyzując kroki boilerplate'u (12-krotne przyspieszenie). Nawet bardziej zachowawczy wynik, jak 3× szybszy rozwój, jest ogromny na dłuższą metę. W istocie poszczególni programiści raportowali dostarczanie funkcji 2–3 razy szybciej, gdy przestali marnować czas na boilerplate i powtarzalne zadania programistyczne.
+
+## Mniej błędów i bugów
+
+Gdy ludzie wykonują nudną, mechaniczną pracę, wkradają się błędy — literówka w nazwie pliku tu, zapomniany import tam. Zautomatyzowane generatory wykonują te same kroki spójnie za każdym razem. Ta spójność prowadzi do mniejszej liczby błędów konfiguracji. Jedno ze źródeł zauważa, że automatyzacja nie tylko zwiększa efektywność, ale też poprawia spójność i redukuje błędy w projektach. Pomyśl o CLI jak o jednostce kodu, która została przetestowana i sprawdzona — za każdym razem, gdy się uruchamia, możesz ufać, że wyjście trzyma się dobrych praktyk (przy założeniu, że Twoje szablony są poprawne). Twoi juniorzy nie pominą przypadkiem napisania testu dla swojego nowego komponentu, bo generator już utworzył za nich plik testowy.
+
+## Onboarding i bus factor
+
+Dzięki udokumentowanemu workflow CLI nowi członkowie zespołu wdrażają się szybciej (jak wspomniano wcześniej), a wiedza jest mniej zamknięta w silosach. „Bus factor” (ryzyko, gdy ktoś odejdzie lub jest niedostępny) spada, ponieważ proces konfiguracji projektu czy tworzenia komponentu nie jest uwięziony w głowie doświadczonego inżyniera — jest zakodowany w narzędziu, którego wszyscy używają. Można to mierzyć jakościowo poprzez to, jak samodzielnie nowe osoby mogą zacząć wnosić wkład. Jeśli wcześniej nowa osoba potrzebowała prowadzenia za rękę, aby skonfigurować moduł, a teraz może uruchomić kilka poleceń CLI i od razu zabrać się za prawdziwe kodowanie, to duża wygrana.
+
+## Spójność i łatwość utrzymania
+
+Choć trudniejszy do zmierzenia, długoterminowy efekt ustandaryzowanej struktury kodu jest znaczący. Oznacza mniej czasu w przeglądach kodu na pytania „czy możesz zmienić nazwę tego pliku, aby pasowała do naszej konwencji?” lub „zapomniałeś dodać testu do tego”. Oznacza też, że narzędzia i skrypty działają jednolicie (na przykład, jeśli każdy komponent ma plik index, możesz napisać generator dokumentacji, który je odczytuje, wiedząc, że układ jest jednolity). Mógłbyś śledzić na przykład spadek liczby naruszeń przewodnika stylu lub komentarzy w przeglądach związanych z architekturą po wdrożeniu CLI.
+
+## Satysfakcja programistów
+
+Nie lekceważ zastrzyku morale płynącego z eliminowania żmudnych zadań. Programiści mogą spędzać więcej czasu na przyjemnej pracy (rozwiązywaniu problemów), a mniej na nudnej konfiguracji. Wewnętrzna ankieta lub nawet nieformalny feedback może to uchwycić. Często, gdy programiści przyzwyczają się do zautomatyzowanego workflow, sama myśl o powrocie do ręcznego tworzenia jest bolesna — to znak, że zwiększyłeś produktywność i poprawiłeś ich życie.
+
+Aby konkretnie mierzyć wpływ, możesz oinstrumentować swoje CLI. Dodaj funkcję logowania lub telemetrii (opt-in dla użytkowników), która śledzi użycie: np. liczy, ile komponentów wygenerowano w tym miesiącu. Pomnóż przez szacowany czas zaoszczędzony na komponent, aby uzyskać całkowitą liczbę zaoszczędzonych godzin. Możesz odkryć na przykład, że w kwartale Twoje CLI wygenerowało 50 komponentów, każdy oszczędzając ~1 godzinę, czyli ~50 zaoszczędzonych godzin — co jest więcej niż pełny tydzień pracy odzyskany dla zespołu. Posiadanie tych liczb może uzasadnić dalszą inwestycję w oprzyrządowanie. Jako bonus, telemetria może ujawnić, które polecenia są używane najczęściej, a które nie, kierując Cię ku temu, gdzie skupić usprawnienia.
+
+Podsumowując, wpływ własnych generatorów kodu widać w szybkości, jakości i zadowoleniu zespołu. Szybsze cykle rozwoju (więcej funkcji na sprint) oraz bardziej spójna jakość bazy kodu to sytuacja win-win. To rodzaj zastrzyku produktywności, który się kumuluje: zaoszczędzenie kilku godzin tygodniowo dla każdego programisty sumuje się w wiele dodatkowych funkcji dostarczonych w ciągu roku.
+
+# EXTRA: Zaawansowane wskazówki
+
+W miarę jak dojrzewa Twój wewnętrzny zestaw narzędzi CLI i generatorów, oto kilka zaawansowanych wskazówek i rozważań, aby naprawdę zmaksymalizować jego potencjał:
+
+## Dystrybuuj swoje CLI przez npm
+
+Nie trzymaj narzędzia w tajemnicy na swojej maszynie — opublikuj je! Możesz spakować swoje CLI jako moduł npm (nawet prywatny, w rejestrze firmowym lub GitHub Packages). To pozwala każdemu w zespole łatwo je zainstalować lub uruchomić przez npx. Dodając pole bin w swoim package.json, jak widzieliśmy wcześniej, polecenie CLI (np. devtool) może być wywoływane globalnie. To otwiera też drzwi do zewnętrznych kontrybucji, jeśli jest publiczne, lub przynajmniej upraszcza aktualizacje wersji (możesz wersjonować CLI i prowadzić changelogi). Jeśli publikujesz publicznie, upewnij się, że nie dołączasz zastrzeżonego kodu szablonów do pakietu — czasem lepiej trzymać go prywatnie. Alternatywnie mógłbyś nawet zintegrować CLI z repozytorium jako zależność deweloperską i dodać skrypty, tak aby uruchomienie `npm run generate:component` wywoływało narzędzie — wybierz model dystrybucji, który uczyni je najbardziej dostępnym dla zespołu.
+
+## Zadbaj o zgodność międzyplatformową
+
+Częstym przeoczeniem przy samodzielnie robionych CLI jest zakładanie środowiska \*nix. Jeśli część Twoich programistów pracuje na Windowsie, zwracaj uwagę na takie rzeczy jak separatory ścieżek (`\` kontra `/`) lub polecenia powłoki, które mogą nie istnieć. API Node.js są generalnie międzyplatformowe, ale unikaj zaszywania na sztywno wywołań `touch` czy `rm` — zamiast tego używaj metod `fs` lub biblioteki takiej jak shelljs czy cross-spawn, która abstrahuje te różnice. Jeśli Twoje CLI wypisuje kolorowe wyjście lub używa znaków specjalnych, upewnij się, że renderują się one poprawnie w różnych terminalach (Chalk domyślnie wykryje, czy kolor jest wspierany). Przetestuj swoje narzędzie przynajmniej na Mac/Linux i Windows, aby wychwycić wszelkie dziwactwa. Celem jest, aby każdy w zespole, niezależnie od systemu operacyjnego, mógł korzystać z automatyzacji. (Jeśli trzeba, możesz dystrybuować skrypty specyficzne dla platformy, ale to komplikuje sprawy — lepiej pisać przenośny kod od samego początku.)
+
+## Wersjonuj swoje szablony i CLI
+
+W miarę jak Twój projekt ewoluuje, możesz aktualizować wzorce kodu w swoich szablonach. Na przykład być może zmienisz frameworki testowe lub przyjmiesz inną bibliotekę do zarządzania stanem — będziesz chciał, aby nowo generowany kod to odzwierciedlał. Dobrym pomysłem jest wersjonowanie swojego CLI lub generatorów. To może być tak proste, jak dołączenie numeru wersji szablonu w wyjściu CLI lub jako stała. Jeśli następuje poważna zmiana, podbij wersję i zakomunikuj, że starszy kod może nie odpowiadać dokładnie nowym szablonom. W niektórych przypadkach możesz utrzymywać wsteczną kompatybilność lub zapewnić ścieżkę aktualizacji. Na przykład mógłbyś mieć polecenie `devtool update component Button`, które wie, jak dostosować starszy wygenerowany komponent do nowszego wzorca. To zaawansowany ruch i może nie być konieczny, jeśli zmiany są niewielkie. Przynajmniej śledź zmiany w swoim CLI w pliku CHANGELOG, aby programiści wiedzieli, co jest nowe lub inne. To pozwala uniknąć zamieszania w stylu „dlaczego komponent X (zrobiony miesiąc temu) wygląda nieco inaczej niż komponent Y (zrobiony teraz)?”. Zapewnia to również odtwarzalność — jeśli ktoś sprawdzi starszy commit repozytorium, może chcieć użyć starszej wersji CLI, aby uzyskać identyczny scaffolding.
+
+## Dodaj telemetrię (metryki użycia)
+
+Jak wspomniano w sekcji o wpływie, dodanie telemetrii do Twojego CLI może dostarczyć cennych wglądów. Możesz oinstrumentować CLI, aby logowało każde wykonanie polecenia (może po prostu do konsoli lub do pliku), lub dla bardziej solidnego rozwiązania wysyłać zdarzenie do wewnętrznego endpointu analitycznego. Bądź bardzo ostrożny z prywatnością i danymi tutaj — skoro to narzędzie wewnętrzne, jest łatwiej, ale mimo to bądź transparentny wobec zespołu co do tego, co śledzisz. Nawet coś prostego, jak liczenie, ile komponentów wygenerowano, może pomóc uzasadnić, jak przydatne jest narzędzie (np. „Nasze CLI wygenerowało 120 komponentów w tym kwartale, wyobraź sobie robienie tego ręcznie!”). Może też zidentyfikować nieużywane polecenia (jeśli jakaś funkcja Twojego CLI nie jest w ogóle używana, być może nie jest potrzebna lub wymaga lepszej dokumentacji). Niektóre frameworki zawierają analitykę od ręki (Oclif ma na przykład plugin do śledzenia użycia). Jeśli wdrażasz telemetrię, uczyń ją opt-in lub przynajmniej niezbyt inwazyjną — celem jest zbieranie ogólnych metryk, a nie szpiegowanie programistów. Gdy będziesz mieć trochę danych, podziel się sukcesem: „automatyzacja zaoszczędziła nam X godzin w tym miesiącu” potrafi być całkiem motywujące.
+
+## Dokumentuj i edukuj
+
+Zadbaj o jasną dokumentację dla swojego CLI. Nawet jeśli wydaje Ci się oczywiste, nowi członkowie zespołu muszą je odkryć. Napisz README lub wewnętrzną stronę wiki dla narzędzia. Dołącz przykłady każdego polecenia oraz może typowe workflow (np. „Aby dodać nową funkcję, uruchom te 3 polecenia…”). Zachęcaj zespół do używania go, podkreślając korzyści. Czasem zmiana kulturowa jest najtrudniejszą częścią — kilka upartych osób może trzymać się starych, ręcznych sposobów. Pokaż im zaoszczędzony czas i zyskaną spójność. Może zorganizuj demo CLI w akcji podczas lunch-and-learn. Gdy ludzie użyją go kilka razy i zobaczą korzyść, nigdy nie będą chcieli wracać.
+
+## Siatki bezpieczeństwa
+
+W miarę jak Twoje CLI staje się potężne (tworząc i modyfikując kod), rozważ dodanie potwierdzeń lub trybów dry-run dla potencjalnie destrukcyjnych akcji. Na przykład, jeśli miałbyś polecenie do usunięcia modułu lub ponownego wygenerowania czegoś, mógłbyś dołączyć flagę `--dry-run`, która pokazuje, co by się stało, bez faktycznego robienia tego. Albo przynajmniej prompt potwierdzenia „Czy na pewno chcesz usunąć X? (t/N)”. To chroni przed wypadkami. Dodatkowo zadbaj, aby Twoja kontrola wersji (.gitignore itd.) była ustawiona tak, aby generowane pliki były śledzone odpowiednio. Zwykle wygenerowany kod źródłowy jest commitowany do repozytorium, więc to w porządku. Ale jeśli Twoje CLI generuje jakiekolwiek artefakty budowania lub pliki tymczasowe, zignoruj je. W istocie traktuj akcje generatora z taką samą troską jak ręcznie pisane zmiany — powinny być możliwe do przeglądu i przetestowania. Dobrą praktyką jest faktyczne przeglądanie wygenerowanego kodu, gdy to możliwe (nawet jeśli jest spójny, jest integrowany z Twoim systemem).
+
+Wdrażając te zaawansowane wskazówki, zamieniasz swoje CLI ze zgrabnego skryptu w solidny wewnętrzny produkt DevTool. Na tym etapie mógłbyś nawet je wersjonować i dystrybuować do innych zespołów lub udostępnić jako open source, jeśli jest wystarczająco uniwersalne. Połączenie dystrybucji, międzyplatformowego dopracowania, wersjonowania i telemetrii zapewni, że Twoje narzędzie pozostanie niezawodne i będzie dalej dostarczać wartość w miarę wzrostu Twojej bazy kodu.
+
+# Podsumowanie
+
+Powtarzalne zadania programistyczne są kosztownym podatkiem od czasu programisty — ale to podatek, który możesz wyeliminować mądrą automatyzacją. Budując własne CLI i generatory kodu, tworzysz mnożnik siły dla swojego zespołu. Korzyści są jasne: rozwijasz funkcje szybciej, struktura Twojego projektu pozostaje spójna i wolna od błędów, a programiści spędzają więcej czasu na kreatywnej pracy zamiast na boilerplate. Jak ujął to jeden z doświadczonych inżynierów, po przyjęciu generowania kodu: „Dostarczam funkcje 2-3× szybciej i spędzam zero czasu na boilerplate i powtarzalnym kodzie”.
+
+Droga do własnego CLI nie odbywa się z dnia na dzień, ale możesz zacząć od małych rzeczy. Wybierz jedną rzecz, którą robisz często — może to tworzenie nowego komponentu lub dodawanie wpisu do menu nawigacji — i napisz prosty skrypt, aby ją zautomatyzować. Używaj go, dopracowuj, a potem rozszerzaj. Z czasem ten jeden skrypt może urosnąć w pełny zestaw poleceń CLI dostosowany do Twojego workflow. Zachęcaj zespół do wnoszenia pomysłów lub usprawnień; wkrótce automatyzacja stanie się częścią kultury. Pamiętaj, jeśli zadanie wydaje się żmudne Tobie, na pewno wydaje się żmudne również innym — i to jest główny kandydat do zeskryptowania.
+
+Ostatecznie prawdziwym osiągnięciem nie jest tylko zaoszczędzenie kilku naciśnięć klawiszy — to pielęgnowanie środowiska rozwoju, w którym wartościowe zadania zajmują centralne miejsce, a te o niskiej wartości są obsługiwane przez narzędzia. Twoja baza kodu utrzymuje wysoki poziom jakości, ponieważ każdy element scaffoldingu jest budowany dokładnie zgodnie ze specyfikacją za każdym razem. Nowi inżynierowie wdrażają się szybko, ponieważ CLI prowadzi ich właściwą ścieżką. A Ty dostarczasz funkcje w tempie, które sprawia, że zastanawiasz się, jak w ogóle radziłeś sobie „po staremu”. Automatyzacja to dźwignia, a dobrze wykonane CLI jest jak dodatkowy członek zespołu, który nigdy nie męczy się nudną pracą.
+
+Jak głosi powiedzenie: „Jeśli robisz to dwa razy, zautomatyzuj to”. Stosując tę mantrę do swoich procesów rozwoju frontendu, odblokujesz nowe poziomy produktywności i przyjemności w pracy. Więc zacznij budować swojego wewnętrznego towarzysza CLI już dziś — Twoje przyszłe ja (i cały Twój zespół) będą Ci wdzięczne!
+
+# Źródła
+
+- [Commander.js — Node.js command-line interfaces made easy](https://github.com/tj/commander.js)
+- [Yargs — Command-line parser and builder for Node.js](https://github.com/yargs/yargs)
+- [Inquirer.js — A collection of common interactive command line user interfaces](https://github.com/SBoudrias/Inquirer.js)
+- [Chalk — Terminal string styling done right](https://github.com/chalk/chalk)
+- [Plop.js — Micro-generator framework that makes it easy for your team to create files with a consistent structure](https://plopjs.com/)
+- [Handlebars.js — Minimal templating engine](https://handlebarsjs.com/)
+- [Oclif — CLI framework from Heroku/Salesforce](https://oclif.io/)
+- [Gluegun — Delightful toolkit for building CLIs with Node.js](https://github.com/infinitered/gluegun)
+- [Nx.dev — Smart monorepo tooling](https://nx.dev/)
+- [Turborepo — High-performance build system for JavaScript/TypeScript monorepos](https://turbo.build/repo)
+- [OpenAPI Generator — Generate clients, servers, and docs from OpenAPI specs](https://openapi-generator.tech/)
+- [Swagger Codegen — Generate server stubs and client SDKs from OpenAPI](https://github.com/swagger-api/swagger-codegen)
+- [shelljs — Portable Unix shell commands for Node.js](https://github.com/shelljs/shelljs)
+- [cross-spawn — Cross-platform spawn for Node](https://github.com/moxystudio/node-cross-spawn)
+- [npm Scripts — Running CLI tools through package.json](https://docs.npmjs.com/cli/v7/using-npm/scripts)
+
+~Seb 👊
