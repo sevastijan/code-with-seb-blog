@@ -1,0 +1,399 @@
+---
+title: 'Nowoczesny CSS w 2026: :has(), @scope i container queries zabiły Twój JS'
+date: '2026-07-08'
+category: 'Development'
+tags: ['css', 'frontend', 'container-queries', 'modern-css', 'performance']
+featured: false
+author: 'Sebastian'
+draft: false
+enSlug: 'modern-css-2026-has-scope-container-queries-guide'
+excerpt: 'Nowoczesny CSS w 2026 skasował całe foldery JavaScriptu. :has(), @scope, container queries i anchor positioning zastępują hacki z ostatniej dekady.'
+---
+
+W zeszłym tygodniu usunąłem 400 linii JavaScriptu, a funkcja stała się _lepsza_. Bez `ResizeObserver`. Bez nasłuchiwacza kliknięcia poza elementem. Bez Floating UI. Bez `MutationObserver` obserwującego checkbox, żebym mógł przełączyć klasę na jego rodzicu. Po prostu CSS, który w końcu robi to, czego zawsze od niego chciałem.
+
+Przez jakieś piętnaście lat „frontend developer" po cichu oznaczał „osobę, która pisze JavaScript, żeby nadrobić to, czego CSS nie potrafi wyrazić". Zaznaczanie rodzica? JS. Stylowanie względem komponentu? JS. Ustawienie tooltipa tak, żeby przeskakiwał przy krawędzi viewportu? Cała biblioteka. Znormalizowaliśmy dostarczanie kilobajtów runtime'u tylko po to, żeby przesuwać nazwę klasy.
+
+Ta era się skończyła. W **2026 fala funkcji CSS przekroczyła Baseline** — czyli działają w Chrome, Firefox, Safari i Edge, nie za flagą — i każda z nich wyprowadza za stodołę konkretny, nośny kawałek JavaScriptu i wysyła go na emeryturę. Oto wycieczka, którą chciałbym, żeby ktoś mi zafundował: co jest nowo używalne, jaki dokładnie JS to zabija, uczciwe uwagi o wsparciu przeglądarek i krótka lista rzeczy, które _wciąż_ potrzebują skryptu.
+
+## :has() — selektor rodzica, który zabił setkę MutationObserverów
+
+`:has()` to ten duży. To **relacyjna pseudoklasa**: stylizuje element na podstawie tego, co _zawiera_, albo co po nim następuje. CSS nigdy tego nie miał. Brak selektora rodzica to prawdopodobnie największy pojedynczy powód, dla którego JavaScript przeciekał do stylowania.
+
+Jest **w Baseline od grudnia 2023** (Chrome/Edge 105+, Safari 15.4+, Firefox 121+), więc w 2026 możesz go używać bez cienia wahania.
+
+Oto wzorzec, który wyrzucałem najczęściej. Stary sposób — stylizowanie karty, gdy checkbox w środku jest zaznaczony:
+
+```js
+// Stary sposób: obserwuj input, przełączaj klasę na przodku
+const inputs = document.querySelectorAll('.card input[type="checkbox"]');
+inputs.forEach((input) => {
+  input.addEventListener('change', () => {
+    input.closest('.card').classList.toggle('is-selected', input.checked);
+  });
+});
+```
+
+To listener zdarzeń na każdy input, klasa, którą musisz trzymać w synchronizacji, i pułapka na ponowne renderowanie czekająca, żeby się wydarzyć. Nowy sposób to jeden selektor:
+
+```css
+/* Stylizuj rodzica na podstawie stanu potomka — zero JS */
+.card:has(input[type='checkbox']:checked) {
+  border-color: oklch(60% 0.2 250);
+  background: oklch(97% 0.02 250);
+}
+```
+
+Mentalne odblokowanie polega na tym, że `:has()` komponuje się ze wszystkim: `:checked`, `:invalid`, `:focus-within`, kombinatorami rodzeństwa. Kilka wzorców, po które teraz sięgam bez przerwy:
+
+```css
+/* Layout reagujący na treść: dodaj padding tylko figurze, która ma podpis */
+figure:has(figcaption) {
+  padding-block-end: 1rem;
+}
+
+/* „Quantity queries" bez matematyki nth-child:
+   siatka, która przełącza się na dwie kolumny dopiero przy 4+ elementach */
+.gallery:has(> :nth-child(4)) {
+  grid-template-columns: 1fr 1fr;
+}
+
+/* Stylowanie poprzedniego rodzeństwa — niemożliwe przed :has().
+   Przygaś etykietę, gdy pole PO niej jest wyłączone */
+label:has(+ input:disabled) {
+  opacity: 0.5;
+}
+```
+
+Jedna uczciwa uwaga: **`:has()` może być kosztowny podczas częstych mutacji DOM**. Silnik ponownie oblicza dopasowanie relacyjne, gdy poddrzewo się zmienia, więc szeroki selektor typu `body:has(...)` sprawdzany ponownie przy każdym naciśnięciu klawisza to realny koszt. Trzymaj podmiot ograniczony i konkretny. Dla statycznych i sterowanych stanem przypadków powyżej jest praktycznie darmowy i kasuje prawdziwy kod.
+
+## Container queries — responsywne komponenty, które nie dbają o viewport
+
+Media queries zadają jedno pytanie: jak duży jest _viewport_? Ale karta nie żyje w viewporcie. Żyje w sidebarze, w modalu, w trzykolumnowej siatce — i powinna układać się na podstawie _własnej_ dostępnej przestrzeni. Przez lata odpowiedzią był `ResizeObserver` na każdy komponent.
+
+**Container queries są w Baseline** (Chrome/Edge 105+, Firefox 110+, Safari 16+) i pokrywają 93%+ globalnego użycia. Oto JavaScript, który kasują:
+
+```js
+// Stary sposób: zmierz kontener, rozgałęź się na jego szerokości
+const observer = new ResizeObserver((entries) => {
+  for (const entry of entries) {
+    const w = entry.contentRect.width;
+    entry.target.classList.toggle('card--wide', w > 400);
+  }
+});
+document.querySelectorAll('.card').forEach((el) => observer.observe(el));
+```
+
+Wersja CSS nie potrzebuje obserwatora, żadnego księgowania klas i działa na etapie layoutu przeglądarki:
+
+```css
+/* Zadeklaruj rodzica jako kontener zapytań */
+.card-wrapper {
+  container-type: inline-size;
+  container-name: card;
+}
+
+/* Potem odpytuj szerokość KONTENERA, nie viewportu */
+@container card (min-width: 400px) {
+  .card {
+    display: grid;
+    grid-template-columns: 120px 1fr;
+    gap: 1rem;
+  }
+}
+```
+
+Wrzuć tę samą `.card` do wąskiego sidebara, a się układa w pionie; wrzuć do szerokiej głównej kolumny, a idzie w poziom — bez konfiguracji i bez JS. Są też **container query units** (`cqi`, `cqb`, `cqw`, `cqh`), które skalują rzeczy względem kontenera, co jest idealne do płynnej typografii wewnątrz komponentu.
+
+A w 2026 historia jest już kompletna: **style queries** (`@container style(...)`) osiągnęły Baseline — Firefox 151 dostarczył ostatni element w maju 2026 — więc możesz też rozgałęziać się na wartościach właściwości niestandardowych kontenera, nie tylko jego rozmiarze. Jeśli budujesz bibliotekę komponentów, łączy się to naturalnie z myśleniem z [komponentowych, skalowalnych systemów frontendowych](/blog/from-components-to-systems-scalable-frontend-with-atomiec-design): komponenty stają się naprawdę niezależne od kontekstu.
+
+## @scope — style, które zatrzymują się tam, gdzie im każesz
+
+Ograniczanie zasięgu stylów kiedyś oznaczało CSS Modules, krok buildu, dyscyplinę BEM albo runtime CSS-in-JS. `@scope` robi to natywnie. Jest **w Baseline od początku 2026** (Chrome 118+, Safari 17.4+, a Firefox dołączający wsparcie, żeby dopełnić zestaw).
+
+Dwie rzeczy czynią go potężnym: korzeń zasięgu (scope root) i opcjonalny **limit zasięgu** (granica `to (...)`), który tworzy „pączka" — style obowiązują wewnątrz korzenia, ale zatrzymują się na limicie.
+
+```css
+/* Style obowiązują dla .card i jej potomków... */
+@scope (.card) to (.card__content) {
+  /* ...ale ZATRZYMUJĄ się na .card__content i niżej („dziurka w pączku").
+     img tutaj oznacza „img wewnątrz .card, ale nie wewnątrz .card__content" */
+  img {
+    border-radius: 8px;
+  }
+
+  :scope {
+    /* :scope odnosi się do samego korzenia zasięgu, czyli .card */
+    border: 1px solid oklch(90% 0 0);
+  }
+}
+```
+
+Druga po cichu wielka funkcja: `@scope` zmienia sposób, w jaki **bliskość** (proximity) rozstrzyga remisy. Gdy dwie reguły z zasięgiem mają równą specyficzność, wygrywa ta, której korzeń jest _bliżej_ w DOM. To dokładnie ten problem, do którego rozwiązania przy tematyzowaniu zagnieżdżonych komponentów kiedyś potrzeba było JS albo głębokich hacków ze specyficznością. To o wiele zdrowszy domyślny wybór niż wyścig zbrojeń specyficzności opisany w [zasadach czystego kodu frontendowego](/blog/principles-of-clean-frontend-code-dry-kiss-solid).
+
+## Natywne zagnieżdżanie — Sass, minus krok buildu
+
+Uruchamialiśmy cały preprocesor głównie po to, żeby pisać zagnieżdżone reguły i `&`. **Natywne zagnieżdżanie CSS jest teraz w Baseline** we wszystkich głównych silnikach, więc mnóstwo konfiguracji Sassa istnieje wyłącznie z przyzwyczajenia.
+
+```css
+.nav {
+  display: flex;
+  gap: 1rem;
+
+  /* Zagnieżdżaj selektory bezpośrednio */
+  a {
+    color: inherit;
+
+    /* & to referencja do rodzica, jak w Sassie */
+    &:hover {
+      color: oklch(55% 0.22 250);
+    }
+  }
+
+  /* Możesz nawet zagnieżdżać media/container queries */
+  @container (min-width: 500px) {
+    gap: 2rem;
+  }
+}
+```
+
+Dwie pułapki warte poznania. Po pierwsze, natywne zagnieżdżanie **nie konkatenuje stringów** tak, jak robi to Sass — `&--active` jest nieprawidłowe; piszesz `&.nav--active`. Po drugie, zagnieżdżony selektor typu jak `a { }` jest w porządku, ale goły zagnieżdżony selektor zaczynający się od identyfikatora we wczesnych implementacjach wymagał `&`; nowoczesne przeglądarki to rozluźniają, ale rozpoczynanie od `&` to nawyk, który nigdy Cię nie ukąsi.
+
+## Cascade layers — wygrywanie walk o specyficzność z premedytacją
+
+`@layer` pozwala zadeklarować jawne pasma priorytetów. Późniejsze warstwy biją wcześniejsze **niezależnie od specyficzności**. To narzędzie, które kończy wojny na `!important` i sprawia, że CSS firm trzecich zachowuje się jak trzeba.
+
+```css
+/* Ustal kolejność RAZ — późniejsza wygrywa */
+@layer reset, base, components, utilities;
+
+@layer components {
+  /* Nawet selektor o wysokiej specyficzności tutaj... */
+  .button.button--primary {
+    background: oklch(55% 0.2 255);
+  }
+}
+
+@layer utilities {
+  /* ...przegrywa z tą regułą o niskiej specyficzności, bo utilities jest później */
+  .bg-transparent {
+    background: transparent;
+  }
+}
+```
+
+To właśnie dlatego frameworki utility przeszły na warstwy. Jeśli dotykałeś nowego silnika Tailwind, widziałeś już ten model w akcji — rozłożyłem go na czynniki pierwsze w [przewodniku migracji do Tailwind CSS 4](/blog/tailwind-css-4-whats-new-migration-guide). Cokolwiek bez warstwy domyślnie wygrywa z czymkolwiek w warstwie, co jest przydatną furtką awaryjną do zapamiętania.
+
+## Subgrid — siatki, które faktycznie się wyrównują
+
+Zagnieżdżone siatki były kiedyś wyspami: siatka potomna nie mogła wyrównać się do torów rodzica, więc nagłówki i stopki kart w rzędzie rozjeżdżały się z linii. Naprawą był JS mierzący wysokości i ustawiający je jako równe. **Subgrid jest w Baseline** (Safari 16, Firefox 71, Chrome/Edge 117) i pozwala potomkowi przejąć tory rodzica:
+
+```css
+.cards {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1rem;
+}
+
+.card {
+  display: grid;
+  /* Rozciągnij się na 3 wiersze siatki RODZICA i odziedzicz jego tory wierszy */
+  grid-row: span 3;
+  grid-template-rows: subgrid;
+}
+```
+
+Teraz tytuł, treść i stopka każdej karty siedzą na wspólnych wierszach w całym rzędzie. Żadnego skryptu synchronizującego wysokości, żadnego zgadywania z `1fr`.
+
+## Stylowanie formularzy z :user-valid — UI walidacji bez maszyny stanów
+
+Natywne `:valid`/`:invalid` były technicznie w porządku, a praktycznie bezużyteczne: puste wymagane pole jest nieprawidłowe od załadowania strony, więc świeci się na czerwono, zanim użytkownik wpisze choć jeden znak. Budowaliśmy więc stan walidacji w JS — śledząc „touched", „dirty", „blurred" — tylko po to, żeby zdecydować, kiedy pokazać błąd.
+
+**`:user-valid` i `:user-invalid`** naprawiają to na poziomie platformy: dopasowują się dopiero _po_ interakcji użytkownika z polem. Teraz w Baseline we wszystkich nowoczesnych przeglądarkach.
+
+```css
+/* Stylizuje dopiero, gdy użytkownik faktycznie zaangażował się w pole */
+input:user-invalid {
+  border-color: oklch(60% 0.2 25);
+}
+
+input:user-valid {
+  border-color: oklch(60% 0.17 150);
+}
+
+/* Połącz z :has(), żeby odsłonić komunikat błędu bez ani grama JS */
+.field:has(input:user-invalid) .error-text {
+  display: block;
+}
+```
+
+Skoro już tu jesteś, dwie kolejne wygody dla formularzy. `field-sizing: content` sprawia, że input albo textarea rośnie, żeby dopasować się do treści — to skrypt auto-rozszerzającej się textarei, kasacja:
+
+```css
+/* Auto-rosnąca textarea, natywnie */
+textarea {
+  field-sizing: content;
+  min-height: 3lh; /* zacznij od 3 wysokości linii */
+  max-height: 12lh;
+}
+```
+
+`field-sizing` jest najpierw w Chromium i wciąż uzupełnia się w silnikach w 2026, więc traktuj go jako **progresywne ulepszenie** — degraduje się do zwykłej stałej textarei. Dostępny, odporny UX formularzy jak ten to powracający motyw w [przewodniku po dostępności webowej 2026](/blog/web-accessibility-2026-eaa-ada-wcag-guide), a robienie tego w CSS oznacza, że zachowanie przetrwa nawet wtedy, gdy Twój bundle JS się nie załaduje.
+
+## text-wrap: balance / pretty — typografia, którą kiedyś udawaliśmy JS-em
+
+Wyważone nagłówki kiedyś oznaczały bibliotekę typu Balance Text mierzącą i wstawiającą `<br>`. Teraz to jedna linia, i jest w Baseline:
+
+```css
+/* Wyrównaj wielolinijkowe nagłówki — żadnego osieroconego ostatniego słowa */
+h1,
+h2,
+h3 {
+  text-wrap: balance;
+}
+
+/* Dla treści: zapobiegaj jednowyrazowym ostatnim liniom (sierotom),
+   zoptymalizowane dla dłuższego tekstu, gdzie 'balance' byłby kosztowny */
+p {
+  text-wrap: pretty;
+}
+```
+
+Użyj `balance` dla krótkiego tekstu (nagłówki, cytaty blokowe) — jest droższy i przeglądarki ograniczają liczbę linii, do których go stosują — a `pretty` dla akapitów.
+
+## Anchor positioning + popover — Floating UI to teraz dwie właściwości CSS
+
+To ta, która wciąż wydaje się magią. Tooltipy, dropdowny i popovery potrzebowały JavaScriptu do dwóch trudnych problemów: **pozycjonowania** względem triggera i **przeskakiwania**, gdy wyszłyby poza viewport. To cały powód, dla którego istnieje Floating UI / Popper — często 10KB+ Twojego bundle'a, ten rodzaj ciężaru, na który zawsze poluję w [przewodniku po bundle poniżej 200KB](/blog/dynamic-bundle-optimization-under-200kb-guide).
+
+Połącz **natywny atrybut `popover`** (Baseline 2024 — za darmo obsługuje pokaż/ukryj, Escape do zamknięcia, light-dismiss przy kliknięciu na zewnątrz i układanie w warstwie górnej) z **CSS anchor positioning**:
+
+```html
+<button popovertarget="menu" id="trigger">Options</button>
+<div popover id="menu">…menu items…</div>
+```
+
+```css
+#trigger {
+  anchor-name: --trigger; /* nazwij kotwicę */
+}
+
+#menu {
+  position: absolute;
+  position-anchor: --trigger; /* przywiąż ten element do tej kotwicy */
+
+  /* Umieść go poniżej i wyrównaj do krawędzi początkowej kotwicy */
+  position-area: bottom span-right;
+  margin-top: 0.5rem;
+
+  /* Automatycznie przeskakuj, żeby zostać na ekranie */
+  position-try-fallbacks: flip-block, flip-inline;
+}
+```
+
+Stary odpowiednik to listener `scroll` + `resize` przeliczający współrzędne i ręczne sprawdzanie przepełnienia w każdej klatce. Tutaj `position-area` go umieszcza, a `position-try-fallbacks` obsługuje przeskok — deklaratywnie, poza głównym wątkiem.
+
+**Uczciwie o wsparciu:** to najmniej ustabilizowana funkcja na liście. Jest **Baseline 2026** w tym sensie, że Chrome 125+, Firefox 132+ i Safari 18.2+ dostarczają rdzenne `anchor()` / `position-anchor`. Ale wylądowała najpierw w Chromium, a krawędzie są nierówne — Safari potrzebowało 18.4+ do niektórych zachowań `@position-try`. Więc: używaj jej jako ulepszenia, trzymaj sensowną statyczną pozycję zapasową i nie dostarczaj jej jako _jedynego_ sposobu, w jaki krytyczne menu może się jeszcze otworzyć.
+
+## color-mix() i oklch() — cały design system bez preprocesora
+
+Generowanie odcieni jaśniejszych, ciemniejszych i stanów hover było drugim zadaniem Sassa. Teraz przeglądarka robi percepcyjnie jednolitą matematykę kolorów w runtimie. **`oklch()` i `color-mix()` są w Baseline** we wszystkich silnikach.
+
+```css
+:root {
+  --brand: oklch(55% 0.2 255);
+}
+
+.button {
+  background: var(--brand);
+}
+
+.button:hover {
+  /* Wmieszaj 15% czerni w kolor marki — prawdziwe, percepcyjne „przyciemnienie" */
+  background: color-mix(in oklch, var(--brand), black 15%);
+}
+
+.badge {
+  /* Kolor relatywny: ten sam odcień/chroma, dużo jaśniejszy — natychmiastowy tint */
+  background: oklch(from var(--brand) 92% c h);
+}
+```
+
+Ponieważ OKLCH jest percepcyjnie jednolity, `+10%` jasności wygląda jak ten sam krok wszędzie na kole barw — w przeciwieństwie do HSL, który Cię okłamuje. Możesz wygenerować całą paletę z jednego tokena, na żywo, świadomą motywu, bez buildu.
+
+## Scroll-driven animations — efekty przewijania poza głównym wątkiem, bez biblioteki
+
+Paski postępu przewijania i efekty odsłaniania przy scrollu oznaczały listener `scroll` odpalający się bez przerwy na głównym wątku (centrum janku) albo instalację hydraulikę IntersectionObserver. **`animation-timeline` z `scroll()` i `view()` jest teraz w Baseline**, a przeglądarka uruchamia to na kompozytorze:
+
+```css
+@keyframes grow {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+/* Pasek postępu czytania powiązany z przewijaniem dokumentu — bez JS */
+.progress {
+  transform-origin: left;
+  animation: grow linear;
+  animation-timeline: scroll(root block);
+}
+
+/* Wygaszaj elementy, gdy wchodzą do viewportu */
+.reveal {
+  animation: fade-in linear both;
+  animation-timeline: view();
+  animation-range: entry 0% cover 40%;
+}
+```
+
+Ponieważ działa poza głównym wątkiem, nie konkuruje z Twoim JS o budżet klatki — co ma znaczenie, jeśli zależy Ci na tego typu metrykach, które śledzę w [przewodniku po budżetach wydajności frontendu](/blog/performance-budgets-frontend-engineers-guide).
+
+## Co wciąż potrzebuje JavaScriptu w 2026
+
+CSS nie zabił _całego_ Twojego JS-a, a udawanie inaczej kończy się poparzeniem. Wciąż sięgasz po skrypt, gdy potrzebujesz:
+
+- **Faktycznej logiki aplikacji i danych** — pobierania, zarządzania stanem, reguł biznesowych. CSS stylizuje; nie liczy.
+- **Złożonego zarządzania fokusem** — roving tabindex, pułapkowania fokusu poza to, co daje `popover`, i większości interakcji klawiaturowych bogatych widżetów ARIA. Semantyka dostępności żyje w HTML + JS, nie w CSS.
+- **Dowolnej manipulacji DOM** — dodawania/usuwania/przestawiania węzłów, list wirtualizowanych, przestawiania metodą przeciągnij i upuść.
+- **Odczytywania pomiarów, żeby zasilić logikę** — jeśli potrzebujesz wartości w pikselach _w JavaScripcie_ (analityka, warunkowe pobieranie), `ResizeObserver`/`IntersectionObserver` wciąż są narzędziami; CSS reaguje na rozmiar, ale nie poda Ci liczby.
+- **Naprawdę dynamicznych celów kotwic** i złożonej animacji sterowanej gestami, której deklaratywne osie czasu nie potrafią wyrazić.
+
+Zmiana polega na tym, że JS wraca do bycia od _zachowania i danych_, a CSS odzyskuje _prezentację_ — czysty podział, którego zawsze twierdziliśmy, że chcemy.
+
+## Uczciwy poradnik migracji
+
+Nie przepisujesz wszystkiego w piątek. Co u mnie zadziałało:
+
+1. **Włącz darmówki już dziś.** `text-wrap: balance/pretty`, natywne zagnieżdżanie, `oklch()`/`color-mix()`, cascade layers, subgrid, `:user-valid` — Baseline i niskie ryzyko. Dostarcz je teraz.
+2. **Następnie zastąp obserwatory.** Wytrop `ResizeObserver`-na-komponent i podmień na container queries; wytrop listenery przełączające klasę rodzica i podmień na `:has()`. To tutaj liczba linii spada szybko.
+3. **Ulepszaj progresywnie dla frontu.** Anchor positioning i `field-sizing` są prawdziwe, ale nierówne — nakładaj je na działające fallbacki, nigdy jako jedyną ścieżkę.
+4. **Usuń zależności, z których wyrosłeś.** Gdy `:has()` i container queries wylądują, zaskakująca liczba małych narzędzi JS i dziura w kształcie Floating UI pojawi się w Twoim bundle'u. Usunięcie ich to najbardziej dźwigniowe sprzątanie, jakie zrobisz w tym kwartale.
+
+Piszę CSS od ponad dekady, a 2026 to pierwszy rok, w którym czuję, że język jest _przed_ tym, czego potrzebuję, zamiast dwa kroki za. Otwórz swój codebase, zgrepuj `ResizeObserver` i `classList.toggle` i zacznij usuwać. To najbardziej satysfakcjonujący refaktor, jaki zrobisz w tym roku.
+
+## References
+
+### Źródła
+
+- [MDN: `:has()` CSS pseudo-class](https://developer.mozilla.org/en-US/docs/Web/CSS/:has)
+- [Can I use: `:has()` relational pseudo-class](https://caniuse.com/css-has)
+- [MDN: CSS container queries](https://developer.mozilla.org/en-US/docs/Web/CSS/Guides/Containment/Container_queries)
+- [MDN: Using container size and style queries](https://developer.mozilla.org/en-US/docs/Web/CSS/Guides/Containment/Container_size_and_style_queries)
+- [web-standards.dev: How to @scope CSS now that it's Baseline](https://web-standards.dev/news/2026/01/scope-css-baseline/)
+- [MDN: Using CSS anchor positioning](https://developer.mozilla.org/en-US/docs/Web/CSS/Guides/Anchor_positioning/Using)
+- [MDN: CSS scroll-driven animations](https://developer.mozilla.org/en-US/docs/Web/CSS/Guides/Scroll-driven_animations)
+- [web.dev: May 2026 Baseline monthly digest](https://web.dev/blog/baseline-digest-may-2026)
+
+### Dalsza lektura
+
+- [MDN: `position-area` CSS property](https://developer.mozilla.org/en-US/docs/Web/CSS/Reference/Properties/position-area)
+- [MDN: `color-mix()` function](https://developer.mozilla.org/en-US/docs/Web/CSS/color_value/color-mix)
+- [MDN: `text-wrap` property](https://developer.mozilla.org/en-US/docs/Web/CSS/text-wrap)
+- [LogRocket: Container queries in 2026 — powerful, but not a silver bullet](https://blog.logrocket.com/container-queries-2026/)
+
+---
+
+~Seb 👊
