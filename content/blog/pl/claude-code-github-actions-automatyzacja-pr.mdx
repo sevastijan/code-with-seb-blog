@@ -1,0 +1,307 @@
+---
+title: 'Claude Code GitHub Actions: automatyzacja recenzji PR, triage issue i poprawek kodu'
+date: '2026-04-20'
+category: 'AI'
+tags: ['claude-code', 'github-actions', 'ci-cd', 'code-review', 'automation']
+draft: false
+featured: false
+author: 'Sebastian'
+enSlug: 'claude-code-github-actions-pr-automation-guide'
+excerpt: 'Oficjalny claude-code-action kosztuje 0,04 USD za recenzję PR. Przy 20 PR-ach dziennie to 24 USD miesięcznie. Oto pełna konfiguracja i mechanizmy kontroli kosztów.'
+---
+
+Trzy miesiące temu dodałem Claude'a do naszego pipeline'u recenzji PR. W pierwszym tygodniu wychwycił race condition w handlerze WebSocketa, który przeoczyło trzech ludzkich recenzentów. W drugim tygodniu oznaczył zapytanie N+1 ukryte za resolverem GraphQL. W trzecim tygodniu mój rachunek za API wyniósł 180 USD, bo zapomniałem ustawić budżet tokenów.
+
+Ten przewodnik obejmuje obie strony: **jak zautomatyzować cały workflow PR za pomocą Claude Code GitHub Actions** oraz jak przy okazji utrzymać przewidywalne koszty.
+
+## Co dostajesz od razu po instalacji
+
+Anthropic dostarcza dwa oficjalne GitHub Actions:
+
+1. **[`anthropics/claude-code-action@v1`](https://github.com/anthropics/claude-code-action)** — uniwersalny action do recenzji PR, triage'u issue, implementacji kodu i wzmianek @claude
+2. **[`anthropics/claude-code-security-review`](https://github.com/anthropics/claude-code-security-review)** — analiza skupiona na bezpieczeństwie, wykorzystująca semantyczne rozumienie Claude'a do wykrywania podatności wykraczających poza dopasowywanie wzorców
+
+Oba są dostępne w GitHub Marketplace. Najszybsza konfiguracja to uruchomienie `/install-github-app` wewnątrz Claude Code — generuje pliki workflow, ustawia sekrety i automatycznie konfiguruje uprawnienia.
+
+## Konfiguracja: od zera do zautomatyzowanych recenzji PR w 10 minut
+
+### Krok 1: zapisz klucz API
+
+```bash
+# W ustawieniach repozytorium GitHub:
+# Settings → Secrets → Actions → New repository secret
+# Nazwa: ANTHROPIC_API_KEY
+# Wartość: twój klucz API
+```
+
+### Krok 2: utwórz workflow
+
+```yaml
+# .github/workflows/claude-review.yml
+name: Claude Code Review
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  issue_comment:
+    types: [created]
+
+jobs:
+  review:
+    if: |
+      (github.event_name == 'pull_request') ||
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    steps:
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          model: claude-sonnet-4-6
+          max_tokens: 4096
+          timeout_minutes: 10
+```
+
+I to wszystko. Każdy PR dostaje teraz recenzję AI. Każdy komentarz `@claude` w PR-ze otrzymuje odpowiedź.
+
+### Krok 3: dodaj kontrolę kosztów
+
+To krok, który wszyscy pomijają — i potem żałują.
+
+```yaml
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          model: claude-sonnet-4-6
+          max_tokens: 4096
+          timeout_minutes: 10
+          # Kontrola kosztów
+          max_turns: 5            # Ogranicz liczbę wymian
+          allowed_tools: |        # Ogranicz, co Claude może robić
+            Read
+            Glob
+            Grep
+            Bash(git diff *)
+            Bash(git log *)
+```
+
+Bez `max_turns` Claude może przejść przez dziesiątki wywołań narzędzi przy skomplikowanym PR-ze. Bez `allowed_tools` może uruchamiać testy, instalować zależności albo eksplorować cały codebase. Jedno i drugie szybko spala tokeny.
+
+## Pięć przepisów na workflow
+
+### Przepis 1: automatyczna recenzja kodu przy każdym PR
+
+```yaml
+- uses: anthropics/claude-code-action@v1
+  with:
+    anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+    model: claude-sonnet-4-6
+    direct_prompt: |
+      Zrecenzuj ten PR. Skup się na:
+      1. Błędach logicznych i przypadkach brzegowych
+      2. Konsekwencjach wydajnościowych (zapytania N+1, zbędne re-rendery)
+      3. Problemach bezpieczeństwa (injection, XSS, obejścia autoryzacji)
+      4. Zmianach kontraktu API, które mogą zepsuć konsumentów
+
+      Bądź konkretny. Odwołuj się do numerów linii. Pomijaj czepianie się
+      stylu — od tego jest linter.
+```
+
+Koszt: ~0,04 USD za recenzję diffa o długości 400 linii na modelu Sonnet.
+
+### Przepis 2: recenzja bezpieczeństwa dla krytycznych ścieżek
+
+```yaml
+# Uruchamia się tylko, gdy zmieniają się pliki wrażliwe pod kątem bezpieczeństwa
+on:
+  pull_request:
+    paths:
+      - 'src/auth/**'
+      - 'src/api/**'
+      - 'src/middleware/**'
+      - '*.config.*'
+
+jobs:
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: anthropics/claude-code-security-review@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+```
+
+Action recenzji bezpieczeństwa analizuje zmienione pliki pod kątem [prompt injection](/blog/prompt-injection-attacks-llm-security-guide), SQL injection, XSS, obejść autoryzacji i innych podatności z OWASP Top 10. Rozumie kontekst — to nie tylko dopasowywanie wzorców. Dobrze łączy się z tradycyjną warstwą SAST, taką jak [GitHub code scanning z CodeQL](/blog/github-code-scanning-codeql-setup-free-alternatives) — recenzja semantyczna i analiza przepływu danych wychwytują różne klasy błędów.
+
+**Ważne zastrzeżenie:** ten action sam w sobie nie jest odporny na prompt injection. Używaj go wyłącznie do recenzji zaufanych PR-ów. Włącz w ustawieniach repozytorium opcję „Require approval for all external contributors".
+
+### Przepis 3: triage i przypisywanie issue
+
+```yaml
+on:
+  issues:
+    types: [opened]
+
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          direct_prompt: |
+            Przeanalizuj to issue. Ustal:
+            1. Czy to bug, prośba o funkcję czy pytanie?
+            2. Który obszar codebase'u jest dotknięty?
+            3. Szacowaną złożoność (mała/średnia/duża)
+            4. Sugerowane etykiety
+
+            Dodaj odpowiednie etykiety i opublikuj komentarz z podsumowaniem.
+```
+
+### Przepis 4: automatyczna poprawka po wzmiance @claude
+
+```yaml
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  fix:
+    if: contains(github.event.comment.body, '@claude fix')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          model: claude-sonnet-4-6
+          allowed_tools: |
+            Read
+            Edit
+            Write
+            Bash(npm run lint)
+            Bash(npm test)
+```
+
+Napisz w PR-ze komentarz `@claude fix this linting error`, a Claude wypchnie commit z poprawką. Czyta kod, wprowadza zmianę, uruchamia lint i testy, a jeśli wszystko przechodzi — commituje.
+
+### Przepis 5: listy kontrolne recenzji zależne od ścieżki
+
+```yaml
+- uses: anthropics/claude-code-action@v1
+  with:
+    anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+    direct_prompt: |
+      Zrecenzuj ten PR, korzystając z list kontrolnych zależnych od ścieżki:
+
+      Dla plików w src/api/:
+      - [ ] Walidacja wejścia za pomocą Zod
+      - [ ] Rate limiting na publicznych endpointach
+      - [ ] Odpowiedzi błędów zgodne z formatem { error, code }
+
+      Dla plików w src/components/:
+      - [ ] Dostępność: poprawne etykiety ARIA
+      - [ ] Brak stylów inline — używaj Tailwind
+      - [ ] Obsłużone stany ładowania i błędu
+
+      Opublikuj komentarz z listą kontrolną i statusem pass/fail dla każdej pozycji.
+```
+
+## Zarządzanie kosztami: liczby
+
+| Scenariusz | Model | Koszt/recenzja | Miesięcznie (20 PR/dzień) |
+|----------|-------|-------------|---------------------|
+| Podstawowa recenzja (diff 400 linii) | Sonnet | ~0,04 USD | ~24 USD |
+| Głęboka recenzja (diff 1000 linii) | Sonnet | ~0,12 USD | ~72 USD |
+| Recenzja bezpieczeństwa | Sonnet | ~0,08 USD | ~48 USD |
+| Automatyczna poprawka (@claude fix) | Sonnet | ~0,20 USD | Zmiennie |
+| Triage issue | Haiku | ~0,01 USD | ~6 USD |
+
+### Lista kontrolna kontroli kosztów
+
+1. **Używaj Sonnet, nie Opus** — Sonnet dobrze radzi sobie z recenzjami przy 1/5 kosztu
+2. **Ustaw `max_turns: 5`** — zapobiega niekontrolowanym pętlom narzędzi
+3. **Ustaw `timeout_minutes: 10`** — twardy wyłącznik awaryjny
+4. **Ogranicz `allowed_tools`** — daj Claude'owi tylko to, czego potrzebuje
+5. **Używaj wyzwalaczy `paths`** — nie recenzuj zmian w README skanerem bezpieczeństwa
+6. **Ustaw miesięczne alerty budżetowe** w panelu Anthropic
+
+Głębsze strategie zarządzania tokenami opisałem w tekście [10 zmian, które ścięły mój rachunek za Claude Code o 70%](/blog/claude-code-token-optimization-bill-cut-guide).
+
+## Integracja z istniejącym CI/CD
+
+Claude Code Actions działają obok twojego dotychczasowego pipeline'u. Praktyczna konfiguracja:
+
+```yaml
+jobs:
+  # Standardowe CI uruchamia się jako pierwsze
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: npm ci && npm run lint && npm test
+
+  # Claude recenzuje dopiero po przejściu CI
+  claude-review:
+    needs: lint-and-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          direct_prompt: |
+            CI przeszło. Skup recenzję na logice, architekturze
+            i bezpieczeństwie — nie na składni czy formatowaniu.
+```
+
+Dzięki temu Claude nie marnuje tokenów na recenzowanie kodu, który nie przechodzi lintingu. Więcej o budowaniu wydajnych [pipeline'ów CI/CD z Claude Code](/blog/claude-code-headless-mode-cicd-automation-playbook), w tym o czterech flagach, których potrzebuje każdy pipeline w trybie headless, opisałem osobno w pełnym poradniku.
+
+## Uwierzytelnianie u dostawców chmurowych
+
+Jeśli korzystasz z AWS, GCP lub Azure zamiast bezpośrednio z API Anthropic:
+
+```yaml
+# AWS Bedrock
+- uses: anthropics/claude-code-action@v1
+  with:
+    use_bedrock: true
+    aws_access_key_id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+    aws_secret_access_key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+    aws_region: us-east-1
+
+# Google Vertex AI
+- uses: anthropics/claude-code-action@v1
+  with:
+    use_vertex: true
+    gcp_project_id: ${{ secrets.GCP_PROJECT_ID }}
+    gcp_region: us-central1
+```
+
+## Podsumowanie
+
+Claude Code GitHub Actions to integracja o najwyższym ROI w całym ekosystemie Claude Code. 24 USD miesięcznie za automatyczne recenzje PR, które wychwytują prawdziwe błędy, egzekwują standardy zespołu i odpowiadają na wzmianki `@claude`.
+
+Zacznij od Przepisu 1 (podstawowa recenzja) i Przepisu 2 (recenzja bezpieczeństwa dla krytycznych ścieżek). Dodawaj kolejne, w miarę jak twój zespół oswaja się z recenzją kodu wspieraną przez AI. Dla bramek przed mergem na dużych diffach połącz ten pipeline z [flotą Claude Code /ultrareview do polowania na bugi w chmurze](/blog/claude-code-ultrareview-cloud-bug-hunting-guide) — uruchamia od 5 do 20 wyspecjalizowanych agentów równolegle i weryfikuje każde znalezisko przed zaraportowaniem.
+
+Co zrobiłbym inaczej? Ustawiłbym `max_turns` i `allowed_tools` od pierwszego dnia. Rachunek na 180 USD nauczył mnie tej lekcji.
+
+## Bibliografia
+
+### Źródła
+- [Claude Code GitHub Actions — oficjalna dokumentacja](https://code.claude.com/docs/en/github-actions) - Przewodnik konfiguracji i dokumentacja ustawień
+- [anthropics/claude-code-action](https://github.com/anthropics/claude-code-action) - Oficjalne repozytorium action z przykładami
+- [anthropics/claude-code-security-review](https://github.com/anthropics/claude-code-security-review) - Action recenzji skupiony na bezpieczeństwie
+- [Claude Code Action — GitHub Marketplace](https://github.com/marketplace/actions/claude-code-action-official) - Wpis w Marketplace
+
+### Dalsza lektura
+- [Claude Code Headless Mode: poradnik automatyzacji CI/CD](/blog/claude-code-headless-mode-cicd-automation-playbook) - Cztery flagi, których potrzebuje każdy pipeline headless
+- [Optymalizacja tokenów w Claude Code: jak ściąłem rachunek o 70%](/blog/claude-code-token-optimization-bill-cut-guide) - Strategie zarządzania kosztami
+- [Ataki prompt injection: SQL injection ery AI](/blog/prompt-injection-attacks-llm-security-guide) - Kwestie bezpieczeństwa recenzji wspieranej przez AI
+
+---
+
+~Seb 👊
