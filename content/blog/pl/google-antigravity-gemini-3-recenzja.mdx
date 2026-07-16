@@ -1,0 +1,147 @@
+---
+title: 'Google Antigravity od środka — tydzień z agent-first IDE opartym na Gemini 3 Pro'
+date: '2026-05-11'
+category: 'AI'
+tags: ['google-antigravity', 'gemini-3', 'agentic-ide', 'ai-coding', 'developer-tools']
+draft: false
+featured: false
+author: 'Sebastian'
+enSlug: 'google-antigravity-gemini-3-agentic-ide-developer-review'
+excerpt: 'Google Antigravity to pierwsze IDE zbudowane wokół agentów zamiast plików. Po tygodniu pracy na realnym projekcie: gdzie model agent-first naprawdę zmienia zasady gry.'
+---
+
+Większość „agentowych IDE" to zwykłe IDE z doklejonym panelem czatu. Google Antigravity jest pierwszym, w którym trzeciego dnia w ogóle przestałem otwierać pliki. To albo przebłysk przyszłości, albo błąd w użyteczności — zależnie od tego, jakie zadanie mu powierzysz.
+
+Spędziłem tydzień, uruchamiając Antigravity na realnym projekcie pobocznym (dashboard w Next.js z backendem na Postgresie) oraz na paru jednorazowych eksperymentach. Oto co faktycznie działa, co się rozpada i jak model agent-first oparty na Gemini 3 Pro wypada w porównaniu z tym, jak obecnie na co dzień korzystam z [Claude Code i Cursora](/blog/claude-code-vs-cursor-vs-codex-honest-developer-comparison-2026).
+
+## Czym Antigravity właściwie jest
+
+Google uruchomiło Antigravity 18 listopada 2025 roku, razem z Gemini 3. To publiczny preview działający na Macu, Windowsie i Linuksie. **W trakcie preview jest darmowy** — bez karty kredytowej, bez limitów poza miękkimi progami, na które i tak wpadają wszyscy.
+
+Pod maską to edytor wywodzący się z VS Code — ale to mniejsza połowa produktu. Większa połowa to coś, co Google nazywa **Mission Control**: osobne okno orkiestrujące agentów pracujących nad zadaniami w twoim edytorze, terminalu i przeglądarce. Agenci mają bezpośredni dostęp do wszystkich trzech powierzchni. Planują, wykonują i weryfikują bez twojego nadzoru.
+
+Podział na dwa okna to zobowiązanie architektoniczne: Edytor to miejsce, gdzie czytasz i edytujesz kod, kiedy masz na to ochotę. Mission Control to miejsce, w którym delegujesz. Założenie jest takie, że spędzasz więcej czasu w Mission Control niż w edytorze. Po tygodniu uważam, że dla pewnych klas pracy to naprawdę prawda, a dla innych — zdecydowanie nie.
+
+## Punkt wyjścia: Gemini 3 Pro
+
+Antigravity domyślnie używa **Gemini 3.1 Pro** do zadań agentowych i **Gemini 3 Flash** do lekkich operacji. Profil benchmarkowy 3.1 Pro jest konkurencyjny, ale nie dominujący:
+
+| Benchmark | Gemini 3.1 Pro | Claude Opus 4.6 | GPT-5.3-Codex |
+|---|---|---|---|
+| SWE-Bench Verified | 80.6% | 80.8% | — |
+| SWE-Bench Pro | 54.2% | — | 56.8% |
+| Terminal-Bench 2.0 | 68.5% | — | 77.3% |
+| LiveCodeBench Pro (Elo) | 2887 | — | — |
+| Kontekst | 1M tokenów | 1M | 400k |
+
+Wniosek: Gemini 3.1 Pro jest **mniej więcej na poziomie Claude Opus w standardowym SWE-Bench Verified**, ale **wyraźnie słabszy w agentowych zadaniach terminalowych** (różnica w Terminal-Bench jest realna i czuć ją, gdy agent musi łańcuchować polecenia powłoki między plikami). Świetnie radzi sobie z rozumowaniem „za jednym strzałem". W długich pętlach agentowych z weryfikacją jest średniakiem.
+
+To istotne dla Antigravity, ponieważ cała propozycja wartości Antigravity to właśnie długa pętla agentowa z weryfikacją.
+
+## Naprawdę nowa rzecz: równoległi agenci w osobnych workspace'ach
+
+Funkcja, która nie istnieje nigdzie indziej — i która uzasadniła dla mnie instalację — to **równoległe workspace'y agentów**. Z poziomu Mission Control możesz:
+
+1. Uruchomić agenta budującego funkcję w gałęzi A.
+2. Uruchomić drugiego agenta refaktoryzującego osobny moduł w gałęzi B.
+3. Uruchomić trzeciego agenta piszącego testy dla nietkniętej części kodu w gałęzi C.
+
+Wszyscy trzej działają jednocześnie. Każdy dostaje własne okno kontekstu. Każdy zapisuje własne commity. Obserwujesz ich postęp w dashboardzie pokazującym status — myśli, czeka na zatwierdzenie, powodzenie, niepowodzenie. Gdy jeden kończy, przeglądasz i zatwierdzasz. Kolejny idzie dalej.
+
+To ta sama idea co [uruchamianie równoległych sesji Claude Code w git worktrees](/blog/parallel-claude-code-sessions-git-worktrees-guide), ale **bez konieczności samodzielnego okablowania tego**. Antigravity obsługuje izolację workspace'ów. Automatycznie tworzy gałęzie. Koordynuje przepływy zatwierdzeń. To najczystsza implementacja równoległej pracy wieloagentowej, jakiej używałem.
+
+Haczyk: Gemini 3.1 Pro dobija do swoich limitów szybciej niż Opus 4.6 czy 4.7 przy trzecim lub czwartym agencie. Dwóch równoległych agentów to wyraźny zysk produktywności. Trzech jest w porządku. Przy czterech zaczyna powstawać ten rodzaj kodu „wygląda dobrze, nie kompiluje się", nad którego przeglądaniem spędzasz więcej czasu, niż zajęłoby ci samo napisanie.
+
+## Co Antigravity potrafi, a Cursor i Claude Code nie
+
+Trzy zdolności są w maju 2026 naprawdę unikalne dla Antigravity:
+
+**1. Wbudowana przeglądarka sterowana przez agenta.** Agent może otworzyć URL twojego serwera deweloperskiego, poklikać, zrobić zrzuty ekranu, odczytać wyrenderowany DOM, wypatrywać błędów w konsoli i użyć tych informacji, by naprawić to, co przed chwilą napisał. To najbliższe „AI testujące własne UI", co widziałem. Dla pracy nad frontendem to przełom.
+
+Przy budowie mojego dashboardu poprosiłem agenta o dodanie filtra zakresu dat. Napisał komponent, otworzył przeglądarkę, kliknął rozwijaną listę, zobaczył, że kalendarz renderuje się poza ekranem przy szerokościach viewportu poniżej 1200px, po czym wrócił i naprawił pozycjonowanie. Claude Code potrafi to zrobić z [Playwright + browser-use MCP](/blog/claude-code-skills-reusable-ai-workflows-guide), ale musisz to okablować. Antigravity dostarcza to od razu.
+
+**2. Mission Control jako główna powierzchnia.** Przestajesz otwierać pliki. Piszesz opis zadania, obserwujesz, jak agent planuje, zatwierdzasz plan, obserwujesz napływający diff, zatwierdzasz diff, idziesz dalej. Edytor istnieje jako awaryjne rozwiązanie na wypadek, gdy potrzebujesz na coś zerknąć. To **realna zmiana modelu interakcji**, nie kosmetyczna poprawka UI.
+
+**3. Rules i Workflows jako obywatele pierwszej kategorii.** W panelu personalizacji edytora definiujesz **Rules** (ograniczenia, których agent trzyma się globalnie — „zawsze używaj Drizzle, nigdy surowego SQL", „każdy komponent musi mieć historię w Storybooku") oraz **Workflows** (wieloetapowe procedury wywoływane komendą slash — `/deploy-staging` uruchamia twoją standardową sekwencję przed wdrożeniem). Koncepcyjnie to odpowiedź Antigravity na [skille Claude Code](/blog/claude-code-skills-reusable-ai-workflows-guide) i CLAUDE.md połączone w jedno, ale UI do edycji i wywoływania jest naprawdę lepsze. Odkrywanie komend slash to tutaj funkcja, która robi różnicę.
+
+## Gdzie Antigravity się rozpada
+
+Ta sekcja to jedyna, której nikt w relacjach z premiery nie pisze, więc jest jedyną wartą przeczytania.
+
+**Utrata pamięci w obrębie jednej sesji.** To błąd, który dokuczył mi najbardziej. Agent zapomina struktury plików, decyzje architektoniczne podjęte piętnaście minut wcześniej i kod, który sam napisał. Drugiego dnia musiałem trzy osobne razy przypominać mu, że używamy `pnpm`, a nie `npm`, mimo że plik lockfile leży dokładnie tam, a on wcześniej w innym zadaniu poprawnie użył pnpm. Okno kontekstu 1M cię nie ratuje, ponieważ agent nie ładuje właściwego kontekstu — ładuje to, co jego planer uznał za istotne, a planer się myli.
+
+**Pożeracz zasobów MacBooka.** Mission Control + Edytor + osadzona przeglądarka to ciężka kombinacja. Na MacBooku Pro M1 z 16GB, z dwoma równoległymi agentami, patrzyłem, jak wskaźnik ciśnienia pamięci robi się czerwony, a wiatraki się rozkręcają. Na M3 Pro z 32GB jest w porządku, ale zauważalnie. Jeśli twoja maszyna jest w dolnej części specyfikacji, spodziewaj się, że to poczujesz.
+
+**Rozłączenia Agent Managera.** Wielokrotnie w ciągu tygodnia Agent Manager tracił połączenie z działającym agentem. Agent pracował dalej w tle, ale UI pokazywało go jako „rozłączonego" i nie pozwalało na interakcję. Restart Antigravity odzyskiwał stan, ale za każdym razem traciłem kilka minut. To problem publicznego preview i prawdopodobnie zostanie naprawiony.
+
+**Luka w Terminal-Bench jest realna.** Gdy zadanie wymaga od agenta łańcuchowania poleceń powłoki — uruchom migrację, obserwuj wyjście, warunkowo uruchom kolejne polecenie, sparsuj JSON z CLI — Antigravity daje zauważalnie gorsze wyniki niż Claude Code z Opus. Wynik 68,5% w Terminal-Bench jest wobec tego uczciwy. Do wszystkiego, co żyje bardziej w terminalu niż w kodzie, chcesz innego narzędzia.
+
+**Brak na razie poważnej oferty enterprise.** Brak SOC 2, brak jasnej polityki rezydencji danych, brak podstaw dla logów audytowych. Jeśli działasz w ochronie zdrowia, finansach lub czymkolwiek regulowanym, Cursor i Claude Code mają już dokumenty compliance, które Antigravity musi dopiero napisać.
+
+**Kontrowersje wokół limitów.** Google po cichu zacieśnia progi „darmowego preview". W intensywny dzień wpadłem na miękki limit, a agent bez uprzedzenia obniżył się do Gemini 3 Flash. Wyniki zauważalnie się pogorszyły i zajęło mi dziesięć minut ustalenie dlaczego. Obserwuj wskaźnik modelu w Mission Control.
+
+## Mój faktyczny workflow po tygodniu
+
+Nie zastąpiłem Claude Code przez Antigravity. Dodałem Antigravity do konkretnych klas zadań:
+
+- **Praca nad frontendem, gdzie liczy się weryfikacja wizualna** → Antigravity. Pętla przeglądarki wewnątrz agenta jest tego warta.
+- **Równoległa praca nad funkcjami w trzech lub więcej niezależnych modułach** → Antigravity. Orkiestracja workspace'ów jest naprawdę najlepsza.
+- **Prototypy greenfield bez istniejącej architektury** → Antigravity. Model „agent-first" błyszczy, gdy nie ma istniejącej struktury do zapomnienia.
+- **Praca mocno terminalowa** (migracje, infrastruktura, debugowanie łańcuchowanych procesów) → Claude Code. Opus 4.7 + 1M kontekstu to wciąż właściwe narzędzie.
+- **Kodobazy, w których muszę czytać, zanim zacznę pisać** → Claude Code. Eksploracja agentowa jest lepsza.
+- **Złożone refaktoryzacje wielu plików z inwariantami między modułami** → Claude Code. Utrata pamięci w Antigravity daje się tu we znaki.
+- **Szybkie, celowane edycje** → Cursor. Tab-complete wciąż jest szybszy niż odpalanie agenta.
+
+Podział, który u mnie działa: **Antigravity do nowej, weryfikowalnej w przeglądarce pracy. Claude Code do wszystkiego, co dotyka istniejącego kodu. Cursor do taktycznych edycji.** Wszystkie trzy otwarte jednocześnie to teraz mój standardowy setup, czyli dokładnie ten [wielonarzędziowy, składalny stos](/blog/ai-coding-tools-2026-developer-guide), ku któremu zmierza reszta branży.
+
+## Konfiguracja
+
+Pobierz z `antigravity.google` (bez rejestracji mailem w preview, co jest odświeżające). Zainstaluj. Zaloguj się kontem Google. Domyślne modele są już skonfigurowane. Pierwsza rzecz do zrobienia:
+
+1. **Otwórz Customizations → Rules.** Napisz trzy lub cztery reguły specyficzne dla twojego projektu: menedżer pakietów, konwencje struktury plików, styl kodu. Bez nich agent domyślnie stosuje ogólne dobre praktyki, które mogą nie pasować do twojej kodobazy.
+2. **Stwórz jeden Workflow na próbę.** Prosty workflow `/format-and-test`, który uruchamia twój formatter, a potem zestaw testów, oszczędzi ci wpisywania go dziesięć razy dziennie.
+3. **Do pierwszego zadania użyj Mission Control, nie edytora.** Opieraj się pokusie powrotu do edycji plik po pliku. Model interakcji zaskakuje dopiero wtedy, gdy zaangażujesz się w niego na parę godzin.
+4. **Skonfiguruj co najmniej dwa równoległe workspace'y** na pierwszą realną sesję, nawet jeśli uruchamiasz naraz tylko jeden. Model myślowy „zadania w osobnych piaskownicach" to rzecz, w której Antigravity jest najlepszy.
+
+## Hipoteza agent-first
+
+Oto co Antigravity robi dobrze, a czego reszta kategorii AI IDE nie: **jednostką pracy jest zadanie, nie plik**. Cursor wciąż każe ci myśleć plikami. Claude Code każe ci myśleć poleceniami. Antigravity każe ci myśleć celami: „zbuduj ten dashboard", „napraw ten błąd", „dodaj testy do tego modułu".
+
+To ujęcie jest prawdziwą zmianą. Widok edytora staje się narzędziem inspekcji, nie przestrzenią roboczą. Piszesz mniej. Przeglądasz więcej. Umiejętność, która się liczy, to **pisanie dobrych opisów zadań i dobrych reguł**, a nie nawigacja po plikach czy pamiętanie skrótów.
+
+Czy to przyszłość programowania — to osobne pytanie. Ale to przyszłość, na którą stawia Google, a Antigravity jest jedynym produktem, który angażuje się w ten zakład od początku do końca. Cursor wciąż asekuruje. Claude Code pozostaje jawnie ukształtowany jak narzędzie. Antigravity mówi „pliki to detal implementacyjny" i tak myśli naprawdę.
+
+Nie sądzę, by wygrał w 2026. Luka w niezawodności i luka Terminal-Bench Gemini 3.1 Pro znaczą zbyt wiele. Ale nie stawiałbym przeciwko samemu zakładowi. Jeśli Gemini 4 zamknie agentową lukę do Opus, a Antigravity naprawi problem z pamięcią sesji, kolejne dwanaście miesięcy zrobi się ciekawe dla całej kategorii IDE.
+
+## Podsumowanie
+
+**Zainstaluj to.** Jest darmowe w trakcie preview, instalacja to jedno kliknięcie, a sama pętla przeglądarki wewnątrz agenta jest warta miejsca na dysku.
+
+**Nie migruj na to.** Problemy z pamięcią, rozłączenia i koszt zasobów sprawiają, że to uzupełnienie, nie zamiennik.
+
+**Dodaj to do wielonarzędziowego stosu.** Antigravity do nowego frontendu, Claude Code do istniejącego kodu i pracy terminalowej, Cursor do taktycznych edycji. To konfiguracja, na której działam, i najlepsza, jakiej używałem.
+
+Model agent-first jest realny. Implementacja wciąż jest surowa. Połączenie jednego z drugim to najciekawszy produkt deweloperski, jaki Google wypuściło od czasu samego Gemini.
+
+## Bibliografia
+
+### Źródła
+
+- [Build with Google Antigravity | Google Developers Blog](https://developers.googleblog.com/build-with-google-antigravity-our-new-agentic-development-platform/) — oficjalna zapowiedź premiery i przegląd możliwości
+- [An Honest Review of Google Antigravity | dev.to](https://dev.to/fabianfrankwerner/an-honest-review-of-google-antigravity-4g6f) — praktyczna krytyka z realnego użycia
+- [Google Antigravity Documentation | Rules & Workflows](https://antigravity.google/docs/rules-workflows) — szczegóły funkcji Rules i Workflows
+- [Gemini 3.1 Pro | Google DeepMind Model Card](https://deepmind.google/models/model-cards/gemini-3-1-pro/) — oficjalne wyniki benchmarków
+- [Gemini 3.1 Pro Benchmark Analysis | SmartScope](https://smartscope.blog/en/generative-ai/google-gemini/gemini-3-1-pro-benchmark-analysis-2026/) — kontekst Terminal-Bench i SWE-Bench Pro
+- [Tried Cursor, Claude Code, and Antigravity for a Month | XDA Developers](https://www.xda-developers.com/tried-cursor-claude-code-google-antigravity-for-month/) — porównawcze testy praktyczne
+- [Review of Google Antigravity for Building Jira Apps | Atlassian](https://www.atlassian.com/blog/developer/review-of-google-antigravity-for-building-jira-apps) — recenzja z realnego projektu
+- [Getting Started with Google Antigravity | Google Codelabs](https://codelabs.developers.google.com/getting-started-google-antigravity) — oficjalny tutorial konfiguracji
+
+### Dalsza lektura
+
+- [Claude Code vs Cursor vs Codex — Honest Developer Comparison 2026](/blog/claude-code-vs-cursor-vs-codex-honest-developer-comparison-2026) — pokrewne porównanie reszty stosu agentowego
+- [Parallel Claude Code Sessions with Git Worktrees](/blog/parallel-claude-code-sessions-git-worktrees-guide) — wersja DIY modelu równoległych workspace'ów Antigravity
+- [Claude Code Skills — Reusable AI Workflows Guide](/blog/claude-code-skills-reusable-ai-workflows-guide) — odpowiednik Workflows Antigravity w Claude Code
+
+---
+
+~Seb 👊
