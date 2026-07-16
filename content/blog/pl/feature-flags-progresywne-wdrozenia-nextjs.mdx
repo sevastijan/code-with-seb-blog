@@ -1,0 +1,923 @@
+---
+title: 'Feature flags i progresywne wdrożenia w Next.js: bezawaryjne deploymenty zrobione dobrze'
+date: '2026-03-28'
+category: 'Architecture'
+tags: ['nextjs', 'feature-flags', 'deployment', 'architecture', 'devops']
+draft: false
+featured: false
+author: 'Sebastian'
+enSlug: 'feature-flags-progressive-rollouts-nextjs-guide'
+excerpt: 'Knight Capital stracił 460 mln dolarów w 45 minut przez nieusunięty feature flag. Oto jak poprawnie wdrożyć feature flags w Next.js — od ewaluacji po dług techniczny.'
+---
+
+1 sierpnia 2012 roku Knight Capital Group wdrożył kod, który przypadkiem ponownie aktywował stary feature flag sterujący przestarzałym algorytmem tradingowym. W 45 minut firma straciła 460 milionów dolarów i została zmuszona do awaryjnego przejęcia. Główną przyczyną nie był błąd w algorytmie — był nią nieusunięty feature flag, którego nikt nie skasował.
+
+Ta historia jest ekstremalna, ale sam wzorzec jest powszechny. Slack zaliczył sześciogodzinną awarię, ponieważ rollout feature flaga wywołał błąd wydajnościowy. Mimo że zespół wycofał flagę w 3 minuty, nieaktualny stan HAProxy przerodził się w wiele godzin przestoju. Każdy zespół, z którym pracowałem i który używa feature flags bez dyscypliny, prędzej czy później ma własną wersję tej historii.
+
+Feature flags to jedno z najpotężniejszych narzędzi we współczesnym deploymencie. Pozwalają oddzielić wdrożenie od udostępnienia funkcji, prowadzić testy A/B bez osobnej infrastruktury, natychmiast wyłączać problematyczne funkcje i wdrażać zmiany dla 1% użytkowników, zanim trafią do 100%. Ale są też jednym z najgroźniejszych źródeł długu technicznego i incydentów produkcyjnych, gdy zarządza się nimi źle.
+
+Jeśli budujesz na [Next.js z Server Components i Edge Runtime](/blog/nextjs-2026-server-components-edge-runtime-guide), feature flags pięknie integrują się z modelem renderowania. Ten przewodnik obejmuje wszystko: architekturę, implementację w Next.js (App Router, Server Components, Middleware, Edge Runtime), cztery typy flag, których potrzebujesz, narzędzia, anty-wzorce oraz dyscyplinę sprzątania, która utrzymuje system w zdrowiu.
+
+## Cztery typy feature flags
+
+Nie wszystkie flagi są równe. Taksonomia Martina Fowlera wyróżnia cztery kategorie, każda o innym czasie życia, właścicielstwie i profilu ryzyka:
+
+### 1. Release flags (tymczasowe — usuń w ciągu 30 dni)
+
+Najpopularniejszy typ. Wdrażasz kod za flagą, stopniowo go włączasz i usuwasz flagę, gdy funkcja jest w pełni wdrożona.
+
+```typescript
+// Release flag — chroni nowy przepływ checkoutu
+if (flags.newCheckoutFlow) {
+  return <NewCheckoutPage />;
+}
+return <LegacyCheckoutPage />;
+```
+
+**Czas życia:** dni do tygodni. Musi zostać usunięta w ciągu 30 dni od osiągnięcia 100% rolloutu.
+
+**Zagrożenie:** to źródło długu flag numer jeden. Zespoły włączają flagę, wypuszczają funkcję i zapominają posprzątać. Teraz masz martwe ścieżki kodu, nieprzetestowane gałęzie i inżynierów, którzy nie wiedzą, która ścieżka faktycznie działa na produkcji.
+
+### 2. Experiment flags (tymczasowe — usuń po zakończeniu testu)
+
+Używane do testów A/B i eksperymentów wielowariantowych. Flaga określa, który wariant widzi użytkownik, a analityka mierzy, który wypada lepiej.
+
+```typescript
+// Experiment flag — test A/B na stronie cennika
+const variant = flags.pricingPageVariant; // 'control' | 'variant_a' | 'variant_b'
+
+switch (variant) {
+  case 'variant_a':
+    return <PricingPageAnnualFirst />;
+  case 'variant_b':
+    return <PricingPageComparisonTable />;
+  default:
+    return <PricingPageOriginal />;
+}
+```
+
+**Czas życia:** tygodnie do miesięcy (testy A/B potrzebują istotności statystycznej). Usuń natychmiast po wpisaniu na stałe zwycięskiego wariantu.
+
+**Kluczowy wymóg:** spójne przypisanie — użytkownik musi zawsze widzieć ten sam wariant. Oznacza to hashowanie po ID użytkownika, a nie losowe przypisywanie przy każdym żądaniu.
+
+### 3. Ops flags / kill switches (stałe)
+
+Awaryjne przełączniki, które pozwalają wyłączać funkcje lub degradować działanie bez deploymentu. To twoje bezpieczniki.
+
+```typescript
+// Kill switch — wyłącza zewnętrzny procesor płatności
+if (!flags.ops.stripe.enabled) {
+  return <PaymentUnavailableMessage />;
+}
+return <StripePaymentForm />;
+```
+
+**Czas życia:** stały. Nigdy ich nie usuwaj.
+
+**Każdy system produkcyjny potrzebuje kill switchy na:**
+- Przetwarzanie płatności
+- Wysyłkę e-maili/powiadomień
+- Integracje z zewnętrznymi API
+- Kosztowne obliczeniowo funkcje
+- Funkcje real-time/WebSocket
+- Indeksowanie wyszukiwania
+
+**Konwencja nazewnictwa:** `ops.{service}.{function}.enabled` — dzięki temu łatwo je znaleźć o 3 nad ranem.
+
+### 4. Permission flags (stałe — powiązane z rozliczeniami/rolami)
+
+Kontrolują dostęp na podstawie planu, roli lub subskrypcji użytkownika. To nie są tak naprawdę „flagi" w tradycyjnym sensie — to decyzje autoryzacyjne napędzane infrastrukturą flag.
+
+```typescript
+// Permission flag — funkcja premium
+if (flags.permissions.advancedAnalytics) {
+  return <AdvancedAnalyticsDashboard />;
+}
+return <UpgradePrompt feature="Advanced Analytics" />;
+```
+
+**Czas życia:** stały, ale ewoluuje wraz z twoim modelem cenowym.
+
+## Matematyka, która powinna cię przerazić
+
+Każdy feature flag dodaje warunkową gałąź do twojego kodu. Przy `n` flagach masz `2^n` możliwych ścieżek kodu:
+
+| Flagi | Ścieżki kodu |
+|-------|-----------|
+| 5 | 32 |
+| 10 | 1 024 |
+| 15 | 32 768 |
+| 20 | 1 048 576 |
+| 30 | 1 073 741 824 |
+
+Nie da się przetestować miliona ścieżek kodu. Nie da się o nich rozumować. Nie da się ich debugować. Dlatego higiena flag nie jest opcjonalna — to wymóg przetrwania.
+
+## Implementacja w Next.js: pełna architektura
+
+Next.js z App Routerem daje ci cztery odrębne miejsca do ewaluacji feature flags, każde z innymi kompromisami:
+
+```
+Request
+  │
+  ▼
+┌─────────────┐
+│  Middleware  │ ← Edge Runtime, uruchamiane przy KAŻDYM żądaniu
+│  (Edge)     │   Najlepsze do: routingu, przekierowań, przypisania wariantu A/B
+└──────┬──────┘
+       │
+       ▼
+┌──────────────────┐
+│  Server Component │ ← Node.js Runtime, uruchamiane na serwerze
+│  (RSC)           │   Najlepsze do: warunkowego renderowania, flag zależnych od danych
+└──────┬───────────┘
+       │
+       ▼
+┌──────────────────┐
+│  Client Component │ ← Przeglądarka, uruchamiane na kliencie
+│  ('use client')  │   Najlepsze do: interaktywnych eksperymentów UI, progressive enhancement
+└──────┬───────────┘
+       │
+       ▼
+┌──────────────────┐
+│  Route Handler   │ ← trasa API, po stronie serwera
+│  (API)           │   Najlepsze do: backendowych bramek funkcji, przetwarzania webhooków
+└──────────────────┘
+```
+
+### Podejście 1: zbuduj własne (zero zależności)
+
+Dla zespołów, które chcą pełnej kontroli i mają proste potrzeby flagowania:
+
+```typescript
+// lib/flags/types.ts
+export type FlagValue = boolean | string | number;
+
+export interface FlagDefinition {
+  key: string;
+  type: 'release' | 'experiment' | 'ops' | 'permission';
+  defaultValue: FlagValue;
+  description: string;
+  owner: string;          // Zespół lub osoba odpowiedzialna
+  createdAt: string;      // Kiedy utworzono flagę
+  expectedRemoval?: string; // Kiedy flaga powinna zostać usunięta (data ISO)
+  tags: string[];
+}
+
+export interface EvaluationContext {
+  userId?: string;
+  email?: string;
+  country?: string;
+  userAgent?: string;
+  percentage?: number;    // 0-100 dla stopniowych rolloutów
+  traits?: Record<string, string>;
+}
+```
+
+```typescript
+// lib/flags/definitions.ts
+import type { FlagDefinition } from './types';
+
+export const FLAG_DEFINITIONS: Record<string, FlagDefinition> = {
+  'new-checkout-flow': {
+    key: 'new-checkout-flow',
+    type: 'release',
+    defaultValue: false,
+    description: 'New multi-step checkout with saved addresses',
+    owner: 'checkout-team',
+    createdAt: '2026-03-01',
+    expectedRemoval: '2026-04-15',
+    tags: ['checkout', 'ux'],
+  },
+  'pricing-experiment': {
+    key: 'pricing-experiment',
+    type: 'experiment',
+    defaultValue: 'control',
+    description: 'A/B test: annual-first vs comparison table pricing page',
+    owner: 'growth-team',
+    createdAt: '2026-03-15',
+    expectedRemoval: '2026-05-01',
+    tags: ['pricing', 'growth'],
+  },
+  'ops.stripe.enabled': {
+    key: 'ops.stripe.enabled',
+    type: 'ops',
+    defaultValue: true,
+    description: 'Kill switch for Stripe payment processing',
+    owner: 'platform-team',
+    createdAt: '2026-01-01',
+    tags: ['ops', 'payments', 'critical'],
+  },
+};
+```
+
+```typescript
+// lib/flags/evaluator.ts
+import { FLAG_DEFINITIONS } from './definitions';
+import type { EvaluationContext, FlagValue } from './types';
+
+// Prosty, ale deterministyczny hash dla rolloutów procentowych
+function hashString(str: string): number {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash |= 0; // Konwersja do 32-bitowej liczby całkowitej
+  }
+  return Math.abs(hash);
+}
+
+// Deterministyczne sprawdzenie procentu — ten sam użytkownik zawsze dostaje ten sam wynik
+function isInPercentage(userId: string, flagKey: string, percentage: number): boolean {
+  const hash = hashString(`${userId}:${flagKey}`);
+  return (hash % 100) < percentage;
+}
+
+interface FlagOverrides {
+  [key: string]: FlagValue;
+}
+
+// Wczytaj nadpisania ze środowiska, bazy danych lub Edge Config
+async function getOverrides(): Promise<FlagOverrides> {
+  // Opcja 1: zmienne środowiskowe (najprostsze)
+  const envOverrides: FlagOverrides = {};
+  for (const [key, def] of Object.entries(FLAG_DEFINITIONS)) {
+    const envKey = `FLAG_${key.replace(/[.-]/g, '_').toUpperCase()}`;
+    const envValue = process.env[envKey];
+    if (envValue !== undefined) {
+      if (def.defaultValue === true || def.defaultValue === false) {
+        envOverrides[key] = envValue === 'true';
+      } else if (typeof def.defaultValue === 'number') {
+        envOverrides[key] = Number(envValue);
+      } else {
+        envOverrides[key] = envValue;
+      }
+    }
+  }
+  return envOverrides;
+}
+
+export async function evaluateFlag(
+  key: string,
+  context: EvaluationContext = {}
+): Promise<FlagValue> {
+  const definition = FLAG_DEFINITIONS[key];
+  if (!definition) {
+    console.warn(`Unknown flag: ${key}`);
+    return false;
+  }
+
+  // Sprawdź nadpisania (ze środowiska, bazy danych lub zdalnej konfiguracji)
+  const overrides = await getOverrides();
+  if (key in overrides) {
+    const override = overrides[key];
+
+    // Obsłuż rollouty procentowe
+    if (context.userId && context.percentage !== undefined) {
+      return isInPercentage(context.userId, key, context.percentage);
+    }
+
+    return override;
+  }
+
+  return definition.defaultValue;
+}
+
+// Wygoda: ewaluuj wszystkie flagi naraz
+export async function evaluateAllFlags(
+  context: EvaluationContext = {}
+): Promise<Record<string, FlagValue>> {
+  const result: Record<string, FlagValue> = {};
+  for (const key of Object.keys(FLAG_DEFINITIONS)) {
+    result[key] = await evaluateFlag(key, context);
+  }
+  return result;
+}
+```
+
+### Podejście 2: Middleware + Edge Config (Vercel)
+
+Do testów A/B i decyzji o routingu middleware jest najlepszym miejscem — uruchamia się przed wyrenderowaniem strony, więc nie ma migotania:
+
+```typescript
+// middleware.ts
+import { NextResponse } from 'next/server';
+import type { NextRequest } from 'next/server';
+import { get } from '@vercel/edge-config';
+
+export async function middleware(request: NextRequest) {
+  // Odczytaj flagę z Edge Config (poniżej milisekundy, globalnie rozproszone)
+  const newCheckout = await get<boolean>('new-checkout-flow');
+
+  // Pobierz lub przypisz użytkownika do kohorty eksperymentu
+  let experimentCohort = request.cookies.get('experiment-cohort')?.value;
+
+  if (!experimentCohort) {
+    // Przypisanie deterministyczne na podstawie wartości losowej
+    const rand = Math.random();
+    experimentCohort = rand < 0.33 ? 'control' : rand < 0.66 ? 'variant_a' : 'variant_b';
+  }
+
+  const response = NextResponse.next();
+
+  // Ustaw cookie kohorty dla spójnego przypisania
+  if (!request.cookies.get('experiment-cohort')) {
+    response.cookies.set('experiment-cohort', experimentCohort, {
+      httpOnly: true,
+      secure: true,
+      sameSite: 'lax',
+      maxAge: 60 * 60 * 24 * 30, // 30 dni
+    });
+  }
+
+  // Przepisz na inną stronę na podstawie flagi
+  if (newCheckout && request.nextUrl.pathname === '/checkout') {
+    return NextResponse.rewrite(new URL('/checkout-v2', request.url));
+  }
+
+  // Test A/B: przepisz stronę cennika na podstawie kohorty
+  if (request.nextUrl.pathname === '/pricing') {
+    if (experimentCohort === 'variant_a') {
+      return NextResponse.rewrite(new URL('/pricing/annual-first', request.url));
+    }
+    if (experimentCohort === 'variant_b') {
+      return NextResponse.rewrite(new URL('/pricing/comparison', request.url));
+    }
+  }
+
+  // Przekaż flagi do server components przez nagłówki
+  response.headers.set('x-feature-new-checkout', String(newCheckout));
+  response.headers.set('x-experiment-cohort', experimentCohort);
+
+  return response;
+}
+
+export const config = {
+  matcher: ['/checkout', '/pricing', '/dashboard/:path*'],
+};
+```
+
+**Dlaczego middleware do testów A/B?** Przepisanie (rewrite) dzieje się na edge, zanim zacznie się jakiekolwiek renderowanie. Użytkownik nigdy nie zobaczy błysku niewłaściwego wariantu. URL pozostaje ten sam (`/pricing`), ale treść pochodzi z innej trasy — niewidoczne dla użytkownika, idealne do eksperymentów.
+
+### Podejście 3: Server Components
+
+Dla flag zależnych od danych użytkownika pobieranych z bazy:
+
+```typescript
+// app/dashboard/page.tsx
+import { headers } from 'next/headers';
+import { evaluateFlag } from '@/lib/flags/evaluator';
+import { getCurrentUser } from '@/lib/auth';
+
+export default async function DashboardPage() {
+  const user = await getCurrentUser();
+  const headersList = await headers();
+
+  // Odczytaj flagę z nagłówka middleware (jeśli tam ustawiona)
+  const newCheckout = headersList.get('x-feature-new-checkout') === 'true';
+
+  // Albo ewaluuj bezpośrednio w server component
+  const showAdvancedAnalytics = await evaluateFlag('permissions.advanced-analytics', {
+    userId: user.id,
+    traits: { plan: user.plan, role: user.role },
+  });
+
+  // Sprawdzenie kill switcha
+  const stripeEnabled = await evaluateFlag('ops.stripe.enabled');
+
+  return (
+    <div>
+      <h1>Dashboard</h1>
+
+      {showAdvancedAnalytics ? (
+        <AdvancedAnalytics userId={user.id} />
+      ) : (
+        <BasicAnalytics userId={user.id} />
+      )}
+
+      {stripeEnabled ? (
+        <PaymentSection />
+      ) : (
+        <Alert variant="warning">
+          Payment processing is temporarily unavailable. We are working on it.
+        </Alert>
+      )}
+
+      {newCheckout && <NewCheckoutBanner />}
+    </div>
+  );
+}
+```
+
+### Podejście 4: Client Components (z providerem)
+
+Dla interaktywnych eksperymentów UI, gdzie flaga wpływa na zachowanie po stronie klienta:
+
+```typescript
+// providers/FeatureFlagProvider.tsx
+'use client';
+
+import { createContext, useContext, type ReactNode } from 'react';
+import type { FlagValue } from '@/lib/flags/types';
+
+type FlagMap = Record<string, FlagValue>;
+
+const FlagContext = createContext<FlagMap>({});
+
+export function FeatureFlagProvider({
+  flags,
+  children,
+}: {
+  flags: FlagMap;
+  children: ReactNode;
+}) {
+  return <FlagContext.Provider value={flags}>{children}</FlagContext.Provider>;
+}
+
+export function useFlag(key: string): FlagValue {
+  const flags = useContext(FlagContext);
+  return flags[key] ?? false;
+}
+
+export function useBooleanFlag(key: string): boolean {
+  return useFlag(key) === true;
+}
+
+export function useStringFlag(key: string): string {
+  return String(useFlag(key) ?? '');
+}
+```
+
+```typescript
+// app/layout.tsx
+import { evaluateAllFlags } from '@/lib/flags/evaluator';
+import { getCurrentUser } from '@/lib/auth';
+import { FeatureFlagProvider } from '@/providers/FeatureFlagProvider';
+
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  const user = await getCurrentUser();
+  const flags = await evaluateAllFlags({
+    userId: user?.id,
+    traits: user ? { plan: user.plan } : {},
+  });
+
+  return (
+    <html>
+      <body>
+        <FeatureFlagProvider flags={flags}>
+          {children}
+        </FeatureFlagProvider>
+      </body>
+    </html>
+  );
+}
+```
+
+```typescript
+// components/SearchBar.tsx
+'use client';
+
+import { useBooleanFlag } from '@/providers/FeatureFlagProvider';
+
+export function SearchBar() {
+  const useNewSearch = useBooleanFlag('new-search-algorithm');
+
+  const handleSearch = async (query: string) => {
+    const endpoint = useNewSearch ? '/api/search/v2' : '/api/search/v1';
+    const results = await fetch(`${endpoint}?q=${encodeURIComponent(query)}`);
+    // ...
+  };
+
+  return (
+    <input
+      type="search"
+      placeholder={useNewSearch ? 'Search with AI...' : 'Search...'}
+      onChange={(e) => handleSearch(e.target.value)}
+    />
+  );
+}
+```
+
+## Progresywny rollout: od 0% do 100%
+
+Progresywny rollout stopniowo zwiększa procent użytkowników widzących daną funkcję. Oto wzorzec, którego używam:
+
+### Harmonogram rolloutu
+
+```
+Dzień 0:   Tylko zespół wewnętrzny (dogfooding)
+Dzień 1:   1% użytkowników (canary)
+Dzień 3:   5% użytkowników (jeśli metryki OK)
+Dzień 5:   25% użytkowników
+Dzień 7:   50% użytkowników
+Dzień 10:  100% użytkowników
+Dzień 14:  Usuń flagę
+```
+
+### Implementacja
+
+```typescript
+// lib/flags/rollout.ts
+interface RolloutConfig {
+  flagKey: string;
+  stages: RolloutStage[];
+  metrics: MetricCheck[];
+}
+
+interface RolloutStage {
+  percentage: number;
+  duration: string;     // np. '2d', '3d'
+  autoAdvance: boolean; // Przejdź dalej automatycznie, jeśli metryki są OK
+}
+
+interface MetricCheck {
+  name: string;
+  threshold: number;
+  comparison: 'lt' | 'gt' | 'eq';
+}
+
+const CHECKOUT_ROLLOUT: RolloutConfig = {
+  flagKey: 'new-checkout-flow',
+  stages: [
+    { percentage: 0, duration: '1d', autoAdvance: false },    // Tylko wewnętrznie
+    { percentage: 1, duration: '2d', autoAdvance: true },     // Canary
+    { percentage: 5, duration: '2d', autoAdvance: true },     // Mała kohorta
+    { percentage: 25, duration: '2d', autoAdvance: true },    // Ćwiartka
+    { percentage: 50, duration: '3d', autoAdvance: true },    // Połowa
+    { percentage: 100, duration: '4d', autoAdvance: false },  // Pełny rollout
+  ],
+  metrics: [
+    { name: 'error_rate', threshold: 0.01, comparison: 'lt' },       // < 1% błędów
+    { name: 'p99_latency_ms', threshold: 2000, comparison: 'lt' },   // < 2s p99
+    { name: 'conversion_rate', threshold: 0.02, comparison: 'gt' },  // > 2% konwersji
+  ],
+};
+```
+
+### Deterministyczne przypisywanie użytkowników
+
+Kluczowy wymóg: użytkownik musi konsekwentnie widzieć ten sam wariant. Nie używaj `Math.random()` — użyj hasha z ID użytkownika + klucza flagi:
+
+```typescript
+function getUserPercentile(userId: string, flagKey: string): number {
+  // Prosty, ale deterministyczny hash
+  let hash = 0;
+  const str = `${userId}:${flagKey}`;
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash |= 0;
+  }
+  return Math.abs(hash) % 100;
+}
+
+function isUserInRollout(userId: string, flagKey: string, percentage: number): boolean {
+  return getUserPercentile(userId, flagKey) < percentage;
+}
+
+// Użytkownik "abc123" z flagą "new-checkout" zawsze dostaje ten sam wynik
+// przy dowolnym progu procentowym
+isUserInRollout('abc123', 'new-checkout', 5);   // Zawsze true albo zawsze false
+isUserInRollout('abc123', 'new-checkout', 50);  // To samo, deterministyczne
+```
+
+**Dlaczego to ważne:** jeśli użytkownik A jest w rolloucie 5% (percentyl = 3), to będzie też w rolloucie 25%, 50% i 100%. Nigdy nie „traci" funkcji w miarę rozszerzania. I odwrotnie — użytkownik B, którego nie ma w rolloucie 5% (percentyl = 47), dostanie funkcję, gdy dojdziesz do 50%.
+
+## Integracja z zewnętrznymi usługami flag
+
+Do poważnego zarządzania flagami użyj dedykowanej usługi. Oto jak każda integruje się z Next.js:
+
+### Vercel Edge Config (darmowe, wbudowane)
+
+Najlepsze, jeśli już jesteś na Vercelu. Zerowy koszt, odczyty poniżej milisekundy, globalnie rozproszone:
+
+```bash
+npm install @vercel/edge-config
+```
+
+```typescript
+// middleware.ts
+import { get } from '@vercel/edge-config';
+
+export async function middleware(request: NextRequest) {
+  const maintenanceMode = await get<boolean>('ops.maintenance.enabled');
+  if (maintenanceMode) {
+    return NextResponse.rewrite(new URL('/maintenance', request.url));
+  }
+}
+```
+
+### Unleash (open source, opcja self-hosted)
+
+Najlepsze dla zespołów, które chcą pełnej kontroli i self-hostingu:
+
+```bash
+npm install @unleash/nextjs
+```
+
+```typescript
+// app/page.tsx (Server Component)
+import { evaluateFlags, flagsClient, getDefinitions } from '@unleash/nextjs';
+import { cookies } from 'next/headers';
+
+export default async function Page() {
+  const cookieStore = await cookies();
+  const sessionId = cookieStore.get('unleash-session')?.value || crypto.randomUUID();
+
+  const definitions = await getDefinitions();
+  const { toggles } = evaluateFlags(definitions, {
+    sessionId,
+    userId: 'user-123',
+  });
+
+  const flags = flagsClient(toggles);
+
+  if (flags.isEnabled('new-dashboard')) {
+    return <NewDashboard />;
+  }
+  return <LegacyDashboard />;
+}
+```
+
+### PostHog (analityka + flagi w jednym)
+
+Najlepsze, jeśli chcesz feature flags I analitykę produktu w jednym narzędziu:
+
+```bash
+npm install posthog-js posthog-node
+```
+
+```typescript
+// app/flags.ts (ewaluacja po stronie serwera)
+import { PostHog } from 'posthog-node';
+
+const posthog = new PostHog(process.env.POSTHOG_KEY!, {
+  host: process.env.POSTHOG_HOST,
+});
+
+export async function getFlags(userId: string) {
+  const flags = await posthog.getAllFlags(userId);
+  return flags;
+}
+
+// Brak migotania — flagi ewaluowane po stronie serwera przed renderowaniem
+```
+
+### LaunchDarkly (enterprise)
+
+Najlepsze dla dużych organizacji o złożonych potrzebach targetowania:
+
+```bash
+npm install @launchdarkly/node-server-sdk
+```
+
+```typescript
+import * as ld from '@launchdarkly/node-server-sdk';
+
+const client = ld.init(process.env.LAUNCHDARKLY_SDK_KEY!);
+await client.waitForInitialization();
+
+export async function getFlag(key: string, userId: string, defaultValue: boolean) {
+  const context = { kind: 'user', key: userId };
+  return client.variation(key, context, defaultValue);
+}
+```
+
+### Macierz decyzyjna
+
+| Czynnik | Edge Config | Unleash | PostHog | LaunchDarkly |
+|--------|-----------|---------|---------|-------------|
+| **Koszt** | Darmowe | Darmowe (self-hosted) | Darmowy plan | $$$$ |
+| **Self-hosted** | Nie | Tak | Tak | Nie |
+| **Testy A/B** | Ręcznie | Podstawowe | Pełne | Pełne |
+| **Analityka** | Nie | Nie | Tak | Ograniczona |
+| **Targetowanie** | Ręczne | Dobre | Dobre | Doskonałe |
+| **Wsparcie edge** | Natywne | Przez SDK | Przez bootstrap | Przez Edge Config |
+| **Złożoność** | Bardzo niska | Średnia | Średnia | Wysoka |
+| **Najlepsze do** | Proste flagi | Maniacy kontroli | Wszystko w jednym | Enterprise |
+
+## Anty-wzorce, które cię sparzą
+
+### 1. Flag spaghetti: flagi zależne od innych flag
+
+```typescript
+// NIGDY TAK NIE RÓB
+if (flags.newUI) {
+  if (flags.newCheckout) {
+    if (flags.newPayment) {
+      return <NewEverything />;
+    }
+    return <NewUINewCheckoutOldPayment />; // Czy to w ogóle działa?
+  }
+  return <NewUIOldCheckout />;
+}
+```
+
+Trzy zagnieżdżone flagi = 8 ścieżek kodu. Większość tych kombinacji nigdy nie została przetestowana i prawdopodobnie nie działa. **Zasada: flagi powinny być niezależne. Jeśli funkcja B wymaga funkcji A, połącz je w jedną flagę.**
+
+### 2. Używanie flag jako konfiguracji
+
+```typescript
+// To nie jest feature flag — to konfiguracja
+if (flags.maxUploadSizeMb > 100) { ... }
+if (flags.apiTimeout === 30000) { ... }
+if (flags.theme === 'dark') { ... }
+```
+
+Feature flags to decyzje binarne (włączone/wyłączone, wariant A/B). Konfiguracja to wartości ciągłe. Do konfiguracji używaj zmiennych środowiskowych lub usługi konfiguracyjnej. Jeśli potrzebujesz bezpieczeństwa typów w czasie działania dla wartości konfiguracyjnych, [walidacja z Zod](/blog/zod-typescript-validation-complete-guide) ze schematami zmiennych środowiskowych to właściwe narzędzie. Używanie flag do konfiguracji rozdyma system flag i utrudnia zarządzanie nim.
+
+### 3. Nietestowanie obu ścieżek
+
+```typescript
+// Jeśli dodajesz flagę, MUSISZ przetestować obie ścieżki
+describe('CheckoutPage', () => {
+  it('renders new checkout when flag is enabled', () => {
+    renderWithFlags({ 'new-checkout': true });
+    expect(screen.getByText('Multi-step Checkout')).toBeInTheDocument();
+  });
+
+  it('renders legacy checkout when flag is disabled', () => {
+    renderWithFlags({ 'new-checkout': false });
+    expect(screen.getByText('Standard Checkout')).toBeInTheDocument();
+  });
+});
+```
+
+### 4. Zapominanie o spójności serwer/klient
+
+Jeśli flaga jest ewaluowana na serwerze (middleware/RSC) i musi też być sprawdzona na kliencie, MUSZĄ się zgadzać. Podejście z middleware (przepisanie na inną trasę) całkowicie omija ten problem. Jeśli nie możesz używać rewrites, przekaż flagi z serwera do klienta wzorcem providera pokazanym powyżej.
+
+### 5. Brak śledzenia wygasania
+
+Każda nietrwała flaga musi mieć datę `expectedRemoval`. Zbuduj narzędzia, które cię ostrzegą:
+
+```typescript
+// scripts/flag-audit.ts
+import { FLAG_DEFINITIONS } from '@/lib/flags/definitions';
+
+const now = new Date();
+const staleFlags: string[] = [];
+const expiredFlags: string[] = [];
+
+for (const [key, def] of Object.entries(FLAG_DEFINITIONS)) {
+  if (def.type === 'ops' || def.type === 'permission') continue; // Flagi stałe
+
+  if (!def.expectedRemoval) {
+    staleFlags.push(`${key} — no expectedRemoval date set (owner: ${def.owner})`);
+    continue;
+  }
+
+  const expiry = new Date(def.expectedRemoval);
+  const daysOverdue = Math.floor((now.getTime() - expiry.getTime()) / 86400000);
+
+  if (daysOverdue > 0) {
+    expiredFlags.push(`${key} — ${daysOverdue} days overdue (owner: ${def.owner})`);
+  } else if (daysOverdue > -7) {
+    staleFlags.push(`${key} — expires in ${Math.abs(daysOverdue)} days (owner: ${def.owner})`);
+  }
+}
+
+if (expiredFlags.length > 0) {
+  console.error('🚨 EXPIRED FLAGS (remove immediately):');
+  expiredFlags.forEach(f => console.error(`  - ${f}`));
+}
+
+if (staleFlags.length > 0) {
+  console.warn('⚠️  FLAGS EXPIRING SOON:');
+  staleFlags.forEach(f => console.warn(`  - ${f}`));
+}
+
+// Zakończ z błędem, jeśli istnieją wygasłe flagi (użyj w CI)
+if (expiredFlags.length > 0) {
+  process.exit(1);
+}
+```
+
+Uruchamiaj to w CI. Wywalaj build, jeśli flagi są przeterminowane. To jedyny sposób na wymuszenie sprzątania.
+
+## Sprzątanie flag: dyscyplina, której nikt nie przestrzega
+
+Największa różnica między zespołami, które odnoszą sukces z feature flags, a tymi, które toną w długu flag, to **dyscyplina sprzątania**. Oto proces:
+
+### Zasada 30 dni
+
+Gdy release flag osiągnie 100% rolloutu:
+1. **Dzień 0:** flaga osiąga 100%. Uruchom zegar.
+2. **Dzień 1-7:** monitoruj problemy. Jeśli stabilne, zaplanuj sprzątanie.
+3. **Dzień 7-14:** utwórz PR usuwający flagę i martwą ścieżkę kodu.
+4. **Dzień 14-30:** PR przejrzany, zmergowany, wdrożony.
+5. **Dzień 30:** flagi już nie ma. Jeśli jest, skrypt audytu CI wywala build.
+
+### Co tak naprawdę oznacza „usunięcie flagi"
+
+To nie tylko skasowanie instrukcji `if`. Prawidłowe usunięcie flagi obejmuje:
+
+1. Usunięcie definicji flagi z konfiguracji flag
+2. Usunięcie wszystkich wywołań ewaluacji (`evaluateFlag('my-flag')`)
+3. Usunięcie martwej ścieżki kodu (gałęzi `else` lub starego komponentu)
+4. Usunięcie testów specyficznych dla usuniętej ścieżki
+5. Zaktualizowanie pozostałego kodu, aby był bezwarunkowy
+6. Usunięcie wszelkich zmiennych środowiskowych związanych z flagą
+
+```typescript
+// Przed: kod z flagą
+function CheckoutPage() {
+  const newCheckout = useBooleanFlag('new-checkout');
+
+  if (newCheckout) {
+    return <NewCheckoutFlow />;
+  }
+  return <LegacyCheckoutFlow />;
+}
+
+// Po: flaga usunięta, zwycięska ścieżka jest teraz na stałe
+function CheckoutPage() {
+  return <NewCheckoutFlow />;
+}
+
+// Ponadto: usuń całkowicie komponent LegacyCheckoutFlow
+// Ponadto: usuń przypadki testowe dla legacy checkout
+// Ponadto: usuń 'new-checkout' z definicji flag
+```
+
+### Kwartalny audyt flag
+
+Co kwartał przejrzyj wszystkie aktywne flagi:
+
+1. Ile flag istnieje? (Cel: < 20 flag nietrwałych)
+2. Ile jest po dacie `expectedRemoval`?
+3. Które flagi mają najwięcej ścieżek kodu? (Ogniska złożoności)
+4. Które flagi trwałe (ops/permission) wciąż mają aktualnych właścicieli?
+
+Zespoły, które wdrażają kwartalne audyty, raportują **40-60% redukcję długu technicznego związanego z flagami** i znacznie mniej incydentów związanych z flagami.
+
+## Monitorowanie flag na produkcji
+
+Feature flags bez monitoringu to ślepe rollouty. Śledź te metryki:
+
+```typescript
+// lib/flags/telemetry.ts
+interface FlagEvaluation {
+  flagKey: string;
+  value: FlagValue;
+  userId?: string;
+  evaluatedAt: string;
+  context: 'middleware' | 'server-component' | 'client' | 'api';
+}
+
+async function trackFlagEvaluation(evaluation: FlagEvaluation) {
+  // Wyślij do swojego stosu analityki/obserwowalności
+  await analytics.track('feature_flag_evaluated', evaluation);
+
+  // Śledź w logach strukturalnych na potrzeby debugowania
+  console.log(JSON.stringify({
+    level: 'info',
+    event: 'flag_evaluation',
+    ...evaluation,
+  }));
+}
+```
+
+**Kluczowe metryki do monitorowania po rolloucie:**
+- Wskaźnik błędów (segmentowany według wartości flagi)
+- Latencja (p50, p95, p99 — segmentowana według wartości flagi)
+- Wskaźnik konwersji (dla flag eksperymentalnych)
+- Liczba ewaluacji flag (wykrywanie nieskończonych pętli lub nadmiernej ewaluacji)
+- PEL (Pending Evaluation Latency) — ile czasu ewaluacja flagi dodaje do obsługi żądania
+
+## Praktyczne wnioski
+
+1. **Używaj czterech typów flag** — release, experiment, ops, permission. Każdy ma inne reguły cyklu życia.
+2. **Ewaluuj w middleware** dla routingu/testów A/B (bez migotania). Ewaluuj w Server Components dla flag zależnych od danych. Ewaluuj na kliencie tylko dla interaktywnego UI.
+3. **Używaj deterministycznego hashowania** dla rolloutów procentowych. Nigdy `Math.random()` do przypisywania wariantów.
+4. **Kill switche są trwałe** — każda zewnętrzna zależność i krytyczna ścieżka potrzebuje jednego.
+5. **Release flags muszą umrzeć w ciągu 30 dni** od osiągnięcia 100%. Wymuszaj to w CI.
+6. **10 flag = 1 024 ścieżki kodu.** Utrzymuj niską liczbę aktywnych flag. Testuj obie ścieżki dla każdej flagi.
+7. **Nie zagnieżdżaj flag.** Jeśli funkcja B wymaga funkcji A, użyj jednej flagi.
+8. **Prowadź kwartalne audyty flag.** Przeglądaj właścicielstwo, daty wygasania i złożoność ścieżek kodu.
+9. **Zacznij prosto.** Edge Config lub zmienne środowiskowe wystarczą większości zespołów. Przejdź na Unleash/PostHog/LaunchDarkly, gdy potrzebujesz targetowania lub eksperymentów.
+10. **Monitoruj metryki segmentowane według flag.** Jeśli twoja nowa funkcja ma wyższy wskaźnik błędów przy 5% rolloutu, chcesz o tym wiedzieć, zanim dojdziesz do 50%.
+
+Jeśli budujesz [systemy agentów AI](/blog/why-ai-agent-projects-fail-5-step-framework), feature flags są niezbędne do stopniowego wdrażania nowych zachowań AI bez ryzyka dla stabilności produkcji. A jeśli twój pipeline deploymentu jest wolny, połączenie flag z [zoptymalizowanym CI/CD](/blog/maximizing-productivity-for-full-stack-developers-focus-strategies-and-workflow-automation) zwielokrotnia korzyści.
+
+Feature flags dają ci moc wdrażania bez strachu. Ale jak każde narzędzie o dużej mocy, wymagają szacunku. Zespoły, które traktują flagi jako tymczasowe rusztowanie — a nie stałą architekturę — to te, które deployują z pewnością siebie.
+
+## Referencje
+
+### Źródła
+- [Martin Fowler: Feature Toggles (Feature Flags)](https://martinfowler.com/articles/feature-toggles.html) — definitywna taksonomia typów feature flags
+- [Vercel: Flags as Code in Next.js](https://vercel.com/blog/flags-as-code-in-next-js) — oficjalne podejście Vercela do feature flags
+- [OWASP: The 12 Commandments of Feature Flags](https://octopus.com/devops/feature-flags/feature-flag-best-practices/) — najlepsze praktyki enterprise
+- [FlagShark: Feature Flag Technical Debt Guide](https://flagshark.com/blog/feature-flag-technical-debt-guide/) — matematyka i koszt długu flag
+- [Unleash: Implement Feature Flags in Next.js](https://docs.getunleash.io/guides/implement-feature-flags-in-nextjs) — przewodnik integracji
+- [PostHog: Next.js Middleware Bootstrap](https://posthog.com/tutorials/nextjs-bootstrap-flags) — bootstrap flag oparty na middleware
+
+### Dalsza lektura
+- [DesignRevision: SaaS Feature Flags Implementation Guide 2026](https://designrevision.com/blog/saas-feature-flags-guide) — kompleksowe wzorce specyficzne dla SaaS
+- [DesignRevision: Feature Flags 12 Best Practices](https://designrevision.com/blog/feature-flags-best-practices) — praktyczne wzorce z kodem
+- [Vercel Edge Config Documentation](https://vercel.com/docs/edge-config) — przewodnik konfiguracji i integracji
+- [FlagShark: Open Source Feature Flag Tools Compared 2026](https://flagshark.com/blog/open-source-feature-flag-tools-compared-2026/) — Unleash vs GrowthBook vs Flipt vs Flagsmith
+- [Unleash: Canary Release vs Progressive Delivery](https://www.getunleash.io/blog/canary-release-vs-progressive-delivery) — porównanie strategii deploymentu
+
+---
+
+~Seb 👊
