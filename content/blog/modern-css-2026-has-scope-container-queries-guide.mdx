@@ -1,0 +1,398 @@
+---
+title: 'Modern CSS in 2026: :has(), @scope and Container Queries Killed Your JS'
+date: '2026-07-16'
+category: 'Development'
+tags: ['css', 'frontend', 'container-queries', 'modern-css', 'performance']
+featured: false
+author: 'Sebastian'
+draft: true
+excerpt: 'Modern CSS in 2026 deleted whole folders of JavaScript. :has(), @scope, container queries and anchor positioning replace the hacks we shipped for a decade.'
+---
+
+I deleted 400 lines of JavaScript last week and the feature got _better_. No `ResizeObserver`. No click-outside listener. No Floating UI. No `MutationObserver` watching a checkbox so I could toggle a class on its parent. Just CSS that finally does the thing I always wanted it to do.
+
+For about fifteen years, "frontend developer" quietly meant "person who writes JavaScript to compensate for what CSS cannot express." Parent selection? JS. Component-relative styling? JS. Positioning a tooltip so it flips at the viewport edge? A whole library. We normalized shipping kilobytes of runtime just to move a class name around.
+
+That era is over. In **2026 a wave of CSS features has crossed Baseline** — meaning they work across Chrome, Firefox, Safari and Edge, not behind a flag — and each one takes a specific, load-bearing chunk of JavaScript out back and retires it. This is the tour I wish someone had given me: what's newly usable, the exact JS it kills, honest browser-support notes, and the short list of things that _still_ need a script.
+
+## :has() — the parent selector that killed a hundred MutationObservers
+
+`:has()` is the big one. It's a **relational pseudo-class**: it styles an element based on what it _contains_ or what follows it. CSS never had this. The lack of a parent selector is arguably the single biggest reason JavaScript leaked into styling.
+
+It's been **Baseline since December 2023** (Chrome/Edge 105+, Safari 15.4+, Firefox 121+), so in 2026 you can use it with zero hesitation.
+
+Here's the pattern I ripped out most often. The old way — style a card when the checkbox inside it is checked:
+
+```js
+// The old way: watch the input, toggle a class on the ancestor
+const inputs = document.querySelectorAll('.card input[type="checkbox"]');
+inputs.forEach((input) => {
+  input.addEventListener('change', () => {
+    input.closest('.card').classList.toggle('is-selected', input.checked);
+  });
+});
+```
+
+That's an event listener per input, a class you have to keep in sync, and a re-render trap waiting to happen. The new way is one selector:
+
+```css
+/* Style the parent based on a descendant's state — no JS at all */
+.card:has(input[type='checkbox']:checked) {
+  border-color: oklch(60% 0.2 250);
+  background: oklch(97% 0.02 250);
+}
+```
+
+The mental unlock is that `:has()` composes with everything: `:checked`, `:invalid`, `:focus-within`, sibling combinators. A few patterns I now reach for constantly:
+
+```css
+/* Layout that reacts to content: only pad a figure that has a caption */
+figure:has(figcaption) {
+  padding-block-end: 1rem;
+}
+
+/* "Quantity queries" without nth-child math:
+   a grid that switches to two columns only when it has 4+ items */
+.gallery:has(> :nth-child(4)) {
+  grid-template-columns: 1fr 1fr;
+}
+
+/* Previous-sibling styling — impossible before :has().
+   Dim a label when the field AFTER it is disabled */
+label:has(+ input:disabled) {
+  opacity: 0.5;
+}
+```
+
+One honest caveat: **`:has()` can be expensive during frequent DOM mutation**. The engine re-evaluates the relational match when the subtree changes, so a broad selector like `body:has(...)` re-checked on every keystroke is a real cost. Keep the subject scoped and specific. For the static and state-driven cases above, it's effectively free and it deletes real code.
+
+## Container queries — responsive components that don't care about the viewport
+
+Media queries ask one question: how big is the _viewport_? But a card doesn't live in the viewport. It lives in a sidebar, a modal, a three-column grid — and it should lay itself out based on _its own_ available space. For years the answer was a `ResizeObserver` per component.
+
+**Container queries are Baseline** (Chrome/Edge 105+, Firefox 110+, Safari 16+) and they cover 93%+ of global usage. Here's the JavaScript they delete:
+
+```js
+// The old way: measure the container, branch on its width
+const observer = new ResizeObserver((entries) => {
+  for (const entry of entries) {
+    const w = entry.contentRect.width;
+    entry.target.classList.toggle('card--wide', w > 400);
+  }
+});
+document.querySelectorAll('.card').forEach((el) => observer.observe(el));
+```
+
+The CSS version needs no observer, no class bookkeeping, and runs at the browser's layout stage:
+
+```css
+/* Declare the parent as a query container */
+.card-wrapper {
+  container-type: inline-size;
+  container-name: card;
+}
+
+/* Then query the CONTAINER's width, not the viewport's */
+@container card (min-width: 400px) {
+  .card {
+    display: grid;
+    grid-template-columns: 120px 1fr;
+    gap: 1rem;
+  }
+}
+```
+
+Drop that same `.card` into a narrow sidebar and it stacks; drop it into a wide main column and it goes horizontal — with no config and no JS. There are also **container query units** (`cqi`, `cqb`, `cqw`, `cqh`) that size things relative to the container, which is perfect for fluid typography inside a component.
+
+And in 2026 the story is now complete: **style queries** (`@container style(...)`) reached Baseline — Firefox 151 shipped the last piece in May 2026 — so you can also branch on a container's custom property values, not just its size. If you're building a component library, this pairs naturally with the thinking in [component-driven, scalable frontend systems](/blog/from-components-to-systems-scalable-frontend-with-atomiec-design): components become truly context-independent.
+
+## @scope — styles that stop where you tell them to
+
+Scoping styles used to mean CSS Modules, a build step, BEM discipline, or CSS-in-JS runtime. `@scope` does it natively. It's **Baseline as of early 2026** (Chrome 118+, Safari 17.4+, and Firefox landing support to complete the set).
+
+Two things make it powerful: a scope root, and an optional **scope limit** (a `to (...)` boundary) that creates a "donut" — styles apply inside the root but stop at the limit.
+
+```css
+/* Styles apply to .card and its descendants... */
+@scope (.card) to (.card__content) {
+  /* ...but STOP at .card__content and below (the "donut hole").
+     img here means "img inside .card but not inside .card__content" */
+  img {
+    border-radius: 8px;
+  }
+
+  :scope {
+    /* :scope refers to the scope root itself, i.e. .card */
+    border: 1px solid oklch(90% 0 0);
+  }
+}
+```
+
+The other quietly huge feature: `@scope` changes how **proximity** breaks ties. When two scoped rules have equal specificity, the one whose root is _closer_ in the DOM wins. That's the exact problem theming nested components used to need JS or deep specificity hacks to solve. It's a much saner default than the specificity arms race described in [clean frontend code principles](/blog/principles-of-clean-frontend-code-dry-kiss-solid).
+
+## Native nesting — Sass, minus the build step
+
+We ran an entire preprocessor mostly to write nested rules and `&`. **Native CSS nesting is Baseline** now across all major engines, so a lot of Sass setups exist only out of habit.
+
+```css
+.nav {
+  display: flex;
+  gap: 1rem;
+
+  /* Nest selectors directly */
+  a {
+    color: inherit;
+
+    /* & is the parent reference, like Sass */
+    &:hover {
+      color: oklch(55% 0.22 250);
+    }
+  }
+
+  /* You can even nest media/container queries */
+  @container (min-width: 500px) {
+    gap: 2rem;
+  }
+}
+```
+
+Two gotchas worth knowing. First, native nesting **doesn't concatenate strings** the way Sass does — `&--active` is invalid; you write `&.nav--active`. Second, a nested type selector like `a { }` is fine, but a bare nested selector that starts with an identifier used to need `&` in early implementations; modern browsers relax this, but leading with `&` is the habit that never bites you.
+
+## Cascade layers — winning specificity fights on purpose
+
+`@layer` lets you declare explicit priority bands. Later layers beat earlier ones **regardless of specificity**. This is the tool that ends `!important` wars and makes third-party CSS behave.
+
+```css
+/* Establish the order ONCE — later wins */
+@layer reset, base, components, utilities;
+
+@layer components {
+  /* Even a high-specificity selector here... */
+  .button.button--primary {
+    background: oklch(55% 0.2 255);
+  }
+}
+
+@layer utilities {
+  /* ...loses to this low-specificity rule, because utilities is later */
+  .bg-transparent {
+    background: transparent;
+  }
+}
+```
+
+This is exactly why utility frameworks moved to layers. If you've touched the new Tailwind engine, you've already seen this model in action — I broke it down in the [Tailwind CSS 4 migration guide](/blog/tailwind-css-4-whats-new-migration-guide). Anything unlayered wins over anything layered by default, which is a handy escape hatch to remember.
+
+## Subgrid — grids that actually line up
+
+Nested grids used to be islands: a child grid couldn't align to its parent's tracks, so card headers and footers across a row drifted out of alignment. The fix was JS measuring heights and setting them equal. **Subgrid is Baseline** (Safari 16, Firefox 71, Chrome/Edge 117) and it lets a child adopt the parent's tracks:
+
+```css
+.cards {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1rem;
+}
+
+.card {
+  display: grid;
+  /* Span 3 rows of the PARENT grid and inherit its row tracks */
+  grid-row: span 3;
+  grid-template-rows: subgrid;
+}
+```
+
+Now every card's title, body and footer sit on shared rows across the whole row. No height-syncing script, no `1fr` guesswork.
+
+## Form styling with :user-valid — validation UI without the state machine
+
+Native `:valid`/`:invalid` were technically fine and practically useless: an empty required field is invalid from page load, so it lights up red before the user types a single character. So we built validation state in JS — tracking "touched", "dirty", "blurred" — just to decide when to show the error.
+
+**`:user-valid` and `:user-invalid`** fix this at the platform level: they only match _after_ the user has interacted with the field. Baseline across modern browsers now.
+
+```css
+/* Only styles once the user has actually engaged with the field */
+input:user-invalid {
+  border-color: oklch(60% 0.2 25);
+}
+
+input:user-valid {
+  border-color: oklch(60% 0.17 150);
+}
+
+/* Combine with :has() to reveal an error message with zero JS */
+.field:has(input:user-invalid) .error-text {
+  display: block;
+}
+```
+
+While you're here, two more form quality-of-life wins. `field-sizing: content` makes an input or textarea grow to fit its content — that's the auto-resizing-textarea script, gone:
+
+```css
+/* The auto-grow textarea, natively */
+textarea {
+  field-sizing: content;
+  min-height: 3lh; /* start at 3 line-heights */
+  max-height: 12lh;
+}
+```
+
+`field-sizing` is Chromium-first and still filling in across engines in 2026, so treat it as **progressive enhancement** — it degrades to a normal fixed textarea. Accessible, resilient form UX like this is a recurring theme in the [2026 web accessibility guide](/blog/web-accessibility-2026-eaa-ada-wcag-guide), and doing it in CSS means the behavior survives even when your JS bundle fails to load.
+
+## text-wrap: balance / pretty — typography we used to fake with JS
+
+Balanced headlines used to mean a library like Balance Text measuring and inserting `<br>`s. Now it's one line, and it's Baseline:
+
+```css
+/* Even out multi-line headings — no orphaned last word */
+h1,
+h2,
+h3 {
+  text-wrap: balance;
+}
+
+/* For body copy: prevent single-word last lines (orphans),
+   optimized for longer text where 'balance' would be costly */
+p {
+  text-wrap: pretty;
+}
+```
+
+Use `balance` for short text (headings, blockquotes) — it's more expensive and browsers cap how many lines it applies to — and `pretty` for paragraphs.
+
+## Anchor positioning + popover — Floating UI is now two CSS properties
+
+This is the one that still feels like magic. Tooltips, dropdowns and popovers needed JavaScript for two hard problems: **positioning** relative to a trigger, and **flipping** when they'd overflow the viewport. That's the entire reason Floating UI / Popper exists — often 10KB+ of your bundle, the kind of weight I'm always hunting in the [sub-200KB bundle guide](/blog/dynamic-bundle-optimization-under-200kb-guide).
+
+Combine the **native `popover` attribute** (Baseline 2024 — handles show/hide, Escape to close, light-dismiss on outside click, and top-layer stacking for free) with **CSS anchor positioning**:
+
+```html
+<button popovertarget="menu" id="trigger">Options</button>
+<div popover id="menu">…menu items…</div>
+```
+
+```css
+#trigger {
+  anchor-name: --trigger; /* name the anchor */
+}
+
+#menu {
+  position: absolute;
+  position-anchor: --trigger; /* tie this element to that anchor */
+
+  /* Place it below and aligned to the anchor's start edge */
+  position-area: bottom span-right;
+  margin-top: 0.5rem;
+
+  /* Automatically flip to stay on-screen */
+  position-try-fallbacks: flip-block, flip-inline;
+}
+```
+
+The old equivalent was a `scroll` + `resize` listener recomputing coordinates and a manual overflow check on every frame. Here `position-area` places it and `position-try-fallbacks` handles the flip — declaratively, off the main thread.
+
+**Support honesty:** this is the least-settled feature on the list. It's **Baseline 2026** in the sense that Chrome 125+, Firefox 132+, and Safari 18.2+ ship the core `anchor()` / `position-anchor`. But it landed Chromium-first and the edges are uneven — Safari needed 18.4+ for some `@position-try` behavior. So: use it as an enhancement, keep a sane static fallback position, and don't ship it as the _only_ way a critical menu can open yet.
+
+## color-mix() and oklch() — a whole design system without a preprocessor
+
+Generating tints, shades and hover states was Sass's other job. Now the browser does perceptually-uniform color math at runtime. **`oklch()` and `color-mix()` are Baseline** across all engines.
+
+```css
+:root {
+  --brand: oklch(55% 0.2 255);
+}
+
+.button {
+  background: var(--brand);
+}
+
+.button:hover {
+  /* Mix 15% black into the brand color — a real, perceptual "darken" */
+  background: color-mix(in oklch, var(--brand), black 15%);
+}
+
+.badge {
+  /* Relative color: same hue/chroma, much lighter — instant tint */
+  background: oklch(from var(--brand) 92% c h);
+}
+```
+
+Because OKLCH is perceptually uniform, `+10%` lightness looks like the same step everywhere on the wheel — unlike HSL, where it lies to you. You can generate an entire palette from one token, live, theme-aware, no build.
+
+## Scroll-driven animations — off-main-thread scroll effects, no library
+
+Scroll progress bars and reveal-on-scroll effects meant a `scroll` listener firing constantly on the main thread (jank central) or IntersectionObserver plumbing. **`animation-timeline` with `scroll()` and `view()` is Baseline** now, and the browser runs it on the compositor:
+
+```css
+@keyframes grow {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+/* A reading-progress bar tied to document scroll — no JS */
+.progress {
+  transform-origin: left;
+  animation: grow linear;
+  animation-timeline: scroll(root block);
+}
+
+/* Fade elements in as they enter the viewport */
+.reveal {
+  animation: fade-in linear both;
+  animation-timeline: view();
+  animation-range: entry 0% cover 40%;
+}
+```
+
+Because it runs off the main thread, it doesn't compete with your JS for frame budget — which matters if you care about the kind of metrics I track in the [frontend performance budgets guide](/blog/performance-budgets-frontend-engineers-guide).
+
+## What still needs JavaScript in 2026
+
+CSS didn't kill _all_ your JS, and pretending otherwise gets you burned. You still reach for a script when you need:
+
+- **Actual application logic and data** — fetching, state management, business rules. CSS styles; it doesn't compute.
+- **Complex focus management** — roving tabindex, focus trapping beyond what `popover` gives you, and most rich ARIA widget keyboard interaction. Accessibility semantics live in HTML + JS, not CSS.
+- **Arbitrary DOM manipulation** — adding/removing/reordering nodes, virtualized lists, drag-and-drop reordering.
+- **Reading measurements to feed logic** — if you need the pixel value _in JavaScript_ (analytics, conditional fetching), `ResizeObserver`/`IntersectionObserver` are still the tools; CSS reacts to size but won't hand you a number.
+- **Truly dynamic anchor targets** and complex gesture-driven animation that the declarative timelines can't express.
+
+The shift is that JS goes back to being for _behavior and data_, and CSS reclaims _presentation_ — the clean separation we always claimed to want.
+
+## The honest migration playbook
+
+You don't rewrite everything on a Friday. What's worked for me:
+
+1. **Turn on the freebies today.** `text-wrap: balance/pretty`, native nesting, `oklch()`/`color-mix()`, cascade layers, subgrid, `:user-valid` — Baseline and low-risk. Ship them now.
+2. **Replace the observers next.** Hunt down `ResizeObserver`-per-component and swap in container queries; hunt down parent-class-toggling listeners and swap in `:has()`. This is where the line-count drops fast.
+3. **Enhance progressively for the frontier.** Anchor positioning and `field-sizing` are real but uneven — layer them on top of working fallbacks, never as the only path.
+4. **Delete the dependencies you've outgrown.** Once `:has()` and container queries land, a surprising number of small JS utilities and a Floating-UI-shaped hole appear in your bundle. Removing them is the highest-leverage cleanup you'll do this quarter.
+
+I've been writing CSS for over a decade, and 2026 is the first year it feels like the language is _ahead_ of what I need instead of two steps behind. Open your codebase, grep for `ResizeObserver` and `classList.toggle`, and start deleting. It's the most satisfying refactor you'll do all year.
+
+## References
+
+### Sources
+
+- [MDN: `:has()` CSS pseudo-class](https://developer.mozilla.org/en-US/docs/Web/CSS/:has)
+- [Can I use: `:has()` relational pseudo-class](https://caniuse.com/css-has)
+- [MDN: CSS container queries](https://developer.mozilla.org/en-US/docs/Web/CSS/Guides/Containment/Container_queries)
+- [MDN: Using container size and style queries](https://developer.mozilla.org/en-US/docs/Web/CSS/Guides/Containment/Container_size_and_style_queries)
+- [web-standards.dev: How to @scope CSS now that it's Baseline](https://web-standards.dev/news/2026/01/scope-css-baseline/)
+- [MDN: Using CSS anchor positioning](https://developer.mozilla.org/en-US/docs/Web/CSS/Guides/Anchor_positioning/Using)
+- [MDN: CSS scroll-driven animations](https://developer.mozilla.org/en-US/docs/Web/CSS/Guides/Scroll-driven_animations)
+- [web.dev: May 2026 Baseline monthly digest](https://web.dev/blog/baseline-digest-may-2026)
+
+### Further Reading
+
+- [MDN: `position-area` CSS property](https://developer.mozilla.org/en-US/docs/Web/CSS/Reference/Properties/position-area)
+- [MDN: `color-mix()` function](https://developer.mozilla.org/en-US/docs/Web/CSS/color_value/color-mix)
+- [MDN: `text-wrap` property](https://developer.mozilla.org/en-US/docs/Web/CSS/text-wrap)
+- [LogRocket: Container queries in 2026 — powerful, but not a silver bullet](https://blog.logrocket.com/container-queries-2026/)
+
+---
+
+~Seb 👊
