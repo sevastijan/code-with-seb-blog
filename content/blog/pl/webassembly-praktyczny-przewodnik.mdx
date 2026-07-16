@@ -1,0 +1,445 @@
+---
+title: 'WebAssembly w praktyce: kiedy JavaScript to za mało'
+date: '2026-01-07'
+category: 'Development'
+tags: ['webassembly', 'wasm', 'performance', 'rust', 'javascript']
+featured: false
+author: 'Sebastian'
+draft: false
+enSlug: 'webassembly-practical-guide-when-javascript-isnt-enough'
+excerpt: 'WebAssembly obiecuje niemal natywną wydajność w przeglądarce. Ale kiedy naprawdę to dowozi? Praktyczny przewodnik z realnymi benchmarkami i frameworkiem decyzyjnym.'
+---
+
+"WebAssembly jest 100x szybszy od JavaScriptu!" Pewnie widziałeś to stwierdzenie. Nie jest prawdziwe. W realnych scenariuszach masz do czynienia z **przyspieszeniem 2-3x**, i to tylko dla konkretnych typów obliczeń. Czasami JavaScript jest wręcz szybszy.
+
+To nie jest zarzut wobec WebAssembly — jest on niesamowicie użyteczny do właściwych problemów. Ale po dekadzie szumu przyszedł czas na praktyczny przewodnik: kiedy Wasm naprawdę ma sens, a kiedy lepiej zostać przy JavaScripcie?
+
+## Czym WebAssembly naprawdę jest
+
+WebAssembly (Wasm) to binarny format instrukcji, który działa w przeglądarce obok JavaScriptu. Potraktuj go jako cel kompilacji: piszesz kod w Rust, C++ lub innych językach, kompilujesz go do `.wasm` i uruchamiasz w przeglądarce.
+
+Najważniejsze punkty:
+
+- **To nie jest zamiennik JavaScriptu** — Wasm nie ma bezpośredniego dostępu do DOM
+- **Działa w tym samym sandboxie** — ten sam model bezpieczeństwa co JS
+- **Jest przenośny** — ten sam plik `.wasm` działa w każdej nowoczesnej przeglądarce
+- **Jest typowany i niskopoziomowy** — bliżej kodu maszynowego niż JavaScript
+
+Oto model mentalny: JavaScript zajmuje się UI i orkiestracją, Wasm bierze na siebie zadania obliczeniowo intensywne.
+
+## Kiedy WebAssembly wygrywa
+
+Wasm błyszczy, gdy musisz wykonać ciężką pracę, z którą JavaScript sobie nie radzi:
+
+### Przetwarzanie obrazu i wideo
+
+```typescript
+// Przetwarzanie obrazu 4K piksel po pikselu
+// JavaScript: ~800ms
+// WebAssembly: ~200ms
+
+const processImage = async (imageData: ImageData) => {
+  // Załaduj moduł Wasm
+  const wasm = await import('./image-processor.wasm')
+
+  // Przekaż dane pikseli do Wasm
+  const result = wasm.applyFilter(imageData.data, imageData.width, imageData.height)
+
+  return new ImageData(result, imageData.width, imageData.height)
+}
+```
+
+Narzędzia takie jak Figma, Photopea i FFMPEG.wasm korzystają z tego wzorca. Gdy manipulujesz milionami pikseli, narzut dynamicznego typowania JavaScriptu się kumuluje.
+
+### Silniki gier i fizyki
+
+Silniki gier potrzebują przewidywalnej, spójnej wydajności. Unity i Unreal Engine kompilują się do WebAssembly na potrzeby gier przeglądarkowych. Kluczowe zalety:
+
+- Przewidywalny czas klatki (brak pauz garbage collectora)
+- Wydajny układ pamięci dla systemów encji
+- Ponowne wykorzystanie istniejących baz kodu w C++
+
+### Kryptografia i kompresja
+
+```typescript
+// Hashowanie z WebAssembly
+import init, { hash_password } from './argon2-wasm'
+
+await init()
+
+// Wasm: ~50ms dla hasha Argon2
+// Czysty JS: ~150ms (i mniej bezpieczne implementacje)
+const hashed = hash_password('user-password', salt)
+```
+
+Kod krytyczny dla bezpieczeństwa zyskuje na wykorzystaniu sprawdzonych w boju bibliotek C/Rust skompilowanych do Wasm zamiast reimplementacji w JavaScripcie.
+
+### CAD i modelowanie 3D
+
+AutoCAD Web i Google Earth używają Wasm do złożonych obliczeń geometrycznych. Gdy wykonujesz operacje macierzowe na tysiącach wierzchołków, instrukcje SIMD w Wasm robią realną różnicę.
+
+### Przetwarzanie danych i analityka
+
+Parsowanie dużych zbiorów danych, wykonywanie obliczeń statystycznych czy przetwarzanie danych naukowych — to klasyczne przypadki użycia Wasm.
+
+## Kiedy JavaScript jest lepszy
+
+Nie sięgaj po WebAssembly, gdy:
+
+### Manipulacja DOM
+
+Wasm nie może bezpośrednio dotknąć DOM. Każda operacja na DOM wymaga wywołania z powrotem do JavaScriptu. Jeśli twoim wąskim gardłem jest renderowanie, Wasm nie pomoże.
+
+```typescript
+// To nie będzie szybsze z Wasm
+// Wąskim gardłem są aktualizacje DOM, nie obliczenia
+items.forEach((item) => {
+  const element = document.createElement('div')
+  element.textContent = item.name
+  container.appendChild(element)
+})
+```
+
+### Proste transformacje danych
+
+```typescript
+// Do tego po prostu użyj JavaScriptu
+const filtered = users.filter((u) => u.active).map((u) => ({ id: u.id, name: u.name }))
+
+// Narzut wywołań JS-do-Wasm uczyniłby to wolniejszym
+```
+
+### Operacje ograniczone przez sieć
+
+Jeśli czekasz na odpowiedzi API, Wasm nie pomoże. Wąskim gardłem nie są obliczenia.
+
+### Gdy nie masz problemów z wydajnością
+
+To najważniejszy punkt. Jeśli twój JavaScript jest wystarczająco szybki, dodanie Wasm wprowadza złożoność bez korzyści. Najpierw profiluj, potem optymalizuj.
+
+## Prawda o wydajności
+
+Ustalmy realistyczne oczekiwania na podstawie konkretnych liczb:
+
+| Operacja                  | JavaScript | WebAssembly | Przyspieszenie      |
+| ------------------------- | ---------- | ----------- | ------------------- |
+| Filtr obrazu (4K)         | 800ms      | 200ms       | 4x                  |
+| Hash Argon2               | 150ms      | 50ms        | 3x                  |
+| Parsowanie JSON           | 10ms       | 15ms        | **0.7x** (JS wygrywa) |
+| Fibonacci(45)             | 12s        | 4s          | 3x                  |
+| Sortowanie tablicy (1M)   | 450ms      | 400ms       | 1.1x                |
+| Aktualizacje DOM (1000)   | 50ms       | 55ms        | **0.9x** (JS wygrywa) |
+
+Kluczowe wnioski:
+
+- **Praca obliczeniowo intensywna**: typowo przyspieszenie 2-4x
+- **Algorytmy intensywnie korzystające z pamięci**: Wasm wygrywa dzięki liniowej pamięci
+- **Operacje na stringach**: JavaScript często wygrywa (zoptymalizowane silniki)
+- **Cokolwiek związanego z DOM**: JavaScript wygrywa (brak narzutu mostka)
+- **Małe operacje**: narzut sprawia, że Wasm jest wolniejszy
+
+## Pierwsze kroki: Rust do Wasm w 5 minut
+
+Rust to najpopularniejszy język dla WebAssembly ze względu na doskonałe narzędzia i brak garbage collectora. Oto minimalna konfiguracja:
+
+### 1. Zainstaluj toolchain
+
+```bash
+# Zainstaluj Rust, jeśli jeszcze go nie masz
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
+# Dodaj target WebAssembly
+rustup target add wasm32-unknown-unknown
+
+# Zainstaluj wasm-pack (narzędzie budujące)
+cargo install wasm-pack
+```
+
+### 2. Utwórz nowy projekt
+
+```bash
+cargo new --lib my-wasm-lib
+cd my-wasm-lib
+```
+
+### 3. Skonfiguruj Cargo.toml
+
+```toml
+[package]
+name = "my-wasm-lib"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wasm-bindgen = "0.2"
+```
+
+### 4. Napisz swój kod w Rust
+
+```rust
+// src/lib.rs
+use wasm_bindgen::prelude::*;
+
+#[wasm_bindgen]
+pub fn fibonacci(n: u32) -> u32 {
+    match n {
+        0 => 0,
+        1 => 1,
+        _ => fibonacci(n - 1) + fibonacci(n - 2),
+    }
+}
+
+#[wasm_bindgen]
+pub fn process_data(data: &[u8]) -> Vec<u8> {
+    // Tutaj twoje ciężkie obliczenia
+    data.iter().map(|x| x.wrapping_mul(2)).collect()
+}
+```
+
+### 5. Zbuduj to
+
+```bash
+wasm-pack build --target web
+```
+
+To generuje katalog `pkg/` z twoim plikiem `.wasm` i bindingami JavaScript.
+
+## Integracja z JavaScriptem
+
+Użycie twojego modułu Wasm w projekcie JavaScript/TypeScript:
+
+```typescript
+// Zaimportuj wygenerowane bindingi
+import init, { fibonacci, process_data } from './pkg/my_wasm_lib.js'
+
+async function main() {
+  // Zainicjalizuj moduł Wasm (wymagane raz)
+  await init()
+
+  // Teraz możesz wywoływać funkcje Wasm jak zwykły JS
+  console.log(fibonacci(40)) // Szybko!
+
+  // Praca z danymi binarnymi
+  const input = new Uint8Array([1, 2, 3, 4, 5])
+  const output = process_data(input)
+  console.log(output) // Uint8Array [2, 4, 6, 8, 10]
+}
+
+main()
+```
+
+### Z bundlerami (Vite, webpack)
+
+```typescript
+// vite.config.ts
+import { defineConfig } from 'vite'
+import wasm from 'vite-plugin-wasm'
+
+export default defineConfig({
+  plugins: [wasm()],
+})
+```
+
+Następnie importuj bezpośrednio:
+
+```typescript
+import { fibonacci } from './pkg/my_wasm_lib.js'
+
+// Działa z hot module replacement
+const result = fibonacci(30)
+```
+
+## Wydajne przekazywanie danych
+
+Największą pułapką wydajnościową jest zbędne kopiowanie danych między pamięcią JavaScriptu a Wasm.
+
+### Źle: kopiowanie przy każdym wywołaniu
+
+```typescript
+// Wolno: dane są kopiowane za każdym razem
+function processFrames(frames: Uint8Array[]) {
+  return frames.map((frame) => wasm.processFrame(frame))
+}
+```
+
+### Dobrze: współdzielony bufor pamięci
+
+```typescript
+// Szybko: alokuj raz, wykorzystuj bufor ponownie
+const buffer = new Uint8Array(wasm.memory.buffer, offset, size)
+
+function processFrames(frames: Uint8Array[]) {
+  return frames.map((frame) => {
+    // Skopiuj do współdzielonego bufora
+    buffer.set(frame)
+    // Przetwarzaj w miejscu
+    wasm.processFrameInPlace(offset, frame.length)
+    // Odczytaj wynik z tego samego bufora
+    return new Uint8Array(buffer)
+  })
+}
+```
+
+### Najlepiej: trzymaj dane w Wasm
+
+```rust
+// Strona Rust: zarządzaj buforem w pamięci Wasm
+#[wasm_bindgen]
+pub struct ImageProcessor {
+    buffer: Vec<u8>,
+}
+
+#[wasm_bindgen]
+impl ImageProcessor {
+    #[wasm_bindgen(constructor)]
+    pub fn new(size: usize) -> Self {
+        Self { buffer: vec![0; size] }
+    }
+
+    pub fn get_buffer_ptr(&self) -> *const u8 {
+        self.buffer.as_ptr()
+    }
+
+    pub fn process(&mut self) {
+        // Modyfikuj self.buffer w miejscu
+        for pixel in &mut self.buffer {
+            *pixel = pixel.saturating_add(10);
+        }
+    }
+}
+```
+
+```typescript
+// Strona JavaScript
+const processor = new ImageProcessor(width * height * 4)
+const ptr = processor.get_buffer_ptr()
+
+// Zapisuj bezpośrednio do pamięci Wasm
+const view = new Uint8Array(wasm.memory.buffer, ptr, size)
+view.set(imageData.data)
+
+// Przetwarzaj bez kopiowania
+processor.process()
+
+// Odczytaj wynik (nadal zero-copy)
+imageData.data.set(view)
+```
+
+## Debugowanie WebAssembly
+
+Nowoczesne przeglądarki mają dobre wsparcie dla debugowania Wasm:
+
+### Chrome DevTools
+
+1. Zbuduj z informacjami debugowymi: `wasm-pack build --debug`
+2. Otwórz DevTools → Sources
+3. Znajdź swój plik `.wasm` w drzewie plików
+4. Ustaw breakpointy w widoku deasemblacji
+5. Dla source maps użyj flagi `--debug` z wasm-pack
+
+### Logowanie do konsoli z Rust
+
+```rust
+use wasm_bindgen::prelude::*;
+
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = console)]
+    fn log(s: &str);
+}
+
+#[wasm_bindgen]
+pub fn debug_function(value: i32) {
+    log(&format!("Debug: value is {}", value));
+}
+```
+
+### Profilowanie wydajności
+
+```typescript
+// Użyj Performance API
+performance.mark('wasm-start')
+const result = wasm.heavyComputation(data)
+performance.mark('wasm-end')
+performance.measure('wasm-computation', 'wasm-start', 'wasm-end')
+```
+
+## Framework decyzyjny
+
+Skorzystaj z tej listy kontrolnej, aby zdecydować, czy WebAssembly ma sens w twoim projekcie:
+
+### Użyj WebAssembly, gdy:
+
+- [ ] Masz **obliczenia ograniczone przez CPU**, które trwają >100ms
+- [ ] Przetwarzasz **duże dane binarne** (obrazy, audio, wideo)
+- [ ] Potrzebujesz **przewidywalnej wydajności** (gry, audio w czasie rzeczywistym)
+- [ ] Portujesz **istniejącą bibliotekę C/C++/Rust**
+- [ ] Potrzebujesz **operacji kryptograficznych** z gwarancjami bezpieczeństwa
+- [ ] Profilowanie JavaScriptu pokazuje obliczenia jako wąskie gardło
+
+### Zostań przy JavaScripcie, gdy:
+
+- [ ] Wąskim gardłem są **aktualizacje DOM** lub **I/O sieciowe**
+- [ ] Operacje trwają **&lt;50ms** w JavaScripcie
+- [ ] Wykonujesz **manipulację stringami** (V8 jest wysoce zoptymalizowany)
+- [ ] Twój zespół **nie zna Rust/C++** (krzywa uczenia jest realna)
+- [ ] Rozmiar bundla jest krytyczny (Wasm dodaje minimum ~20-100KB)
+- [ ] Nie wykonałeś **profilowania**, aby potwierdzić wąskie gardło
+
+### Podejście hybrydowe (zalecane)
+
+Większość udanych projektów Wasm używa obu:
+
+```
+┌─────────────────────────────────────────┐
+│              JavaScript                  │
+│  • Renderowanie UI                      │
+│  • Obsługa zdarzeń                      │
+│  • Wywołania API                        │
+│  • Zarządzanie stanem                   │
+└────────────────┬────────────────────────┘
+                 │ Wywołanie do ciężkiej pracy
+                 ▼
+┌─────────────────────────────────────────┐
+│             WebAssembly                  │
+│  • Przetwarzanie obrazu                 │
+│  • Obliczenia fizyki                    │
+│  • Kompresja/szyfrowanie                │
+│  • Złożone algorytmy                    │
+└─────────────────────────────────────────┘
+```
+
+## Co dalej: Component Model
+
+WebAssembly Component Model (wchodzący w 2026 roku) zmienia zasady gry:
+
+- **Interoperacyjność języków**: łącz moduły Rust, Python i JavaScript bezproblemowo
+- **Lepsze narzędzia**: znormalizowane interfejsy między komponentami
+- **Mniejsze bundle**: współdziel wspólny kod między komponentami
+
+Oznacza to, że będziesz mógł użyć biblioteki ML w Pythonie, procesora obrazu w Rust i kodu spajającego w JavaScripcie — wszystko skompilowane do składalnych komponentów Wasm.
+
+## Podsumowanie
+
+WebAssembly nie jest magicznym pyłem, który wszystko przyspiesza. To potężne narzędzie do konkretnych problemów: ciężkich obliczeń, przetwarzania danych binarnych i portowania istniejących baz kodu.
+
+Praktyczne podejście:
+
+1. **Najpierw profiluj** — zidentyfikuj, gdzie naprawdę jest twoje wąskie gardło
+2. **Spróbuj optymalizacji JavaScriptu** — V8 jest zdumiewająco szybki
+3. **Jeśli wąskim gardłem są obliczenia**, rozważ Wasm
+4. **Zacznij od małego** — wyodrębnij jedną gorącą funkcję i zbenchmarkuj ją
+5. **Zmierz wynik** — czy to naprawdę pomogło?
+
+Najlepsze projekty Wasm, jakie widziałem, zaczynały się od jasnego problemu z wydajnością, dowodziły benchmarkami, że Wasm go rozwiązał, i utrzymywały czystą granicę między JS a Wasm.
+
+Nie dodawaj złożoności dla samej złożoności. Ale gdy JavaScript naprawdę to za mało, WebAssembly jest gotowy.
+
+Chcesz zgłębić temat? [Książka Rust and WebAssembly](https://rustwasm.github.io/book/) jest znakomita, a dokumentacja MDN dokładnie omawia API JavaScript.
+
+Używałeś WebAssembly na produkcji? Chętnie usłyszę o twoim doświadczeniu — co zadziałało, co nie i co zrobiłbyś inaczej.
+
+~Seb 👊

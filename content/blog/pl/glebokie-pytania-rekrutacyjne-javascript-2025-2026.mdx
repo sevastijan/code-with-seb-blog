@@ -1,0 +1,554 @@
+---
+title: 'Głębokie pytania rekrutacyjne z JavaScriptu na lata 2025–2026'
+date: '2025-09-10'
+category: 'Development'
+tags: ['deep javascript interview', 'advanced frontend interview', 'javascript internals', 'react fiber', 'angular signals', 'vue reactivity', 'typescript advanced patterns', 'frontend interview preparation', 'javascript 2025', 'senior frontend engineer', 'interview question bank', 'event loop microtasks macrotasks', 'performance optimization', 'react concurrent rendering', 'angular change detection']
+featured: false
+author: 'Sebastian'
+draft: false
+enSlug: 'deep-javascript-interview-guide-for-2025–2026'
+excerpt: 'Zaawansowane pytania rekrutacyjne z JavaScriptu dla senior frontendowców: event loop, domknięcia, wzorce TypeScript i wnętrzności Reacta, Angulara oraz Vue.'
+---
+
+Rozmowy rekrutacyjne na stanowiska frontendowe w czołowych firmach technologicznych ewoluują. Dzisiejsza rozmowa dla seniora to coś więcej niż przypominanie sobie podstawowych faktów – bada głębokie wnętrzności JavaScriptu, architekturę frameworków i umiejętność rozwiązywania problemów. Ten przewodnik zagłębia się w zaawansowane koncepcje JS (event loop, zakresy, dziedziczenie prototypowe vs klasowe), ich powiązania z nowoczesnymi frameworkami (React Fiber, Angular signals, reaktywność Vue), wzorce TypeScript, optymalizacje wydajności oraz przyszłe trendy. Dołączamy też sekcję z zaawansowanymi pytaniami i odpowiedziami oraz wysokiej jakości materiały do dalszej nauki. Podnieśmy poziom Twojego przygotowania do rozmowy!
+
+---
+
+## Wnętrzności JavaScriptu i zaawansowane koncepcje
+
+### Event loop i współbieżność
+
+Nowoczesne silniki JS używają event loopa do zarządzania operacjami asynchronicznymi. W uproszczeniu, event loop nieustannie sprawdza call stack oraz kolejki zadań (kolejkę microtasków i kolejkę makrotasków), by wykonywać zadania, gdy stos jest pusty. Microtaski (np. callbacki rozwiązanych Promise’ów) mają priorytet i uruchamiają się po bieżącym skrypcie, ale przed jakimkolwiek nowym renderowaniem czy zdarzeniami IO, podczas gdy makrotaski (np. callbacki `setTimeout`, zdarzenia DOM) uruchamiają się w kolejnej iteracji pętli. Oznacza to, że po każdym zadaniu silnik opróżnia wszystkie microtaski, zanim zajmie się kolejnym makrotaskiem. Opanowanie tej mechaniki jest kluczowe – rekruterzy często dają kod z użyciem async/await, promise’ów, `setTimeout` itd. i oczekują, że przewidzisz kolejność wykonania lub zidentyfikujesz race condition. Na przykład powinieneś wiedzieć, że callbacki promise’ów uruchamiają się przed callbackami `setTimeout` w tym samym ticku. Ta znajomość modelu współbieżności pokazuje zdolność do rozumowania o zachowaniach asynchronicznych, co wyróżnia kandydatów seniorskich.
+
+### Zakres, hoisting i domknięcia
+
+Głębokie zrozumienie kontekstów wykonania JS to konieczność. Powinieneś umieć wyjaśnić hoisting (jak deklaracje funkcji i `var` są przetwarzane w fazie kompilacji) oraz Temporal Dead Zone (TDZ) (dlaczego dostęp do `let`/`const` przed inicjalizacją rzuca błędem). Na przykład zmienna zadeklarowana przez `let` jest hoistowana, ale niezainicjalizowana (TDZ) aż do linii jej deklaracji. Domknięcia (closure/domknięcie) – zdolność funkcji do zapamiętywania swojego zewnętrznego zakresu – to ulubiony temat; poza samą definicją spodziewaj się pytań o pułapki związane z domknięciami.
+
+Jednym z częstych problemów są wycieki pamięci: domknięcia mogą nieumyślnie powodować wycieki, trzymając referencje do zmiennych, które nie są już potrzebne. Na przykład, jeśli domknięcie zachowuje referencję do dużego obiektu, ten obiekt nie może zostać zebrany przez garbage collector, co potencjalnie rozdmuchuje zużycie pamięci. Rekruterzy mogą pytać, jak unikać takich wycieków (np. przez zerowanie referencji lub użycie słabych referencji). Zrozumienie automatycznego garbage collection w JavaScripcie (algorytm mark-and-sweep) i tego, jak zbierane są nieosiągalne obiekty, to przydatna wiedza tła (np. dlaczego cykliczne referencje były problematyczne w starych kolektorach opartych na zliczaniu referencji).
+
+W praktyce możesz zostać zapytany, jak wykryć i naprawić wyciek pamięci w single-page app – mocna odpowiedź wspomni o użyciu narzędzi deweloperskich przeglądarki do robienia zrzutów sterty (heap snapshots) oraz identyfikowaniu odłączonych węzłów DOM lub listenerów, a także o wzorcach takich jak usuwanie event listenerów czy używanie WeakMap dla cache’a, który nie blokuje garbage collection.
+
+### Dziedziczenie prototypowe vs klasy
+
+Najlepsi kandydaci potrafią omówić, jak działa łańcuch prototypów obiektów w JavaScripcie „pod maską”. Klasy w ES6+ to w istocie lukier składniowy na modelu dziedziczenia prototypowego. Rekruterzy mogą poprosić Cię o zaimplementowanie dziedziczenia bez `class` (przy użyciu funkcji konstruktora i ustawiania `__proto__` lub `Object.create`) albo o wyjaśnienie, jak przechodzony jest łańcuch prototypów podczas dostępu do właściwości. Bądź gotów porównać oba modele: dziedziczenie prototypowe jest bardziej elastyczne (obiekty mogą bezpośrednio dziedziczyć po innych obiektach), podczas gdy wzorce klasyczne wymuszają sztywną hierarchię. Wartościowa jest też wiedza o specjalnych typach obiektów, takich jak `Symbol`. Symbole to unikalne, niemutowalne identyfikatory, często używane do definiowania nieenumerowalnych właściwości obiektów lub zachowań protokołów. Na przykład `Symbol.iterator` sprawia, że obiekt można iterować pętlą `for..of`. Na rozmowie możesz zostać zapytany: „Czym są symbole i kiedy byś ich użył?”. Mocna odpowiedź zauważy, że symbole tworzą unikalne klucze właściwości, które nie kolidują z innymi, co jest przydatne do dodawania metadanych do obiektów lub definiowania własnej iteracji, oraz wspomni, że niektóre „well-known symbols” zaczepiają się o wnętrzności JavaScriptu (np. `Symbol.iterator` dla iterowalnych, `Symbol.hasInstance` dla zachowania `instanceof`).
+
+### Iteratory i generatory
+
+W 2025 roku znajomość protokołu iteracji jest zakładana z góry. Powinieneś wiedzieć, że iterator to obiekt z metodą `next()` zwracającą `{value, done}`, a iterowalny to obiekt z metodą `Symbol.iterator` zwracającą iterator. Spodziewaj się pytań w rodzaju „Jak sprawiłbyś, że własny obiekt jest iterowalny?” – idealna odpowiedź naszkicuje użycie `Symbol.iterator` do zwracania wartości. Generatory (funkcje deklarowane przez `function*`) upraszczają tworzenie iteratorów, pozwalając pisać kod, który można wstrzymać (`yield`) i wznowić. Zaawansowane pytania mogą dotyczyć zdolności generatorów do zarządzania przepływami asynchronicznymi lub tego, czym różnią się od zwykłych funkcji (generatory nie wykonują się od razu do końca i mogą produkować wiele wyników w czasie). Może pojawić się zastosowanie z życia: np. użycie generatorów do implementacji leniwych sekwencji lub zarządzania złożonymi pętlami asynchronicznymi (choć `async/await` jest dziś powszechniejsze). Pamiętaj, by wspomnieć, że generatory automatycznie implementują protokół iteratora i można ich używać z `for..of`. Zrozumienie tych głębokich cech języka pokazuje, że „czujesz”, jak JavaScript działa pod warstwą składni.
+
+---
+
+## Mistrzostwo TypeScriptu w nowoczesnym frontendzie
+
+W 2025 roku TypeScript jest domyślnym wyborem dla frontendowego developmentu na dużą skalę. Od kandydatów seniorskich oczekuje się nie tylko używania TS, lecz także wykorzystywania jego zaawansowanego systemu typów do czystszego, bezpieczniejszego kodu. Rozmowy mogą badać Twoje rozumienie generyków, zaawansowanych typów oraz tego, jak typy mogą modelować złożoną logikę programu.
+
+### Generyki i wnioskowanie typów
+
+Generyki pozwalają pisać funkcje i klasy działające z wieloma typami przy zachowaniu bezpieczeństwa typów. Powinieneś swobodnie pisać funkcje generyczne, np.
+
+```q
+function identity<T>(value: T): T {
+  return value
+}
+```
+
+i wyjaśniać, jak kompilator wnioskuje `T` na podstawie użycia. Typowe pytanie rekrutacyjne: „Czym są generyki i po co ich używać?” – dobra odpowiedź podkreśla, że generyki umożliwiają sensowne relacje typów między wejściami a wyjściami (gwarantując na przykład, że typ zwracany funkcji odpowiada typowi jej argumentu). Możesz zostać poproszony o zaimplementowanie generycznej struktury danych (jak `Stack<T>`) i omówienie, jak poprawia ona bezpieczeństwo w porównaniu z użyciem `any`. Bądź też gotów na scenariusze, w których wnioskowanie zawodzi i musisz dostarczyć jawne parametry generyczne lub ograniczenia (przy użyciu `extends`).
+
+### Zaawansowane typy – warunkowe, mapowane, utility types
+
+Rozmowy z najwyższej półki często obejmują rozumowanie o złożonych typach. Typy warunkowe (conditional types, wprowadzone w TS 2.8) pozwalają, by typy zależały od warunków – na przykład
+
+```tsx
+type IsString<T> = T extends string ? 'yes' : 'no'
+```
+
+będzie ewaluować do `"yes"` dla `T = string` i `"no"` w przeciwnym razie. Rekruter może poprosić Cię o zinterpretowanie lub napisanie typu warunkowego. Rozważ na przykład:
+
+```tsx
+type UnwrapPromise<T> = T extends Promise<infer U> ? U : T.
+```
+
+Powinieneś wyjaśnić, że ten typ używa `infer`, by wyciągnąć typ wartości, do której rozwiązuje się promise, a w przeciwnym razie zwraca samo T – w praktyce „rozpakowuje” promise’y. Typy mapowane (mapped types) pozwalają przekształcać właściwości typu (np. czyniąc wszystkie właściwości opcjonalnymi lub readonly). Znaj wbudowane utility types, takie jak `Partial<T>` (który czyni wszystkie pola opcjonalnymi) czy `Pick<T, K>` (wybiera podzbiór pól), i bądź gotów zaimplementować prosty ręcznie (np. jak `Required<T>` mógłby być zdefiniowany za pomocą typów mapowanych). Te wzorce demonstrują zdolność do okiełznania TypeScriptu w rzeczywistych, dużych bazach kodu, gdzie często trzeba egzekwować niezmienniki na poziomie typów. Rekruter może przedstawić scenariusz: „Jak zapewniłbyś na poziomie typów, że obiekt ma co najmniej jedną z dwóch właściwości?” – rozwiązanie mogłoby wykorzystać na przykład typy unii i typy warunkowe.
+
+### Utility types i template literal types
+
+Zaznajom się z nowszymi cechami systemu typów. Template literal types pozwalają konstruować typy będące unią literałów stringowych (na przykład tworzenie typów takich jak `"btn-${"small"|"large"}` programatycznie). Utility types takie jak `Omit`, `Extract`, `Exclude` itp. są powszechnie używane w kodzie frameworków – rekruterzy mogą zapytać, czy je znasz lub czy potrafisz zaimplementować jeden z nich. Na przykład: „Co robi typ `Record<K, V>`?” (Odpowiedź: konstruuje typ obiektu, którego klucze są typu unii `K`, a wartości typu `V`). Znajomość tych typów świadczy o tym, że pisałeś – albo przynajmniej czytałeś – wyrafinowany TypeScript.
+
+### Rola TypeScriptu w rozmowach rekrutacyjnych
+
+Firmy oczekują, że będziesz rozumować o kodzie w kontekście silnego typowania. Może to oznaczać analizę podchwytliwego błędu kompilacji w kodzie mocno opartym na generykach albo refaktoryzację fragmentu JavaScriptu do TypeScriptu, wykorzystując typy do zapobiegania błędom. Częstym motywem jest wykazanie, że typy poprawiają utrzymywalność i skalowalność – np. użycie interfejsów lub klas abstrakcyjnych do projektowania jasnych kontraktów, albo użycie typów unii / discriminated union do modelowania danych wariantowych (jak typy `SyntheticEvent` w Reakcie czy typy akcji Reduxa). Bądź przygotowany na pytania o zawężanie typów (type narrowing – jak TS używa sprawdzeń `typeof`, discriminated unions itp., by doprecyzować typy wewnątrz warunków) oraz o declaration merging lub module augmentation (zaawansowane, ale czasem pytane przy rolach związanych z projektowaniem bibliotek).
+
+## Zanurzenia w frameworki: React, Angular i Vue
+
+Nowoczesne frameworki frontendowe abstrahują od wielu rzeczy, ale kandydaci seniorscy powinni wiedzieć, co dzieje się pod maską. Rekruterzy często pytają, jak framework działa wewnętrznie albo jak znajomość wnętrzności pomaga w debugowaniu czy optymalizacji. Przyjrzyjmy się kluczowym punktom dla Reacta, Angulara i Vue, istotnym w latach 2025–2026:
+
+### React: architektura Fiber, concurrent rendering i wnętrzności hooków
+
+#### Fiber i reconciliation
+
+React 16 wprowadził nowy rdzenny algorytm zwany Fiber, który fundamentalnie zmienił sposób przetwarzania aktualizacji. Powinieneś umieć wyjaśnić, że React Fiber dzieli pracę renderowania na małe jednostki i rozkłada ją, w razie potrzeby, na wiele klatek, umożliwiając reactowe możliwości concurrent rendering. W skrócie, Fiber to odnowiony silnik reconciliation: wcześniej renderowanie Reacta było synchroniczne i mogło blokować główny wątek, ale Fiber pozwala Reactowi wstrzymywać i wznawiać pracę oraz priorytetyzować pilne aktualizacje (jak wejście użytkownika) ponad mniej pilne.
+
+Rekruter może zapytać: **„Dlaczego wprowadzono Fiber i jak pomaga?”** – solidna odpowiedź: Fiber pozwala przerywać zadania renderowania i wykonywać drobnoziarniste aktualizacje, czyniąc UI bardziej responsywnym poprzez zapewnienie, że np. animacja czy naciśnięcie klawisza nie utkną za długim renderem komponentu poza ekranem. To fundament dla funkcji Concurrent Mode (dostępnych w React 18+), takich jak `startTransition` czy Suspense. Warto wspomnieć, że Fiber utrzymuje drzewo węzłów fiber odpowiadających elementom Reacta i że umożliwia time-slicing (rozkładanie pracy na klatki). Choć nie będziesz implementować Fibera na rozmowie, wykazanie zrozumienia koncepcyjnego pokazuje, że potrafisz rozumować o wydajności Reacta.
+
+Jako konkretny przykład możesz wyjaśnić, jak pisanie w polu tekstowym obsługiwane jest z wyższym priorytetem niż renderowanie dużej listy – dzięki Fiberowi React może wstrzymać diffowanie listy, by natychmiast obsłużyć aktualizację inputu.
+
+#### Funkcje concurrent i Suspense
+
+Bazując na Fiberze, concurrent rendering Reacta pozwala przetwarzać wiele aktualizacji stanu bez blokowania. Możesz zostać zapytany o Suspense – nie tylko dla code-splittingu, lecz także dla pobierania danych w ekosystemie React 18. Upewnij się, że potrafisz opisać React Suspense jako mechanizm wstrzymywania renderowania i pokazywania fallbacku podczas oczekiwania na jakiś zasób (jak leniwie ładowany komponent lub dane).
+
+Na przykład: **„Jak Suspense poprawia ładowanie aplikacji?”** – odpowiedziałbyś, że pozwala owinąć fragmenty drzewa komponentów i wyświetlić fallback (jak spinner), dopóki dana część nie będzie gotowa, upraszczając obsługę asynchronicznego UI. Jeśli rozmowa dotknie React Server Components (RSC) – nowszej koncepcji od React 18+ – znaj podstawy: RSC to komponenty działające wyłącznie na serwerze, emitujące zserializowane drzewo UI, które ma zostać scalone z reactem po stronie klienta. RSC pozwalają przenieść logikę renderowania na serwer dla lepszej wydajności i wysłać mniej JS do klienta.
+
+Możliwe pytanie: **„Czym są React Server Components i czym różnią się od zwykłych komponentów?”** – solidna odpowiedź: działają na serwerze, nie mają stanu ani efektów i zwracają JSX, który jest streamowany do klienta; ponieważ nigdy nie wysyłają JS do przeglądarki, zmniejszają rozmiar bundle’a i mogą poprawić wydajność (zwłaszcza w połączeniu z Next.js).
+
+Współpracują z komponentami klienckimi poprzez przekazywanie propsów; myśl o nich jak o ewolucji renderowania izomorficznego, gdzie część UI jest renderowana czysto po stronie serwera.
+
+#### Wnętrzności hooków
+
+Hooki Reacta są dziś powszechnie omawiane na rozmowach – nie tylko jak ich używać, lecz także jak działają.
+
+Jedno z zaawansowanych pytań: **„Dlaczego hooki muszą być wywoływane na najwyższym poziomie komponentu (nie w pętlach ani warunkach)?”**. Ma to sprawdzić, czy rozumiesz, że React śledzi wywołania hooków po kolejności. Gdy komponent się renderuje, React utrzymuje wewnętrzną tablicę stanów hooków, a każde wywołanie `useState`/`useEffect` itd. odpowiada indeksowi w tej tablicy. Jeśli wywołasz hooki warunkowo, możesz złamać tę kolejność, powodując błędne przypisania stanu. Wyjaśnienie tego pokazuje, że znasz implementację: React używa bieżącego „indeksu hooka” podczas renderowania, przypisując lub pobierając stan z tablicy (lub listy powiązanej) pamięci hooków. Wspomnij też, że przy ponownych renderach hooki są wywoływane w tej samej kolejności, co pozwala Reactowi dopasować każde wywołanie hooka do jego zachowanego stanu z poprzedniego renderu.
+
+Możesz też dostać pytanie o stale closures (np. „Dlaczego mój `useEffect` nie widział zaktualizowanej wartości stanu?”). Wiąże się to z tym, jak hooki przechwytują zmienne – powinieneś wyjaśnić, że jeśli stan zostanie zaktualizowany, ale callback efektu został utworzony w wcześniejszym renderze, to domyka się on nad starymi wartościami, chyba że dodasz je do tablicy zależności. Rekruter może zamienić to w scenariusz debugowania: rozwiązałbyś go, dodając brakujące zależności lub używając refa do utrwalenia mutowalnej wartości między renderami. Ogółem, wykazanie zrozumienia wnętrzności hooków (a nie tylko ich API) pokazuje, że potrafisz debugować podchwytliwe problemy Reacta, które juniorom mogą wydawać się magią.
+
+### Angular: change detection, Zone.js, dependency injection i signals
+
+#### Change detection i Zone.js
+
+Projekt frameworka Angular mocno akcentuje automatyczne change detection. Historycznie Angular używa biblioteki `Zone.js`, by przechwytywać wszystkie operacje asynchroniczne. W aplikacji Angulara `Zone.js` monkey-patchuje asynchroniczne API (jak `setTimeout`, zdarzenia DOM, `XHR/fetch`, promise’y), tak by po takich zdarzeniach Angular wiedział, że ma uruchomić cykl change detection. W istocie `Zone.js` zaczepia się o event loop i za każdym razem, gdy zdarzenie asynchroniczne się zakończy, wyzwala `ApplicationRef.tick()`, powodując, że Angular przechodzi drzewo komponentów i aktualizuje wszelkie bindingi, które się zmieniły.
+
+Powinieneś umieć wyjaśnić, że w domyślnej strategii change detection Angulara, gdy dzieje się jakiekolwiek zdarzenie, sprawdzany jest każdy komponent (odgórne sprawdzenie szablonów komponentów pod kątem zmienionych danych). Może to być nieefektywne w dużych aplikacjach. Dlatego Angular udostępnia strategię change detection OnPush: mówi ona Angularowi, by pomijał sprawdzanie komponentu, chyba że zajdą określone warunki.
+
+Rekruter może zapytać: **„Kiedy użyłbyś OnPush i jak to działa?”** – odpowiedziałbyś, że komponenty OnPush są sprawdzane tylko wtedy, gdy zmieniła się referencja `@Input`, gdy zdarzenie pochodzi z tego komponentu, lub gdy ręcznie oznaczysz go do sprawdzenia. Redukuje to zbędne sprawdzenia i poprawia wydajność.
+
+Oczekiwana jest też znajomość systemu DI Angulara. Dependency injection w Angularze jest hierarchiczne – zazwyczaj istnieje root injector dla usług singletonowych oraz dodatkowe injectory dla modułów funkcjonalnych lub providerów komponentów. W praktyce możesz zostać zapytany, jak Angular znajduje instancję usługi dla komponentu. Dobra odpowiedź opisuje drzewo injectorów: Angular najpierw zajrzy do własnego injectora komponentu (jeśli dostarczył on usługę), a następnie do injectorów nadrzędnych aż do roota.
+
+Pozwala to mieć odrębne instancje usługi w różnych poddrzewach (na przykład zlokalizowaną instancję usługi dla określonej funkcji). Powinieneś też wspomnieć o składni `providedIn: 'root'` w `@Injectable`, która tree-shakuje usługi, domyślnie dostarczając je w root injectorze. Wyrafinowane pytanie mogłoby brzmieć: „Jak zaprojektowałbyś usługę współdzieloną przez niektóre komponenty, ale nie inne?” – co sprawdza rozumienie providerów na poziomie komponentu vs modułu.
+
+#### Signals – przyszłość reaktywności Angulara
+
+Dużym niedawnym dodatkiem (Angular v16) są Signals, które wprowadzają drobnoziarnisty system reaktywności podobny do reaktywności w Vue czy SolidJS. Signals dostarczają jawnych wartości reaktywnych, które odczytujesz wywołaniem funkcji, a ustawiasz setterem. W przeciwieństwie do `Zone.js`, który robi dirty-checking całego drzewa komponentów, signals pozwalają Angularowi śledzić konkretne zależności i aktualizować tylko dotknięte komponenty. Powinieneś wiedzieć, że signals można używać do tworzenia stanu (`signal()`), wyliczania wartości pochodnych (`computed()`) i uruchamiania efektów ubocznych (`effect()`), oraz że Angular zmierza ku przyszłości bez zone, wykorzystując signals do change detection.
+
+Rekruter może zapytać: **„Jakie problemy rozwiązują signals w Angularze?”**. Wyjaśniłbyś, że signals eliminują potrzebę globalnego change detection przy każdym zdarzeniu asynchronicznym – zamiast sprawdzania wszystkiego przez Angulara, komponent oparty na signalach re-renderuje się tylko wtedy, gdy zmienią się konkretne signals, których używa. Przynosi to korzyści w wydajności i przejrzystości: koniec ze zbędnymi sprawdzeniami nietkniętych komponentów oraz łatwiejsze debugowanie, bo reaktywność jest jawna.
+
+Mógłbyś to skontrastować: Zone.js = niejawne i szerokie (patchuj wszystko, a potem rób pełne sprawdzenia drzewa) vs Signals = jawne i granularne (aktualizuj dokładnie to, co dotknięte). Wspomnij też, że Angular umożliwia działanie bez zone – Angular 17+ pozwala wyłączyć Zone.js i sterować change detection ręcznie lub przez signals. W kontekście rozmów pokazuje to, że nadążasz za ewolucją Angulara. Nawet jeśli Twój rekruter nie używał jeszcze signals, świadomość ich i ich zalet (jak unikanie błędów `expressionChangedAfterItHasBeenChecked` już w założeniu) zostanie dobrze odebrana.
+
+Na koniec kandydaci angularowi powinni wciąż swobodnie czuć się z klasycznymi tematami, jak digest cycle vs obecne (od Angulara 2) jednokierunkowe change detection, choć digest z AngularJS jest dziś głównie historyczny. Upewnij się, że potrafisz wyartykułować, jak `ChangeDetectorRef` jest używany do ręcznego wyzwalania lub odłączania change detection w razie potrzeby, i wspomnij o strategiach wydajnościowych (jak używanie OnPush, `trackBy` w `ngFor` i unikanie zbędnych pipe’ów). Kluczem jest wykazanie, że potrafisz zrównoważyć „magię” Angulara (Zone) z jawną optymalizacją i jesteś świadomy nowych usprawnień (signals).
+
+### Vue: rdzeń reaktywności, watchery i optymalizacje Virtual DOM
+
+#### Reaktywność Vue 3 (oparta na Proxy)
+
+System reaktywności Vue to kluczowa siła frameworka. Powinieneś wiedzieć, jak działa reaktywność Vue 3 przy użyciu ES6 Proxy (podczas gdy Vue 2 używało `Object.defineProperty`). Prawdopodobne pytanie: **„Jak Vue 3 wykrywa zmiany w obiektach i tablicach?”** – odpowiedź: Vue 3 owija stan w Proxy przez API `reactive()`. Proxy przechwytuje operacje get/set: przy get śledzi zależność; przy set wyzwala watchery dla tej właściwości. W przeciwieństwie do Vue 2, proxy Vue 3 potrafi wykryć dodanie nowych właściwości lub zmiany indeksów tablicy bez specjalnego API (bez potrzeby `Vue.set`). Obsługuje też automatycznie obiekty zagnieżdżone (domyślnie głęboka reaktywność).
+
+W kategoriach rekrutacyjnych możesz zostać zapytany o zalety reaktywności Vue opartej na proxy nad starszym systemem – wspomniałbyś, że `defineProperty` w Vue 2 nie potrafiło wykryć dodania ani usunięcia właściwości i wymagało wcześniejszego owinięcia danych. System Vue 3 śledzi właściwości w locie, co czyni go bardziej odpornym (choć proxy mają niewielki koszt wydajnościowy). Wykazanie znajomości terminów takich jak „track” i „trigger” oraz roli Reactive Effect (funkcji, która uruchamia render komponentu lub funkcję computed i śledzi zależności) pokaże głębokie zrozumienie.
+
+#### Właściwości computed i watchery
+
+Częstym pytaniem o Vue jest różnica między właściwościami computed a właściwościami obserwowanymi (watched). Wyjaśnij, że właściwość computed to buforowana pochodna stanu reaktywnego, która ponownie się ewaluuje tylko wtedy, gdy zmienią się jej zależności, podczas gdy watcher (używający API `watch`) to imperatywna reakcja na zmiany stanu, używana do efektów ubocznych, jak wywołania API. Na przykład computed jest idealne do wyliczenia wartości do wyświetlenia, a watch służy do wykonania akcji, jak pobranie danych, gdy zmieni się określony stan. Zaawansowana dyskusja może obejmować `watchEffect`, cechę Composition API Vue 3, podobną do połączenia computed+watch, która automatycznie śledzi zależności.
+
+Jeśli zapytany **„Kiedy użyłbyś watchEffect zamiast watch?”** – odpowiedz, że `watchEffect` jest przydatny, gdy nie wiesz dokładnie, które źródła reaktywne musisz obserwować (będzie śledzić wszystko, co użyte w jego callbacku), podczas gdy `watch` służy do jawnego obserwowania konkretnych źródeł z precyzyjną kontrolą (i opcjami jak immediate czy deep watching).
+
+#### Virtual DOM i kompilacja szablonów
+
+Vue, podobnie jak React, używa Virtual DOM, ale implementacja Vue wykorzystuje optymalizacje kompilatora. Bądź gotów omówić, jak kompilator szablonów Vue może zoptymalizować renderowanie. Kompilator Vue potrafi przeanalizować szablon i oznaczyć części DOM jako statyczne – te części są kompilowane do reużywalnych vnode’ów, które nie są diffowane przy każdym renderze. Na przykład statyczna zawartość (bez bindingów) jest buforowana, tak by nie była za każdym razem tworzona od nowa ani diffowana. Vue stosuje też patch flags w skompilowanej funkcji render, by wskazać, jaki rodzaj dynamicznych zmian ma dany węzeł (tekst, klasa itp.), dzięki czemu runtime może pomijać sprawdzanie części, które się nie zmieniły.
+
+Rekruterzy mogą zapytać: **„Dlaczego Virtual DOM Vue jest w niektórych przypadkach szybszy niż w Reakcie?”** – świetną odpowiedzią jest to, że VDOM Vue, wyposażony w wiedzę z kompilatora, może unikać pracy, wiedząc z góry, które części DOM są statyczne lub co dokładnie trzeba porównać. W Reakcie natomiast każdy render ponownie diffuje całe poddrzewo (chyba że użyjesz `React.memo` lub innych wskazówek), bo runtime z natury nie wie, co mogło się zmienić. Ta różnica jest często przytaczana w dyskusjach Vue vs React, a jej znajomość pokazuje, że rozumiesz wydajność na poziomie frameworka.
+
+Mógłbyś zilustrować to przykładem: jeśli masz listę, w której zmienia się tylko jeden element, patch flags Vue pozwalają pominąć diffowanie pozostałych elementów, podczas gdy React by je diffował (chyba że wkroczą optymalizacje z kluczami i PureComponent).
+
+#### Pułapki reaktywności Vue
+
+Wykazanie świadomości częstych pułapek również świadczy o ekspertyzie. Na przykład w Vue 2 klasyczną pułapką było to, że dodanie nowej właściwości do obiektu nie było reaktywne, chyba że użyłeś `Vue.set` – mógłbyś wspomnieć, że Vue 3 rozwiązało to za pomocą proxy. Inną jest zrozumienie timingu flush: Vue aktualizuje DOM asynchronicznie po zmianach danych (w następnym ticku), więc czasem musisz zaczekać na `Vue.nextTick()`, by niezawodnie uzyskać zaktualizowany DOM w kodzie.
+
+Rekruter może zapytać, jak Vue batchuje aktualizacje DOM – wyjaśniłbyś, że wiele synchronicznych mutacji jest scalanych i aplikowanych w następnym ticku microtaska, by unikać zbędnych re-renderów.
+
+Omawiając te punkty, pokazujesz, że nie traktujesz frameworków jak czarnych skrzynek – wiesz, dlaczego React mógłby gubić klatki bez Fibera, jak Angular wie, kiedy zaktualizować UI, gdy powróci XHR, i co czyni aktualizacje Vue efektywnymi. Ten poziom wglądu to dokładnie to, co wyróżnia senior frontendowców na rozmowach.
+
+---
+
+## Optymalizacja wydajności w aplikacjach frontendowych
+
+Od senior frontendowca oczekuje się posiadania zestawu technik wydajnościowych oraz wykazania „mindsetu wydajnościowego” podczas rozmów. Częste tematy obejmują optymalizacje czasu ładowania (bundling, tree-shaking, code-splitting), optymalizacje runtime’owe (efektywne aktualizacje DOM, unikanie wycieków pamięci) oraz profilowanie i diagnozowanie problemów z wydajnością. Bądź gotów odpowiadać zarówno na pytania koncepcyjne („czym jest tree shaking?”), jak i scenariuszowe („nasza aplikacja jest wolna przy filtrowaniu listy 100 tys. elementów, co byś zrobił?”).
+
+### Rozmiar bundle’a i wydajność ładowania
+
+Optymalizacja tego, ile JavaScriptu wysyłamy do przeglądarki, jest kluczowa. Powinieneś wspomnieć o technikach takich jak tree-shaking, które usuwa nieużywany kod z bundle’a na etapie budowania. Nowoczesne bundlery (Webpack, Rollup, esbuild) używają statycznej analizy ES modules do usuwania martwego kodu – na przykład, jeśli zaimportujesz lodash, ale użyjesz tylko jednej funkcji, dobry build dołączy tylko tę funkcję.
+
+Jeśli zapytany _„Jak zmniejszasz rozmiar bundle’a?”_, mów o tree-shakingu (i o tym, że opiera się on na modułach bez efektów ubocznych), używaniu dynamic imports do leniwego ładowania kodu (np. rozdzielaniu bibliotek vendorskich lub ciężkich komponentów, by ładowały się na żądanie) oraz technikach takich jak code-splitting (rozdzielanie oparte na trasach w SPA przy użyciu React Lazy/Suspense lub modułów Angulara). Wspomnij też o analizowaniu bundle’i narzędziami (Webpack Bundle Analyzer itp.), by znaleźć duże zależności.
+
+Prawdziwy przykład: mógłbyś opisać, jak zidentyfikowałeś ogromny bundle lokalizacji moment.js i zastąpiłeś go lżejszą biblioteką date-fns. Pokazuje to praktyczne doświadczenie.
+
+### Wydajność runtime’owa
+
+Ta kategoria jest szeroka, ale rekruterzy często skupiają się na tym, jak utrzymać płynność aplikacji (animacje w 60fps, brak skokowego scrollowania itp.). Pomaga znajomość potoku renderowania przeglądarki – powinieneś być świadomy pojęć takich jak layout thrash (częste reflowy) i tego, jak batchować pomiary i mutacje DOM, by nie wymuszać reflowu zbyt często.
+
+Typowe pytanie mogłoby brzmieć: **„Jakie są częste źródła problemów z wydajnością w aplikacji webowej?”** – wymieniłbyś rzeczy takie jak: zbyt wiele elementów DOM lub częste manipulacje DOM, zbędne re-rendery (w Reakcie brak memoizacji komponentów prowadzący do dodatkowych diffów DOM), blokowanie głównego wątku kosztownymi obliczeniami, wycieki pamięci powodujące churn garbage collectora oraz duże repainty z powodu braku warstwowania lub nieefektywnego użycia CSS.
+
+Jeśli pytanie skłania się ku pamięci, wspomnij, że długo żyjące single-page apps mogą wyciekać pamięć, jeśli event listenery lub interwały nie są czyszczone. Używając profilera pamięci DevTools, możesz robić zrzuty, by wychwycić obiekty, które powinny były zostać zebrane (np. odłączone węzły DOM wciąż referencjonowane).
+
+### Optymalizacja wykonywania JS
+
+Na rozmowie możesz dostać scenariusz w rodzaju „to ciężkie obliczenie w przeglądarce zamraża UI”. Dobrą odpowiedzią jest przeniesienie pracy do web workerów (wielowątkowość) lub podzielenie jej na kawałki rozłożone na wiele ticków przy użyciu technik takich jak `setTimeout`/`requestIdleCallback` (podobnie jak Fiber robi time slicing).
+
+Wiąże się to z wiedzą o event loopie: dzieląc zadania, unikasz blokowania jednowątkowego JS na zbyt długo. Wspomnij też o używaniu debouncingu/throttlingu dla zdarzeń takich jak zmiana rozmiaru okna czy wprowadzanie z klawiatury, by nie wykonywać zbyt dużo pracy zbyt szybko.
+
+### Wskazówki wydajnościowe specyficzne dla frameworków
+
+Każdy framework ma własne dobre praktyki: w Reakcie używanie `React.memo` lub `useMemo/useCallback`, by unikać ponownych obliczeń lub re-renderów czystych komponentów; w Angularze używanie change detection OnPush i odłączanie detektorów dla statycznych części UI; w Vue wykorzystywanie właściwości computed i unikanie głębokich watcherów.
+
+Jeśli rekruter zapyta na przykład **„Jak poprawiłbyś wydajność w aplikacji React z dużą liczbą powtarzających się renderów?”**, mógłbyś mówić o identyfikowaniu zbędnych renderów (być może przy użyciu React DevTools Profiler lub biblioteki why-did-you-render), a następnie zastosowaniu memoizacji lub przesunięciu stanu w dół, by minimalizować aktualizacje. Dla Angulara: może wspomnieć o rozdzielaniu dużych modułów lub użyciu `trackBy` w `*ngFor`, by Angular mógł ponownie wykorzystać węzły DOM po kluczach.
+
+### Profilowanie i pomiary
+
+Jedno to spekulować, ale senior inżynierowie mierzą. Powinieneś swobodnie opisywać użycie zakładki performance w narzędziach deweloperskich przeglądarki – zbierając timeline, by zobaczyć, gdzie spędzany jest czas (scripting, rendering, painting). Może pojawić się też wiedza o Core Web Vitals (Largest Contentful Paint itp.) oraz o używaniu Lighthouse lub narzędzi web.dev do uzyskiwania wyników wydajności.
+
+Jeśli zapytany **„Jak znajdujesz wąskie gardło wydajności w aplikacji?”**, wzorcowa odpowiedź brzmiałaby: najpierw odtworzyłbym spowolnienie i użył profilowania wydajności, by sprawdzić, czy jest ono ograniczone przez CPU (dużo skryptowania) czy przez GPU/layout (dużo obliczeń stylów lub repaintów). Jeśli to wykonywanie JS na CPU, sprawdzam duże funkcje na flame chart (może nieefektywna pętla). Jeśli to layout thrashing, patrzę na wykresy pod kątem inwalidacji layoutu. Mógłbyś wspomnieć o profilach pamięci, jeśli problemem jest powolny wyciek pamięci. W Reakcie użyłbyś React Profilera, by zobaczyć, które komponenty renderują się często, i odpowiednio zoptymalizować. W Angularze mógłbyś użyć profilera Angular DevTools lub ręcznie zinstrumentować change detection.
+
+Podsumowując, wykaż się systematycznym podejściem: zidentyfikuj wolny fragment (profilowanie), wyjaśnij lub zastosuj poprawkę (zoptymalizuj algorytm, zredukuj operacje DOM, wprowadź cache/memoizację, podziel pracę, użyj workerów), a następnie zweryfikuj poprawę. To rozumowanie jest bardziej imponujące niż samo rzucanie terminami. Pokaż, że priorytetyzujesz doświadczenie użytkownika (płynność, szybkie ładowania) i masz umiejętności, by to osiągnąć.
+
+---
+
+## Oczekiwania rekrutacyjne w firmach z najwyższej półki
+
+Czego dokładnie szukają firmy „z najwyższej półki” na rozmowach frontendowych? W latach 2025–2026 wyłoniło się kilka wyraźnych motywów:
+
+### Głębia zrozumienia
+
+Firmy oczekują, że kandydaci seniorscy dogłębnie rozumieją narzędzia i języki, których używają, a nie tylko powierzchownie wiedzą, jak ich użyć. Oznacza to, że pytania rekrutacyjne często badają, dlaczego coś działa tak, jak działa. Na przykład, zamiast po prostu pytać o definicję domknięcia, mogą zapytać „Jak domknięcia w JavaScripcie wpływają na zużycie pamięci?” lub „Czy możesz przejść przez przypadek użycia, w którym domknięcie powoduje błąd, i jak go naprawić?” – to sprawdza zrozumienie wykraczające poza wiedzę wyuczoną na pamięć. Jak wspomniano wcześniej, kandydat, który potrafi wyartykułować wewnętrzne działanie event loopa lub sposób działania algorytmu reconciliation w Reakcie, wyróżni się. Dla kontrastu pytania w rodzaju „jaka jest różnica między `==` a `===`” czy „czym jest `this` w JavaScripcie” są uważane za zbyt juniorskie – rekruterzy zakładają, że to wiesz. W istocie badania niedawnych rozmów pokazują, że trywialne pytania tracą na popularności na rzecz tych, które „sprawdzają, czy potrafisz przemyśleć rzeczywiste problemy”.
+
+### Rozwiązywanie rzeczywistych problemów
+
+Następuje przesunięcie od zagadek algorytmicznych ku praktycznym scenariuszom. Na rozmowach frontendowych pojawiają się pytania w stylu system design: możesz zostać poproszony o zaprojektowanie architektury dla złożonej funkcji frontendowej albo o to, jak poprawić niezawodność lub wydajność istniejącej bazy kodu. Firmy chcą zobaczyć, że potrafisz zastosować swoją wiedzę, by podejmować dobre decyzje inżynieryjne.
+
+Może to oznaczać omawianie kompromisów (np. „Wybrałbyś Redux czy Context API do zarządzania stanem w danej sytuacji i dlaczego?” albo „Jak ustrukturyzowałbyś aplikację, by była wysoce skalowalna i utrzymywalna?”). Aby zabłysnąć, wpleć swoje doświadczenie: wspomnij wzorce projektowe, których używałeś, jak konfigurowałeś testowanie lub CI dla frontendu, jak podchodzisz do dostępności i wydajności jako części projektowania. Wykazanie „mindsetu inżynierskiego” – myślenia o przypadkach brzegowych, trybach awarii i utrzymywalności – jest kluczowe.
+
+### Czynniki różnicujące
+
+Na poziomie seniorskim od każdego oczekuje się biegłości w kodowaniu. Tym, co różnicuje kandydatów, jest często komunikacja, umiejętności debugowania i zdolność do samodzielnego kierowania sobą. Możesz dostać celowo niejasny lub złożony problem, który wymaga zadawania pytań doprecyzowujących (np. zadanie domowe z niejednoznaczną specyfikacją albo zadanie debugowania z wieloma plikami). Pokazanie metodycznego podejścia (jak systematyczne zawężanie przyczyny błędu lub rozbijanie dużego zadania na mniejsze) zdobędzie punkty.
+
+Dodatkowo firmy z najwyższej półki uwielbiają kandydatów, którzy wykazują poczucie odpowiedzialności (ownership) i proaktywność: na przykład, omawiając projekt, wspomnienie, jak zidentyfikowałeś i naprawiłeś problem z wydajnością albo jak poprawiłeś developer experience swojego zespołu, tworząc własną regułę ESLint itp., pokazuje, że wychodzisz poza samo implementowanie funkcji.
+
+### AI i narzędzia deweloperskie
+
+Bardzo współczesna kwestia – niektóre firmy przyznają teraz, że deweloperzy używają w swoim workflow asystentów AI do kodowania (GitHub Copilot, ChatGPT itp.). W istocie pewne firmy, jak Canva, wprost pozwalają, a nawet zachęcają do używania AI podczas rozmów. Uzasadnienie jest takie, że skoro ich inżynierowie codziennie używają AI, chcą zobaczyć, jak kandydaci wykorzystują te narzędzia do rozwiązywania problemów. Oznacza to, że możesz zostać poproszony o użycie asystenta AI do wygenerowania jakiegoś kodu, ale ocena skupi się na Twoich umiejętnościach wyższego rzędu: jak promptujesz AI, interpretujesz i weryfikujesz jego wynik oraz integrujesz go w rozwiązanie. Jeśli pojawi się temat użycia AI, jasno pokaż, że potrafisz je efektywnie wykorzystać, ale też krytycznie.
+
+Na przykład mógłbyś powiedzieć: **„Użyłbym Copilota, by szybko uzyskać szkic rozwiązania, ale potem starannie bym je przejrzał i przetestował, korygując każdą część, która nie jest optymalna”**. W przypadku Canvy faktycznie szukają umiejętności takich jak zdolność do debugowania i ulepszania kodu wygenerowanego przez AI oraz podejmowania trafnych decyzji z AI jako pomocnikiem. Więc jeśli rekruter zapyta, jak poradziłbyś sobie z zadaniem z AI, podkreśl, że używasz AI, by zwiększać produktywność, a nie jako kuli: wciąż musisz rozumieć kod i być za niego odpowiedzialny. Dobrze też wspomnieć o znajomości prompt engineeringu – np. dostarczaniu kontekstu do AI, iterowaniu po jego odpowiedziach – co pokazuje, że wyprzedzasz trendy.
+
+### Wpływ low-code/no-code
+
+Wraz z rozwojem platform low-code/no-code (do budowania prostych aplikacji, formularzy, stron) możesz dostać pytanie, jak wpływają one na rolę frontendowca. Firmy prawdopodobnie nie będą oczekiwać, że jesteś ekspertem od tych narzędzi, ale mogą ocenić Twoje nastawienie. Przemyślaną odpowiedzią jest, że narzędzia low-code potrafią obsłużyć boilerplate i wzmocnić projektantów lub mniej technicznych członków zespołu, co uwalnia frontend inżynierów, by zajęli się bardziej złożoną, dopasowaną pracą. Na przykład, jeśli strona marketingowa jest zbudowana w Webflow przez projektantów, deweloperzy frontendu mogą skupić się na rdzennej aplikacji produktu.
+
+Pokaż, że nie boisz się tych narzędzi – przeciwnie, wiesz, jak się z nimi integrować (być może pobierając dane z no-code CMS przez API) i kiedy przejść na rozwiązanie własne. Wspomnij też, że fundamenty inżynierskie wciąż są kluczowe: gdy rozwiązania low-code natrafią na ograniczenia, firmy polegają na wykwalifikowanych deweloperach, by je rozszerzyć lub zoptymalizować.
+
+Więc jeśli na rozmowie zostaniesz zapytany **„Czy uważasz, że platformy no-code zastąpią frontend deweloperów?”**, idealna odpowiedź brzmi: „Obsługują powtarzalne zadania, ale inżynierowie są potrzebni do złożonej logiki, strojenia wydajności, integracji i budowania komponentów, których ostatecznie używają użytkownicy no-code. Swobodnie używam ich, gdy jest to stosowne, ale też diagnozuję problemy, gdy te abstrakcje przeciekają.” To pokazuje, że widzisz szerszy obraz swojej roli.
+
+Ostatecznie firmy z najwyższej półki chcą frontend inżynierów, którzy są technicznie silni, elastyczni i wciąż się uczą. Jeśli potrafisz rozmawiać o nadchodzących standardach webowych, to również dodatkowy atut – pokazuje, że jesteś na bieżąco. Kolejne omówimy przyszłe trendy.
+
+---
+
+## Przyszłe trendy: co przed nami w latach 2025–2026
+
+Rozwój frontendu nieustannie ewoluuje. Biegłość w nadchodzących funkcjach i trendach zaimponuje rekruterom i pokaże, że przygotowujesz się na przyszłość, a nie tylko rozwiązujesz wczorajsze problemy.
+
+### Wschodzące funkcje JavaScriptu
+
+Język JavaScript (ECMAScript) wciąż się rozrasta. Warto odnotować kilka propozycji, które prawdopodobnie trafią do specyfikacji ES2025 lub ES2026:
+
+- Pipeline Operator (`|>`): ta propozycja (na Stage 2/3) wprowadza czystszą składnię do łańcuchowania funkcji. Pozwala wziąć wynik jednego wyrażenia i bezpośrednio przekazać go jako wejście do następnego, sprawiając, że kod czyta się od lewej do prawej. Na przykład `value |> double |> square` zamiast `square(double(value))`. Jeśli rekruter zapyta, jaka nowa funkcja JS Cię ekscytuje, możesz wspomnieć o pipeline operatorze i o tym, jak może poprawić czytelność kodu, unikając głęboko zagnieżdżonych wywołań funkcji.
+
+- Pattern Matching: mocno wyczekiwaną funkcją (Stage 3 na rok 2025) jest wyrażenie `match` (pomyśl o `switch` na sterydach), które pozwala destrukturyzować wartość względem wielu wzorców. Może znacznie uprościć rozgałęzianie po kształcie obiektu (na przykład odróżnianie obiektów błędu od wyników sukcesu). Jest to podobne do pattern matchingu w językach takich jak Scala czy Rust. Mógłbyś wspomnieć, jak może to uczynić logikę warunkową bardziej deklaratywną i mniej podatną na błędy (koniec z długimi łańcuchami if-else sprawdzającymi typy obiektów).
+
+- Temporal API: zastępując niezgrabny obiekt `Date`, Temporal (obecnie Stage 3) dostarcza zestaw obiektów dla dat, czasów i stref czasowych, ze znacznie rozsądniejszym interfejsem. Prawdopodobnie wkrótce stanie się częścią JS, więc pokazanie świadomości jest dobre. Np. mógłbyś powiedzieć: „Praca z datami będzie łatwiejsza – Temporal dostarcza `PlainDate`, `ZonedDateTime` itp., rozwiązując z gracją problemy takie jak konwersje stref czasowych i DST”. Rekruterzy doceniają, gdy jesteś zorientowany w poprawkach długotrwałych bolączek (a daty/czas zawsze były bolączką!).
+
+Records & Tuples: to nowe niemutowalne typy wartości (Stage 2), które zachowują się jak głęboko niemutowalne Obiekty i Tablice. `Record` jest jak obiekt, który jest zamrożony i porównywany po wartości, a `Tuple` jest analogiczny dla tablic. Dwa recordy o tej samej zawartości są uważane za równe (`===`), w przeciwieństwie do obiektów. Może to być przełomem przy używaniu obiektów jako kluczy mapy lub do memoizacji. Wspomnij, że tworzy się je składnią `#{ }` i `#[ ]`. Pokazuje to, że myślisz z wyprzedzeniem o bezpiecznym zarządzaniu stanem (bez przypadkowych mutacji).
+
+- Native Observable: dyskutuje się nawet o wbudowanym typie Observable (choć wciąż wcześnie, Stage 1). Jeśli programowanie reaktywne to Twoja działka, możesz o tym napomknąć (ale mniej pewne, że wkrótce wyląduje). Wciąż pokazuje to świadomość pipeline’u TC39 i tego, że umiałbyś dostosować się do świata, w którym wzorce RxJS być może staną się standardem.
+
+Warto też odnotować: dekoratory oficjalnie przechodzą przez pipeline (Stage 3). TypeScript miał eksperymentalne dekoratory (dla Angulara i innych), ale wkrótce ustandaryzowana forma stanie się częścią JS. Jeśli używałeś dekoratorów TS, wspomnij o tym i zaznacz konwergencję standardów.
+
+### Ewolucja TypeScriptu
+
+TypeScript będzie nadal dopasowywał się do funkcji JS (jak nowe dekoratory po ich finalizacji). Ogromną potencjalną zmianą na horyzoncie jest propozycja Type Annotations as Comments. TC39 pracuje nad umożliwieniem składni typów w JS, która byłaby po prostu ignorowana w runtime (w istocie umożliwiając natywne uruchamianie plików pisanych w TypeScripcie poprzez traktowanie typów jako komentarzy). Jeśli to się zmaterializuje (obecnie jest na Stage 2 jako Type Annotations), oznacza to, że przepaść między TypeScriptem a JavaScriptem może się zawęzić – przyszli deweloperzy JS mogliby stopniowo przyjmować typy bez kroku budowania. Na rozmowie mógłbyś wspomnieć tę propozycję, by pokazać, że nadążasz za konwergencją ekosystemu JS/TS. Sygnalizuje to, że myślisz o usprawnieniach developer experience.
+
+### Platforma webowa i narzędzia
+
+Poza funkcjami języka rozważ szersze trendy: WebAssembly rośnie (nie tylko do ciężkich obliczeń, ale też do rzeczy takich jak biblioteki UI kompilowane z innych języków – choć to jeszcze nie częsty temat rozmów dla ról frontendowych). Ciągły wzrost frameworków takich jak Svelte i Solid (które akcentują „kompilowanie frameworka do zera” lub użycie drobnoziarnistej reaktywności) to znak paradygmatów skupionych na wydajności – miło wiedzieć o nich trochę, gdyby rekruter był zaintrygowany nowymi frameworkami. Nadchodzi też AI w UX – np. interfejsy pluginów ChatGPT czy modele ML działające na edge – ale są one bardziej domenowo specyficzne.
+
+### Rozwój wspomagany AI
+
+Dotknęliśmy tematu AI na rozmowach, ale ogólnie, do 2025 roku deweloperzy pracujący z asystentami AI będą powszechni. Niektórzy rekruterzy mogą zapytać o Twoją opinię na ten temat lub o to, jak z niego korzystasz. Rozsądnie jest mieć odpowiedź, która obejmuje AI, ale też rozpoznaje jego ograniczenia. Na przykład mógłbyś powiedzieć, że używasz AI do generowania boilerplate’u lub sugerowania rozwiązań, ale zawsze przeglądasz kod pod kątem poprawności i stylu. Może używasz go jako narzędzia do nauki, by uzyskać wskazówki o nieznanej technologii. Pokazanie, że nie czujesz się zagrożony przez AI, a zamiast tego wykorzystujesz je, by być bardziej produktywnym, przedstawia Cię jako inżyniera, który będzie rósł wraz z przyszłymi narzędziami. Wspomnij też o wszelkim doświadczeniu z AI w produkcji – np. implementowaniu funkcji chatbota lub używaniu API AI – jeśli to istotne, bo pokazuje, że potrafisz integrować nowe technologie.
+
+Podsumowując, przyszłość frontendu w latach 2025–2026 wygląda ekscytująco: nowe możliwości języka uczynią kod czystszym i potężniejszym, frameworki włączają coraz bardziej wyrafinowaną reaktywność i optymalizacje w czasie kompilacji, a workflow dewelopera jest wzbogacany przez AI. Firmy z najwyższej półki chcą inżynierów gotowych na te zmiany. Będąc na bieżąco i eksperymentując z funkcjami beta (może próbowałeś funkcji ES202X przez Babel lub nightly TypeScriptu), sygnalizujesz, że utrzymasz ich bazę kodu nowoczesną i skierowaną w przyszłość.
+
+Mając te tematy na uwadze, przejdźmy do kilku przykładowych pytań i odpowiedzi rekrutacyjnych, które ujmują zaawansowane koncepcje omówione powyżej. Użyj tych Q&A, by sprawdzić swoje zrozumienie i jako wzoru na to, jak jasno i zwięźle wyjaśniać złożone idee podczas rozmowy.
+
+---
+
+## Zaawansowane przykłady pytań i odpowiedzi rekrutacyjnych
+
+#### P1: Wyjaśnij różnicę między kolejką microtasków a kolejką makrotasków w event loopie JavaScriptu. Dlaczego to rozróżnienie jest ważne?
+
+W event loopie JavaScriptu microtaski (zwykle callbacki promise’ów lub zadania `queueMicrotask`) są priorytetyzowane, by uruchomić się natychmiast po aktualnie wykonywanym skrypcie, zanim silnik odda kontrolę z powrotem do UI lub obsłuży inne zdarzenia. Makrotaski (zdarzenia, timery itp.) są zaplanowane na uruchomienie w następnej iteracji event loopa. Rozróżnienie ma znaczenie, ponieważ microtaski mogą wykonać się wiele razy przed jakimkolwiek renderowaniem czy I/O, potencjalnie powodując zagłodzenie UI, jeśli nie zostaną ostrożnie obsłużone.
+
+Na przykład, jeśli promise wciąż kolejkuje kolejny promise w swoim `.then`, wszystkie one uruchomią się w tym samym obrocie, a przeglądarka nie zaktualizuje `DOM`, dopóki się nie zakończą. Wiedząc to, możemy przewidzieć, że we fragmencie z `Promise.resolve().then(...)` i `setTimeout(...,0)` `.then` promise’a uruchomi się pierwsze (microtask), a timeout później (makrotask). Na rozmowie dodałbym, że to kluczowe dla zrozumienia zachowań, jak to, dlaczego `await` (który jest w istocie microtaskiem) może wykonać się przed `setTimeout 0`.
+
+#### P2: JavaScript jest jednowątkowy. Jak zatem web API takie jak `setTimeout` czy zdarzenia DOM umożliwiają zachowanie asynchroniczne?
+
+Sam JavaScript działa na jednym wątku, ale przeglądarka dostarcza możliwości w tle (web API) oraz mechanizm harmonogramowania. Funkcje takie jak `setTimeout` nie są obsługiwane bezpośrednio przez silnik JS; zamiast tego przeglądarka (lub runtime Node) zarządza timerem w tle. Gdy timer się zakończy, kolejkuje callback do odpowiedniej kolejki zadań. Event loop później zdejmie ten callback z kolejki, gdy call stack będzie wolny, i go wykona.
+
+To samo dotyczy zdarzeń DOM (przeglądarka nasłuchuje, a gdy zdarzenie wystąpi, kolejkuje callback zdarzenia). Model ten pozwala JavaScriptowi wydawać się asynchronicznym pomimo jednego wątku, kooperatywnie harmonogramując pracę przez event loop. W istocie, choć JS może robić tylko jedną rzecz naraz, przeglądarka może obsługiwać wiele rzeczy (timery, żądania sieciowe) i używać event loopa, by przeplatać wykonania JS. To wyjaśnienie pokazuje, że rozumiem środowisko uruchomieniowe wokół JavaScriptu, a nie tylko sam język.
+
+#### P3: Czym w JavaScripcie jest domknięcie i czy możesz podać praktyczny przykład domknięcia powodującego nieoczekiwane zachowanie?
+
+Domknięcie ma miejsce, gdy funkcja „pamięta” zmienne spoza siebie (w swoim zakresie leksykalnym), nawet jeśli wywołasz tę funkcję w innym kontekście. Praktycznie, każda funkcja wewnętrzna, która używa zmiennej z funkcji zewnętrznej, jest domknięciem. Na przykład, jeśli masz pętlę tworzącą funkcje wypychane do tablicy, a te funkcje używają indeksu pętli, wszystkie mogą „pamiętać” końcową wartość indeksu (jeśli użyto `var`), ponieważ dla całej pętli istniał tylko jeden zakres. Klasyczne nieoczekiwane zachowanie:
+
+```js
+var funcs = []
+for (var i = 0; i < 3; i++) {
+  funcs.push(function () {
+    console.log(i)
+  })
+}
+funcs[0]()
+funcs[1]()
+funcs[2]()
+```
+
+To wypisze „3, 3, 3”, ponieważ trzy domknięcia odwołują się do tego samego `i` (które zakończyło się na 3). Poprawką byłoby użycie `let i` w pętli (tworzące nowy binding w każdej iteracji) lub natychmiastowe wywołanie funkcji w każdej iteracji, by przechwycić bieżącą wartość. Domknięcia są potężne, ale – jak widać – mogą też prowadzić do błędów, jeśli nie jest się ostrożnym co do zakresu, który każde domknięcie domyka. (Zauważam też, że domknięcia mogą powodować wycieki pamięci, utrzymując referencje przy życiu; np. długo żyjące domknięcie odwołujące się do dużego obiektu uniemożliwi zebranie tego obiektu przez garbage collector).
+
+#### P4: Jak działa garbage collection w JavaScripcie i czym jest wyciek pamięci?
+
+JavaScript używa automatycznego garbage collection – zazwyczaj formy mark-and-sweep. Silnik okresowo identyfikuje obiekty osiągalne z referencji-korzeni (jak obiekt globalny czy zmienne lokalne dowolnej aktualnie wykonywanej funkcji). Każdy obiekt, który nie jest osiągalny, uważany jest za śmieć, a jego pamięć zostaje odzyskana. Wyciek pamięci następuje, gdy nieumyślnie trzymasz referencje do obiektów, których już nie potrzebujesz, uniemożliwiając GC ich zebranie. Na przykład, jeśli wypchniemy węzły DOM do tablicy i nigdy ich nie usuniemy, to nawet po usunięciu tych węzłów ze strony nasza tablica wciąż je referencjonuje – to wyciek.
+
+Innym częstym źródłem są długo żyjące timery lub event listenery, które nie są czyszczone – domykają się nad zmiennymi lub referencjami i żyją dalej. W istocie wyciek pamięci w JS oznacza, że trzymasz obiekty, które powinny były zostać zwolnione. Narzędzia takie jak Chrome DevTools pomagają znajdować wycieki poprzez robienie zrzutów sterty; możesz zobaczyć, że pewne obiekty rosną liczebnie z czasem. Jako senior deweloper wspomniałbym o strategiach takich jak zerowanie referencji (gdy stosowne), usuwanie event listenerów, używanie WeakMap/WeakRef dla cache’y, tak by nie blokowały GC itp., w scenariuszu, gdzie zużycie pamięci jest problemem.
+
+#### P5: Porównaj dziedziczenie prototypowe i dziedziczenie klasowe w JavaScripcie.
+
+Natywne dziedziczenie JavaScriptu jest prototypowe: obiekty dziedziczą po innych obiektach. Każdy obiekt może mieć prototyp (link `__proto__`) do innego obiektu i deleguje wyszukiwanie właściwości do tego prototypu. Dziedziczenie klasyczne (klasy) to wzorzec zbudowany na prototypach – składnia `class` z ES6 tworzy funkcje konstruktora i używa prototypów pod maską. Różnica tkwi głównie w sposobie myślenia o tym: w dziedziczeniu prototypowym możesz bezpośrednio utworzyć obiekt, który służy jako prototyp dla innych (jak `let parent = {x: 1}; let child = Object.create(parent);`), podczas gdy dziedziczenie klasowe zazwyczaj polega na tworzeniu instancji z szablonu (blueprint). W JavaScripcie klasy są w istocie lukrem składniowym; gdy deklarujesz klasę, metody trafiają na prototyp konstruktora.
+
+Jeden niuans: prototypowy system JS jest bardzo elastyczny – możesz nawet zmienić prototyp obiektu w runtime (`Object.setPrototypeOf`), choć nie jest to zalecane ze względów wydajności. W praktyce użycie `class A extends B {…}` ustawi prototyp B jako prototyp prototypu A (pozwalając instancjom A dziedziczyć po B). Na rozmowie kluczem jest: klasy sprawiają, że dziedziczenie JS wygląda bardziej jak w Javie czy C#, ale pod maską jest prototypowe. Mogę dodać, że dziedziczenie prototypowe umożliwia wzorce takie jak kompozycja obiektów i miksiny poprzez zwykłe przypisywanie prototypów lub kopiowanie właściwości, oferując więcej dynamizmu niż klasyczne dziedziczenie klasowe.
+
+#### P6: Czym jest Symbol w JavaScripcie i do czego się go używa?
+
+Symbol to typ prymitywny wprowadzony w ES6. Każdy Symbol jest unikalny – jeśli utworzysz dwa symbole o tym samym opisie, wciąż są to odrębne wartości. Symbole są zazwyczaj używane jako klucze właściwości na obiektach, by uniknąć kolizji nazw. Na przykład, jeśli mam obiekt i chcę dodać właściwość, której nikt inny nieumyślnie nie nadpisze, mogę zrobić: `const secret = Symbol('secret'); obj[secret] = 'hidden'`. Tylko kod trzymający symbol `secret` może uzyskać dostęp do tej właściwości. Symbole mają kilka specjalnych zastosowań: istnieją well-known symbols, których JavaScript używa, by zaczepić się o zachowania języka, jak `Symbol.iterator` (jeśli obiekt ma właściwość o kluczu `Symbol.iterator`, obiekt jest iterowalny).
+
+Innym jest `Symbol.toStringTag`, który dostosowuje wynik `toString()`. W praktyce używałem symboli do definiowania wewnętrznych metadanych obiektów, które biblioteki mogą dołączać bez kolizji ze zwykłymi właściwościami. Są też używane w pewnych API – np. `Symbol.asyncIterator` dla protokołów asynchronicznej iteracji. W skrócie, symbole umożliwiają definiowanie ukrytych lub specjalnych właściwości na obiektach i otwierają formę metaprogramowania przez te well-known symbols.
+
+#### P7: Jak działają iteratory w JavaScripcie? Czy potrafisz napisać prosty iterator dla obiektu?
+
+Iterator to obiekt, który ma metodę `next()` zwracającą obiekt `{ value: ..., done: ... }`. Gdy `done` jest true, sygnalizuje brak dalszych wartości. Iterowalny to dowolny obiekt, który dostarcza iterator przez właściwość `Symbol.iterator`. Na przykład tablice są iterowalne – `array[Symbol.iterator]()` daje iterator przechodzący przez wartości. Jeśli chcę zrobić prosty iterator dla, powiedzmy, zakresu liczb, mógłbym zrobić:
+
+```js
+function rangeIterator(start, end) {
+  let current = start
+  return {
+    next() {
+      if (current <= end) {
+        return { value: current++, done: false }
+      } else {
+        return { done: true }
+      }
+    },
+  }
+}
+```
+
+Ten `rangeIterator(1,5)` produkowałby wartości od 1 do 5. Aby uczynić obiekt iterowalnym (bym mógł użyć go w pętli `for..of`), nadaję mu metodę `[Symbol.iterator]()`, która zwraca taki iterator. Na przykład:
+
+```js
+const range = {
+  start: 1,
+  end: 5,
+  [Symbol.iterator]() {
+    let current = this.start,
+      end = this.end
+    return {
+      next() {
+        if (current <= end) {
+          return { value: current++, done: false }
+        }
+        return { done: true }
+      },
+    }
+  },
+}
+```
+
+Teraz `for (let num of range) console.log(num)`; wypisałoby 1,2,3,4,5. To pokazuje, że rozumiem protokół iteracji. Na rozmowie mógłbym też wspomnieć o generatorach jako wygodnym sposobie tworzenia iteratorów: funkcja generatora `function* rangeGen(start,end){ for(let i=start;i<=end;i++) yield i; }` osiąga to samo w bardziej zwięzły sposób. To słowo kluczowe `yield` produkuje wartości, a `next()` generatora steruje pętlą.
+
+#### P8: Czym w TypeScripcie są typy warunkowe i jak byś jednego użył?
+
+Typy warunkowe w TS pozwalają wyrażać typy zależne od innych typów. Mają składnię `T extends U ? X : Y`. Na przykład TypeScript ma wbudowany typ `Awaited<T>`, który dla danego typu T wyprodukuje typ wartości rozwiązanej, jeśli T jest Promise, w przeciwnym razie pozostawia T bez zmian. Można to zapisać jako:
+
+```ts
+type MyAwaited<T> = T extends Promise<infer V> ? V : T
+```
+
+Tutaj sprawdza, czy T jest Promise czegoś (`infer V` przechwytuje typ wewnętrzny), a jeśli tak, zwraca ten typ wewnętrzny, w przeciwnym razie zwraca samo T. Prostszy przykład:
+
+```ts
+type IsString<T> = T extends string ? true : false
+```
+
+`IsString<"hello">` byłoby `true`, a `IsString<42>` byłoby `false`. Używałem typów warunkowych do tworzenia utility types – na przykład typu usuwającego `null` i `undefined` z unii:
+
+```ts
+type NonNullable<T> = T extends null | undefined ? never : T
+```
+
+Dokładnie tak TS definiuje swój `NonNullable`. Więc zastosowanie jest wtedy, gdy typ musi rozgałęzić się na podstawie jakiejś właściwości T. Są potężne w TS do rzeczy takich jak mapowanie struktur JSON na typy POJO czy wyliczanie typów zwracanych na podstawie typów argumentów (jak w utility `ReturnType<T>`). Podkreśliłbym, że typy warunkowe można łączyć ze słowem kluczowym `infer`, by wyciągać typy (jak `infer V` powyżej), i że distribuują się nad uniami (więc jeśli T jest unią, warunek stosuje się do każdego członu – kwestia, na którą trzeba uważać, czasem wymagająca `[]` wokół wyrażeń `T extends`, by uniknąć dystrybucji). To pokazuje mocne opanowanie zaawansowanego TS.
+
+#### P9: Jak działa wnioskowanie typów w TypeScripcie? Czy możesz podać przykład, gdzie wywnioskuje typ, którego możesz się nie spodziewać?
+
+TypeScript stara się wnioskować typy zawsze, gdy to możliwe, by zredukować potrzebę adnotacji. Wnioskuje z wartości literałowych (np. `let x = 5` wnioskuje `x: number`), z kontekstu (np. parametry w callbackach, typ zwracany funkcji, jeśli go nie adnotujesz, ale masz instrukcje return itp.) oraz z użycia generyków. Klasyczny przykład dotyczy generyków i typów unii:
+
+```ts
+function wrapInArray<T>(x: T) {
+  return [x]
+}
+```
+
+Jeśli wywołam `wrapInArray(10)`, TS wywnioskuje `T` jako `number`, a funkcja zwróci `number[]`. Jeśli wywołam `wrapInArray({ id: 1, name: "foo" })`, wywnioskuje ten złożony typ obiektu. Wnioskowanie może zaskoczyć przy uniach i przeciążeniach. Na przykład:
+
+```ts
+const arr = [1, 'hello']
+```
+
+Tutaj TS domyślnie wnioskuje `arr` jako `(string | number)[]` (tablicę unii). Ale gdybym miał funkcję z przeciążeniami, wnioskowanie wybiera pierwszą pasującą sygnaturę przeciążenia, co może dać nieoczekiwane wyniki, jeśli nie są starannie uporządkowane. Inny przykład: kontekstowe typowanie funkcji:
+
+```ts
+const nums = [3, 2, 1]
+nums.sort((a, b) => a - b)
+```
+
+TS wnioskuje `a` i `b` jako liczby z kontekstu typu `nums.sort`. Nieoczekiwany scenariusz:
+
+```ts
+let mixed = [new Date(), new RegExp('')]
+```
+
+Wnioskuje tablicę jako unię `([Date, RegExp])` -> w rzeczywistości wywnioskuje ją jako `(Date | RegExp)[]`. Jeśli chciałbyś krotkę, musiałbyś ją zadeklarować. Jeszcze jeden: wnioskowanie typów z asercjami `const` – jeśli zrobię `let x = { name: "Alice" } as const`, TS wnioskuje typ x jako `{ readonly name: "Alice" }` (typ literałowy z readonly) zamiast ogólnego `{ name: string }`. Zrozumienie tych niuansów (jak kiedy wnioskuje typy literałowe vs poszerzone) pokazuje głębię. Podsumowując, algorytm wnioskowania TS stara się być najlepszym wspólnym typem lub opartym na użyciu – i choć zwykle intuicyjny, czasem musimy go poprowadzić (ograniczeniami generyków, przeciążeniami lub `as const`). Ta odpowiedź demonstruje, że potrafię nawigować po tych zawiłościach.
+
+#### P10: Czym jest React Fiber i jak poprawia renderowanie w Reakcie?
+
+Fiber to nazwa wewnętrznej reimplementacji algorytmu reconciliation w Reakcie, wprowadzonej w React 16. Przed Fiberem React renderował całe poddrzewo komponentów rekurencyjnie za jednym razem (co mogło blokować wątek JS). Fiber dzieli pracę na małe jednostki i może wstrzymywać oraz wznawiać pracę. Każdy element UI odpowiada „fiberowi” (lekkiemu obiektowi), który trzyma jego stan i to, co trzeba zrobić dalej.
+
+Wielką poprawą jest to, że React może teraz wykonywać pracę renderowania asynchronicznie i obsługiwać priorytetowe aktualizacje. Na przykład wejście użytkownika czy animacje mogą być priorytetyzowane ponad mniej pilne aktualizacje. Fiber umożliwił też funkcje takie jak Concurrent Mode i Suspense. Konkretny scenariusz: jeśli użytkownik pisze w inpucie, gdy wolny komponent się renderuje, Fiber pozwala Reactowi wstrzymać wolny render, zastosować najpierw aktualizację inputu (by UI wydawało się responsywne), a potem kontynuować render.
+
+Rezultatem jest płynniejsza, nieblokująca interaktywność. Często podsumowuję: Fiber jest jak kooperatywny scheduler dla komponentów Reacta. Nie zmienia publicznego API (poza nowymi funkcjami, które odblokowuje), lecz jest w całości szczegółem implementacyjnym, który poprawia wydajność i toruje drogę nowym możliwościom (jak time-slicing i selektywna hydratacja po stronie klienta). Termin „fiber” pochodzi od fiberów w systemach operacyjnych – czyli lekkich wątków – co jest analogią do tego, jak React może przełączać się między zadaniami. Na rozmowie unikałbym zbyt niskopoziomowych szczegółów i skupił się na korzyściach: przerywanie, dzielenie renderowania na kawałki i harmonogramowanie. Wspomniałbym też, że to fundament dla rzeczy takich jak hook `useTransition` (do oznaczania aktualizacji jako niepilne).
+
+#### P11: React 18 wprowadził funkcje takie jak `startTransition` i `Suspense` do pobierania danych. Jak one działają i dlaczego są przydatne?
+
+W concurrent mode Reacta 18 `startTransition` to sposób na oznaczenie aktualizacji jako niskopriorytetowej („tranzycja”). Na przykład, filtrując listę na podstawie inputu, chcesz natychmiast zaktualizować pole inputu (wysoki priorytet), ale możesz odroczyć aktualizację dużej listy (niski priorytet). `startTransition` Reacta pozwala owinąć aktualizację stanu dla listy, tak że jeśli nadejdzie pilniejsza aktualizacja (jak kolejne naciśnięcie klawisza), może ona przerwać renderowanie aktualizacji listy. Zapobiega to zablokowaniu UI przy kosztownych re-renderach. W kodzie:
+
+```jsx
+import { startTransition } from 'react';
+onChange={(e) => {
+  setInputValue(e.target.value);
+  startTransition(() => {
+    setFilter(e.target.value); // kosztowna aktualizacja przefiltrowanej listy
+  });
+}}
+
+```
+
+Tutaj `setInputValue` jest pilne, a `setFilter` jest wewnątrz `startTransition` – React w razie potrzeby wstrzyma tę aktualizację, by utrzymać responsywność aplikacji. Suspense do pobierania danych to kolejny duży dodatek. Idea polega na tym, by pozwolić komponentom rzucić „promise” (lub jakiś sygnał asynchroniczny) i by React go przechwycił i zaczekał, pokazując w międzyczasie fallback UI. React 18+ dostarcza `<Suspense>`, który może teraz współpracować z funkcjami concurrent, by wstrzymać renderowanie, dopóki dane nie będą gotowe. Na przykład, z frameworkami Reacta (Next.js lub Relay), mógłbyś napisać:
+
+```jsx
+<Suspense fallback={<Spinner />}>
+  <CommentsList />
+</Suspense>
+```
+
+Jeśli `CommentsList` pobiera dane (przez coś jak `useSuspenseQuery`, które rzuca, dopóki dane się nie załadują), wyświetli się `<Spinner>`, a React nie spróbuje renderować `CommentsList`, dopóki promise się nie rozwiąże. Upraszcza to orkiestrację stanów ładowania w porównaniu z prop-drillingiem flag ładowania. Podsumowując, `startTransition` poprawia postrzeganą przez użytkownika wydajność, odraczając niekrytyczne renderowanie, a Suspense poprawia doświadczenie użytkownika, deklaratywnie obsługując stany ładowania. Oba polegają na zdolności Reacta do harmonogramowania i wstrzymywania pracy (umożliwionej przez Fiber). Rekruterzy zadający to pytanie chcą zobaczyć, że rozumiem, iż React ewoluuje poza proste `setState` – staje się orkiestratorem operacji asynchronicznych i renderowania UI w mądrzejszy sposób.
+
+#### P12: Czy możesz wyjaśnić koncepcję Angulara zwaną „zones” oraz to, jak nadchodzący system signals zmienia tradycyjne change detection?
+
+Angular używa Zone.js, by automatycznie wykrywać, kiedy uruchomić change detection. Zone.js patchuje niskopoziomowe API (timery, promise’y, zdarzenia DOM), tak by po takim zdarzeniu Angular wiedział, że coś mogło się zmienić, i uruchamiał change detection na komponentach. Pomyśl o Zone.js jako o umieszczeniu Angulara „wewnątrz” strefy, w której wszystkie akcje asynchroniczne są śledzone. Sprawia to, że two-way binding i aktualizacje widoku Angulara dzieją się automatycznie – deweloperzy nie muszą wywoływać `$scope.apply()` jak w AngularJS; po prostu działa. Jednak to podejście oznacza, że nawet jeśli zmieni się jedna mała rzecz, Angular może sprawdzić wiele komponentów (domyślna strategia sprawdza całe drzewo).
+
+Teraz Signals w Angularze (od v16) dostarczają drobnoziarnistą alternatywę reaktywności. Zamiast polegać na zone, by wyzwolić pełne sprawdzenie aplikacji, signals pozwalają konkretnym komponentom reagować na konkretne zmiany danych. Signal jest jak wartość reaktywna (z getterem/setterem `.value` w API Angulara). Szablony komponentów mogą konsumować signals, a Angular re-renderuje ten komponent tylko wtedy, gdy używany przez niego signal wyemituje nową wartość. To duża zmiana: może całkowicie wyeliminować Zone.js (tryb zone-less), pozwalając deweloperowi lub frameworkowi precyzyjnie wyzwalać aktualizacje. Więc podczas gdy Zone.js jest niejawne (deweloper nie pisze dla niego kodu, monkey-patchuje i magicznie wyzwala sprawdzenia), signals są jawne – wiesz dokładnie, których signals używa komponent, a te signals powiadamiają Angulara o aktualizacji.
+
+Rezultatem jest znacznie mniej zbędnej pracy; komponenty nietknięte przez zmianę nie uruchomią change detection (z Zone.js, o ile nie oznaczone jako OnPush, wciąż byłyby sprawdzane). Podsumowując, zone to podejście do change detection szerokim pędzlem (wygodne, ale potencjalnie ciężkie), a signals to podejście chirurgiczne (precyzyjne i potencjalnie znacznie wydajniejsze). Angular jest wstecznie kompatybilny – wciąż możesz używać Zone.js – ale signals reprezentują przyszłość (czynią Angulara bardziej podobnym do Reacta czy Vue w reaktywności). Wyjaśnienie tego pokazuje, że rozumiem zarówno obecne, jak i nadchodzące wnętrzności Angulara.
+
+#### P13: Kompilator szablonów Vue może optymalizować aktualizacje przez static hoisting i patch flags. Czy mógłbyś wyjaśnić, co to znaczy?
+
+Kompilator szablonów Vue nie tylko tłumaczy szablony HTML na funkcje render; analizuje je też pod kątem optymalizacji. Static hoisting odnosi się do identyfikowania części DOM, które nigdy się nie zmieniają, i wynoszenia ich poza funkcję render, tak by były tworzone raz i ponownie wykorzystywane. Na przykład:
+
+```vue
+<div>
+  <p>Static text</p>
+  <p>{{ dynamic }}</p>
+</div>
+```
+
+Pierwszy `<p>` nie ma bindingów, więc kompilator wyniesie vnode dla `<p>Static text</p>` jako stałą. Przy każdym re-renderze Vue może pominąć ponowne tworzenie tego vnode’a, a nawet pominąć jego diffowanie, wiedząc, że jest statyczny. Oszczędza to czas. Patch flags to małe flagi numeryczne, które kompilator dołącza do dynamicznych elementów w kodzie funkcji render. Oznaczają, jaki rodzaj zmian trzeba sprawdzić dla danego węzła. Na przykład, jeśli element ma dynamiczny binding klasy i nic więcej, kompilator może wygenerować flagę mówiącą „może zmienić się tylko klasa”.
+
+Podczas aktualizacji Vue może wtedy pominąć diffowanie dzieci tego elementu lub innych propsów – zaktualizuje tylko klasę, jeśli będzie trzeba. Jeśli węzeł jest w pełni statycznym poddrzewem, Vue może nawet całkowicie pominąć jego diffowanie (bo flaga mówi Vue „nie trzeba sprawdzać wewnątrz, nic nie może się zmienić”). Te optymalizacje są powodem, dla którego wydajność Vue jest często bardzo dobra od razu po wyjęciu z pudełka – framework wykonuje sporo pracy w czasie kompilacji, by zredukować pracę w runtime. Więc podsumowując: static hoisting = nie rób ponownie rzeczy statycznych; patch flags = oznacz węzły wskazówkami o tym, co porównać, tak by Vue unikało zbędnych sprawdzeń.
+
+To pokazuje, że rozumiem, jak Vue wypełnia lukę między deklaratywnymi szablonami a efektywnymi aktualizacjami DOM.
+
+#### P14: Jakie są częste problemy z wydajnością w single-page applications i jak byś je rozwiązał?
+
+Częste problemy z wydajnością SPA obejmują duże rozmiary bundle’i, zbyt dużo pracy na głównym wątku, wycieki pamięci oraz częste zbędne aktualizacje DOM. Dla rozmiaru bundle’a użyłbym code-splittingu (leniwe ładowanie tras lub ciężkich komponentów), tree-shakingu (zapewnienie użycia ES modules i aktualnych narzędzi budowania) oraz ewentualnie rozważył użycie lżejszych bibliotek (np. scenariusz moment.js vs date-fns). By zredukować pracę na głównym wątku, przyjrzałbym się kosztownym obliczeniom lub ogromnym operacjom diffowania DOM – dla ciężkich obliczeń przeniósłbym je do Web Workerów, by nie blokowały UI; dla dużych list użyłbym windowingu (jak react-window czy virtual scroll z Angular CDK), tak by naraz renderowana była tylko część DOM. Zbędne aktualizacje DOM mogą pochodzić z problemów z zarządzaniem stanem – np. re-renderowanie całego drzewa komponentów, gdy zmieniła się tylko mała część.
+
+W Reakcie użyłbym `React.memo` lub przesunął stan bliżej miejsca, gdzie jest używany. W Angularze przełączyłbym się na change detection OnPush, by komponenty nie aktualizowały się, chyba że zmienią się inputy. W Vue upewniłbym się, że nie używam głębokich watcherów, które wyzwalają się zbyt często, itp. Wycieki pamięci – sprawdziłbym zapomniane subskrypcje (usunięcie event listenerów w `componentWillUnmount` / `ngOnDestroy` lub użycie `takeUntil` w RxJS), wyczyścił timery i unikał globalnych cache’y rosnących w nieskończoność (użycie WeakMap dla cache’y, by nie trzymały martwych obiektów). Wykorzystałbym też narzędzia do profilowania wydajności: np. użycie zakładki Performance, by zebrać timeline, gdy aplikacja jest wolna, i zidentyfikować czas scriptingu vs renderingu vs paintingu. Jeśli to rendering, może zbyt wiele repaintów (można użyć `will-change` lub promocji warstw CSS dla animacji).
+
+Jeśli scripting, znajduję gorące funkcje – może parsowanie JSON, które można wykonać w workerze, lub nieefektywny algorytm, który da się zoptymalizować (np. używając memoizacji lub redukując zapytania do DOM przez buforowanie wyników). Omawiając każdy z tych punktów, demonstruję całościowe podejście: mierz, zidentyfikuj typ wąskiego gardła, zastosuj celowane rozwiązanie.
+
+Przykład, który mógłbym wspomnieć: „Mieliśmy wolną stronę z 1000 elementów i scrollowanie się zacinało – wprowadziłem virtual scrolling, tak by naraz istniało tylko ~30 węzłów DOM, co naprawiło zacinanie”. Taka odpowiedź oparta na doświadczeniu dobrze rezonuje na rozmowach seniorskich.
+
+#### P15: Skoro frameworki abstrahują od tak wielu rzeczy, dlaczego wciąż ważne jest rozumienie szczegółów czystego JavaScriptu, jak event loop, prototypy itp.?
+
+Ponieważ frameworki są zbudowane na JavaScripcie, a zrozumienie fundamentów czyni Cię lepszym w używaniu i debugowaniu frameworków. Na przykład, jeśli aplikacja React ma dziwny błąd z funkcją asynchroniczną, znajomość event loopa i microtasków pomaga uświadomić sobie, że aktualizacja stanu może dziać się po wyjściu z event handlera, co może wpłynąć na to, co widzisz. Albo w Angularze zrozumienie dziedziczenia prototypowego jest kluczem do pojęcia, jak komponenty rozszerzają dyrektywy lub jak prototypy RxJS mogą być patchowane. Poza tym, gdy coś idzie nie tak, a framework nie daje jasnego błędu, wiedza o bazowym JS pomaga to zdiagnozować (może to wcale nie framework, lecz złe użycie `this` albo problem z domknięciem).
+
+Dodatkowo strojenie wydajności często wymaga zejścia na niższy poziom: np. unikania dodatkowych reflowów lub używania wydajnych wzorców JS. Od senior deweloperów oczekuje się debugowania problemów, które nie są proste – wycieków pamięci, dziwnych błędów timingowych itp., które często sprowadzają się do rdzennego zachowania JS. Więc choć na co dzień możesz pisać wysokopoziomowy kod, na rozmowie powiedziałbym: zrozumienie wnętrzności JS jest jak umiejętność naprawy silnika, a nie tylko prowadzenia samochodu. Daje Ci moc radzenia sobie z nieoczekiwanym.
+
+Ta perspektywa pokazuje, że nie traktuję frameworków jak magii; mam wgląd w silnik, który je napędza.
+
+### Podsumowanie
+
+Seniorskie rozmowy frontendowe w latach 2025–2026 mniej dotyczą podręcznikowych definicji, a bardziej wykazania głębokiego, ustrukturyzowanego rozumowania. Firmy z najwyższej półki oczekują, że kandydaci wyartykułują, jak wnętrzności JavaScriptu – jak event loop, domknięcia, dziedziczenie prototypowe i zarządzanie pamięcią – przekładają się na rzeczywiste debugowanie i poprawę wydajności. Celem nie jest zapamiętanie przypadków brzegowych, lecz wyjaśnienie, dlaczego rzeczy działają w określony sposób i jak to wpływa na zachowanie systemu pod obciążeniem lub przy skali.
+
+Mocni kandydaci wychodzą poza przypominanie API frameworków. Potrafią połączyć fundamenty z praktycznymi scenariuszami: wyjaśnić, dlaczego microtaski uruchamiają się przed makrotaskami, jak React Fiber poprawia responsywność, dlaczego Angular Signals przewyższają Zone.js w celowanych aktualizacjach lub jak patch flags Vue redukują narzut runtime’owy. Każde pytanie to okazja, by zademonstrować myślenie architektoniczne, a nie tylko powierzchowną umiejętność kodowania.
+
+Wybitny występ na rozmowie pokazuje też świadomość kompromisów. Zamiast „to jest poprawna odpowiedź”, wyjaśniasz, kiedy jedno podejście jest lepsze od drugiego – na przykład, dlaczego użyć `useTransition` dla niepilnych aktualizacji lub jak wybierać między prymitywami reaktywnymi a imperatywnym zarządzaniem stanem. Ten rodzaj myślenia sygnalizuje dojrzałość, poczucie odpowiedzialności i zdolność do budowania odpornych systemów.
+
+Wreszcie, opanowanie zaawansowanych pytań rekrutacyjnych oznacza jasną i precyzyjną komunikację. Najlepsi kandydaci osadzają swoje odpowiedzi w kontekście, prowadzą przez swoje rozumowanie, podkreślają implikacje wydajnościowe i często dodają osobiste spostrzeżenia lub prawdziwe historie z debugowania „z okopów”. W skrócie, te Q&A to nie quiz – to Twoja szansa, by pokazać strategiczną głębię, techniczną jasność i przywództwo inżynierskie.
+
+---
+
+## Materiały do dalszej nauki i źródła
+
+Aby pogłębić wiedzę i być na bieżąco z nowoczesnym frontendem, oto kilka wysokiej jakości materiałów:
+
+- MDN Web Docs – JavaScript Internals: [In-depth Guide to the JS Runtime](https://developer.mozilla.org/en-US/docs/Web/API/HTML_DOM_API/Microtask_guide/In_depth#:~:text=,the%20current%20event%20loop%20iteration) – Zgłębiaj tematy takie jak event loop, tasks vs microtasks na MDN oraz zarządzanie pamięcią (algorytmy garbage collection, wycieki pamięci). MDN oferuje kompleksowe, aktualne wyjaśnienia.
+
+- [JavaScript Info (tutorial Ilyi Kantora)](https://levelup.gitconnected.com/event-loop-in-javascript-microtask-macrotask-promise-and-common-interview-questions-14b7ee57be94?gi=a4cc35a9322d#:~:text=match%20at%20L313%20,and%20many%20other%20things) – Zwłaszcza sekcje o garbage collection i domknięciach, a także event loop: microtasks & macrotasks, które dostarczają jasnych przykładów.
+
+- „You Don’t Know JS Yet” (seria książek Kyle’a Simpsona) – Świetne do głębokich zanurzeń w scope & closures, this & object prototypes i więcej. Jest darmowa na GitHubie i naprawdę pomaga utrwalić rdzenne koncepcje JS.
+
+- [TypeScript Handbook (typescriptlang.org)](https://dev.to/frontendtoolstech/typescript-advanced-patterns-writing-cleaner-safer-code-in-2025-4gbn#:~:text=3) – Oficjalna dokumentacja, zwłaszcza rozdziały Advanced Types i Generics, które omawiają typy warunkowe, typy mapowane i inne wzorce z przykładami.
+
+- [TypeScript Deep Dive (książka Basarata)](https://basarat.gitbook.io/typescript/type-system/generics#:~:text=The%20key%20motivation%20for%20generics,The%20members%20can%20be) – Otwartoźródłowa książka omawiająca wszystko od podstawowego po zaawansowany TypeScript, w tym praktyczne wzorce i zawiłości systemu typów.
+
+- React Official Docs (react.dev) – Przeczytaj dokumentację React Beta o Concurrent UI Patterns i Hooks. Nowa dokumentacja ma świetne wyjaśnienia tranzycji, Suspense oraz tego, jak działa renderowanie. Sprawdź też wystąpienia z React Conf o Fiberze (np. „A Cartoon Intro to Fiber” Lin Clark).
+
+- [gist „React Fiber Architecture” autorstwa acdlite](https://github.com/acdlite/react-fiber-architecture) – Autorytatywne głębokie zanurzenie autorstwa członka core teamu Reacta, wyjaśniające Fiber bardziej szczegółowo dla tych, którzy chcą go naprawdę zrozumieć.
+
+- [Dokumentacja Angulara](https://angular.dev/guide/di/hierarchical-dependency-injection) – Oficjalne przewodniki Angulara o Change Detection i Signals. Zacznij od przewodnika Hierarchy of Injectors, by opanować DI, i nowej dokumentacji Signals na angular.dev, by zobaczyć przykłady kodu opartego na signalach zastępującego wzorce oparte na zone.
+
+- [Dokumentacja Vue.js](https://vuejs.org/guide/essentials/reactivity-fundamentals.html) – Zwłaszcza sekcja Reactivity (zarówno Fundamentals, jak i „Reactivity in Depth”), by zrozumieć system Proxy Vue, oraz przewodnik Vue o Optimizations, który omawia, jak kompilator szablonów optymalizuje aktualizacje (np. wyjaśnienia static hoisting i patch flags).
+
+- Materiały o wydajności: kolekcja performance Google web.dev – omawia dobre praktyki wydajnościowe i Core Web Vitals. Ponadto dokumentacja Chrome DevTools o profilowaniu wydajności i debugowaniu pamięci jest nieoceniona do nauki optymalizacji w praktyce.
+
+- [„Tasks, Microtasks, Queues and Schedules” autorstwa Jake’a Archibalda](https://jakearchibald.com/2015/tasks-microtasks-queues-and-schedules/#:~:text=JakeArchibald,colleague%20Matt%20Gaunt%20I)
+  – Klasyczny wpis na blogu, który wizualnie i obrazowo wyjaśnia event loop JavaScriptu. Lektura obowiązkowa, by naprawdę pojąć asynchroniczny timing.
+
+- TC39 Proposals Tracking – Repozytorium GitHub z propozycjami TC39 (lub okazjonalne blogi jak Dev.to [„7 upcoming JS features in 2025”](https://dev.to/abhishekkrpand1/7-upcoming-javascript-features-to-watch-in-2025-56fb#:~:text=const%20result%20%3D%20String)
+  ), by mieć oko na to, jakie nowe funkcje języka nadchodzą (pipeline operator, pattern matching, Temporal itp.). Blog 2ality dr. Axela Rauschmayera to również świetne źródło wyjaśnień propozycji.
+
+- Przemyśliwanie wzorców na nowo: kursy Frontend Masters lub Pluralsight o zaawansowanych wzorcach (jak skalowalne projektowanie komponentów, wzorce zarządzania stanem poza Reduxem itp.). Jako senior deweloper, rozumienie różnych wzorców architektonicznych (Flux, CQRS na froncie, mikrofrontendy) może Cię wyróżnić.
+
+- [Portale do ćwiczenia rozmów](greatfrontend.com/questions/quiz/what-are-the-potential-pitfalls-of-using-closures#:~:text=Further%20reading): Choć nie są autorytatywne do nauki nowego materiału, strony takie jak GreatFrontend (które mają pytania scenariuszowe) czy FrontendInterviewHandbook mogą być przydatne, by sprawdzić wiedzę i zobaczyć więcej przykładowych pytań z rozwiązaniami poza tymi w tym przewodniku.
+
+~Seb 👊
