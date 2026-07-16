@@ -1,0 +1,273 @@
+---
+title: 'Budżety wydajności dla frontend developerów: jak ustawiać i egzekwować twarde limity'
+date: '2026-03-28'
+category: 'Development'
+tags: ['performance', 'web-vitals', 'ci-cd', 'nextjs', 'frontend']
+draft: false
+featured: false
+author: 'Sebastian'
+enSlug: 'performance-budgets-frontend-engineers-guide'
+excerpt: 'Tylko 47% stron zalicza Core Web Vitals w 2026. Reszta traci 8-35% konwersji. Budżety wydajności zamieniają mgliste cele w limity egzekwowane w CI.'
+---
+
+Wydajność degraduje się jeden import na raz. Nikt nie dodaje 200KB JavaScriptu w pojedynczym commicie. Dzieje się to przez wiele miesięcy — biblioteka do wykresów tu, paczka ikon tam, polyfill, którego nikt nie usunął, biblioteka CSS-in-JS, która podwoiła bundle. Zanim ktokolwiek to zauważy, strona ładuje się w 4 sekundy i nikt nie potrafi wskazać, kiedy zrobiła się wolna.
+
+Budżety wydajności zapobiegają temu, zamieniając mgliste cele („strona powinna być szybka") w twarde liczby egzekwowane w CI. Przekroczysz budżet → build się wywala → PR zostaje naprawiony przed mergem.
+
+Tylko 47% stron zalicza wszystkie trzy Core Web Vitals w 2026. Pozostałe 53% traci od 8% do 35% konwersji, ruchu i przychodów. Budżet wydajności to najtańsza polisa ubezpieczeniowa przed byciem w tych 53%.
+
+## Trzy budżety, których potrzebujesz
+
+Zacznij od trzech budżetów. Więcej przytłacza; mniej zostawia luki.
+
+### 1. Budżet JavaScriptu: < 200KB gzip (pierwsze załadowanie)
+
+JavaScript to najdroższy zasób. Każdy KB kosztuje czas parsowania na urządzeniu mobilnym (~1ms/KB), czas wykonania i pamięć. Opisałem to dogłębnie w moim [przewodniku po optymalizacji bundle](/blog/dynamic-bundle-optimization-under-200kb-guide).
+
+```json
+// konfiguracja size-limit w package.json
+{
+  "size-limit": [
+    {
+      "path": ".next/static/**/*.js",
+      "limit": "200 kB",
+      "gzip": true
+    }
+  ]
+}
+```
+
+### 2. Largest Contentful Paint (LCP): < 2,5 sekundy
+
+LCP mierzy moment, w którym największy widoczny element kończy się renderować. Próg Google: poniżej 2,5s jest „good".
+
+```json
+// konfiguracja budżetu lighthouse — budget.json
+[
+  {
+    "timings": [
+      { "metric": "largest-contentful-paint", "budget": 2500 },
+      { "metric": "interactive", "budget": 3500 },
+      { "metric": "first-contentful-paint", "budget": 1500 }
+    ],
+    "resourceSizes": [
+      { "resourceType": "script", "budget": 200 },
+      { "resourceType": "total", "budget": 500 }
+    ]
+  }
+]
+```
+
+### 3. Interaction to Next Paint (INP): < 200ms
+
+INP mierzy responsywność — ile czasu mija między interakcją użytkownika a kolejną aktualizacją wizualną. 43% stron nie zalicza tego progu w 2026, co czyni go najczęściej oblewanym Core Web Vital.
+
+INP trudniej zbudżetować w CI, bo wymaga prawdziwej interakcji użytkownika. Monitoruj go za pomocą Real User Monitoring (RUM) i ustaw alerty. Jeśli Twoja aplikacja ciągle go nie zalicza, przyczyny i konkretne poprawki rozłożyłem na czynniki pierwsze w moim [przewodniku po Interaction to Next Paint](/blog/inp-interaction-to-next-paint-core-web-vital-guide).
+
+## Egzekwowanie budżetów w CI
+
+### size-limit (rozmiar bundle)
+
+```bash
+npm install -D size-limit @size-limit/preset-app
+```
+
+```yaml
+# .github/workflows/performance.yml
+name: Performance Budget
+
+on: pull_request
+
+jobs:
+  bundle-size:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: 'npm' }
+      - run: npm ci
+      - run: npm run build
+      - uses: andresz1/size-limit-action@v1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+```
+
+To dodaje komentarz do każdego PR-a pokazujący zmiany rozmiaru bundle i wywala build, jeśli budżet zostanie przekroczony.
+
+### Lighthouse CI (Core Web Vitals)
+
+```bash
+npm install -D @lhci/cli
+```
+
+```javascript
+// lighthouserc.js
+module.exports = {
+  ci: {
+    collect: {
+      url: ['http://localhost:3000/', 'http://localhost:3000/blog'],
+      startServerCommand: 'npm run start',
+      numberOfRuns: 3,
+    },
+    assert: {
+      assertions: {
+        'categories:performance': ['error', { minScore: 0.9 }],
+        'largest-contentful-paint': ['error', { maxNumericValue: 2500 }],
+        'cumulative-layout-shift': ['error', { maxNumericValue: 0.1 }],
+        'total-blocking-time': ['error', { maxNumericValue: 200 }],
+        'first-contentful-paint': ['error', { maxNumericValue: 1500 }],
+      },
+    },
+    upload: {
+      target: 'temporary-public-storage',
+    },
+  },
+};
+```
+
+```yaml
+  lighthouse:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: 'npm' }
+      - run: npm ci && npm run build
+      - run: npx @lhci/cli autorun
+```
+
+### Real User Monitoring (RUM)
+
+CI wyłapuje regresje przed mergem. RUM wyłapuje problemy na produkcji z prawdziwymi użytkownikami:
+
+```typescript
+// lib/web-vitals.ts
+import { onLCP, onINP, onCLS } from 'web-vitals';
+
+function sendToAnalytics(metric: { name: string; value: number }) {
+  // Wyślij do swojego dostawcy analityki
+  fetch('/api/analytics/vitals', {
+    method: 'POST',
+    body: JSON.stringify(metric),
+    keepalive: true, // Zapewnia dostarczenie nawet przy zamykaniu strony
+  });
+}
+
+export function reportWebVitals() {
+  onLCP(sendToAnalytics);
+  onINP(sendToAnalytics);
+  onCLS(sendToAnalytics);
+}
+```
+
+Ustaw alerty, gdy wartości p75 przekroczą Twoje budżety:
+- LCP p75 > 2,5s → alert na Slacku
+- INP p75 > 200ms → alert na Slacku
+- CLS p75 > 0,1 → alert na Slacku
+
+## Tabela budżetów dla typowej aplikacji Next.js
+
+| Metryka | Budżet | Narzędzie | Egzekwowanie |
+|--------|--------|------|-------------|
+| **First Load JS** | < 200 KB (gzip) | size-limit | CI — wywal PR |
+| **Całkowita waga strony** | < 500 KB (gzip) | Lighthouse | CI — wywal PR |
+| **LCP** | < 2,5s | Lighthouse CI | CI — wywal PR |
+| **FCP** | < 1,5s | Lighthouse CI | CI — wywal PR |
+| **TBT** | < 200ms | Lighthouse CI | CI — wywal PR |
+| **CLS** | < 0,1 | Lighthouse CI | CI — ostrzeż |
+| **INP** | < 200ms | RUM | Alert na p75 |
+| **Performance Score** | > 90 | Lighthouse CI | CI — wywal PR |
+| **Rozmiar obrazu** | < 200 KB na obraz | Własny skrypt | CI — ostrzeż |
+
+## Szybkie zwycięstwa dla każdego Core Web Vital
+
+### LCP < 2,5s
+
+```typescript
+// 1. Preload obrazu LCP
+// app/layout.tsx
+<link rel="preload" href="/hero.webp" as="image" fetchpriority="high" />
+
+// 2. Użyj Next.js Image z priority
+<Image src="/hero.webp" alt="Hero" priority width={1200} height={600} />
+
+// 3. Inline'uj krytyczny CSS (Next.js robi to automatycznie)
+
+// 4. Użyj ISR — cache'owane strony mają ~80ms TTFB
+export const revalidate = 60;
+```
+
+### INP < 200ms
+
+```typescript
+// 1. useTransition dla kosztownych aktualizacji stanu
+const [isPending, startTransition] = useTransition();
+startTransition(() => setFilteredItems(expensiveFilter(query)));
+
+// 2. Wirtualizuj długie listy
+import { useVirtualizer } from '@tanstack/react-virtual';
+
+// 3. Odraczaj niekrytyczny JavaScript
+const HeavyComponent = dynamic(() => import('./HeavyComponent'), { ssr: false });
+
+// 4. Użyj web workerów do pracy obciążającej CPU
+const worker = new Worker(new URL('./heavy-computation.worker.ts', import.meta.url));
+```
+
+### CLS < 0,1
+
+```typescript
+// 1. Zawsze ustawiaj width/height na obrazach
+<Image src="/photo.jpg" width={800} height={600} alt="Photo" />
+
+// 2. Rezerwuj miejsce na dynamiczną treść
+<div style={{ minHeight: '300px' }}>
+  <Suspense fallback={<Skeleton height={300} />}>
+    <DynamicContent />
+  </Suspense>
+</div>
+
+// 3. Unikaj wstawiania treści nad istniejącą treścią
+// Źle: baner pojawia się na górze, spychając wszystko w dół
+// Dobrze: zarezerwuj miejsce na baner od samego początku
+```
+
+## Cykl życia budżetu
+
+1. **Zmierz stan obecny** — uruchom Lighthouse i size-limit na swoim buildzie produkcyjnym
+2. **Ustaw początkowe budżety** — 10-20% powyżej obecnych wartości (osiągalne, nie aspiracyjne)
+3. **Egzekwuj w CI** — wywalaj buildy przekraczające budżety
+4. **Zaostrzaj kwartalnie** — obniżaj budżety w miarę optymalizacji
+5. **Poluzuj, gdy uzasadnione** — nowe funkcje z ciężkimi zależnościami mogą wymagać korekty budżetu. Udokumentuj dlaczego.
+
+## Praktyczne wnioski
+
+1. **Minimum trzy budżety:** rozmiar JS (< 200KB), LCP (< 2,5s), Performance Score (> 90).
+2. **Egzekwuj w CI, nie na spotkaniach.** Automatyczne kontrole wyłapują 100% regresji; code review wyłapuje może 20%.
+3. **Używaj size-limit do sprawdzania bundle** — jest prosty, szybki i publikuje wyniki na PR-ach.
+4. **Używaj Lighthouse CI do metryk renderowania** — uruchamiaj 3+ razy na URL, żeby zredukować szum.
+5. **Monitoruj INP za pomocą RUM** — nie da się go zmierzyć w CI, tylko z prawdziwymi użytkownikami.
+6. **Zacznij 10-20% powyżej obecnych wartości.** Aspiracyjne budżety, które zawsze oblewają, są ignorowane.
+7. **Zaostrzaj budżety kwartalnie.** Dyscyplina wydajności kumuluje się w czasie.
+8. **Każda nowa zależność to decyzja budżetowa.** Sprawdź [bundlephobia.com](https://bundlephobia.com) przed `npm install`.
+9. **Priorytet LCP: preload obrazu hero, użyj ISR, inline'uj krytyczny CSS.**
+10. **Priorytet INP: [useTransition](/blog/react-concurrent-mode-practical-guide) dla kosztownych renderów, wirtualizuj listy, odraczaj niekrytyczny JS.**
+
+Budżety wydajności to różnica między „powinniśmy kiedyś zoptymalizować" a „build nie przejdzie, dopóki tego nie zrobimy". Zespoły, które egzekwują budżety, dostarczają szybciej, bo wyłapują regresje wcześnie — zanim skumulują się w rodzaj spowolnienia, którego naprawa zajmuje cały sprint.
+
+## Źródła i materiały
+
+### Źródła
+- [web.dev: Incorporate Performance Budgets Into Your Build Tools](https://web.dev/articles/incorporate-performance-budgets-into-your-build-tools) — oficjalny przewodnik
+- [web.dev: Use Lighthouse for Performance Budgets](https://web.dev/use-lighthouse-for-performance-budgets/) — konfiguracja budżetu Lighthouse
+- [Technori: How to Build Performance Budgets Into CI/CD](https://technori.com/2026/03/24938-how-to-build-performance-budgets-into-your-ci-cd-pipeline/todd/) — wzorce integracji z CI
+- [NitroPack: Most Important Core Web Vitals Metrics 2026](https://nitropack.io/blog/most-important-core-web-vitals-metrics/) — obecny stan CWV
+
+### Dalsza lektura
+- [DigitalApplied: Core Web Vitals 2026 Optimization](https://www.digitalapplied.com/blog/core-web-vitals-2026-inp-lcp-cls-optimization-guide) — kompleksowy przewodnik po CWV
+- [Felix Gerschau: Getting Into Performance Budgets](https://felixgerschau.com/getting-into-performance-budgets/) — praktyczne wprowadzenie
+- [A Faster Web: Performance Budgets with Lighthouse](https://www.afasterweb.com/2020/01/28/performance-budgets-with-lighthouse/) — konfiguracja Lighthouse CI
+
+---
+
+~Seb 👊
