@@ -1,0 +1,891 @@
+---
+title: 'Architektura Mono Services - łączenie zalet monorepo i mikroserwisów'
+date: '2025-03-19'
+category: 'Architecture'
+tags: ['Clean Code', 'Software Architecture', 'Code Maintainability', 'Web Development', 'Scalable Code', 'Java', 'NextJS']
+featured: false
+author: 'Sebastian'
+draft: false
+enSlug: 'mono-services-architecture-combining-the-advantages-of-monorepo-and-microservices'
+excerpt: 'Mono Services to hybrydowa architektura łącząca prostotę monorepo z niezależnością mikroserwisów. Poznaj zasady, strukturę i pułapki tego podejścia.'
+---
+
+## Wprowadzenie
+
+W dzisiejszym dynamicznym świecie tworzenia oprogramowania coraz trudniej znaleźć równowagę między szybkością dostarczania nowych funkcji a utrzymaniem wysokiej jakości i skalowalności. Jako programista z niemal 10-letnim doświadczeniem miałem okazję pracować zarówno z monolitami, jak i mikroserwisami, a także z różnymi strategiami zarządzania kodem, w tym z podejściem monorepo.
+
+Architektura Mono Services narodziła się z potrzeby znalezienia złotego środka. To hybrydowe podejście łączy zalety monorepo (łatwość współdzielenia kodu, jednolite standardy, prostota zarządzania) z korzyściami mikroserwisów (niezależność, skalowalność, odporność na awarie).
+
+W projekcie MoodBeat Analytics, aplikacji analizującej nastrój użytkownika na podstawie nagrań głosowych, stanęliśmy przed wyzwaniem: potrzebowaliśmy elastyczności mikroserwisów, ale nie chcieliśmy ponosić pełnego ciężaru organizacyjnego związanego z wieloma repozytoriami i rozproszoną bazą kodu.
+
+## Geneza koncepcji Mono Services
+
+Zanim zagłębimy się w szczegóły, warto zastanowić się nad problemami, które doprowadziły do powstania koncepcji Mono Services. Tradycyjne podejścia architektoniczne mają istotne ograniczenia podczas budowania nowoczesnych, złożonych aplikacji. Te wyzwania skłoniły nas do poszukiwania rozwiązania hybrydowego, które mogłoby zapewnić to, co najlepsze z wielu światów, minimalizując jednocześnie ich wady.
+
+### Problemy z tradycyjnymi architekturami
+
+**Monolity:**
+
+- Trudność w skalowalnym rozwoju przez wiele zespołów
+- Problemy z wprowadzaniem drobnych zmian (ryzyko wpływu na cały system)
+- Ograniczenia technologiczne (trudność w mieszaniu technologii)
+
+**Klasyczne mikroserwisy:**
+
+- Złożoność operacyjna (wiele repozytoriów, wiele pipeline'ów CI/CD)
+- Trudność w utrzymaniu spójnych standardów kodu
+- Duplikacja kodu i funkcjonalności
+- Skomplikowana komunikacja między serwisami
+
+**Tradycyjne monorepo:**
+
+- Często wymuszają jednolite narzędzia build/deploy
+- Ryzyko "sprzężenia" komponentów mimo intencji ich rozdzielenia
+- Problemy z wydajnością przy dużych bazach kodu
+
+Zainspirowani rozwiązaniami stosowanymi przez kilka dużych firm technologicznych, które przyjęły podejście monorepo, ale dostosowując je do skali projektów średniej wielkości i bardziej heterogenicznych stosów technologicznych, stworzyliśmy podejście Mono Services.
+
+## Porównanie Mono Services z innymi architekturami
+
+### Mono Services vs. tradycyjne monorepo
+
+**Tradycyjne monorepo:**
+
+- Zwykle silnie zależne od dedykowanych narzędzi (Bazel, Buck)
+- Często ograniczone do jednolitych stosów technologicznych
+- Wymagają wysokiej dyscypliny zespołu i zaawansowanych narzędzi
+
+**Mono Services:**
+
+- Wykorzystuje standardowe narzędzia deweloperskie
+- Wspiera heterogeniczne stosy technologiczne
+- Bardziej dostępne dla średnich zespołów
+- Utrzymuje silne granice między serwisami
+
+### Mono Services vs. klasyczne mikroserwisy w wielu repozytoriach
+
+**Klasyczne mikroserwisy:**
+
+- Każdy serwis ma własne repozytorium
+- Pełna niezależność technologiczna
+- Skomplikowane zarządzanie wersjami współdzielonych komponentów
+- Trudność w utrzymaniu spójnych standardów
+
+**Mono Services:**
+
+- Jedno repozytorium dla wszystkich serwisów
+- Łatwiejsze współdzielenie kodu
+- Jednolite standardy i narzędzia
+- Prostsze zarządzanie zależnościami
+
+### Mono Services vs. moduły w monolicie
+
+**Moduły w monolicie:**
+
+- Wspólny cykl kompilacji i wdrożenia
+- Często silne zależności między modułami
+- Ograniczenia w wyborze technologii
+
+**Mono Services:**
+
+- Niezależne wdrażanie poszczególnych serwisów
+- Jasne granice API między serwisami
+- Możliwość użycia różnych technologii dla różnych serwisów
+
+## Kluczowe zasady architektury Mono Services
+
+Architektura Mono Services opiera się na kilku fundamentalnych zasadach:
+
+1. **Jedno repozytorium, wiele niezależnych serwisów** - wszystkie serwisy są przechowywane w jednym repozytorium, ale zachowują swoją niezależność operacyjną.
+
+2. **Współdzielone biblioteki i kontrakty** - wspólny kod jest zorganizowany w biblioteki, które mogą być wykorzystywane przez wiele serwisów.
+
+3. **Niezależne wdrażanie** - każdy serwis może być budowany i wdrażany niezależnie od pozostałych.
+
+4. **Centralne zarządzanie zależnościami** - zależności są zarządzane centralnie, aby uniknąć konfliktów i niespójności.
+
+5. **Jasne granice między serwisami** - komunikacja między serwisami odbywa się poprzez dobrze zdefiniowane API.
+
+## Struktura projektu MoodBeat Analytics
+
+W projekcie MoodBeat Analytics przyjęliśmy następującą strukturę repozytorium:
+
+```tree
+/mono-services-repo
+    /services
+        /auth-service          # Java 17 + Spring Boot
+        /analysis-service      # Java 17 + Spring Boot
+        /user-management       # Java 17 + Spring Boot
+        /web-client            # NuxtJS + Tailwind
+        /mobile-client         # React Native
+    /shared
+        /core-models          # Współdzielone modele danych
+        /common-utils         # Współdzielone narzędzia
+        /api-contracts        # Definicje API
+    /infrastructure
+        /ci-cd                # Konfiguracja CI/CD
+        /kubernetes           # Konfiguracja Kubernetes
+        /monitoring           # Konfiguracja monitoringu
+```
+
+### Podział na serwisy
+
+Nasz projekt podzieliliśmy na kilka kluczowych serwisów:
+
+1. **Auth Service** - odpowiedzialny za uwierzytelnianie i autoryzację
+2. **Analysis Service** - rdzeń aplikacji, obsługujący analizę nagrań głosowych
+3. **User Management** - zarządzanie użytkownikami i ich danymi
+4. **Web Client** - aplikacja webowa dla użytkowników
+5. **Mobile Client** - aplikacja mobilna w React Native
+
+### Współdzielone komponenty
+
+W katalogu `/shared` umieściliśmy elementy wykorzystywane przez wiele serwisów:
+
+1. **Core Models** - podstawowe modele danych używane przez cały system
+2. **Common Utils** - narzędzia pomocnicze, biblioteki logowania, obsługa błędów itp.
+3. **API Contracts** - definicje interfejsów API między serwisami
+
+### Infrastruktura
+
+Katalog `/infrastructure` zawiera wszystkie elementy związane z wdrażaniem i utrzymaniem systemu:
+
+1. **CI/CD** - konfiguracje pipeline'ów dla GitHub Actions
+2. **Kubernetes** - manifesty Kubernetes do wdrożenia
+3. **Monitoring** - konfiguracja Prometheusa, Grafany i innych narzędzi monitorujących
+
+## Strategie utrzymania spójności kodu w różnych technologiach
+
+Jednym z wyzwań w wielojęzycznym monorepo jest utrzymanie spójności kodu w różnych technologiach. Podczas pracy z Javą, JavaScriptem/TypeScriptem, Node.js, Pythonem, PHP lub innymi językami w tym samym repozytorium różne idiomy, wzorce i narzędzia mogą prowadzić do rozdrobnionych praktyk deweloperskich. Każdy język wnosi własny ekosystem i konwencje, co utrudnia utrzymanie jednolitego podejścia. Stworzenie spójnej bazy kodu wymaga celowych działań standaryzacyjnych, które respektują unikalne cechy każdego języka, jednocześnie ustanawiając wspólne zasady.
+
+### Wspólne standardy kodowania
+
+Stworzyliśmy wspólny zestaw wytycznych kodowania dla wszystkich technologii, uwzględniając konwencje nazewnicze (camelCase dla JavaScriptu, PascalCase dla klas Javy), preferencje dotyczące formatowania kodu, takie jak wcięcia i długość linii, oraz spójne praktyki dotyczące komentarzy i dokumentacji. Te wspólne standardy pomagają programistom płynnie przemieszczać się między różnymi częściami bazy kodu, nawet przy przełączaniu się między językami programowania.
+
+W przyszłych artykułach na blogu omówię najpopularniejsze standardy kodowania bardziej szczegółowo i wyjaśnię, jak można je skutecznie wdrażać w projektach wielojęzycznych.
+
+### Narzędzia weryfikacji konwencji
+
+Do automatycznego egzekwowania standardów używamy różnych narzędzi:
+
+1. **ESLint** dla JavaScriptu/TypeScriptu
+2. **Prettier** do formatowania kodu JavaScript
+3. **Checkstyle** dla Javy
+4. **EditorConfig** do podstawowych ustawień edytora
+
+### Automatyczne sprawdzanie
+
+Wszystkie te narzędzia są zintegrowane z naszym pipeline'em CI/CD, aby zapewnić, że każda zmiana spełnia ustalone standardy. Nasz zautomatyzowany workflow uruchamia linting, sprawdzanie typów i walidację stylu przy każdym pull requeście, oznaczając problemy jeszcze przed rozpoczęciem code review. Ta automatyzacja nie tylko utrzymuje spójność między różnymi technologiami, ale także eliminuje subiektywne dyskusje o formatowaniu podczas przeglądów, pozwalając programistom skupić się na bardziej istotnych aspektach jakości kodu.
+
+```yaml
+# .github/workflows/code-quality.yml
+name: Code Quality
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: Set up JDK
+        uses: actions/setup-java@v2
+        with:
+          java-version: '17'
+      - name: Checkstyle
+        run: ./gradlew checkstyleMain checkstyleTest
+
+  lint-frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: Set up Node.js
+        uses: actions/setup-node@v2
+        with:
+          node-version: '16'
+      - name: Install dependencies
+        run: pnpm install
+      - name: Lint
+        run: pnpm -r lint
+```
+
+### Kontrakty API i zarządzanie typami
+
+Jednym z kluczowych elementów architektury Mono Services jest efektywne zarządzanie kontraktami API między serwisami.
+Definiowanie modeli danych
+W naszym projekcie używamy OpenAPI do definiowania kontraktów REST API:
+
+```yaml
+# shared/api-contracts/mood-analysis-api.yaml
+openapi: 3.0.0
+info:
+  title: Mood Analysis API
+  version: 1.0.0
+paths:
+  /api/mood/analyze:
+    post:
+      summary: Analyze mood from audio
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                audio:
+                  type: string
+                  format: binary
+      responses:
+        '200':
+          description: Successful analysis
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MoodAnalysisResult'
+components:
+  schemas:
+    MoodAnalysisResult:
+      type: object
+      properties:
+        userId:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        primaryMood:
+          $ref: '#/components/schemas/MoodType'
+        confidenceScore:
+          type: number
+          format: float
+
+    MoodType:
+      type: string
+      enum:
+        - HAPPY
+        - SAD
+        - ANGRY
+        - ANXIOUS
+        - NEUTRAL
+        - EXCITED
+        - TIRED
+```
+
+### Generowanie typów TypeScript
+
+Z definicji OpenAPI generujemy typy TypeScript, które są wykorzystywane w aplikacji frontendowej:
+
+```typescript
+// Wygenerowany kod w shared/api-contracts/generated/typescript/
+export interface MoodAnalysisResult {
+  userId: string
+  timestamp: string
+  primaryMood: MoodType
+  confidenceScore: number
+  secondaryMoods?: MoodType[]
+}
+
+export enum MoodType {
+  HAPPY = 'HAPPY',
+  SAD = 'SAD',
+  ANGRY = 'ANGRY',
+  ANXIOUS = 'ANXIOUS',
+  NEUTRAL = 'NEUTRAL',
+  EXCITED = 'EXCITED',
+  TIRED = 'TIRED',
+}
+```
+
+### Testowanie kontraktów
+
+Do testowania zgodności implementacji z kontraktami używamy narzędzia Pact:
+
+```java
+@SpringBootTest
+@PactTestFor(providerName = "mood-analysis-service")
+class MoodAnalysisContractTest {
+
+    @Autowired
+    private AudioAnalysisService audioAnalysisService;
+
+    @MockBean
+    private MoodDetectionEngine moodEngine;
+
+    @BeforeEach
+    void setup() {
+        // Konfiguracja mocków
+    }
+
+    @Test
+    @PactVerification(fragment = "analyzeMoodContract")
+    void verifyAnalyzeMoodContract() {
+        // Test weryfikujący kontrakt
+    }
+
+    public static RequestResponsePact analyzeMoodContract(PactDslWithProvider builder) {
+        return builder
+            .given("A valid audio sample")
+            .uponReceiving("A request to analyze mood")
+            .path("/api/mood/analyze")
+            .method("POST")
+            .willRespondWith()
+            .status(200)
+            .body(newJsonBody(body -> {
+                body.stringType("userId", "user123");
+                body.stringType("primaryMood", "HAPPY");
+                body.numberType("confidenceScore", 0.95);
+            }).build())
+            .toPact();
+    }
+}
+```
+
+### Zarządzanie współdzielonym stanem
+
+W architekturze mikroserwisów zarządzanie współdzielonym stanem stanowi szczególne wyzwanie.
+Architektura sterowana zdarzeniami
+W projekcie MoodBeat Analytics wdrożyliśmy architekturę sterowaną zdarzeniami z użyciem Kafki:
+
+```java
+// Producent zdarzeń
+@Service
+public class MoodAnalysisEventPublisher {
+    private final KafkaTemplate<String, MoodAnalysisEvent> kafkaTemplate;
+
+    @Autowired
+    public MoodAnalysisEventPublisher(KafkaTemplate<String, MoodAnalysisEvent> kafkaTemplate) {
+        this.kafkaTemplate = kafkaTemplate;
+    }
+
+    public void publishAnalysisResult(MoodAnalysisResult result) {
+        MoodAnalysisEvent event = new MoodAnalysisEvent(result);
+        kafkaTemplate.send("mood-analysis-events", result.getUserId(), event);
+    }
+}
+
+// Konsument zdarzeń
+@Service
+public class UserInsightsGenerator {
+    @KafkaListener(topics = "mood-analysis-events")
+    public void handleMoodAnalysisEvent(MoodAnalysisEvent event) {
+        // Generowanie wniosków na podstawie analizy
+    }
+}
+```
+
+## Wzorzec CQRS
+
+Do zaawansowanego zarządzania stanem wdrożyliśmy wzorzec Command Query Responsibility Segregation (CQRS). Ten wzorzec architektoniczny rozdziela operacje odczytu i zapisu na odrębne modele, pozwalając na niezależną optymalizację każdego z nich. W naszej implementacji operacje zapisu są obsługiwane przez obiekty Command, które reprezentują intencję użytkownika i są przetwarzane przez dedykowane Command Handlery stosujące logikę biznesową i utrwalanie danych. Operacje odczytu natomiast używają wyspecjalizowanych obiektów Query, przetwarzanych przez Query Handlery zoptymalizowane pod kątem wydajności pobierania danych.
+
+```java
+// Command - operacja zmieniająca stan
+public class RecordMoodSampleCommand {
+    private final String userId;
+    private final byte[] audioData;
+
+    // Konstruktor, gettery
+}
+
+// Command Handler
+@Service
+public class RecordMoodSampleCommandHandler {
+    private final AudioAnalysisService analysisService;
+    private final MoodAnalysisEventPublisher eventPublisher;
+
+    // Konstruktor z wstrzykiwaniem zależności
+
+    public void handle(RecordMoodSampleCommand command) {
+        MoodAnalysisResult result = analysisService.analyzeAudio(
+            command.getAudioData(),
+            command.getUserId()
+        );
+
+        eventPublisher.publishAnalysisResult(result);
+    }
+}
+
+// Query - operacja odczytu
+public class GetUserMoodHistoryQuery {
+    private final String userId;
+    private final LocalDateTime from;
+    private final LocalDateTime to;
+
+    // Konstruktor, gettery
+}
+
+// Query Handler
+@Service
+public class GetUserMoodHistoryQueryHandler {
+    private final MoodAnalysisRepository repository;
+
+    // Konstruktor z wstrzykiwaniem zależności
+
+    public List<MoodAnalysisResult> handle(GetUserMoodHistoryQuery query) {
+        return repository.findByUserIdAndTimestampBetween(
+            query.getUserId(),
+            query.getFrom(),
+            query.getTo()
+        );
+    }
+}
+```
+
+### Ciągła integracja i wdrażanie
+
+W modelu Mono Services automatyzacja CI/CD jest szczególnie ważna. Bez odpowiednich strategii optymalizacji czasy budowania mogą szybko wymknąć się spod kontroli w miarę rozrastania się repozytorium.
+
+Kluczową optymalizacją jest selektywne budowanie tylko tych serwisów, które uległy zmianie. Zamiast przebudowywać całe repozytorium przy każdym commicie, inteligentny system CI/CD może przeanalizować, które pliki zostały zmodyfikowane, i dokładnie określić, które serwisy mogą być tym objęte. To podejście drastycznie skraca czasy budowania i zużycie zasobów, zapewniając jednocześnie odpowiednią walidację zmian.
+
+```yaml
+# .github/workflows/service-ci.yml
+name: Service CI
+
+on:
+  push:
+    paths:
+      - 'services/**'
+      - 'shared/**'
+      - '.github/workflows/service-ci.yml'
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      services: ${{ steps.filter.outputs.changes }}
+    steps:
+      - uses: actions/checkout@v3
+      - uses: dorny/paths-filter@v2
+        id: filter
+        with:
+          filters: |
+            auth-service: services/auth-service/**
+            analysis-service: services/analysis-service/**
+            user-management: services/user-management/**
+            web-client: services/web-client/**
+
+  build-and-test:
+    needs: detect-changes
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: ${{ fromJSON(needs.detect-changes.outputs.services) }}
+    steps:
+      - uses: actions/checkout@v3
+
+      # Konfiguracja dla serwisów backendowych w Javie
+      - name: Set up JDK 17
+        if: ${{ matrix.service != 'web-client' }}
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      # Konfiguracja dla Next.js
+      - name: Set up Node.js
+        if: ${{ matrix.service == 'web-client' }}
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+
+      # Instalacja zależności i budowanie
+      - name: Build and test service
+        run: |
+          cd services/${{ matrix.service }}
+          if [[ "${{ matrix.service }}" == "web-client" ]]; then
+            npm ci
+            npm run test
+            npm run build
+          else
+            ./gradlew build test
+          fi
+```
+
+## Wdrażanie z ArgoCD
+
+Do wdrażania serwisów używamy GitOps z ArgoCD:
+
+```yaml
+# infrastructure/kubernetes/applications/analysis-service.yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: analysis-service
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/your-org/mono-services-repo.git
+    path: infrastructure/kubernetes/analysis-service
+    targetRevision: HEAD
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: moodbeat
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+```
+
+### Aspekty DevOps specyficzne dla Mono Services
+
+W naszym projekcie używamy Turborepo do optymalizacji budowania i cache'owania. To narzędzie rozumie graf zależności między pakietami i serwisami w naszym repozytorium, umożliwiając inteligentne przyrostowe budowanie. Potrafi określić, co należy przebudować na podstawie tego, co uległo zmianie, i cache'uje artefakty budowania, aby uniknąć zbędnej pracy. To znacząco przyspiesza zarówno lokalny development, jak i pipeline'y CI/CD, czyniąc podejście monorepo bardziej praktycznym nawet w miarę rozrastania się repozytorium.
+
+```json
+// turbo.json
+{
+  "pipeline": {
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**", ".next/**"]
+    },
+    "test": {
+      "dependsOn": ["build"],
+      "outputs": []
+    },
+    "lint": {
+      "outputs": []
+    },
+    "deploy": {
+      "dependsOn": ["build", "test", "lint"],
+      "outputs": []
+    }
+  }
+}
+```
+
+## Monitoring i obserwowalność
+
+Do monitorowania całego ekosystemu używamy Prometheusa i Grafany:
+
+```yaml
+# infrastructure/kubernetes/monitoring/prometheus-values.yaml
+serverFiles:
+  prometheus.yml:
+    scrape_configs:
+      - job_name: 'spring-actuator'
+        metrics_path: '/actuator/prometheus'
+        kubernetes_sd_configs:
+          - role: pod
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+            action: keep
+            regex: true
+```
+
+### Globalna obsługa błędów i odporność
+
+W naszym projekcie wdrożyliśmy Circuit Breaker z Resilience4j. Ten wzorzec pomaga zapobiegać kaskadowym awariom między serwisami, automatycznie wykrywając, kiedy serwis podrzędny ma problemy. Gdy liczba awarii osiągnie określony próg, obwód "otwiera się" i szybko odrzuca kolejne żądania, zamiast pozwalać im na przekroczenie limitu czasu. To podejście nie tylko chroni system jako całość, ale także daje niesprawnym serwisom czas na regenerację bez bombardowania ich żądaniami.
+
+```java
+@Service
+public class ResilientMoodAnalysisService {
+    private final AudioAnalysisService analysisService;
+    private final CircuitBreakerRegistry circuitBreakerRegistry;
+
+    @Autowired
+    public ResilientMoodAnalysisService(
+        AudioAnalysisService analysisService,
+        CircuitBreakerRegistry circuitBreakerRegistry
+    ) {
+        this.analysisService = analysisService;
+        this.circuitBreakerRegistry = circuitBreakerRegistry;
+    }
+
+    public MoodAnalysisResult analyzeAudio(byte[] audioData, String userId) {
+        CircuitBreaker circuitBreaker = circuitBreakerRegistry.circuitBreaker("audioAnalysis");
+
+        return Try.ofSupplier(
+            CircuitBreaker.decorateSupplier(
+                circuitBreaker,
+                () -> analysisService.analyzeAudio(audioData, userId)
+            )
+        ).recover(throwable -> {
+            // Rozwiązanie awaryjne w razie niepowodzenia
+            return createFallbackAnalysisResult(userId);
+        }).get();
+    }
+
+    private MoodAnalysisResult createFallbackAnalysisResult(String userId) {
+        // Logika tworzenia wyniku awaryjnego
+    }
+}
+```
+
+## Scentralizowane logowanie
+
+Wszystkie serwisy wysyłają logi do centralnego systemu ELK Stack:
+
+```yaml
+# application.yml dla serwisów Spring Boot
+logging:
+pattern:
+console: '%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg %X{traceId} %X{spanId} %n'
+level:
+root: INFO
+com.moodbeat: DEBUG 12. Security aspects
+```
+
+## Zarządzanie uwierzytelnianiem i autoryzacją
+
+Do zapewnienia bezpieczeństwa między serwisami używamy tokenów JWT:
+
+```java
+@Configuration
+@EnableWebSecurity
+public class SecurityConfig extends WebSecurityConfigurerAdapter {
+
+    private final JwtTokenValidator tokenValidator;
+
+    @Autowired
+    public SecurityConfig(JwtTokenValidator tokenValidator) {
+        this.tokenValidator = tokenValidator;
+    }
+
+    @Override
+    protected void configure(HttpSecurity http) throws Exception {
+        http
+            .csrf().disable()
+            .sessionManagement().sessionCreationPolicy(SessionCreationPolicy.STATELESS)
+            .and()
+            .addFilterBefore(new JwtAuthenticationFilter(tokenValidator), UsernamePasswordAuthenticationFilter.class)
+            .authorizeRequests()
+            .antMatchers("/api/public/**").permitAll()
+            .anyRequest().authenticated();
+    }
+}
+```
+
+## Skanowanie bezpieczeństwa
+
+Regularnie przeprowadzamy skanowanie bezpieczeństwa z użyciem narzędzi takich jak OWASP Dependency Check:
+
+```gradle
+gradleCopyplugins {
+    id 'org.owasp.dependencycheck' version '7.1.0'
+}
+
+dependencyCheck {
+    failBuildOnCVSS = 7
+    suppressionFile = file("$rootDir/config/owasp-suppressions.xml")
+}
+```
+
+## Skalowanie dla różnych wielkości zespołów
+
+Architekturę Mono Services można dostosować do różnych wielkości zespołów. Mniejszym zespołom zapewnia prostotę i spójność bez narzutu wielu repozytoriów. W miarę wzrostu zespołów architektura może ewoluować w kierunku bardziej formalnych granic i zarządzania. Kluczem jest utrzymanie jasnej odpowiedzialności i wzorców komunikacji dopasowanych do skali twojej organizacji, tak aby architektura techniczna uzupełniała strukturę zespołu, zamiast z nią walczyć.
+
+### Małe zespoły (2-5 osób)
+
+**Dla małych zespołów Mono Services oferuje:**
+
+- Prostsze zarządzanie kodem bez potrzeby przełączania się między repozytoriami
+- Łatwiejsze współdzielenie kodu i standardów
+- Unikanie narzutu związanego z koordynacją zmian między repozytoriami
+
+**Rekomendacje:**
+
+- Uproszczona struktura katalogów
+- Minimalistyczne pipeline'y CI/CD
+- Mniej formalne procesy code review
+
+### Średnie zespoły (5-15 osób)
+
+Dla średnich zespołów, takich jak nasz w MoodBeat Analytics, Mono Services zapewnia:
+
+- Jasne granice odpowiedzialności
+- Możliwość równoległej pracy nad różnymi serwisami
+- Utrzymanie spójności całego systemu
+
+**Rekomendacje:**
+
+- Jasne wyznaczenie właścicieli poszczególnych serwisów
+- Automatyzacja weryfikacji standardów kodu
+- Selektywne procesy CI/CD
+
+### Duże zespoły (15+ osób)
+
+Wdrożenie Mono Services dla dużych zespołów wymaga dodatkowych praktyk:
+
+- Formalne procesy code review
+- Zaawansowane narzędzia do zarządzania monorepo (np. Bazel, Buck)
+- Bardziej rygorystyczne zasady dotyczące granic między serwisami
+
+**Rekomendacje:**
+
+- Struktury zespołów zorganizowane wokół serwisów lub domen biznesowych
+- Zaawansowane narzędzia zarządzania zależnościami
+- Dedykowane zespoły infrastrukturalne wspierające platformę Mono Services
+
+## Zalety i wyzwania
+
+### Zalety architektury Mono Services
+
+- Uproszczone współdzielenie kodu - wspólne modele i biblioteki w jednym repozytorium
+- Spójność kodu - łatwiejsze utrzymanie standardów i stylu kodu
+- Szybszy development - mniej problemów z zarządzaniem zależnościami
+- Elastyczność wdrażania - możemy wdrażać poszczególne serwisy niezależnie
+- Lepsza widoczność - łatwiej zrozumieć cały system, mając go w jednym miejscu
+- Łatwiejszy refaktoring - możliwość wprowadzania zmian obejmujących wiele serwisów w jednym PR
+- Uproszczone zarządzanie wersjami - lepsza kontrola nad kompatybilnością między serwisami
+
+### Wyzwania
+
+- Rosnąca złożoność repozytorium - wymaga dobrego zarządzania i organizacji
+- Zarządzanie wersjami interfejsów - potrzeba jasnych kontraktów API
+- Wymagania CI/CD - pipeline'y muszą być inteligentne, aby budować tylko to, co się zmieniło
+- Dyscyplina programistów - potrzeba jasnych granic między serwisami
+- Skalowanie systemu kontroli wersji - bardzo duże repozytoria mogą obciążać Git
+- Zarządzanie dostępem - trudności z ograniczaniem dostępu do określonych części repozytorium
+
+## Kiedy nie wybierać Mono Services
+
+Architektura Mono Services nie jest uniwersalnym rozwiązaniem i w niektórych przypadkach lepiej wybrać inne podejście:
+
+**Kiedy tradycyjne mikroserwisy są lepsze**
+
+Heterogeniczne stosy technologiczne - gdy różne zespoły wymagają radykalnie odmiennych technologii, frameworków i cykli życia
+Bardzo duże organizacje - z wieloma niezależnymi zespołami pracującymi nad luźno powiązanymi produktami
+Ekstremalne wymagania dotyczące niezależnego skalowania - gdy różne komponenty systemu mają drastycznie odmienne charakterystyki skalowania
+
+### Kiedy monolit jest lepszy
+
+Małe projekty - gdy narzut mikroserwisów nie przynosi korzyści
+Ograniczone zasoby - gdy zespół jest zbyt mały, aby skutecznie zarządzać wieloma serwisami
+Wczesna faza startupu - gdy szybkość iteracji i eksperymentowania jest ważniejsza niż skalowalność
+
+### Kiedy tradycyjne monorepo jest lepsze
+
+Jednolity stos technologiczny - gdy wszystkie komponenty używają tej samej technologii i narzędzi
+Silne zależności między komponentami - gdy komponenty są ściśle powiązane
+Organizacje z bardzo zaawansowanymi narzędziami do zarządzania monorepo - gdy istnieje infrastruktura specyficzna dla monorepo
+
+## Najczęstsze pułapki, których należy unikać
+
+    Na podstawie doświadczeń z MoodBeat Analytics, oto kilka pułapek, których należy unikać:
+
+### 1. Zamazane granice między serwisami
+
+**Problem:** Brak jasno zdefiniowanych granic między serwisami prowadzi do splątanych zależności.
+
+**Rozwiązanie:**
+Zdefiniuj jasne kontrakty API przy użyciu standardowych formatów, takich jak OpenAPI czy Protocol Buffers, traktując te kontrakty jako obywateli pierwszej kategorii z właściwym wersjonowaniem. Wdróż mechanizmy egzekwowania poprzez bramy API i service mesh, aby zapobiec nieautoryzowanej komunikacji między serwisami.
+
+Stosuj zasady projektowania sterowanego domeną (domain-driven design), organizując serwisy wokół możliwości biznesowych i ograniczonych kontekstów, a nie wokół kwestii technicznych. Pomaga to ustanowić naturalne granice zgodne z domenami biznesowymi.
+
+Używaj narzędzi do analizy zależności, aby wcześnie wykrywać naruszenia granic, i ustanów jasną własność serwisów z dedykowanymi zespołami odpowiedzialnymi za utrzymanie integralności granic. Planuj regularne przeglądy architektoniczne skupiające się konkretnie na granicach serwisów, aby zidentyfikować potencjalne problemy, zanim staną się kłopotliwe.
+
+Gdy naruszenia zostaną wykryte, priorytetowo traktuj refaktoring w celu przywrócenia właściwego rozdzielenia, czy to poprzez wyodrębnienie współdzielonego kodu do bibliotek, czy poprzez restrukturyzację granic serwisów. Zgłębimy ten kluczowy temat znacznie dokładniej w przyszłym artykule poświęconym utrzymaniu granic serwisów w środowisku monorepo.
+
+### 2. Nadmierne współdzielenie kodu
+
+**Problem:** Pokusa współdzielenia zbyt wielu komponentów między serwisami prowadzi do silnego sprzężenia.
+
+**Rozwiązanie:**
+Podczas zarządzania monorepo z wieloma serwisami opieraj się pokusie wyodrębniania i współdzielenia każdego fragmentu podobnego kodu. Zamiast tego skup się na współdzieleniu tylko naprawdę generycznych komponentów, które dostarczają jasnej wartości w wielu serwisach bez wprowadzania zależności specyficznych dla domeny.
+
+Stosuj "zasadę trzech" (Rule of Three) - poczekaj, aż zobaczysz ten sam wzorzec co najmniej trzy razy, zanim wyabstrahujesz go do współdzielonego komponentu. W razie wątpliwości preferuj kontrolowaną duplikację ponad przedwczesną abstrakcję, ponieważ zduplikowany kod jest często łatwiejszy w utrzymaniu niż źle zaprojektowana abstrakcja ściśle powiązana z wieloma serwisami.
+
+Regularnie oceniaj współdzielone biblioteki, usuwając te, które nie dostarczają wystarczającej wartości lub stały się zbyt specyficzne dla domeny. Rozważ użycie metryk, takich jak liczba zależnych komponentów, częstotliwość zmian i wpływ międzyserwisowy, aby kierować tymi decyzjami. Ustal jasne kryteria tego, co należy do współdzielonych bibliotek, i egzekwuj te standardy poprzez code review.
+
+Pamiętaj, że każdy współdzielony komponent stanowi potencjalny punkt sprzężenia, który może jednocześnie wpłynąć na wiele serwisów. Strategie identyfikacji odpowiednich granic współdzielenia i zarządzania ewolucją współdzielonych komponentów zgłębimy w dedykowanym przyszłym artykule.
+
+### 3. Ignorowanie cyklu życia serwisu
+
+**Problem:** Traktowanie wszystkich serwisów jako części jednego cyklu życia.
+
+**Rozwiązanie:**
+W architekturze Mono Services każdy serwis powinien utrzymywać własny rytm rozwoju i wydań, mimo że mieści się w tym samym repozytorium. Ustanów mechanizmy pozwalające różnym serwisom ewoluować we własnym tempie, gdzie niektóre mogą wydawać zmiany codziennie, a inne aktualizować się rzadziej.
+
+Wdróż niezależne wersjonowanie dla każdego serwisu i współdzielonego komponentu, używając wersjonowania semantycznego, aby jasno komunikować wpływ zmian. Pozwala to serwisom konsumującym aktualizować się według własnego harmonogramu, jednocześnie rozumiejąc potencjalne problemy z kompatybilnością.
+
+Stwórz jawne zasady zarządzania wersjami API, które określają, jak długo starsze wersje będą wspierane i jak komunikowane jest wycofywanie. Rozważ użycie wersjonowania API w ścieżce URL lub nagłówkach, zamiast zmieniać istniejące endpointy. W razie potrzeby używaj feature flag dla wstecznej kompatybilności.
+
+Rozwiń pipeline, który wspiera wydawanie poszczególnych serwisów bez konieczności ponownego wdrażania całego systemu. Może to obejmować pipeline'y CI/CD specyficzne dla serwisu, które uruchamiają się tylko wtedy, gdy zmieniają się odpowiednie pliki. Bardziej zaawansowane strategie zarządzania cyklem życia i wzorce wersjonowania omówimy w nadchodzącym artykule poświęconym niezależnej ewolucji serwisów w ramach monorepo.
+
+### 4. Brak automatyzacji
+
+**Problem:** Ręczne zarządzanie zależnościami i budowaniem prowadzi do błędów i nieefektywności.
+
+**Rozwiązanie:**
+Aby architektura Mono Services odniosła sukces, inwestuj w kompleksową automatyzację CI/CD od samego początku. Twórz pipeline'y budowania, które inteligentnie określają, które serwisy wymagają przebudowy na podstawie zmian, zamiast przebudowywać wszystko przy każdym commicie.
+
+Wdróż narzędzia do analizy zależności, które mapują relacje między serwisami a współdzielonymi komponentami, automatycznie wykrywając, kiedy zmiany w jednym obszarze mogą wpłynąć na inne. Wykorzystaj te informacje do uruchamiania odpowiednich testów i kroków walidacji w oparciu o potencjalny promień oddziaływania zmiany.
+
+Automatyzuj testy kompatybilności między serwisami przy użyciu frameworków do testowania kontraktów, takich jak Pact czy Spring Cloud Contract. Testy te weryfikują, że interakcje między serwisami nadal działają poprawnie w miarę ewolucji poszczególnych serwisów, dostarczając wczesnego ostrzeżenia o przełomowych zmianach, zanim dotrą do produkcji.
+
+Rozważ wdrożenie systemu budowania świadomego monorepo, takiego jak Turborepo, Nx czy Bazel, który może optymalizować budowanie poprzez cache'owanie i równoległe wykonywanie, jednocześnie rozumiejąc zależności między serwisami. Przyszły artykuł zagłębi się w konkretne techniki automatyzacji, które mogą drastycznie skrócić czasy budowania i zwiększyć produktywność programistów w środowiskach Mono Services.
+
+## Przyszłe kierunki rozwoju Mono Services
+
+Architektura Mono Services będzie ewoluować wraz z rozwojem narzędzi i praktyk:
+
+### Narzędzia i technologie
+
+- **Lepsze narzędzia do budowania** - rozwój narzędzi takich jak Turborepo, Nx, Bazel dla wielojęzycznych monorepo
+- **Zaawansowane systemy kontroli wersji** - rozwiązania lepiej radzące sobie z dużymi repozytoriami
+- **Development wspomagany AI** - narzędzia AI do analizy zależności i sugestii refaktoringu
+- **Chmurowe środowiska deweloperskie** - zintegrowane środowiska chmurowe zoptymalizowane pod monorepo
+
+### Trendy w architekturze
+
+- **Bezserwerowe mikroserwisy** - łączenie Mono Services z architekturą serverless
+- **Edge computing** - dostosowanie Mono Services do rozproszonych środowisk brzegowych
+- **WebAssembly** - wykorzystanie WASM do ujednolicenia wdrożeń w różnych środowiskach
+- **Architektura sterowana zdarzeniami** - głębsza integracja ze wzorcami sterowanymi zdarzeniami
+
+## Wnioski i rekomendacje
+
+    Architektura Mono Services to podejście, które nieustannie doskonalę w projekcie MoodBeat Analytics. Nie jest to uniwersalne rozwiązanie i nie zastąpi tradycyjnych mikroserwisów w bardzo dużych projektach. Jednak dla wielu średnich zespołów może stanowić idealny kompromis między prostotą monorepo a elastycznością mikroserwisów.
+
+    ### Kluczowe rekomendacje
+
+- **Zacznij od jasnych granic** - zdefiniuj granice między serwisami przed implementacją
+- **Inwestuj w automatyzację** - automatyzacja CI/CD jest kluczem do sukcesu Mono Services
+- **Stosuj kontrakty API** - jasne kontrakty API pomagają utrzymać granice między serwisami
+- **Bądź pragmatyczny** - nie trzymaj się sztywno jednego podejścia, dostosuj architekturę do swoich potrzeb
+- **Refaktoruj regularnie** - okresowo przeglądaj granice między serwisami i refaktoruj w razie potrzeby
+
+### Kiedy rozważyć Mono Services:
+
+- Masz średniej wielkości zespół (5-15 programistów)
+- Potrzebujesz mikroserwisów, ale nie chcesz zarządzać wieloma repozytoriami
+- Masz serwisy w różnych językach/technologiach, ale chcesz spójnego podejścia
+- Musisz szybko iterować na początku projektu, ale chcesz zachować skalowalność
+
+## Podsumowanie
+
+Warto zauważyć, że architektura Mono Services opisana w tym artykule reprezentuje moje aktualne przemyślenia i eksploracje możliwości w przestrzeni architektury oprogramowania. Projekt MoodBeat Analytics wciąż jest w toku, a to podejście ma charakter eksperymentalny. Jak każdy wzorzec architektoniczny, może okazać się, że ma ograniczenia lub wady, które nie są jeszcze widoczne.
+
+Zawsze istnieje możliwość, że po dalszym rozwoju i testach w rzeczywistych warunkach to podejście okaże się nieoptymalne dla naszego konkretnego przypadku użycia i nigdy nie zostanie w pełni wdrożone ani przyjęte. Dzielę się tymi pomysłami nie jako ostatecznymi rozwiązaniami, lecz jako częścią trwającej podróży odkrywania i uczenia się w architekturze oprogramowania, gdzie nieudane eksperymenty często dostarczają tyle samo wartości, co te udane.
+
+### Przydatne narzędzia
+
+Oto kilka narzędzi, które szczególnie polecam do architektury Mono Services:
+
+- **Turborepo** - inteligentny system budowania dla monorepo JavaScript/TypeScript
+- **Gradle** Composite Builds - łączenie wielu projektów Gradle
+- **OpenAPI Generator** - generowanie klientów API z definicji OpenAPI
+- **ArgoCD** - GitOps dla Kubernetes
+- **Temporal** - platforma workflow dla mikroserwisów
+
+### Bibliografia i dalsze źródła wiedzy
+
+Dla tych, którzy chcą zagłębić się w Mono Services i pokrewne architektury:
+
+- "Building Microservices" - Sam Newman
+- "Monolith to Microservices" - Sam Newman
+- "Fundamentals of Software Architecture" - Mark Richards & Neal Ford
+- "Building Evolutionary Architectures" - Neal Ford, Rebecca Parsons & Patrick Kua
+
+## Co dalej w serii
+
+W nadchodzących artykułach zagłębię się w kilka kluczowych aspektów architektury Mono Services, których nie udało się tutaj szczegółowo omówić:
+
+- Praktyczna implementacja backendu z Java Spring Boot - zgłębimy szczegóły implementacji serwisów backendowych w architekturze Mono Services, w tym szczegółowe przykłady kodu i najlepsze praktyki.
+- Implementacja frontendu z Next.js i Tailwind - szczegółowe spojrzenie na to, jak strukturyzować i implementować aplikacje frontendowe w kontekście Mono Services.
+- Strategie migracji - kompleksowy przewodnik po tym, jak migrować z monolitów lub rozproszonych mikroserwisów do architektury Mono Services, z praktycznymi krokami i pułapkami, których należy unikać.
+- Studium przypadku MoodBeat Analytics - dogłębna analiza tego, jak zastosowaliśmy te zasady w rzeczywistym projekcie, w tym wyzwania, przed którymi stanęliśmy, oraz mierzalne usprawnienia, które osiągnęliśmy.
+
+Śledź dalej, jeśli chcesz dowiedzieć się więcej o tych aspektach architektury Mono Services!
+
+~Seb 👊
