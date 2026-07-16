@@ -1,0 +1,668 @@
+---
+title: 'Optymalizacja pipelineów CI/CD pod kątem DX: jak skrócić czas deployu z 15 do 2 minut'
+date: '2026-03-28'
+category: 'Architecture'
+tags: ['devops', 'ci-cd', 'github-actions', 'performance', 'developer-experience']
+draft: false
+featured: false
+author: 'Sebastian'
+enSlug: 'optimizing-cicd-pipelines-dx-deploy-times-guide'
+excerpt: '70% deweloperów twierdzi, że wolne CI/CD zabija ich produktywność. Stripe stracił 3,5 godziny tygodniowo na czekanie. Oto jak skrócić czas deployu o 80%.'
+---
+
+Piętnastominutowy pipeline CI nie brzmi katastrofalnie. Ale policzmy: zespół 8 inżynierów, każdy pushuje 3-4 razy dziennie, czekając średnio 12 minut na jedno uruchomienie pipeline'u. To **6,4 godziny zablokowanego czasu deweloperów dziennie** — niemal pełny etat jednego inżyniera, każdego dnia, spalany na czekaniu.
+
+Stripe zmierzył to dokładnie. Ich inżynierowie spędzali średnio 3,5 godziny tygodniowo na czekaniu na pipeline'y CI. Po migracji do szybszego dostawcy CI i zrównolegleniu zestawów testów skrócili zablokowany czas o 70% i dostarczyli rocznie o 20% więcej funkcjonalności. Nie przez zatrudnianie kolejnych osób — przez przyspieszenie pipeline'u.
+
+To nie jest wyłącznie problem produktywności. Badania JetBrains pokazują, że ponad 70% deweloperów twierdzi, iż wolne CI/CD negatywnie wpływa na ich produktywność, a niewystarczające narzędzia plasują się wśród głównych czynników decydujących o odejściach z pracy. Wolne pipeline'y nie tylko marnują czas — niszczą morale, przerywają stan flow i wypychają twoich najlepszych inżynierów do firm z lepszą infrastrukturą.
+
+Przez ostatnie trzy lata optymalizowałem pipeline'y CI/CD dla dziesiątek zespołów. Schemat jest zawsze taki sam: pipeline, który startował z 3 minut, spuchł do ponad 15 minut przez nagromadzone śmieci, brakujące cache, seryjne wykonywanie zadań bezpiecznych do zrównoleglenia i brak osoby odpowiedzialnej za wydajność pipeline'u. Połącz to z solidną [konfiguracją lintingu i sprawdzania typów](/blog/advanced-linting-type-safety-eslint-typescript-guide), która działa szybko, a twój pipeline staje się mnożnikiem produktywności zamiast wąskim gardłem. Oto systematyczne podejście, którego używam, żeby znów zapanować nad sytuacją.
+
+## Anatomia wolnego pipeline'u
+
+Zanim zaczniesz optymalizować, musisz zrozumieć, gdzie ucieka czas. Typowy pipeline projektu Next.js wygląda tak:
+
+```
+Total: ~15 minut
+├── Checkout + Setup:     1.5 min  (10%)
+│   ├── Git checkout:      20s
+│   ├── Node setup:        15s
+│   └── npm install:       55s    ← Brak cache
+├── Lint:                  2 min   (13%)
+│   └── ESLint (full):     2 min  ← Sprawdzanie wszystkich plików
+├── Type Check:            2.5 min (17%)
+│   └── tsc --noEmit:      2.5 min ← Cały projekt
+├── Tests:                 5 min   (33%)
+│   ├── Unit tests:        2 min
+│   └── E2E tests:         3 min  ← Wykonanie seryjne
+├── Build:                 3 min   (20%)
+│   └── next build:        3 min  ← Brak cache
+└── Deploy:                1 min   (7%)
+```
+
+Każda sekcja ma potencjał optymalizacyjny. Zaatakujmy każdą z osobna.
+
+## Poziom 1: Cache'owanie wszystkiego (oszczędność 5-8 min)
+
+Cache'owanie to pojedyncza optymalizacja o największym wpływie. Większość zespołów albo nie cache'uje, albo cache'uje nieprawidłowo.
+
+### Cache'owanie zależności
+
+Domyślne `actions/setup-node` z cache'owaniem to dobry początek, ale istnieje lepsze podejście:
+
+```yaml
+# .github/workflows/ci.yml
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      # npm ci jest szybsze niż npm install — pomija rozwiązywanie zależności
+      - run: npm ci
+```
+
+**Wpływ:** Oszczędza 30-60 sekund na instalacji zależności. Pierwsze uruchomienie pobiera wszystko; kolejne przywracają dane z cache'u i weryfikują jedynie integralność.
+
+### Cache buildu (Next.js)
+
+Next.js ma wbudowany cache buildu (`.next/cache`), który dramatycznie przyspiesza kolejne buildy:
+
+```yaml
+      - name: Cache Next.js build
+        uses: actions/cache@v4
+        with:
+          path: |
+            .next/cache
+          key: nextjs-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}-${{ hashFiles('**/*.ts', '**/*.tsx', '**/*.css') }}
+          restore-keys: |
+            nextjs-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}-
+            nextjs-${{ runner.os }}-
+
+      - run: npm run build
+```
+
+**Wpływ:** Skraca czas buildu o 40-70% przy kolejnych uruchomieniach. Next.js rekompiluje tylko zmienione strony i komponenty.
+
+### Turborepo / Nx Remote Cache
+
+Dla monorepo zdalne cache'owanie jest przełomowe. Zamiast przebudowywać wszystko, zadania, które się nie zmieniły, są przywracane z cache'u natychmiast:
+
+```yaml
+      # Turborepo z cache'em GitHub Actions (darmowy, bez konta Vercel)
+      - name: Cache Turbo
+        uses: actions/cache@v4
+        with:
+          path: |
+            .turbo
+            **/node_modules/.cache/turbo
+          key: turbo-${{ runner.os }}-${{ hashFiles('**/turbo.json') }}-${{ github.sha }}
+          restore-keys: |
+            turbo-${{ runner.os }}-${{ hashFiles('**/turbo.json') }}-
+            turbo-${{ runner.os }}-
+
+      - run: npx turbo run build lint test --filter=...[origin/main]
+```
+
+Flaga `--filter=...[origin/main]` mówi Turborepo, żeby uruchomiło zadania tylko dla pakietów, które zmieniły się od gałęzi bazowej. Jeśli istnieje 45 zadań, a dotkniętych jest tylko 4, pomijasz 41.
+
+**Wpływ:** Redukcja czasu CI monorepo o 60-90%. Zespół, z którym pracowałem, przeszedł z 26 minut do 1 minuty, łącząc cache Turbo z filtrowaniem dotkniętych zmian.
+
+### Cache'owanie warstw Dockera
+
+Jeśli twój pipeline buduje obrazy Dockera:
+
+```yaml
+      - name: Build Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          tags: app:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+```
+
+`type=gha` używa wbudowanego cache'u GitHub Actions dla warstw Dockera. W połączeniu z dobrze uporządkowanym Dockerfile eliminuje to redundantne przebudowywanie warstw:
+
+```dockerfile
+# Dockerfile — zoptymalizowany pod cache'owanie
+# Etap 1: Zależności (zmieniają się rzadko)
+FROM node:22-alpine AS deps
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci --production
+
+# Etap 2: Build (zmienia się przy zmianach w kodzie)
+FROM node:22-alpine AS builder
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+RUN npm run build
+
+# Etap 3: Runtime (minimalny obraz)
+FROM node:22-alpine AS runner
+WORKDIR /app
+ENV NODE_ENV=production
+COPY --from=builder /app/.next ./.next
+COPY --from=builder /app/public ./public
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/package.json ./
+CMD ["npm", "start"]
+```
+
+**Kluczowa obserwacja:** `COPY package.json` przed `COPY .` gwarantuje, że zależności są cache'owane, chyba że zmieni się `package.json`. Jeśli zmienisz tylko kod źródłowy, warstwa `npm ci` jest ponownie wykorzystywana.
+
+**Wpływ:** Redukcja czasu buildu Dockera o 50-70%.
+
+## Poziom 2: Zrównoleglenie (oszczędność 3-5 min)
+
+Wykonanie seryjne to drugi największy pożeracz czasu. Jeśli lint, typecheck i testy są niezależne (a są), uruchamiaj je jednocześnie:
+
+### Równoległe joby
+
+```yaml
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: 'npm' }
+      - run: npm ci
+      - run: npm run lint
+
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: 'npm' }
+      - run: npm ci
+      - run: npm run typecheck
+
+  test-unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: 'npm' }
+      - run: npm ci
+      - run: npm run test:unit
+
+  test-e2e:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: 'npm' }
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npx playwright test --shard=${{ matrix.shard }}/4
+
+  build:
+    needs: [lint, typecheck, test-unit]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: 'npm' }
+      - run: npm ci
+      - name: Cache Next.js build
+        uses: actions/cache@v4
+        with:
+          path: .next/cache
+          key: nextjs-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}-${{ hashFiles('**/*.ts', '**/*.tsx') }}
+          restore-keys: nextjs-${{ runner.os }}-
+      - run: npm run build
+
+  deploy:
+    needs: [build, test-e2e]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Deploy to production"
+```
+
+**Klucz:** `lint`, `typecheck`, `test-unit` i `test-e2e` działają jednocześnie. `build` czeka na szybkie sprawdzenia. `deploy` czeka na wszystko.
+
+```
+Oś czasu (równolegle):
+0s ─────── 60s ────── 120s ────── 180s ────── 240s
+├─ lint ──────────┤
+├─ typecheck ─────────┤
+├─ test:unit ─────────────┤
+├─ test:e2e [shard 1] ────────────────┤
+├─ test:e2e [shard 2] ────────────────┤
+├─ test:e2e [shard 3] ────────────────┤
+├─ test:e2e [shard 4] ────────────────┤
+                           ├─ build ──────────┤
+                                              ├─ deploy ─┤
+                                                         Total: ~4 min
+```
+
+Porównaj z wykonaniem seryjnym: lint → typecheck → tests → build → deploy = ~15 min.
+
+### Sharding testów
+
+Powyższy sharding testów E2E (`--shard=${{ matrix.shard }}/4`) rozdziela twoje testy Playwright na 4 równoległe runnery. 12-minutowy zestaw testów staje się ~3-minutowy.
+
+Dla jeszcze sprytniejszego podziału opartego na czasie wykonania:
+
+```yaml
+  test-e2e:
+    strategy:
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      # ... kroki konfiguracyjne ...
+      - run: npx playwright test --shard=${{ matrix.shard }}/4
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results-${{ matrix.shard }}
+          path: test-results/
+```
+
+## Poziom 3: Selektywne wykonanie (oszczędność 2-4 min)
+
+Nie każda zmiana wymaga każdego sprawdzenia. PR z dokumentacją nie potrzebuje testów E2E. Zmiana stylu nie potrzebuje pełnego buildu.
+
+### Filtrowanie oparte na ścieżkach
+
+```yaml
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig.json'
+      - '.github/workflows/**'
+
+# Pomiń CI dla zmian dotyczących wyłącznie dokumentacji
+# Filtrowanie ścieżek oznacza, że workflow w ogóle się nie uruchamia
+```
+
+### Warunkowe joby
+
+```yaml
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      src: ${{ steps.filter.outputs.src }}
+      tests: ${{ steps.filter.outputs.tests }}
+      docs: ${{ steps.filter.outputs.docs }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            src:
+              - 'src/**'
+              - 'app/**'
+              - 'package.json'
+            tests:
+              - 'tests/**'
+              - 'playwright.config.ts'
+            docs:
+              - 'docs/**'
+              - '*.md'
+
+  lint:
+    needs: changes
+    if: needs.changes.outputs.src == 'true'
+    # ... job lint ...
+
+  test-e2e:
+    needs: changes
+    if: needs.changes.outputs.src == 'true' || needs.changes.outputs.tests == 'true'
+    # ... job e2e ...
+
+  build:
+    needs: [changes, lint]
+    if: needs.changes.outputs.src == 'true'
+    # ... job build ...
+```
+
+**Wpływ:** PR-y dotyczące wyłącznie dokumentacji kończą się w kilka sekund. Zmiany dotyczące tylko testów pomijają pełny build. Zmiany w kodzie źródłowym uruchamiają wszystko.
+
+### Wykrywanie dotkniętych pakietów (monorepo)
+
+Dla monorepo Turborepo lub Nx uruchamiaj zadania tylko dla dotkniętych pakietów:
+
+```yaml
+      # Turbo: tylko dotknięte pakiety
+      - run: npx turbo run build test lint --filter=...[origin/main]
+
+      # Nx: tylko dotknięte projekty
+      - run: npx nx affected --target=build --base=origin/main
+      - run: npx nx affected --target=test --base=origin/main
+      - run: npx nx affected --target=lint --base=origin/main
+```
+
+## Poziom 4: Optymalizacja infrastruktury
+
+### Szybsze runnery
+
+Standardowe runnery GitHuba to maszyny 2-vCPU. Dla workflow'ów wymagających mocy obliczeniowej (buildy, testy E2E) większe runnery robią znaczącą różnicę:
+
+```yaml
+jobs:
+  build:
+    runs-on: ubuntu-latest-4-cores  # 4 vCPU, 16 GB RAM
+    # Lub dla zespołów na GitHub Enterprise:
+    # runs-on: ubuntu-latest-8-cores
+```
+
+W 2026 roku GitHub obniżył ceny runnerów nawet o 39%, przy czym runner 4-vCPU kosztuje tyle samo, co dawny 2-vCPU. Praktycznie nie ma powodu, by nie używać większych runnerów do jobów buildu.
+
+### Composite Actions dla suchej (DRY) konfiguracji
+
+Jeśli każdy job powtarza checkout → setup-node → npm ci, wyodrębnij to:
+
+```yaml
+# .github/actions/setup/action.yml
+name: 'Setup'
+description: 'Checkout, setup Node, install dependencies'
+runs:
+  using: 'composite'
+  steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 22
+        cache: 'npm'
+    - run: npm ci
+      shell: bash
+```
+
+```yaml
+# W twoim workflow
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ./.github/actions/setup
+      - run: npm run lint
+```
+
+### Runnery Arm64
+
+GitHub oferuje runnery Arm64, które są o 37% tańsze i często szybsze dla obciążeń Node.js:
+
+```yaml
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm  # Runner Arm64
+```
+
+## Zoptymalizowany pipeline: przed i po
+
+### Przed (seryjnie, bez cache): ~15 minut
+
+```yaml
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: npm install           # Brak cache, nie npm ci
+      - run: npm run lint          # Wszystkie pliki
+      - run: npm run typecheck     # Cały projekt
+      - run: npm run test          # Wszystkie testy, seryjnie
+      - run: npm run test:e2e      # Wszystkie E2E, seryjnie
+      - run: npm run build         # Brak cache buildu
+```
+
+### Po (równolegle, cache'owane, selektywnie): ~3-4 minuty
+
+```yaml
+name: CI
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true  # Anuluj poprzednie uruchomienia dla tej samej gałęzi
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      src: ${{ steps.filter.outputs.src }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            src:
+              - 'src/**'
+              - 'app/**'
+              - 'package.json'
+              - 'tsconfig.json'
+
+  quality:
+    needs: changes
+    if: needs.changes.outputs.src == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        check: [lint, typecheck, test-unit]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: 'npm' }
+      - run: npm ci
+      - run: |
+          case "${{ matrix.check }}" in
+            lint)      npm run lint ;;
+            typecheck) npm run typecheck ;;
+            test-unit) npm run test:unit ;;
+          esac
+
+  test-e2e:
+    needs: changes
+    if: needs.changes.outputs.src == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: 'npm' }
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npx playwright test --shard=${{ matrix.shard }}/3
+
+  build:
+    needs: [quality]
+    if: needs.changes.outputs.src == 'true' || needs.changes.result == 'skipped'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: 'npm' }
+      - run: npm ci
+      - uses: actions/cache@v4
+        with:
+          path: .next/cache
+          key: nextjs-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}-${{ hashFiles('**/*.ts', '**/*.tsx') }}
+          restore-keys: nextjs-${{ runner.os }}-
+      - run: npm run build
+
+  deploy:
+    needs: [build, test-e2e]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - run: echo "Deploy to production"
+```
+
+**Zastosowane kluczowe optymalizacje:**
+1. `concurrency` anuluje poprzednie uruchomienia — brak zmarnowanej mocy obliczeniowej na nieaktualne commity
+2. `dorny/paths-filter` pomija CI dla zmian niedotyczących kodu źródłowego
+3. Strategia macierzy zrównolegla lint, typecheck i testy jednostkowe
+4. Testy E2E rozdzielone na 3 runnery (sharding)
+5. Cache buildu dla Next.js
+6. Cache zależności przez setup-node
+7. `fail-fast: false` — zobacz wszystkie błędy, nie tylko pierwszy
+
+## Mierzenie wydajności pipeline'u
+
+Nie zoptymalizujesz tego, czego nie mierzysz. Śledź te metryki:
+
+### Cztery kluczowe metryki
+
+1. **Czas trwania pipeline'u** (p50, p95) — najważniejsza liczba. Cel: poniżej 5 minut dla p50.
+2. **Czas w kolejce** — czas spędzony na oczekiwaniu na runner. Jeśli wysoki, potrzebujesz większych runnerów lub self-hosted.
+3. **Współczynnik trafień cache'u** — odsetek uruchomień, które trafiają w cache. Cel: > 80%.
+4. **Współczynnik niepowodzeń** — odsetek uruchomień, które zawodzą. Niestabilne (flaky) testy go zawyżają i marnują czas.
+
+### GitHub Actions Insights
+
+GitHub udostępnia wbudowaną analitykę workflow'ów pod adresem `https://github.com/{org}/{repo}/actions/caches` dla wykorzystania cache'u i czasów uruchomień workflow'ów. Dla głębszej analizy:
+
+```bash
+# Pobierz czasy trwania uruchomień workflow przez API
+gh api repos/{owner}/{repo}/actions/runs \
+  --jq '.workflow_runs[:20] | .[] | "\(.created_at) \(.updated_at) \(.name) \(.conclusion)"'
+
+# Sprawdź wykorzystanie cache'u
+gh api repos/{owner}/{repo}/actions/caches \
+  --jq '.actions_caches | sort_by(.last_accessed_at) | reverse | .[:10] | .[] | "\(.key) \(.size_in_bytes / 1048576 | floor)MB"'
+```
+
+## Częste pułapki
+
+### 1. Klucz cache'u zbyt szeroki lub zbyt wąski
+
+```yaml
+# Zbyt szeroki — cache nigdy się nie unieważnia (nieaktualne dane)
+key: deps-cache
+
+# Zbyt wąski — cache nigdy nie trafia (unikalny za każdym razem)
+key: deps-${{ github.sha }}
+
+# W sam raz — unieważnia się, gdy zmieniają się zależności
+key: deps-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
+```
+
+### 2. Nieużywanie npm ci
+
+`npm install` rozwiązuje zależności i może zaktualizować `package-lock.json`. `npm ci` jest szybsze, bo pomija rozwiązywanie i instaluje dokładnie to, co jest w lockfile:
+
+```yaml
+# Wolne i niedeterministyczne
+- run: npm install
+
+# Szybkie i deterministyczne
+- run: npm ci
+```
+
+### 3. Instalowanie zależności deweloperskich do buildów produkcyjnych
+
+Jeśli twój build nie potrzebuje zależności testowych:
+
+```yaml
+- run: npm ci --omit=dev  # Pomiń devDependencies
+```
+
+### 4. Nieanulowanie zastąpionych uruchomień
+
+Bez `concurrency` wypchnięcie 3 commitów w krótkim odstępie uruchamia 3 pełne pipeline'y. Pierwsze dwa są zmarnowane:
+
+```yaml
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+```
+
+### 5. Niestabilne (flaky) testy
+
+Test, który zawodzi w 5% przypadków, marnuje 5% wszystkich uruchomień CI. Niestabilne testy to cichy zabójca wydajności pipeline'u. Śledź je i naprawiaj agresywnie:
+
+```yaml
+      # Ponawianie Playwright, by złagodzić niestabilność (ale napraw przyczynę!)
+      - run: npx playwright test --retries=1
+```
+
+## ROI szybkich pipeline'ów
+
+Ujmę to w liczbach:
+
+| Metryka | Przed | Po | Wpływ |
+|--------|--------|-------|--------|
+| **Czas trwania pipeline'u** | 15 min | 3 min | -80% |
+| **Dzienny czas czekania (8 devów)** | 6,4 godz. | 1,3 godz. | -80% |
+| **Tygodniowy czas czekania** | 32 godz. | 6,4 godz. | **25,6 godz. oszczędności** |
+| **Roczny czas czekania** | 1 664 godz. | 333 godz. | **1 331 godz. oszczędności** |
+| **Przy koszcie mieszanym 100 USD/godz.** | 166 400 USD | 33 300 USD | **133 100 USD oszczędności/rok** |
+
+To 133 tys. USD odzyskanego czasu inżynierskiego z optymalizacji pipeline'u, której wdrożenie zajmuje 1-2 dni. Nie ma inwestycji infrastrukturalnej o wyższym ROI.
+
+## Praktyczne wnioski
+
+1. **Cache'uj wszystko** — zależności, artefakty buildu, warstwy Dockera. Samo to ścina 40-60% czasu pipeline'u.
+2. **Zrównoleglaj niezależne joby** — lint, typecheck i testy nie zależą od siebie. Uruchamiaj je jednocześnie.
+3. **Rozdzielaj testy E2E (sharding)** — dziel Playwright/Cypress na wiele runnerów za pomocą `--shard`.
+4. **Pomijaj zbędną pracę** — używaj filtrowania ścieżek i wykrywania dotkniętych pakietów. Zmiana dokumentacji nie potrzebuje testów E2E.
+5. **Anuluj zastąpione uruchomienia** — `concurrency` z `cancel-in-progress: true` zapobiega marnotrawstwu.
+6. **Używaj `npm ci`** — szybsze i deterministyczne. Nigdy `npm install` w CI.
+7. **Ulepszaj runnery** — runnery 4-vCPU kosztują teraz tyle, co dawne 2-vCPU. Używaj ich.
+8. **Mierz czas trwania pipeline'u co tydzień** — ustaw cel (poniżej 5 min p50) i śledź go.
+9. **Naprawiaj niestabilne testy natychmiast** — marnują skumulowany czas i podkopują zaufanie do CI.
+10. **Traktuj wydajność pipeline'u jak funkcjonalność** — bierz ją na siebie, mierz, rezerwuj na nią czas.
+
+Połącz szybkie pipeline'y z [feature flagami dla stopniowych wdrożeń](/blog/feature-flags-progressive-rollouts-nextjs-guide), a otrzymasz idealną siatkę bezpieczeństwa deploymentu — szybki feedback ORAZ kontrolowane wydania. Jeśli prowadzisz monorepo, [wzorce architektoniczne Nx/Turborepo](/blog/mono-services-architecture-combining-the-advantages-of-monorepo-and-microservices), o których pisałem, stosują się bezpośrednio do opisanego wyżej podejścia z filtrowaniem dotkniętych pakietów.
+
+Szybkie pipeline'y to nie tylko miły dodatek. To fundament wydajnego zespołu inżynierskiego. Każda minuta ścięta z CI to minuta, którą twoi inżynierowie spędzają na budowaniu, a nie na czekaniu.
+
+## Źródła
+
+### Źródła
+- [GitHub: Awesome Copilot CI/CD Best Practices](https://github.com/github/awesome-copilot/blob/main/instructions/github-actions-ci-cd-best-practices.instructions.md) — oficjalne dobre praktyki GitHuba
+- [DevOps.com: Optimizing CI/CD for Developer Happiness](https://devops.com/optimizing-ci-cd-pipelines-for-developer-happiness-and-high-performance/) — badania nad wpływem na developer experience
+- [JetBrains: The ROI of Developer Experience](https://blog.jetbrains.com/teamcity/2026/01/the-roi-of-dev-experience/) — kwantyfikacja biznesowego wpływu szybkości CI
+- [Vercel: How to Reduce Build Time with Next.js](https://vercel.com/kb/guide/how-do-i-reduce-my-build-time-with-next-js-on-vercel) — optymalizacje specyficzne dla Next.js
+- [WarpBuild: GitHub Actions for Monorepos](https://www.warpbuild.com/blog/github-actions-monorepo-guide) — wzorce CI dla Turborepo i Nx
+- [Playwright: Test Sharding](https://playwright.dev/docs/test-sharding) — oficjalna dokumentacja shardingu
+
+### Dalsza lektura
+- [DEV.to: Supercharging GitHub Actions with Turbo Caching](https://dev.to/abhilashlr/supercharging-github-actions-ci-from-slow-to-lightning-fast-with-turbo-caching-1bed) — praktyczna konfiguracja Turbo + GHA
+- [DEV.to: How We Reduced Deployment Time by 25x](https://dev.to/maxprilutskiy/how-i-sliced-deployment-times-to-a-fraction-and-achieved-lightning-fast-deployments-to-production-with-github-actions-4ifi) — studium przypadku z prawdziwego świata
+- [Netdata: Docker Layer Caching](https://www.netdata.cloud/academy/docker-layer-caching/) — dogłębna analiza optymalizacji buildu Dockera
+- [RunsOn: The Matrix Strategy in GitHub Actions](https://runs-on.com/github-actions/the-matrix-strategy/) — zaawansowane wzorce macierzy
+
+---
+
+~Seb 👊
