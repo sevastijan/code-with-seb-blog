@@ -1,0 +1,264 @@
+---
+title: 'WET kontra AHA: jak unikać przedwczesnej abstrakcji w rozwoju frontendu'
+date: '2025-04-25'
+category: 'Architecture'
+tags: ['abstraction', 'frontend', 'code-quality', 'refactoring', 'Clean Code', 'Software Architecture', 'Best Practices', 'Scalable Code', 'Reusable Components']
+featured: false
+author: 'Sebastian'
+draft: false
+enSlug: 'wet-vs-aha-avoiding-premature-abstraction-in-frontend-development'
+excerpt: 'WET i AHA podważają nadgorliwe DRY, promując świadomą duplikację, aby uniknąć przedwczesnych, kruchych abstrakcji. Kiedy abstrakcja naprawdę się opłaca?'
+---
+
+Doświadczeni deweloperzy frontendu znają maksymę DRY (Don't Repeat Yourself), która nakłania nas do eliminowania powielonego kodu. Nadgorliwe DRY może jednak przynieść odwrotny skutek – prowadzi do przedwczesnych abstrakcji, które czynią kod bardziej złożonym, a nie prostszym. W ostatnich latach popularność zyskały dwie przeciwstawne zasady: WET (Write Everything Twice) oraz AHA (Avoid Hasty Abstractions). Obie zachęcają do rozsądnej duplikacji w kodzie, aby uniknąć pułapek błędnych abstrakcji.
+
+Ten artykuł zawiera techniczne porównanie WET i AHA, wraz z analizą zestawioną obok siebie, przykładami kodu w Reakcie oraz wskazówkami dotyczącymi utrzymywalności, skalowania i refaktoryzacji. Na koniec wyprowadzimy najlepsze praktyki określające, kiedy w kodzie frontendowym wybrać WET, a kiedy AHA.
+
+# Zrozumieć WET (Write Everything Twice)
+
+WET to akronim od "Write Everything Twice" ("napisz wszystko dwa razy"). W istocie jest reakcją na dogmat DRY. Zasada WET głosi, że pewna duplikacja kodu jest dopuszczalna – a nawet pożądana – jeśli pomaga zapobiec przedwczesnej abstrakcji. W praktyce WET sugeruje, że ten sam (lub podobny) kod można bez wyrzutów sumienia napisać dwa razy; dopiero przy trzecim wystąpieniu warto rozważyć wyodrębnienie abstrakcji. Jak ujmuje to jedno ze sformułowań: "Możesz zapytać sam siebie »czy już tego nie pisałem?« dwa razy, ale nigdy trzy razy". Uzasadnienie jest takie, że napisanie czegoś dwa razy niesie niski koszt (minimalny wpływ na rozmiar bundle'a i niewielki narzut utrzymania), podczas gdy zbyt wczesna abstrakcja może mieć wysoki koszt w postaci złożoności.
+
+W podejściu WET wstrzymujesz się z tworzeniem współdzielonej funkcji czy komponentu, dopóki naprawdę nie dostrzeżesz powtarzającego się wzorca. Dopóki kod nie jest używany w co najmniej trzech miejscach, nie ma pilnej potrzeby jego abstrahowania. Jeśli wymagana jest zmiana, po prostu wprowadzasz ją w dwóch miejscach. Czekając na trzecie użycie, zyskujesz konkretny wgląd w to, które części kodu są wspólne, a które specyficzne dla danego przypadku. To chroni przed zgadywaniem abstrakcji, która może nie pasować do przyszłych wymagań. Krótko mówiąc, WET zachęca do duplikacji teraz, aby umożliwić lepszą abstrakcję później.
+
+## Korzyści i uzasadnienie WET
+
+### Unikanie przedwczesnej abstrakcji
+
+WET wprost mierzy się z problemem zbyt wczesnego abstrahowania. Dopuszczając powtórzenia, zapobiega tworzeniu "rozdętych abstrakcji, pełnych flag i warunków", które próbują obsłużyć każdy przypadek. Taki rozdęty kod często powstaje, gdy deweloperzy są *"zdeterminowani, by wysuszyć (DRY) kod... zanim jeszcze wiemy na pewno, które jego części są naprawdę wspólne."* Bazy kodu w stylu WET mają natomiast prostsze, bardziej skoncentrowane funkcje czy komponenty, początkowo dopasowane do konkretnego przypadku użycia.
+
+### Przejrzystość i utrzymywalność
+
+Duplikacja może w krótkim okresie prowadzić do czytelniejszego, bardziej zrozumiałego kodu. Każdy fragment kodu jest samowystarczalny w swoim przypadku użycia, nie splątany z generyczną abstrakcją. Dzięki temu bazę kodu łatwiej ogarnąć nowym osobom. Jak zauważa autor kodu WET, pisanie w stylu WET może wymagać więcej namysłu i wysiłku, ale w efekcie powstają mniejsze abstrakcje, o których w dłuższej perspektywie łatwiej wnioskować i które łatwiej utrzymywać.
+
+### Reguła trzech (Rule of Three)
+
+WET często pokrywa się z "regułą trzech" znaną z refaktoryzacji – nie abstrahuj, dopóki nie zobaczysz czegoś co najmniej trzy razy. Daje to konkretną heurystykę. Na przykład: "dopóki nie mam trzech zastosowań danego fragmentu kodu – nie ma naprawdę pilnej potrzeby jego abstrahowania". Przy trzech przykładach wspólny wzorzec zwykle staje się oczywisty, a abstrakcja zostaje odpowiednio ograniczona zakresowo.
+
+## Potencjalne wady WET
+
+### Tymczasowa duplikacja
+
+Z definicji WET oznacza, że przez pewien czas będziesz mieć powielony kod. Może to wprowadzić niewielki ciężar utrzymania – jeśli w jednym miejscu znaleziony zostanie błąd, deweloper musi pamiętać, aby naprawić go również w równoległych implementacjach. W skrajnych przypadkach, jeśli ktoś naprawdę nigdy nie abstrahuje, może skończyć z utrzymywaniem wielu kopii podobnego kodu. (Zwolennicy WET argumentowaliby, że w praktyce, gdy wzorzec wyraźnie się wyłoni, i tak przeprowadzisz refaktoryzację, więc nadmiernej długoterminowej duplikacji się unika).
+
+### Wymagana dyscyplina
+
+Stosowanie WET nie jest wymówką, by nigdy nie refaktoryzować. Wymaga dyscypliny, aby okresowo wracać do powielonego kodu i abstrahować go, gdy nadejdzie właściwy moment. Zasada "unikaj przedwczesnej abstrakcji, ale abstrahuj, gdy wzorce powtórzeń stają się jasne i orientujesz się, że po raz trzeci piszesz ten sam kod" to dobra wytyczna. Zespoły muszą zadbać, aby "napisz to dwa razy" ostatecznie prowadziło do "refaktoryzuj przy trzecim razie".
+
+---
+
+# Zrozumieć AHA (Avoid Hasty Abstractions)
+
+AHA to skrót od "Avoid Hasty Abstractions" ("unikaj pochopnych abstrakcji", wymawiane "aha!" jak w chwili olśnienia). Zasadę tę spopularyzował Kent C. Dodds w 2020 roku, a nawiązuje ona do wcześniejszej mądrości Sandi Metz i innych. AHA to wezwanie, by opierać się pokusie abstrahowania kodu, zanim naprawdę zrozumiesz domenę problemu i jej zmienność. W istocie mówi ono: _nie twórz abstrakcji tylko po to, by usunąć duplikację; twórz ją, aby uprościć system, gdy masz dowody, że to właściwy projekt._
+
+Jedno z najlepszych podsumowań AHA pochodzi z rady Sandi Metz: "_wybieraj duplikację zamiast błędnej abstrakcji_". Oddaje ono rdzeń filozofii AHA – lepiej mieć dwa fragmenty podobnego kodu niż jedną abstrakcję, która błędnie próbuje obsłużyć oba przypadki i ostatecznie przysparza więcej kłopotów. "Błędna abstrakcja" jest uważana za bardziej szkodliwą niż powielony kod. Pochopnie wymyślone abstrakcje mogą stać się nieszczelne, złożone lub sztywne, przez co zmiany są trudniejsze, niż gdyby kod pozostał powielony i prosty.
+
+Zamiast sztywnej reguły AHA nakazuje deweloperom kierować się osądem. Odwlekaj abstrakcję do chwili, gdy przyniesie ona wyraźną korzyść i będziesz jej pewien. Kent Dodds opisuje bycie "w porządku z duplikacją kodu, dopóki nie poczujesz się dość pewnie, że znasz przypadki użycia tego powielonego kodu". W tym momencie cechy wspólne "będą wołać o abstrakcję" – co oznacza, że abstrakcja stanie się oczywista i naturalna. Zgadza się to z ideą czekania, aż projekt wyłoni się z użycia, zamiast spekulowania z wyprzedzeniem.
+
+AHA wprowadza też ideę "optymalizuj najpierw pod kątem zmiany". Ponieważ w oprogramowaniu "tak naprawdę nie wiemy, jakie wymagania zostaną nałożone na nasz kod w przyszłości", AHA zachęca do pisania kodu łatwego do zmiany (nawet jeśli oznacza to pewną duplikację), zamiast kodu "zoptymalizowanego" przez abstrakcję pod przyszłość, która może nigdy nie nadejść. Unikając pochopnych abstrakcji, utrzymujemy kod elastycznym. Jeśli wymagania się zmienią, łatwiej zmodyfikować dwie czy trzy proste implementacje niż rozplątywać głęboko zakorzenioną abstrakcję zbudowaną na założeniach, które okazały się błędne.
+
+## Korzyści i uzasadnienie AHA
+
+### Nacisk na poprawne abstrakcje
+
+AHA pomaga zapewnić, że gdy już tworzysz abstrakcję, jest to ta właściwa. Czekając i zbierając więcej informacji (dodatkowe przypadki użycia, potwierdzone wzorce), abstrakcja, którą ostatecznie zaimplementujesz, ma większą szansę trafnie odzwierciedlać wspólne zachowanie i naprawdę zmniejszać ogólną złożoność.
+
+### Elastyczność i tolerancja na zmiany
+
+Ponieważ AHA zachęca do pozostawiania kodu powielonym, dopóki nie stanie się to konieczne, każdy fragment może rozwijać się niezależnie wraz z ewolucją wymagań. Nie jesteś zmuszony wpasowywać nowego wymagania w istniejącą abstrakcję, która nie została pod nie zaprojektowana. W praktyce często oznacza to uniknięcie scenariusza, w którym wykrzywiasz generyczną funkcję stosem gałęzi if/else, aby obsłużyć nowe przypadki. Gdy abstrakcja zostaje wreszcie wprowadzona, dzieje się to z wiedzą o wielu rzeczywistych przypadkach użycia, więc jest odporna na zmiany.
+
+### Pragmatyzm, nie dogmatyzm
+
+W przeciwieństwie do niektórych interpretacji DRY, a nawet WET, AHA jest jawnie niedogmatyczna co do tego, kiedy abstrahować. Chodzi wyłącznie o wyczucie czasu. _"Programowanie AHA... nie daje twardych reguł określających, kiedy abstrahować wolno, a kiedy nie"_. Ta elastyczność oznacza, że deweloperzy mogą kierować się intuicją i doświadczeniem. Jeśli dwa fragmenty kodu są powielone, ale wyraźnie zawsze będą podążać tą samą logiką, możesz abstrahować już przy drugim wystąpieniu.
+
+I odwrotnie, jeśli powieliłeś kod trzy albo cztery razy, ale każdy przypadek wciąż ma rozbieżne potrzeby, możesz nadal się wstrzymywać. Pytanie przewodnie brzmi: _czy abstrahuję pochopnie? Jeśli tak, poczekaj jeszcze trochę._
+
+## Potencjalne wady AHA
+
+### Brak wyraźnego punktu wyzwalającego
+
+Ponieważ AHA jest bardziej zasadą niż regułą, mniej doświadczeni deweloperzy mogą się zastanawiać: _"skąd mam wiedzieć, czy abstrahuję zbyt pochopnie, czy czekam zbyt długo?"_. Odpowiedź przychodzi z doświadczeniem i normami zespołu. Brak reguły liczbowej (jak WET-owe "trzy razy") oznacza, że wymaga to dobrego osądu. Zespoły przyjmujące AHA muszą się komunikować i przeglądać kod, aby zasada była stosowana spójnie i nie była nadużywana jako wymówka do unikania koniecznej refaktoryzacji.
+
+### Przejściowa duplikacja
+
+Podobnie jak WET, AHA toleruje przejściową duplikację kodu. Oznacza to, że mają tu zastosowanie te same wady powielonego kodu: potencjalny dodatkowy wysiłek przy utrzymywaniu wielu miejsc, ryzyko niespójności itd. AHA uznaje ten kompromis, mówiąc w istocie, że ten dodatkowy wysiłek jest mniejszym złem w porównaniu z przedwczesną abstrakcją, która mogłaby przeniknąć całą bazę kodu. Mimo to, jeśli duplikacji się nie pilnuje, może ona prowadzić do nieco większego krótkoterminowego nakładu utrzymania.
+
+---
+
+# WET kontra AHA: kluczowe porównanie
+
+Zarówno WET, jak i AHA powstały, by zaadresować niedostatki sztywnego trzymania się DRY. W istocie zgadzają się w znacznie większym stopniu, niż się różnią – obie opowiadają się za odwlekaniem abstrakcji i tolerowaniem duplikacji dla lepszego projektu. Istnieją jednak subtelne różnice w ich podejściu i zastosowaniu. Poniższa tabela porównawcza zestawia obie zasady obok siebie:
+
+| **Aspekt**                    | **WET (Write Everything Twice)**                                                                              | **AHA (Avoid Hasty Abstractions)**                                                                          |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| **Główna idea**               | Zachęca do co najmniej dwukrotnej duplikacji. Abstrahuj dopiero przy trzecim wystąpieniu, gdy wzorce są jaśniejsze. | Unikaj przedwczesnych abstrakcji. Abstrahuj dopiero, gdy masz pewność, że wzorzec jest stabilny i korzystny. |
+| **Wytyczna kontra elastyczność** | Daje konkretną "regułę trzech" — abstrahuj dopiero po trzecim użyciu.                                       | Daje elastyczne nastawienie — abstrahuj, gdy moment wydaje się właściwy, w oparciu o rzeczywiste przypadki użycia. |
+| **Rodowód filozoficzny**      | Reakcja na nadgorliwe DRY. Zakorzeniona w regule trzech i małych, dobrze przemyślanych abstrakcjach.        | Ukuta przez Kenta C. Doddsa. Zainspirowana ideą Sandi Metz "wybieraj duplikację zamiast błędnej abstrakcji". |
+| **Podejście do duplikacji**   | Zachęca do wczesnej duplikacji kodu, by wzorce mogły wyłonić się naturalnie.                                | Akceptuje duplikację jako stan przejściowy. Unika późniejszego kosztu rozplątywania błędnych abstrakcji.   |
+| **Kiedy abstrahować**         | Przy trzecim wystąpieniu wzorca.                                                                            | Gdy abstrakcja przestaje być pochopna — zwykle oczywista z użycia.                                          |
+| **Dogmatyzm**                 | Nieco bardziej nakazowa ze względu na regułę "trzech razy".                                                 | Celowo niedogmatyczna; przedkłada namysł nad sztywne reguły.                                                |
+| **Cel ostateczny**            | Dojść do czystych, minimalnych abstrakcji opartych na rzeczywistych potrzebach.                             | Zachować elastyczność i prostotę, dopóki właściwa abstrakcja nie stanie się oczywista.                      |
+
+### Podsumowując
+
+Zarówno WET, jak i AHA propagują pragmatyczne podejście do ponownego wykorzystania kodu. WET daje prostszą regułę ("napisz dwa razy, przy trzecim abstrahuj"), która może być wygodnym standardem zespołowym. AHA dostarcza szerszej filozofii ("unikaj pochopnej abstrakcji"), która obejmuje radę WET, ale zostawia więcej swobody. Wielu deweloperów postrzega je wręcz jako wzajemnie się wzmacniające – WET jest jednym ze sposobów praktykowania unikania pochopnych abstrakcji.
+
+Kent C. Dodds zauważa zresztą, że ważne jest wyważone i pragmatyczne podejście, i przyznaje, że przedkłada AHA nad DRY czy WET, ponieważ utrzymuje ono czujność wobec abstrakcji bez sztywnych reguł. Niemniej zarówno WET, jak i AHA ostatecznie dążą do zrównoważenia DRY: **przypominają nam, że usuwanie duplikacji nie jest najwyższą cnotą w kodzie – jest nią usuwanie zbędnej złożoności.**
+
+---
+
+# Przykład: zapobieganie przedwczesnej abstrakcji w komponencie React
+
+Aby zilustrować różnice, rozważmy scenariusz frontendowy. Wyobraź sobie, że nasza aplikacja musi wyświetlać różne okna modalne: alert błędu oraz monit potwierdzenia (a być może później także okno dialogowe z formularzem). Deweloper ściśle trzymający się DRY mógłby ulec pokusie stworzenia jednego generycznego komponentu `<Modal>`, który obsłuży wszystkie te przypadki za pomocą propsów i logiki warunkowej. Dla kontrastu podejście WET/AHA zaczęłoby od napisania osobnych komponentów dla każdego typu modala, nawet jeśli oznacza to zduplikowanie części struktury, a wspólne fragmenty wyabstrahowałoby dopiero później.
+
+## Podejście DRY (przedwczesna abstrakcja)
+
+Jeden komponent próbuje obsłużyć zarówno modal błędu, jak i potwierdzenia. Prowadzi to do mnóstwa kodu warunkowego dostosowującego różne zachowania:
+
+```jsx
+// Generyczny komponent modala obsługujący wiele typów (błąd, potwierdzenie itd.)
+function Modal({ type, message, onConfirm, onClose, onSubmit, isForm }) {
+  return (
+    <div className={`modal ${type}`}>
+      {/* Renderowanie warunkowe w zależności od typu */}
+      {type === 'error' && <ErrorIcon />}
+      {type === 'confirm' && <QuestionMarkIcon />}
+
+      {/* Jeśli to modal typu formularz, pokaż formularz */}
+      {isForm ? (
+        <form onSubmit={onSubmit}>
+          <p>{message}</p>
+          {/* ... pola formularza ... */}
+          <button type="submit">Submit</button>
+          <button type="button" onClick={onClose}>
+            Cancel
+          </button>
+        </form>
+      ) : (
+        <div>
+          <p>{message}</p>
+          {/* W modalu potwierdzenia użytkownik musi potwierdzić; w błędzie tylko zamyka */}
+          {type === 'confirm' ? (
+            <button onClick={onConfirm}>Confirm</button>
+          ) : (
+            <button onClick={onClose}>OK</button>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+```
+
+### Co dzieje się w powyższym kodzie?
+
+Komponent `Modal` próbuje pokryć wszystkie przypadki. Ma gałęzie dla `type === 'error'` kontra `type === 'confirm'`, props `isForm` przełączający zachowanie formularza oraz różne przyciski/akcje zależnie od kontekstu. W miarę dodawania kolejnych typów modali (powiedzmy modala informacyjnego, złożonego modala z formularzem itd.) komponent ten obrósłby jeszcze większą liczbą propsów i logiki `if`/`else`.
+
+Nie byłoby zaskoczeniem zobaczyć z czasem dokładane flagi w rodzaju `isSecondLevel` czy `hasTwoButtons`, aby pokryć nowe wymagania. Wkrótce komponent mógłby zamienić się w labirynt warunkowego renderowania – zupełnie jak przykład _"monolitycznego modala"_ z opowieści o WET, który miał _"instrukcje warunkowe dla każdego z tych parametrów, tworzące niemal nieskończoną liczbę kombinacji (i błędów). To była potworność"_. To podręcznikowy przypadek **pochopnej abstrakcji**: próba wtłoczenia różnych potrzeb w jedną abstrakcję zbyt wcześnie.
+
+## Podejście WET/AHA (odroczona abstrakcja)
+
+Zacznij od dwóch osobnych komponentów, po jednym dla każdego typu modala, nawet jeśli dzielą pewną podobną strukturę. Zduplikowanie podstawowego znacznika i logiki modala jest początkowo w porządku:
+
+```jsx
+// Konkretny komponent modala błędu (obsługuje wyłącznie komunikaty błędów)
+function ErrorModal({ message, onClose }) {
+  return (
+    <div className="modal error">
+      <ErrorIcon />
+      <p>{message}</p>
+      <button onClick={onClose}>OK</button>
+    </div>
+  )
+}
+
+// Konkretny komponent modala potwierdzenia (obsługuje wyłącznie monity potwierdzenia)
+function ConfirmModal({ message, onConfirm, onCancel }) {
+  return (
+    <div className="modal confirm">
+      <QuestionMarkIcon />
+      <p>{message}</p>
+      <button onClick={onConfirm}>Confirm</button>
+      <button onClick={onCancel}>Cancel</button>
+    </div>
+  )
+}
+```
+
+W podejściu WET każdy komponent skupia się na własnym celu. Mamy dwa kontenery `div` z klasą `modal`, dwa znaczniki `<p>` na komunikaty itd. – tak, miejscami jest to powielony kod, ale każdy komponent jest prosty i łatwy do zrozumienia w izolacji. Nie ma logiki warunkowej wykrzywiającej jeden komponent, by służył wielu panom.
+
+Załóżmy teraz, że pojawia się trzecie wymaganie dotyczące modala, na przykład okno dialogowe z formularzem (`FormModal`). Początkowo moglibyśmy podobnie utworzyć trzeci komponent `FormModal`. W tym momencie mamy trzy implementacje okien modalnych. Przyjrzelibyśmy się im wówczas, by zobaczyć, jaki wzorzec się wyłania (zgodnie z WET-ową regułą trzech). Być może zauważymy, że wszystkie modale dzielą wspólną strukturę: kontener z komunikatem i kilkoma przyciskami. Moglibyśmy zdecydować się na refaktoryzację, ale sposób jej przeprowadzenia jest podparty rzeczywistymi danymi:
+
+- Moglibyśmy wyabstrahować komponent `ModalFrame` lub `BaseModal` obsługujący generyczny układ/stylowanie, a specyficzną logikę (błąd kontra potwierdzenie kontra formularz) pozostawić w poszczególnych komponentach.
+
+- Albo moglibyśmy po prostu wydzielić drobny pomocnik dla czegoś wspólnego (jak ostylowany tytuł czy konkretny układ przycisków), bez scalania wszystkiego w jeden komponent.
+
+Co kluczowe, nie wrzucilibyśmy przedwcześnie wszystkiego do jednego komponentu Modal. Zamiast tego tworzymy abstrakcje, które mają sens: na przykład `ErrorModal` i `ConfirmModal` mogłyby oba używać współdzielonego komponentu `<ModalContainer>` dla zewnętrznego znacznika, ale mieć własną zawartość w środku. W efekcie powstaje bardziej modularny projekt. Każda abstrakcja (jak `ModalContainer`) jest mniejsza i dobrze zdefiniowana, zamiast jednej gigantycznej abstrakcji z niekończącymi się flagami.
+
+To podejście odzwierciedla to, co zaleca zasada WET: _"współdziel tyle, ile jest faktycznie potrzebne"_, a nie tyle, ile się da. Jest też zgodne z AHA: nie wprowadziliśmy abstrakcji, dopóki nie zrozumieliśmy wymagań trzech różnych modali, unikając potencjalnie błędnej abstrakcji. Różnica w rezultatach jest wyraźna: podejście DRY dało jeden złożony komponent z wieloma ścieżkami kodu, podczas gdy podejście WET/AHA dało wiele prostych komponentów z możliwością czystego wyodrębnienia wspólnych części.
+
+---
+
+# Kompromisy i implikacje
+
+Wybór między natychmiastową abstrakcją a kontrolowaną duplikacją (w stylu WET/AHA) wiąże się z kompromisami. Przeanalizujmy, jak zasady te wpływają na utrzymywalność, skalowanie i refaktoryzację w bazie kodu frontendowego:
+
+## Utrzymywalność
+
+Kod ściśle trzymający się DRY poprzez używanie jednej abstrakcji wszędzie może stać się trudny w utrzymaniu, jeśli abstrakcja ta nie została zaprojektowana z myślą o wszystkich przyszłych scenariuszach. Jak widzieliśmy, silnie generyczny komponent może stać się _niemożliwy_ do zrozumienia czy utrzymania dla nowych osób. Z drugiej strony kod w stylu WET/AHA może być łatwiejszy do przyswojenia, ponieważ każdy fragment służy jasnemu celowi bez ukrytych sprzężeń.
+
+Kompromis polega na tym, że deweloper musi być świadomy równoległych implementacji – jeśli w jednym modalu jest błąd, powinien sprawdzić, czy drugi modal nie ma podobnego błędu. W praktyce dobrze nazwane, skoncentrowane komponenty/funkcje (produkt uboczny WET/AHA) mogą wręcz zmniejszać obciążenie poznawcze. Utrzymanie się poprawia, ponieważ każda jednostka kodu jest prostsza, nawet jeśli tych jednostek jest nieco więcej.
+
+## Skalowanie (wzrost bazy kodu)
+
+W miarę rozrastania się projektu posiadanie właściwych abstrakcji jest kluczowe dla skalowania rozwoju. Przedwczesne abstrakcje mogą stać się wąskimi gardłami – za każdym razem, gdy ktoś musi zrobić coś odrobinę nowego, musi przebrnąć przez uniwersalny moduł "dla wszystkich" lub go zmodyfikować, ryzykując regresje w niepowiązanych obszarach. WET i AHA proponują bardziej skalowalne podejście: pozwól abstrakcjom ewoluować naturalnie. Unikając zbyt wczesnego wiązania wszystkiego razem, baza kodu może rosnąć wraz z funkcjonalnościami dodawanymi równolegle (na przykład różni deweloperzy mogą niezależnie pracować nad `ErrorModal` i `ConfirmModal`).
+
+Gdy abstrakcje zostają wreszcie wprowadzone, bywają mniejsze i bardziej komponowalne, co skaluje się lepiej niż monolity. Trzeba przyznać, że pod względem samej liczby linii kodu WET będzie początkowo miało go więcej (przez duplikację). Ale doświadczone zespoły przy skalowaniu często wolą jawną duplikację od niejawnej abstrakcji, bo daje ona bardziej przewidywalny i luźno powiązany kod.
+
+## Refaktoryzacja
+
+Jest takie powiedzenie, że każdy głupiec potrafi napisać kod zrozumiały dla komputera; dobrzy programiści piszą kod zrozumiały dla ludzi. WET i AHA pomagają pisać ten drugi, odraczając stapianie kodu do chwili, gdy masz pewność, że przyniesie ono ludziom korzyść. Gdy nadchodzi czas refaktoryzacji powielonego kodu, proces jest prosty – identyfikujesz wspólne części i je wyodrębniasz.
+
+Porównaj to z refaktoryzacją złej abstrakcji: być może będziesz musiał rozplątać mnóstwo logiki warunkowej albo wręcz napisać wszystko od nowa. We wcześniejszym przykładzie z oknem popup zespół ostatecznie musiał wyrzucić potwornego modala i zbudować go poprawnie od zera, bo zaszedł zbyt daleko.
+
+Stosowanie WET/AHA oznacza, że refaktoryzacja odbywa się w mniejszych partiach i w "ostatnim odpowiedzialnym momencie". Istnieje ryzyko, że jeśli ktoś będzie zwlekał w nieskończoność, refaktoryzacja może nigdy nie nastąpić. Ale w profesjonalnym środowisku przeglądy kodu i świadomość tych zasad zwykle skłaniają zespół do konsolidacji kodu, gdy nadejdzie na to czas. Kluczowy wniosek jest taki, że refaktoryzacja dobrze zrozumianej duplikacji jest łatwiejsza i bezpieczniejsza niż refaktoryzacja źle zaimplementowanej abstrakcji.
+
+## Wydajność
+
+We frontendzie (zwłaszcza w Reakcie) można się zastanawiać, czy duplikacja kontra abstrakcja ma implikacje wydajnościowe. Ogólnie napisanie czegoś dwa razy ma znikomy wpływ na czas działania. Wpływ na rozmiar bundle'a jest zwykle niewielki (dwa małe komponenty kontra jeden nieco większy często wychodzą na podobne). Co więcej, czasem nadmiernie generyczny kod bywa mniej wydajny lub gorzej się dzieli na bundle niż kod specyficzny, ponieważ kod generyczny może zawierać obsługę wszystkich przypadków. Wydajność nie powinna więc być tu czynnikiem decydującym; powinna nim być utrzymywalność.
+
+## Aspekt filozoficzny (kultura zespołu)
+
+Przyjęcie WET lub AHA wpływa na to, jak zespół myśli o kodzie. Zachęca deweloperów do głębokiego zastanowienia się nad kodem i nad tym, co czyni go złożonym, zamiast bezmyślnego stosowania reguły eliminowania duplikacji. Sprzyja kulturze, w której zespół podczas przeglądów kodu pyta: "czy ta abstrakcja jest naprawdę uzasadniona?". Z czasem prowadzi to do zbiorowej intuicji co do "właściwego" momentu na abstrahowanie. Może też zmniejszać obawę przed dodawaniem nowego kodu – deweloperzy nie muszą polować na idealną istniejącą abstrakcję, by wcisnąć w nią swoją funkcjonalność; mogą bezpiecznie stworzyć nową implementację, wiedząc, że jeśli później ktoś dostrzeże nakładanie się, można je będzie wtedy scalić. To dość wyzwalające i może przyspieszyć rozwój z pewnością, że nie zaciągasz trwałego długu technologicznego, pisząc podobny kod dwa razy. Dług techniczny, jeśli w ogóle, jest krótkotrwały i zamierzony.
+
+---
+
+# Podsumowanie i najlepsze praktyki
+
+Zarówno WET, jak i AHA prowadzą nas do jednej fundamentalnej lekcji: nie abstrahuj kodu, dopóki nie masz pewności, że abstrakcja przynosi netto korzyść. W rozwoju frontendu, gdzie wymagania się zmieniają, a przypadków brzegowych jest mnóstwo, lekcja ta jest szczególnie cenna. Komponent czy narzędzie, które było DRY i idealne dla dwóch przypadków, może stać się koszmarem, gdy zostanie zmuszone do obsłużenia trzeciego scenariusza, pod który nie było projektowane. Trzymając się WET/AHA, przedkładamy przejrzystość i adaptowalność nad przedwczesną elegancję.
+
+Oto kilka najlepszych praktyk i wytycznych określających, kiedy w bazie kodu frontendowego wybrać podejście WET, a kiedy AHA:
+
+- Jeśli łapiesz się na pisaniu pomocnika lub komponentu tylko po to, by uniknąć jednorazowego skopiowania kodu, zatrzymaj się i przemyśl to ponownie. Często lepiej powielić kod i poczekać. Jak radzi AHA, "optymalizuj pod kątem zmiany", nie zobowiązując się do abstrakcji zbyt wcześnie. Abstrahuj dopiero, gdy masz pewność co do wzorca (np. po zobaczeniu go w co najmniej dwóch czy trzech miejscach).
+
+- Praktyczna reguła z WET – pozwól sobie napisać ten sam (lub bardzo podobny) kod dwa razy. Gdy pojawi się trzecie wystąpienie, to twój sygnał do oceny. Przy trzecim wystąpieniu zapytaj: co jest naprawdę wspólne we wszystkich trzech przypadkach, a co się różni? Pomaga to zaprojektować czystszą abstrakcję. Jeśli jesteś mniej doświadczonym deweloperem, ta reguła może być bezpiecznym domyślnym wyborem.
+
+- Zapytaj "czy ta abstrakcja jest pochopna?". Rozważając refaktoryzację powielonego kodu w jeden moduł, uczciwie oceń, czy w pełni rozumiesz problem. Czy przypadki użycia mają stabilną, spójną część wspólną? Czy raczej zgadujesz, jak się uogólnią? Jeśli istnieje jakakolwiek wątpliwość, to znak, by się wstrzymać. Pamiętaj mantrę: "wybieraj duplikację zamiast błędnej abstrakcji". Lepiej żyć z odrobiną powtórzonego kodu niż wprowadzić błędną abstrakcję, która wpłynie na całą bazę kodu.
+
+- Przyjęcie WET/AHA nie oznacza, że nigdy nie abstrahujesz. Oznacza odraczanie abstrakcji. Miej powielony kod na oku z myślą o ewentualnej refaktoryzacji. Na przykład podczas przeglądów kodu czy sprintów refaktoryzacyjnych szukaj podobnych wzorców kodu. Narzędzia (jak analizatory statyczne czy nawet grep) mogą pomóc dostrzec, kiedy trafiłeś na ten "trzeci raz". Kent Dodds wspomina o użyciu narzędzia do wykrywania kodu kopiuj-wklej, by zidentyfikować możliwości abstrakcji, gdy nadszedł właściwy moment. Celem jest ostatecznie usunięcie zbędnej duplikacji, gdy nabierzesz pewności, jak zrobić to dobrze.
+
+- Przedkładaj kompozycję nad złożone dziedziczenie – to bardziej ogólna wskazówka React/UI, która współgra z WET/AHA. Zamiast tworzyć jeden bazowy komponent z mnóstwem wariantów (co jest w istocie abstrakcją przez dziedziczenie lub konfigurację), rozważ komponowanie mniejszych komponentów. Na przykład zamiast pojedynczego Modala z flagami typu miej wiele konkretnych modali, które być może dzielą mniejszy komponent ModalLayout. W ten sposób "wyabstrahowana" część jest minimalna (tylko układ), a każdy modal obsługuje swoją unikalną logikę. Kompozycja pozwala na ponowne użycie bez sztywności jednej gigantycznej abstrakcji, dobrze wpisując się w ideę współdzielenia tylko tego, co trzeba współdzielić.
+
+- Jeśli świadomie decydujesz się powielić kod ze względu na WET/AHA, pomocne bywa zostawienie komentarza lub notatki w kodzie albo w pull requeście. Coś w rodzaju: "Duplikuję celowo zgodnie z AHA – zrefaktoryzuję, gdy przypadek użycia się ustabilizuje". Sygnalizuje to innym, że duplikacja jest zamierzona, a nie przeoczeniem. Ustawia oczekiwanie, że w przyszłości może nastąpić refaktoryzacja, i wyjaśnia, dlaczego dotąd jej nie przeprowadzono. Komunikacja gwarantuje, że cały zespół jest zgodny co do tych zasad.
+
+Podsumowując, WET i AHA to dwie strony tej samej monety – obie zachęcają nas, by pisać teraz prostszy kod i odraczać abstrakcję, dopóki naprawdę nie przyniesie korzyści. W dużej bazie kodu frontendowego stosowanie tych zasad może prowadzić do komponentów i modułów łatwiejszych do zrozumienia, testowania i modyfikacji. Unikasz pułapki uniwersalnych rozwiązań "dla wszystkich", które w rzeczywistości nie pasują dobrze do nikogo.
+
+Praktykuj WET, pisząc coś dwa razy, gdy trzeba, i praktykuj AHA, unikając tych pochopnych abstrakcji, które dziś wydają się "sprytne", a stają się jutrzejszym długiem technicznym. Twoja baza kodu (i twoi koledzy z zespołu, którzy ją utrzymują) w dłuższej perspektywie podziękują ci za to uważne podejście.
+
+---
+
+# Źródła
+
+- [Netta Bondy, "We Should All Be Writing WET Code," Dev.to](https://dev.to/nettab/we-should-all-be-writing-wet-code-3d95#:~:text=This%20fixation%20on%20DRYness%20is,case%20while%20still%20avoiding%20repetition)
+- [Kent C. Dodds, "AHA Programming (Avoid Hasty Abstractions)"](https://kentcdodds.com/blog/aha-programming)
+
+~Seb 👊
