@@ -1,0 +1,252 @@
+---
+title: 'Claude Code Routines: Twój agent AI pracuje, gdy Ty śpisz'
+date: '2026-04-20'
+category: 'AI'
+tags: ['claude-code', 'automation', 'scheduled-tasks', 'routines', 'devops']
+draft: false
+featured: false
+author: 'Sebastian'
+enSlug: 'claude-code-routines-scheduled-automation-guide'
+excerpt: 'Claude Code Routines działają w infrastrukturze Anthropic — bez laptopa. Zaplanuj nocne triage issues, cotygodniowe aktualizacje dokumentacji i monitoring PR-ów, które działają offline.'
+---
+
+Kiedyś zostawiałem MacBooka otwartego na całą noc z uruchomioną sesją Claude Code, która monitorowała nasze GitHub issues. Jeśli WiFi mrugnęło, sesja padała. Jeśli macOS się aktualizował, sesja padała. Jeśli kot przeszedł po klawiaturze — no wiesz, o co chodzi.
+
+Potem, w kwietniu 2026, Anthropic wypuścił Routines i cały model się zmienił. **Routines działają w chmurowej infrastrukturze Anthropic.** Twój laptop może być zamknięty, wyłączony albo leżeć na dnie jeziora. Agent pracuje dalej.
+
+To największa zmiana paradygmatu w Claude Code od czasu [trybu headless](/blog/claude-code-headless-mode-cicd-automation-playbook). Oto jak skonfigurować to porządnie.
+
+## Czym właściwie są Routines
+
+Routine to zapisane zadanie Claude Code zdefiniowane przez trzy składniki:
+
+1. **Prompt** — co chcesz, żeby Claude zrobił
+2. **Repozytorium** — baza kodu, do której ma dostęp
+3. **Connectory** — zewnętrzne narzędzia (GitHub, Slack, Linear, Asana)
+
+Po skonfigurowaniu routine działa samodzielnie — wyzwalana przez harmonogram, wywołanie API albo webhook z GitHuba. Bez otwartej sesji w terminalu. Bez włączonego komputera.
+
+### Routines vs Desktop Scheduled Tasks vs /loop
+
+Claude Code ma trzy mechanizmy automatyzacji. Każdy służy do czegoś innego:
+
+| Funkcja | Gdzie działa | Przetrwa wylogowanie? | Najlepsza do |
+|---------|--------------|-----------------------|--------------|
+| `/loop` | Twoja sesja w terminalu | Nie | Odpytywania podczas aktywnej pracy |
+| Desktop Scheduled Tasks | Twoja maszyna (lokalnie) | Tylko gdy maszyna jest włączona | Codziennych zadań lokalnych |
+| **Routines** | Chmura Anthropic | **Tak** | Automatyzacji produkcyjnej |
+
+Jeśli Twoje zadanie musi działać niezawodnie niezależnie od stanu maszyny, użyj Routines. Jeśli odpytujesz coś, kodując na bieżąco, `/loop` w zupełności wystarczy.
+
+## Konfiguracja pierwszej routine
+
+### Z poziomu CLI
+
+```bash
+# Utwórz routine interaktywnie
+claude routine create
+
+# Albo poleceniem schedule
+/schedule
+```
+
+To przeprowadzi Cię przez wybór repozytorium, napisanie promptu, wybór triggerów i podłączenie zewnętrznych narzędzi.
+
+### Z poziomu Claude Code Web
+
+Jeśli korzystasz z [Claude Code w przeglądarce](https://claude.ai/code), UI Routines znajdziesz w lewym pasku bocznym pod "Automations". Konfiguracja klik-klik z tymi samymi możliwościami.
+
+### Konfiguracja routine
+
+Definicja routine wygląda tak:
+
+```json
+{
+  "name": "nightly-issue-triage",
+  "prompt": "Review all GitHub issues opened in the last 24 hours. For each: add appropriate labels (bug, feature, question, docs), estimate complexity (small/medium/large), and post a triage comment with suggested next steps. If an issue is a duplicate, link to the original and add the 'duplicate' label.",
+  "repository": "myorg/myapp",
+  "connectors": ["github"],
+  "triggers": [
+    {
+      "type": "schedule",
+      "cron": "0 6 * * *"
+    }
+  ],
+  "model": "claude-sonnet-4-6",
+  "max_tokens": 8192
+}
+```
+
+## Pięć gotowych do produkcji Routines
+
+### Routine 1: Nocny triage issues
+
+```
+Prompt: Review all GitHub issues opened in the last 24 hours.
+For each issue:
+1. Read the full description and any linked code
+2. Add labels: bug, feature, question, or docs
+3. Estimate complexity: small (<2hr), medium (2-8hr), large (>1 day)
+4. Post a triage comment with:
+   - Root cause hypothesis (for bugs)
+   - Suggested implementation approach (for features)
+   - Relevant code locations
+5. If duplicate, link original and label 'duplicate'
+
+Schedule: Daily at 6:00 AM UTC
+```
+
+To zastępuje poranne spotkanie triage w małych zespołach. Gdy Twój lead przychodzi do pracy, każde nowe issue ma już kontekst, etykiety i sugerowane podejście.
+
+### Routine 2: Cotygodniowa synchronizacja dokumentacji
+
+```
+Prompt: Compare the current codebase against our documentation
+in docs/ and README.md. Find:
+1. New exported functions/components without docs
+2. Documented APIs whose signatures changed
+3. Removed features still mentioned in docs
+4. Missing environment variables in .env.example
+
+Create a PR with documentation updates for anything outdated.
+Title: "docs: weekly sync [date]"
+
+Schedule: Every Monday at 7:00 AM UTC
+```
+
+### Routine 3: Skan bezpieczeństwa zależności
+
+```
+Prompt: Run npm audit and analyze the results. For each
+vulnerability:
+1. Assess actual impact on our codebase (is the vulnerable
+   code path reachable?)
+2. Check if a patched version exists
+3. Test if upgrading breaks anything (run tests)
+
+If safe upgrades exist, create a PR. If breaking changes
+are required, create an issue with migration steps.
+
+Schedule: Every Wednesday at 3:00 AM UTC
+```
+
+### Routine 4: Sprawdzanie i przypominanie o zastałych PR-ach
+
+```
+Prompt: Find all open PRs older than 5 days without activity.
+For each:
+1. Check if CI is passing
+2. Check if there are unresolved review comments
+3. Post a friendly comment summarizing the PR status and
+   what's blocking merge
+4. If the PR has merge conflicts, note which files conflict
+
+Schedule: Daily at 9:00 AM UTC
+```
+
+### Routine 5: Monitor regresji wydajności
+
+```
+Prompt: Pull the latest Lighthouse CI results from our
+main branch. Compare against last week's baseline. If any
+Core Web Vital regressed by more than 10%:
+1. Identify which commits landed between the two runs
+2. Analyze those commits for likely performance culprits
+3. Create an issue with findings and suggested fixes
+4. Tag with 'performance-regression' label
+
+Schedule: Daily at 5:00 AM UTC
+Trigger: Also on POST to /api/lighthouse-webhook
+```
+
+## Typy triggerów
+
+### Schedule (Cron)
+
+```json
+{
+  "type": "schedule",
+  "cron": "0 6 * * 1-5"  // Dni robocze o 6:00
+}
+```
+
+Standardowa składnia cron. Działa w infrastrukturze Anthropic niezależnie od stanu Twojej maszyny.
+
+### Trigger API
+
+```json
+{
+  "type": "api"
+}
+```
+
+Każda routine dostaje unikalny endpoint. Wyzwól ją z dowolnego miejsca:
+
+```bash
+curl -X POST https://api.claude.ai/routines/{routine_id}/run \
+  -H "Authorization: Bearer $ROUTINE_TOKEN" \
+  -d '{"context": "Triggered by deploy webhook"}'
+```
+
+Tak właśnie łączysz routines w większe workflow — webhook deploya wyzwala routine sprawdzającą stan zdrowia po wdrożeniu.
+
+### GitHub Webhook
+
+```json
+{
+  "type": "github_webhook",
+  "events": ["issues.opened", "pull_request.merged"]
+}
+```
+
+Reaguj na zdarzenia GitHuba bez pisania [plików workflow GitHub Actions](/blog/claude-code-github-actions-pr-automation-guide). Prostsza konfiguracja dla typowych triggerów.
+
+## Zarządzanie kosztami
+
+Routines korzystają z tego samego rozliczania opartego na tokenach co Claude Code. Typowa nocna routine triage skanująca 5-10 issues kosztuje 0,10-0,30 USD za uruchomienie. Przy codziennej częstotliwości to 3-9 USD miesięcznie.
+
+**Strategie kontroli kosztów:**
+
+1. **Używaj Sonnet do rutynowych zadań** — Opus tylko do złożonego rozumowania
+2. **Ustaw `max_tokens` per routine** — zapobiegaj rozjeżdżającym się sesjom
+3. **Planuj na godziny poza szczytem** — bez różnicy w koszcie, ale mniejsze obciążenie
+4. **Zacznij od częstotliwości cotygodniowej** i zwiększaj, jeśli wartość jest wyraźna
+5. **Monitoruj przez `/cost`** — śledź koszty routines osobno
+
+Pełny poradnik optymalizacji tokenów znajdziesz w [tym, jak obciąłem swój rachunek za Claude Code o 70%](/blog/claude-code-token-optimization-bill-cut-guide).
+
+## Kiedy NIE używać Routines
+
+**Użyj zamiast tego [GitHub Actions](/blog/claude-code-github-actions-pr-automation-guide)**, gdy potrzebujesz, aby akcja działała w Twoim środowisku CI z dostępem do infrastruktury, sekretów i narzędzi buildowych.
+
+**Użyj zamiast tego Desktop Scheduled Tasks**, gdy zadanie potrzebuje dostępu do lokalnych plików, narzędzi lub usług niedostępnych w chmurze.
+
+**Użyj zamiast tego `/loop`**, gdy aktywnie monitorujesz coś podczas sesji kodowania i chcesz otrzymywać informacje zwrotne w czasie rzeczywistym.
+
+Routines są do **automatyzacji typu fire-and-forget**, która nie zależy od Twojego lokalnego środowiska.
+
+## Podsumowanie
+
+Routines to odpowiedź Claude Code na "chciałbym to zautomatyzować, ale nie warto budować dla tego porządnego pipeline'u CI". Triage issues, synchronizacja dokumentacji, skanowanie zależności, przypominanie o zastałych PR-ach — to zadania, które wypadają przez szczeliny, bo nikt nie chce utrzymywać osobnej automatyzacji dla każdego z nich.
+
+Skonfiguruj w tym tygodniu dwie routines:
+1. **Nocny triage issues** — Twój zespół zauważy to od razu
+2. **Cotygodniowy skan zależności** — wyłapuje podatności, zanim staną się incydentami
+
+Potem rozbudowuj od tego punktu. Twój laptop podziękuje Ci za sen.
+
+## Źródła
+
+### Źródła
+- [Run Prompts on a Schedule — oficjalna dokumentacja](https://code.claude.com/docs/en/scheduled-tasks) - Dokumentacja scheduled tasks i routines
+- [Claude Code Routines — zapowiedź Anthropic](https://9to5mac.com/2026/04/14/anthropic-adds-repeatable-routines-feature-to-claude-code-heres-how-it-works/) - Relacja z premiery funkcji
+- [Claude Code Can Now Do Your Job Overnight — The New Stack](https://thenewstack.io/claude-code-can-now-do-your-job-overnight/) - Produkcyjne przypadki użycia i wzorce
+
+### Dalsza lektura
+- [Claude Code Headless Mode: The CI/CD Automation Playbook](/blog/claude-code-headless-mode-cicd-automation-playbook) - Tryb headless do integracji z pipeline'em CI
+- [Claude Code GitHub Actions: Automate PR Reviews](/blog/claude-code-github-actions-pr-automation-guide) - Automatyzacja specyficzna dla GitHuba z Actions
+- [Claude Code Hooks & Custom Agents](/blog/claude-code-hooks-custom-agents-ai-pipelines-guide) - Budowanie własnych pipeline'ów automatyzacji
+
+---
+
+~Seb 👊
