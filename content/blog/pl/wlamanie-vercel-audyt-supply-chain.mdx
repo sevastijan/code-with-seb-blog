@@ -1,0 +1,403 @@
+---
+title: "Playbook włamania do Vercel: jak zaudytować bezpieczeństwo supply chain Twojej aplikacji Next.js"
+date: '2026-04-22'
+category: 'Development'
+tags: ['security', 'supply-chain', 'nextjs', 'vercel', 'oauth']
+draft: false
+featured: false
+author: 'Sebastian'
+enSlug: 'vercel-breach-supply-chain-security-audit-guide'
+excerpt: "Włamanie do Vercel zaczęło się od rozszerzenia przeglądarki i tokenu OAuth narzędzia AI, nie od luki w kodzie. Oto praktyczny audyt supply chain dla każdego zespołu Next.js."
+---
+
+Włamanie do Vercel nie zaczęło się od zero-daya. Nie zaczęło się od źle skonfigurowanego firewalla ani od SQL injection, którego nikt nie załatał. Zaczęło się od rozszerzenia przeglądarki.
+
+Konkretnie od rozszerzenia przeglądarki Context.ai — narzędzia produktywności opartego na AI — któremu pracownik Vercela przyznał szerokie zakresy OAuth. Ten skompromitowany token OAuth dał atakującym przyczółek w wewnętrznych systemach Vercela. Stamtąd poruszali się lateralnie. Włamanie ujawniło kod źródłowy, wewnętrzne narzędzia i potencjalnie metadane deploymentów klientów.
+
+Jeśli właśnie teraz uruchamiasz aplikację Next.js na Vercelu, powierzchnia ataku, która umożliwiła to włamanie, prawdopodobnie istnieje również w Twojej organizacji. Nie dlatego, że Vercel zrobił coś wyjątkowo źle — ale dlatego, że wektor ataku na supply chain, który ich dosięgnął, to dokładnie ten sam, który już teraz siedzi w profilach przeglądarek Twojego zespołu, w Twoich integracjach OAuth z GitHubem i w Twoich plikach `.env`.
+
+Weekend po ujawnieniu incydentu spędziłem, przeprowadzając pełny audyt supply chain każdego projektu, którym zarządzam. Oto playbook, którego użyłem, zamieniony w przewodnik krok po kroku, który możesz w poniedziałek rano wręczyć swojemu team leadowi.
+
+## Wektor ataku: dlaczego rozszerzenia przeglądarki to nowe ryzyko supply chain
+
+Pomówmy o tym, co się właściwie stało. Pracownik Vercela zainstalował Context.ai, rozszerzenie przeglądarki zaprojektowane, by wspomagać workflow wspierane przez AI. Podczas konfiguracji rozszerzenie zażądało uprawnień OAuth — prawdopodobnie dostępu do odczytu repozytoriów GitHub, może danych Google Workspace, potencjalnie tokenów sesji przeglądarki.
+
+To jest ta część, która ma znaczenie: **rozszerzenia przeglądarki działają z pełnymi uprawnieniami zalogowanego użytkownika**. Kiedy przyznajesz rozszerzeniu dostęp OAuth do swojego konta GitHub, otrzymuje ono te same zakresy, które masz Ty. Jeśli jesteś adminem organizacji, to rozszerzenie ma teraz dostęp admina organizacji. Jeśli masz uprawnienia zapisu do konfiguracji deploymentów produkcyjnych, ma je również to rozszerzenie.
+
+Tradycyjny atak na supply chain uderza w Twoje `node_modules`. Martwisz się o typosquatting na npm, złośliwe skrypty postinstall, przejęte konta maintainerów. To wciąż realne — ale wektor rozszerzenia przeglądarki jest prawdopodobnie gorszy, ponieważ:
+
+1. **Żaden code review go nie wychwyci.** Nikt nie recenzuje, jakie rozszerzenia instaluje Twój zespół. Nie ma PR-a na „dodałem rozszerzenie do Chrome".
+2. **Zakresy OAuth są lepkie.** Raz przyznane uprawnienia pozostają aż do jawnego odwołania. Większość ludzi nigdy nie audytuje swoich połączeń z aplikacjami OAuth.
+3. **Zasięg rażenia jest ogromny.** Pojedyncze skompromitowane rozszerzenie w przeglądarce jednego inżyniera może uzyskać dostęp do każdej usługi, do której ten inżynier jest uwierzytelniony — GitHub, Vercel, konsola AWS, Google Cloud, Slack, Notion, Linear, wszystkiego.
+
+To ta sama klasa ryzyka, którą opisałem w [kontekście bezpieczeństwa narzędzi AI](/blog/prompt-injection-attacks-llm-security-guide) — kiedy dajesz narzędziu szeroki dostęp do działania w Twoim imieniu, ufasz całemu supply chain stojącemu za tym narzędziem. Rozszerzenie Context.ai nie było złośliwe z założenia. Ale jego tokeny OAuth były cenne — i zostały skompromitowane.
+
+Teraz zaudytujmy Twój stack.
+
+## Krok 1 audytu: higiena zmiennych środowiskowych
+
+Zacznij od najbardziej oczywistej powierzchni ataku: Twoich sekretów.
+
+Otwórz teraz swój dashboard Vercela. Przejdź do Settings → Environment Variables. Spójrz na każdy pojedynczy wpis. Dla każdego zadaj dwa pytania:
+
+1. **Czy to musi tu być?** Jeśli to sekret używany wyłącznie podczas lokalnego developmentu, w ogóle nie powinien znajdować się w Vercelu.
+2. **Kiedy był ostatnio rotowany?** Jeśli odpowiedź brzmi „kiedy zakładaliśmy projekt", to jest Twój pierwszy punkt do działania.
+
+Oto co powinno, a co nie powinno żyć w Twoim dashboardzie Vercela:
+
+**Należy do Vercela:**
+- Connection stringi bazy danych (tylko produkcja)
+- Klucze API firm trzecich, których serwer potrzebuje w runtime
+- Sekrety uwierzytelniania (sekret NextAuth/Auth.js, klucze podpisujące JWT)
+- Sekrety podpisujące webhooki
+
+**NIE należy do Vercela:**
+- Personal access tokeny (GitHub PAT-y, tokeny npm)
+- Tokeny CI/CD (te należą do secrets w GitHub Actions)
+- Klucze wyłącznie developerskie (klucze testowe Stripe, lokalne URL-e baz danych)
+- Współdzielone dane logowania zespołu (te powinny być w menedżerze sekretów takim jak Vault lub AWS Secrets Manager)
+
+Kluczowy punkt specyficzny dla Next.js: **cokolwiek z prefiksem `NEXT_PUBLIC_` jest wbudowywane w Twój JavaScript po stronie klienta**. To nie jest sekret. To jest dosłownie wysyłane do każdej przeglądarki, która ładuje Twoją aplikację. Wciąż widzę zespoły umieszczające klucze API w zmiennych `NEXT_PUBLIC_`, bo „aplikacja potrzebuje tego w przeglądarce". Jeśli przeglądarka tego potrzebuje, ma to cały świat. Projektuj odpowiednio.
+
+```bash
+# Szybkie sprawdzenie: co jest wyeksponowane po stronie klienta w Twoim buildzie?
+grep -r "NEXT_PUBLIC_" .env* --include="*.env*"
+grep -r "process.env.NEXT_PUBLIC_" src/ app/ --include="*.ts" --include="*.tsx"
+```
+
+Rozróżnienie między zmiennymi środowiskowymi build-time i runtime w Next.js nieustannie zaskakuje ludzi. Zmienne build-time (w tym wszystkie zmienne `NEXT_PUBLIC_`) są wstawiane w kod podczas `next build`. Zmienne runtime są odczytywane, gdy serwer startuje. Jeśli rotujesz sekret build-time, musisz zrobić redeploy. Jeśli rotujesz sekret runtime, musisz zrestartować proces serwera. Vercel radzi sobie z tym całkiem dobrze dzięki swojemu zakresowaniu zmiennych środowiskowych (Production, Preview, Development), ale tylko jeśli skonfigurowałeś to poprawnie.
+
+## Krok 2 audytu: rotacja wszystkich sekretów
+
+Po ujawnieniu incydentu Vercela bezpieczne założenie jest takie, że każdy sekret dostępny przez infrastrukturę Vercela należy traktować jako potencjalnie skompromitowany. Tak, Vercel powiedział, że zasięg rażenia był ograniczony. Nie, nie powinieneś ufać tej ocenie, gdy na szali są Twoje produkcyjne dane logowania do bazy danych.
+
+Oto checklista rotacji:
+
+```markdown
+## Checklista rotacji sekretów
+
+### Natychmiast (zrób dzisiaj)
+- [ ] Dane logowania do bazy danych (connection stringi, hasła)
+- [ ] SECRET NextAuth / Auth.js
+- [ ] Klucze podpisujące JWT
+- [ ] Klucze API operatorów płatności (Stripe, Paddle)
+- [ ] Sekrety klienta OAuth (Google, GitHub itd.)
+- [ ] Sekrety podpisujące webhooki
+
+### W ciągu 48 godzin
+- [ ] Klucze API firm trzecich SaaS (SendGrid, Resend, Twilio)
+- [ ] Dane logowania dostawców chmury (klucze dostępowe AWS, konta serwisowe GCP)
+- [ ] Tokeny CDN i storage (Cloudflare, sekrety presigned URL S3)
+- [ ] Tokeny analityki i monitoringu
+
+### W ciągu tygodnia
+- [ ] Tokeny publikacji npm
+- [ ] Dane logowania do rejestru Dockera
+- [ ] Klucze SSH używane w deploymencie
+- [ ] Wszelkie „legacy" sekrety, które „kiedyś powinniśmy zrotować"
+```
+
+Kiedy rotujesz, nie zmieniaj po prostu wartości w dashboardzie Vercela. Zmień ją najpierw u źródła (np. wygeneruj ponownie klucz w dashboardzie Stripe), potem zaktualizuj Vercela, a następnie zrób redeploy. Jeśli zaktualizujesz najpierw Vercela, powstaje okno, w którym stary klucz jest odwołany, ale nowy jeszcze nie jest wdrożony — i Twoja aplikacja przestaje działać.
+
+Dla zespołów zarządzających wieloma projektami to właśnie tu automatyzacja rotacji sekretów staje się niezbędna. Narzędzia takie jak [Doppler](https://www.doppler.com/), [Infisical](https://infisical.com/) czy HashiCorp Vault potrafią propagować zrotowane sekrety jednocześnie we wszystkich Twoich środowiskach. Jeśli wciąż kopiujesz sekrety metodą kopiuj-wklej między dashboardami, włamanie do Vercela jest Twoim sygnałem, żeby przestać.
+
+## Krok 3 audytu: przejrzyj aplikacje OAuth połączone z Twoją organizacją
+
+To jest krok, który większość zespołów pomija — i to właśnie on zapobiegłby włamaniu do Vercela.
+
+Przejdź do GitHub → Settings → Applications → Authorized OAuth Apps. Spójrz na każdą pojedynczą aplikację tam wymienioną. Dla swojej organizacji przejdź do Organization Settings → Third-party access → OAuth application policy.
+
+Szukasz:
+
+- **Aplikacji, których nie rozpoznajesz.** Jeśli nie wiesz, co to jest, odwołaj dostęp.
+- **Aplikacji z nadmiernymi zakresami.** Czy narzędzie do formatowania kodu naprawdę potrzebuje dostępu `repo:write`? Czy dashboard analityczny potrzebuje `admin:org`?
+- **Aplikacji, które nie były używane od miesięcy.** Nieaktualne autoryzacje to darmowa powierzchnia ataku.
+- **Narzędzi AI z szerokimi uprawnieniami.** To dokładnie ten wektor, który dosięgnął Vercela. Copilot, Cody, integracje Cursora, każde narzędzie AI łączące się przez OAuth.
+
+Zrób to samo dla Google Workspace: Google Account → Security → Third-party apps with account access.
+
+I dla samego Vercela: Vercel Dashboard → Settings → Integrations. Przejrzyj każdą połączoną integrację.
+
+```markdown
+## Checklista audytu OAuth
+- [ ] Osobiste aplikacje OAuth GitHub (github.com/settings/applications)
+- [ ] Polityka OAuth organizacji GitHub (ustawienia org → Third-party access)
+- [ ] Aplikacje firm trzecich Google Workspace
+- [ ] Integracje i połączone aplikacje Vercela
+- [ ] Połączenia aplikacji Slack
+- [ ] Integracje z narzędziami do zarządzania projektami Linear / Jira
+- [ ] Wszelkie aplikacje połączone przez SSO/SAML
+```
+
+Dla organizacji włącz restrykcje aplikacji OAuth na poziomie organizacji GitHub. Wymaga to zatwierdzenia przez admina, zanim jakakolwiek aplikacja OAuth uzyska dostęp do danych organizacji. Tak, dodaje to tarcia, gdy ktoś chce wypróbować nowe narzędzie. To tarcie jest funkcją, a nie błędem.
+
+## Krok 4 audytu: zaudytuj rozszerzenia przeglądarki w całym zespole
+
+To ten trudny. Nie możesz łatwo zobaczyć, jakie rozszerzenia przeglądarki mają zainstalowani członkowie Twojego zespołu. Ale możesz ustanowić politykę i przeprowadzić audyt.
+
+**Dla osób indywidualnych** otwórz `chrome://extensions/` (lub odpowiednik w Twojej przeglądarce). Dla każdego rozszerzenia:
+
+1. Sprawdź jego uprawnienia. Kliknij „Szczegóły" i spójrz na „Dostęp do witryn" i „Uprawnienia".
+2. Wyszukaj w Google nazwę rozszerzenia z dopiskiem „security" lub „breach". Czy było już wcześniej skompromitowane?
+3. Sprawdź, kiedy było ostatnio aktualizowane. Porzucone rozszerzenia są celem przejęć — nieuczciwi aktorzy kupują je i wypychają złośliwą aktualizację.
+4. Zadaj sobie pytanie: czy naprawdę tego używam? Jeśli nie, usuń je.
+
+**Dla zespołów** oto polityka, którą teraz egzekwuję:
+
+```markdown
+## Polityka rozszerzeń przeglądarki dla zespołów inżynierskich
+
+### Kategorie zatwierdzone
+- Menedżery haseł (1Password, Bitwarden)
+- Blokery reklam (uBlock Origin)
+- Narzędzia dostępności
+- Wyłącznie zatwierdzone przez firmę narzędzia deweloperskie
+
+### Wymaga przeglądu bezpieczeństwa przed instalacją
+- Każde rozszerzenie asystenta AI lub copilota
+- Każde rozszerzenie żądające dostępu OAuth do GitHuba/Google/dostawców chmury
+- Każde rozszerzenie z uprawnieniem „odczyt i zmiana wszystkich Twoich danych na wszystkich stronach"
+
+### Zakazane
+- Rozszerzenia od nieznanych wydawców z <1000 użytkowników
+- Rozszerzenia niezaktualizowane od 12+ miesięcy
+- Każde rozszerzenie żądające uprawnień wykraczających poza jego deklarowany cel
+```
+
+Jeśli Twoja firma korzysta z zarządzanych profili Chrome lub rozwiązania MDM, możesz egzekwować allowlisty rozszerzeń na poziomie organizacji. To pojedyncza kontrola bezpieczeństwa o najwyższym ROI, jaką możesz wdrożyć po włamaniu do Vercela.
+
+Zespoły wdrażające [narzędzia deweloperskie AI na dużą skalę](/blog/claude-code-team-leads-onboarding-guide) muszą traktować bezpieczeństwo rozszerzeń jako część checklisty onboardingu, a nie coś dorzucanego po fakcie.
+
+## Krok 5 audytu: sprawdź logi buildów pod kątem zapisanych danych logowania
+
+Logi buildów Vercela mogą przypadkowo zawierać sekrety. Zdarza się to częściej, niż byś pomyślał:
+
+- Skrypt buildu, który `echo`-uje zmienne środowiskowe dla debugowania
+- Nieudany build, który zrzuca środowisko w trace błędu
+- Zależność, która loguje swoją konfigurację przy starcie, w tym connection stringi
+- Test runnery, które wypisują odpowiedzi API zawierające tokeny
+
+Przejdź do swojego dashboardu Vercela, otwórz zakładkę Deployments i przeczytaj logi buildów swoich ostatnich pięciu deploymentów. Szukaj wzorców, które wyglądają jak sekrety:
+
+```bash
+# Wzorce do wyszukania w logach buildów
+sk_live_     # klucze live Stripe
+sk_test_     # klucze testowe Stripe
+ghp_         # personal access tokeny GitHub
+gho_         # tokeny OAuth GitHub
+AKIA         # identyfikatory kluczy dostępowych AWS
+xoxb-        # tokeny botów Slack
+SG.          # klucze API SendGrid
+re_          # klucze API Resend
+mongodb+srv  # connection stringi MongoDB
+postgres://  # connection stringi PostgreSQL
+```
+
+Jeśli znajdziesz jakiekolwiek, te sekrety są skompromitowane. Zrotuj je natychmiast. Potem napraw skrypt buildu, który je wyciekł.
+
+W przypadku aplikacji Next.js szczególnie uważaj na `next.config.js` lub `next.config.mjs`, które przekazują sekrety przez `env` lub `publicRuntimeConfig`:
+
+```javascript
+// NIE RÓB TEGO — sekrety trafiają do wyjścia buildu
+module.exports = {
+  env: {
+    DATABASE_URL: process.env.DATABASE_URL, // To zostanie wbudowane w kod!
+  },
+};
+
+// RÓB TAK — użyj serverRuntimeConfig dla sekretów tylko po stronie serwera
+module.exports = {
+  serverRuntimeConfig: {
+    databaseUrl: process.env.DATABASE_URL,
+  },
+  publicRuntimeConfig: {
+    // Tutaj tylko wartości niebędące sekretami
+    apiBaseUrl: process.env.NEXT_PUBLIC_API_URL,
+  },
+};
+```
+
+Jeszcze lepiej: pomiń `publicRuntimeConfig` całkowicie i używaj zmiennych `NEXT_PUBLIC_` bezpośrednio. A do sekretów tylko po stronie serwera sięgaj przez `process.env` w Server Components, Route Handlers i Server Actions — nigdy przez konfigurację, która mogłaby zostać zserializowana do klienta.
+
+## Krok 6 audytu: przejrzyj pliki .env
+
+Chodzi o zrozumienie, co gdzie żyje, i o upewnienie się, że nic nie jest w niewłaściwym miejscu.
+
+Twój projekt powinien mieć jasną hierarchię plików `.env`:
+
+```
+.env                  # Wspólne domyślne (nie-sekret, commitowane)
+.env.local            # Lokalne nadpisania (sekret, w gitignore)
+.env.development      # Domyślne developerskie (nie-sekret, commitowane)
+.env.production       # Domyślne produkcyjne (nie-sekret, commitowane)
+.env.production.local # Sekrety produkcyjne (w gitignore, nie powinny istnieć)
+```
+
+Uruchom teraz to sprawdzenie:
+
+```bash
+# Zweryfikuj, że .env.local jest w gitignore
+grep ".env.local" .gitignore
+grep ".env*.local" .gitignore
+
+# Sprawdź, czy jakieś pliki .env.local zostały zcommitowane
+git log --all --diff-filter=A -- "*.env.local" ".env.local"
+
+# Sprawdź, czy sekrety pojawiają się w zcommitowanych plikach .env
+git log -p -- ".env" ".env.development" ".env.production" | grep -i "secret\|password\|token\|key"
+```
+
+Jeśli `git log` pokazuje, że `.env.local` został kiedykolwiek zcommitowany, te sekrety są w Twojej historii gita na zawsze (chyba że przepiszesz historię za pomocą `git filter-branch` lub BFG Repo Cleaner). Nawet jeśli usunąłeś plik w późniejszym commicie, sekrety da się odzyskać z historii. Zrotuj je.
+
+To samo dotyczy zahardenowanych [enterprise'owych konfiguracji bezpieczeństwa](/blog/claude-code-security-hardening-enterprise-guide) — jeśli Twój tooling AI lub automatyzacja kiedykolwiek zapisze sekrety do plików, które zostaną zcommitowane, Twoja historia gita staje się obciążeniem.
+
+Oto model myślowy, którego używam:
+
+- **`.env` (commitowany):** Nazwy zmiennych i niesekretne wartości domyślne. `NEXT_PUBLIC_SITE_URL=http://localhost:3000`
+- **`.env.local` (w gitignore):** Faktyczne sekrety dla lokalnego developmentu. `DATABASE_URL=postgres://...`
+- **Dashboard Vercela:** Sekrety produkcyjne i preview. Nic więcej.
+- **Menedżer sekretów:** Wszystko współdzielone między wieloma usługami lub zespołami.
+
+Jeśli wartość pojawia się zarówno w `.env.local`, jak i w dashboardzie Vercela, upewnij się, że są to różne wartości. Twój lokalny development powinien używać danych logowania testowych/sandbox, nigdy kluczy produkcyjnych.
+
+## Nastawienie „zero trust dla narzędzi deweloperskich"
+
+Włamanie do Vercela to symptom większego problemu: ufamy naszym narzędziom deweloperskim bezwarunkowo. Instalujemy rozszerzenia, nie czytając uprawnień. Przyznajemy dostęp OAuth, nie sprawdzając zakresów. Wklejamy produkcyjne sekrety do plików `.env.local` na laptopach z Bóg wie czym działającym w tle.
+
+Zero trust dla narzędzi deweloperskich oznacza:
+
+1. **Każde narzędzie dostaje minimalne możliwe uprawnienia.** Jeśli rozszerzenie potrzebuje tylko odczytać bieżącą stronę, nie dostaje dostępu do wszystkich witryn. Jeśli integracja z GitHubem potrzebuje tylko dostępu do odczytu jednego repo, nie dostaje uprawnień zapisu w całej organizacji.
+
+2. **Każde przyznanie uprawnień ma datę wygaśnięcia.** Tokeny OAuth powinny być regularnie rotowane. Fine-grained personal access tokeny GitHuba pozwalają ustawić daty wygaśnięcia — używaj ich zamiast klasycznych PAT-ów, które nigdy nie wygasają.
+
+3. **Dostęp każdego członka zespołu jest audytowalny.** Powinieneś być w stanie odpowiedzieć: „Jakie narzędzia firm trzecich mają dostęp do naszej organizacji GitHub?" bez pytania każdej osoby z osobna.
+
+4. **Każdy sekret ma harmonogram rotacji.** Nie „rotuj, gdy jest włamanie". Rotuj w rytmie — kwartalnie jako minimum, miesięcznie dla sekretów o wysokiej wartości.
+
+5. **Każde nowe narzędzie przechodzi przegląd bezpieczeństwa.** Nie musi to być formalna 20-stronicowa ocena. 15-minutowa checklista: Jakich uprawnień potrzebuje? Kto je utrzymuje? Czy miało incydenty bezpieczeństwa? Do jakich danych ma dostęp?
+
+## Kompletna checklista bezpieczeństwa supply chain
+
+Wydrukuj to. Wręcz każdemu tech leadowi w swoim zespole. Przejdź przez to w tym tygodniu.
+
+```markdown
+# Checklista audytu bezpieczeństwa supply chain Next.js
+
+## Zmienne środowiskowe
+- [ ] Przejrzyj wszystkie zmienne w dashboardzie Vercela
+- [ ] Usuń te, które nie są aktywnie używane
+- [ ] Potwierdź, że żadne zmienne NEXT_PUBLIC_ nie zawierają sekretów
+- [ ] Zweryfikuj, że użycie zmiennych build-time vs runtime jest poprawne
+- [ ] Sprawdź, że .env.local jest w gitignore
+- [ ] Potwierdź brak sekretów w commitowanych plikach .env
+- [ ] Przeszukaj historię gita pod kątem przypadkowo zcommitowanych sekretów
+
+## Rotacja sekretów
+- [ ] Zrotuj dane logowania do bazy danych
+- [ ] Zrotuj sekrety uwierzytelniania (NextAuth, klucze JWT)
+- [ ] Zrotuj klucze API operatorów płatności
+- [ ] Zrotuj sekrety klienta OAuth
+- [ ] Zrotuj klucze API firm trzecich SaaS
+- [ ] Zrotuj dane logowania dostawców chmury
+- [ ] Ustaw harmonogram rotacji (przynajmniej przypomnienia w kalendarzu)
+
+## OAuth i integracje
+- [ ] Zaudytuj autoryzowane aplikacje OAuth GitHub (osobiste)
+- [ ] Zaudytuj politykę aplikacji OAuth organizacji GitHub
+- [ ] Włącz restrykcje aplikacji OAuth na poziomie organizacji
+- [ ] Zaudytuj dostęp aplikacji firm trzecich Google Workspace
+- [ ] Zaudytuj integracje Vercela
+- [ ] Odwołaj wszelkie nieużywane lub nierozpoznane autoryzacje
+- [ ] Przełącz się na fine-grained PAT-y GitHuba z datami wygaśnięcia
+
+## Rozszerzenia przeglądarki
+- [ ] Zaudytuj wszystkie zainstalowane rozszerzenia przeglądarki (każdy członek zespołu)
+- [ ] Usuń nieużywane rozszerzenia
+- [ ] Ustanów politykę zatwierdzania rozszerzeń
+- [ ] Skonfiguruj allowlistę rozszerzeń (jeśli używasz zarządzanych przeglądarek)
+- [ ] Szczególnie przejrzyj rozszerzenia narzędzi AI i ich zakresy OAuth
+
+## Build i deployment
+- [ ] Przejrzyj ostatnie 5 logów buildów pod kątem wyciekłych sekretów
+- [ ] Sprawdź next.config.js pod kątem sekretów przekazywanych przez env/publicRuntimeConfig
+- [ ] Zweryfikuj brak sekretów w warstwach Dockera lub cache buildu
+- [ ] Potwierdź, że sekrety CI/CD są ograniczone do pipeline'u, a nie do dashboardu Vercela
+- [ ] Włącz reguły deploy protection w Vercelu (wymagaj zatwierdzenia dla produkcji)
+
+## Na bieżąco
+- [ ] Zaplanuj kwartalną rotację sekretów
+- [ ] Zaplanuj miesięczny audyt OAuth
+- [ ] Dodaj skanowanie sekretów do CI (GitHub secret scanning, GitGuardian lub TruffleHog)
+- [ ] Udokumentuj zatwierdzoną listę narzędzi zespołu
+- [ ] Uwzględnij audyt bezpieczeństwa w checkliście onboardingu
+```
+
+## Automatyzacja rotacji sekretów: narzędzia i wzorce
+
+Ręczna rotacja się nie skaluje. Oto narzędzia warte oceny:
+
+**Doppler** — synchronizuje sekrety między Vercelem, AWS, GitHub Actions i lokalnymi środowiskami developerskimi. Zmień sekret w Dopplerze, a rozpropaguje się wszędzie. Ma logi audytu pokazujące, kto i kiedy uzyskał dostęp do czego.
+
+**Infisical** — open-source'owa alternatywa dla Dopplera. Możliwa do self-hostingu, jeśli wymaga tego compliance. Natywna integracja z Vercelem.
+
+**HashiCorp Vault** — standard enterprise. Dynamiczne sekrety (generuje krótkożyjące dane logowania do bazy danych na żądanie), automatyczna rotacja, szczegółowe ścieżki audytu. Przesada dla małych zespołów, niezbędne dla branż regulowanych.
+
+**GitHub Secret Scanning** — darmowe dla repozytoriów publicznych, dostępne dla prywatnych repozytoriów w GitHub Enterprise. Ostrzega, gdy sekret zostanie zcommitowany. Ma też push protection, które blokuje commity zawierające sekrety, zanim trafią do repo.
+
+**TruffleHog** — skanuje historię gita, systemy plików i buckety S3 pod kątem sekretów. Uruchom go w CI, by wychwycić wycieki, zanim zostaną zmergowane.
+
+Dla lekkiego wzorca automatyzacji, który działa bez dodatkowego toolingu:
+
+```bash
+#!/bin/bash
+# rotate-secrets.sh — uruchamiaj miesięcznie przez cron lub CI
+# Ten skrypt przypomina i śledzi, nie rotuje automatycznie
+# (auto-rotacja wymaga wywołań API specyficznych dla usługi)
+
+ROTATION_LOG="./security/rotation-log.json"
+DAYS_THRESHOLD=90
+
+echo "Sprawdzanie dat rotacji sekretów..."
+
+# Sprawdź datę ostatniej rotacji każdego sekretu z loga
+jq -r '.secrets[] | select(
+  (now - (.lastRotated | fromdateiso8601)) > ('$DAYS_THRESHOLD' * 86400)
+) | "ZALEGŁE: \(.name) — ostatnia rotacja \(.lastRotated)"' "$ROTATION_LOG"
+```
+
+Prawdziwa automatyzacja bierze się z używania menedżerów sekretów, które wspierają programową rotację. Na przykład AWS Secrets Manager potrafi automatycznie rotować hasła baz danych RDS według harmonogramu. Stripe pozwala programowo rolować klucze API. Wzorzec jest taki: przechowuj sekret w menedżerze wspierającym rotację, skonfiguruj harmonogram rotacji i spraw, by Twój deployment pobierał sekrety z menedżera, a nie z zahardkodowanych zmiennych środowiskowych.
+
+## Co to włamanie powinno zmienić w Twoim procesie
+
+Włamanie do Vercela nie było egzotyczne. Było to rozszerzenie przeglądarki ze zbyt wieloma uprawnieniami, połączone z tokenem OAuth mającym zbyt duży dostęp, wycelowane w pracownika z dostępem do wrażliwych systemów. Każde ogniwo w tym łańcuchu istnieje w większości organizacji inżynierskich.
+
+Rozwiązaniem nie jest jedna kontrola techniczna. To zmiana nastawienia:
+
+- **Supply chain to nie tylko pakiety npm.** To każde narzędzie, rozszerzenie, integracja i połączenie OAuth w Twoim workflow developerskim.
+- **Maszyny deweloperów są częścią powierzchni ataku.** To, co jest zainstalowane na laptopach Twojego zespołu, ma tak samo duże znaczenie jak to, co jest zdeployowane na Twoich serwerach.
+- **Wygoda jest wrogiem bezpieczeństwa.** Każde kliknięcie „Zaloguj przez GitHub", każdy prompt „Zezwól temu rozszerzeniu", każdy skrót „po prostu wklej klucz produkcyjny do .env.local" to potencjalny wektor włamania.
+
+Przeprowadź audyt. Zrotuj sekrety. Ustanów polityki. Powyższa checklista zajmuje pięcioosobowemu zespołowi około pół dnia. To tanio w porównaniu z alternatywą.
+
+Kolejny atak na supply chain nie będzie wyglądał jak poprzedni. Ale fundamenty — least privilege, higiena sekretów, regularne audyty i zdrowa nieufność wobec każdego narzędzia w Twoim łańcuchu — chronią Cię niezależnie od wektora.
+
+### Źródła
+
+- [Vercel Security Incident Disclosure (kwiecień 2026)](https://vercel.com/blog/security-incident-april-2026) — oficjalne oświadczenie Vercela o osi czasu, zakresie i naprawie włamania
+- [Context.ai Browser Extension OAuth Compromise Analysis](https://www.bleepingcomputer.com/news/security/context-ai-extension-oauth-compromise/) — techniczna analiza wektora ataku opartego na rozszerzeniu
+- [Next.js Environment Variables Documentation](https://nextjs.org/docs/app/building-your-application/configuring/environment-variables) — oficjalna dokumentacja obsługi zmiennych środowiskowych build-time vs runtime
+- [GitHub Fine-Grained Personal Access Tokens](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#fine-grained-personal-access-tokens) — konfiguracja zakresowanych, wygasających tokenów
+- [OWASP Supply Chain Security Guide](https://owasp.org/www-project-software-component-verification-standard/) — framework do oceny ryzyk supply chain w projektach software'owych
+
+### Dalsza lektura
+
+- [Włamanie do Vercela: co programiści Next.js muszą wiedzieć](/blog/vercel-security-breach-nextjs-developer-guide) — dogłębna analiza szczegółów włamania i jego natychmiastowego wpływu na ekosystem Next.js
+- [Hardening bezpieczeństwa Claude Code dla enterprise](/blog/claude-code-security-hardening-enterprise-guide) — uprawnienia, sandboxing i wzorce ścieżek audytu dla agentów AI na produkcji
+- [Ataki prompt injection: SQL injection ery AI](/blog/prompt-injection-attacks-llm-security-guide) — dlaczego narzędzia AI z szerokim dostępem tworzą nowe klasy podatności bezpieczeństwa
+- [Doppler Secrets Management](https://www.doppler.com/) — scentralizowana synchronizacja sekretów między Vercelem, AWS i środowiskami lokalnymi
+- [TruffleHog od Truffle Security](https://github.com/trufflesecurity/trufflehog) — open-source'owe narzędzie do wykrywania sekretów w historii gita, systemach plików i storage'u chmurowym
+- [Google OAuth Token Best Practices](https://developers.google.com/identity/protocols/oauth2/policies) — zakresowanie, wygasanie i zarządzanie cyklem życia tokenów OAuth
+
+---
+
+~Seb 👊
