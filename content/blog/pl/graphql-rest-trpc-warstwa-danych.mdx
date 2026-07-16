@@ -1,0 +1,468 @@
+---
+title: 'GraphQL vs REST vs tRPC: jak wybrać właściwą warstwę danych dla dużych aplikacji'
+date: '2026-03-28'
+category: 'Architecture'
+tags: ['api', 'graphql', 'rest', 'trpc', 'architecture']
+draft: false
+featured: false
+author: 'Sebastian'
+enSlug: 'graphql-vs-rest-vs-trpc-data-layer-guide'
+excerpt: 'GraphQL urosło o 340% od 2023. tRPC pojawia się w 15% ofert pracy i szybko pinie się w górę. REST wciąż dominuje z 70%. Oto kompletny framework decyzyjny.'
+---
+
+Budowałem produkcyjne API ze wszystkimi trzema — REST, GraphQL i tRPC. A pytanie, które słyszę najczęściej, nie brzmi „które jest najlepsze?". Brzmi „którego użyć w moim projekcie?". Szczera odpowiedź w 2026: prawdopodobnie więcej niż jednego.
+
+Typowa nowoczesna aplikacja używa REST-a do publicznych API i integracji, tRPC lub GraphQL do warstwy danych frontendu, oraz REST-a lub gRPC do komunikacji między usługami. Mentalność „jednego API, które rządzi wszystkimi" jest martwa. Każde narzędzie ma swój obszar, w którym błyszczy, a wciskanie jednego na terytorium drugiego rodzi ból.
+
+Oto, czego nauczyłem się, budując i skalując wszystkie trzy — łącznie z problemami, które ujawniają się dopiero przy skali: zapytania N+1 w GraphQL, przeinżynierowanie w REST oraz ograniczenie tRPC wyłącznie do TypeScriptu, które zabija jego adopcję w mieszanych zespołach.
+
+## REST: uniwersalny standard
+
+REST nie jest technologią — to styl architektoniczny zbudowany na HTTP. Zasoby mają swoje URL-e, operacje używają metod HTTP, a odpowiedzi wykorzystują kody statusu. To lingua franca sieci.
+
+### Co REST robi dobrze
+
+```typescript
+// Prostota jest tu funkcją, a nie wadą
+GET    /api/users           → Lista użytkowników
+GET    /api/users/123       → Pobierz użytkownika 123
+POST   /api/users           → Utwórz użytkownika
+PATCH  /api/users/123       → Zaktualizuj użytkownika 123
+DELETE /api/users/123       → Usuń użytkownika 123
+GET    /api/users/123/orders → Pobierz zamówienia użytkownika 123
+```
+
+**Cache'owanie HTTP działa natywnie.** `GET /api/products` z nagłówkiem `Cache-Control: max-age=3600` jest cache'owane przez przeglądarki, CDN-y i reverse proxy bez żadnego kodu aplikacji. GraphQL i tRPC nie potrafią tego zrobić, bo używają żądań POST lub własnych protokołów.
+
+**Każdy język, framework i narzędzie rozumie REST.** Twoja aplikacja na iOS, aplikacja na Androida, integracje partnerów, narzędzia CLI, Postman, curl — wszystkie mówią w REST natywnie.
+
+**OpenAPI/Swagger dostarcza dokumentację czytelną dla maszyn.** Automatycznie generowane dokumenty, klienckie SDK i walidacja żądań przychodzą za darmo.
+
+### Co REST robi źle
+
+**Overfetching:** prosisz o użytkownika, dostajesz cały obiekt użytkownika — nawet jeśli potrzebujesz tylko imienia:
+
+```typescript
+// Potrzebujesz: user.name, user.avatar
+// Dostajesz: user.name, user.avatar, user.email, user.address,
+//            user.preferences, user.createdAt, user.lastLogin,
+//            user.settings, user.subscriptionDetails...
+```
+
+**Underfetching:** pobranie zamówień użytkownika wymaga osobnego żądania. Pobranie pozycji zamówienia — kolejnego. Jedna strona może potrzebować 5–10 żądań:
+
+```typescript
+// Dashboard potrzebuje: user + orders + products + metrics + notifications
+const user = await fetch('/api/users/123');
+const orders = await fetch('/api/users/123/orders');
+const products = await fetch('/api/products?featured=true');
+const metrics = await fetch('/api/metrics/summary');
+const notifications = await fetch('/api/notifications?unread=true');
+// 5 sekwencyjnych (lub równoległych) rund komunikacji
+```
+
+**Brak bezpieczeństwa typów między klientem a serwerem** (bez dodatkowego narzędzia). Zmienisz pole odpowiedzi na serwerze, a klient dowie się o tym dopiero w runtime.
+
+### Nowoczesny REST z bezpieczeństwem typów
+
+Ta luka się zamyka. Hono i Elysia dostarczają type-safe API REST z end-to-end inferencją typów:
+
+```typescript
+// Hono — type-safe REST z klientem w stylu RPC
+import { Hono } from 'hono';
+import { zValidator } from '@hono/zod-validator';
+import { z } from 'zod';
+
+const app = new Hono()
+  .get('/users/:id', async (c) => {
+    const id = c.req.param('id');
+    const user = await db.users.findUnique({ where: { id } });
+    return c.json(user);
+  })
+  .post(
+    '/users',
+    zValidator('json', z.object({
+      name: z.string().min(1),
+      email: z.string().email(),
+    })),
+    async (c) => {
+      const data = c.req.valid('json');
+      const user = await db.users.create({ data });
+      return c.json(user, 201);
+    }
+  );
+
+// Klient dostaje pełną inferencję typów (jak w tRPC)
+import { hc } from 'hono/client';
+const client = hc<typeof app>('http://localhost:3000');
+const res = await client.users[':id'].$get({ param: { id: '123' } });
+// res jest w pełni otypowane!
+```
+
+## GraphQL: elastyczna warstwa danych
+
+GraphQL pozwala klientowi określić dokładnie te dane, których potrzebuje. Żadnego overfetchingu, żadnego underfetchingu. Jedno żądanie, dokładnie taki kształt, jaki chcesz.
+
+### Co GraphQL robi dobrze
+
+```graphql
+# Jedno żądanie, dokładnie te dane, których potrzebuje dashboard
+query DashboardData {
+  currentUser {
+    name
+    avatar
+    role
+  }
+  recentOrders(limit: 5) {
+    id
+    total
+    status
+    items {
+      product {
+        name
+        price
+      }
+    }
+  }
+  metrics {
+    revenue
+    orderCount
+    customerCount
+  }
+}
+```
+
+**Jedno żądanie zamiast pięciu.** Klient opisuje kształt danych, których potrzebuje, a serwer rozwiązuje go w jednej rundzie komunikacji.
+
+**Silny system typów.** Schema jest kontraktem — klient i serwer zgadzają się co do typów, a narzędzia takie jak GraphQL Code Generator automatycznie produkują typy TypeScript.
+
+**Introspekcja.** Schema jest samodokumentująca się. Narzędzia takie jak GraphiQL i Apollo Studio pozwalają interaktywnie eksplorować API.
+
+**Idealny do warstw BFF.** Gdy twój frontend potrzebuje danych z wielu backendowych usług, GraphQL jest doskonałą warstwą agregacyjną — ten wzorzec opisałem szczegółowo w moim [przewodniku po architekturze BFF](/blog/bff-the-frontends-best-friend-in-the-microservices-world).
+
+### Co GraphQL robi źle
+
+#### Problem N+1
+
+To największa produkcyjna pułapka GraphQL. Gdy odpytujesz listę z zagnieżdżonymi relacjami, każdy element wyzwala osobne zapytanie do bazy danych:
+
+```graphql
+# To niewinne zapytanie...
+query {
+  orders(limit: 50) {  # 1 zapytanie
+    customer {          # 50 zapytań (jedno na zamówienie)
+      name
+      orders {          # kolejne 50 zapytań (jedno na klienta)
+        total
+      }
+    }
+  }
+}
+# = 101 zapytań do bazy dla jednego żądania GraphQL
+```
+
+**Rozwiązanie:** DataLoader grupuje pojedyncze żądania w zapytania wsadowe. Musisz jednak o nim wiedzieć, poprawnie go zaimplementować i utrzymywać:
+
+```typescript
+// DataLoader grupuje N pojedynczych wczytań w 1 zapytanie wsadowe
+const userLoader = new DataLoader(async (userIds: string[]) => {
+  const users = await db.users.findMany({
+    where: { id: { in: userIds } },
+  });
+  // Musi zwrócić wyniki w tej samej kolejności co wejściowe ID
+  return userIds.map(id => users.find(u => u.id === id));
+});
+
+// Każdy resolver woła loader.load(id) — DataLoader je grupuje
+const resolvers = {
+  Order: {
+    customer: (order) => userLoader.load(order.customerId),
+  },
+};
+```
+
+#### Złożoność i bezpieczeństwo
+
+Dowolny klient może skonstruować głęboko zagnieżdżone zapytanie, które zmiażdży twój serwer:
+
+```graphql
+# Wymarzone zapytanie atakującego
+query {
+  users {
+    orders {
+      items {
+        product {
+          reviews {
+            author {
+              orders {
+                items {
+                  product {
+                    # ... 10 poziomów w głąb, wykładniczo rosnące dane
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+**Musisz zaimplementować:** limitowanie głębokości zapytań, analizę złożoności zapytań, rate limiting w oparciu o wskaźnik złożoności oraz persisted queries na produkcji.
+
+#### Cache'owanie jest trudne
+
+REST cache'uje na poziomie HTTP za pomocą standardowych nagłówków. GraphQL używa żądań POST (domyślnie niecache'owalnych), a odpowiedzi mają zmienne kształty. Potrzebujesz warstwy cache'owania świadomej GraphQL (Apollo Client, Relay, urql z znormalizowanym cache'em).
+
+#### Podatek od narzędzi
+
+Produkcyjny setup GraphQL wymaga: języka definicji schematu, resolverów, DataLoaderów, generacji kodu, klienta cache'ującego, analizy złożoności zapytań i monitoringu. To znacząco więcej infrastruktury niż REST.
+
+### Kiedy GraphQL błyszczy
+
+- **Wiele klientów frontendowych** (web, mobile, TV), z których każdy potrzebuje innego kształtu danych
+- **Agregowanie danych z wielu usług** — GraphQL jako BFF/gateway
+- **Zespoły, w których frontend i backend są rozdzielone** — schema jest kontraktem
+- **Złożone, zagnieżdżone modele danych** — jedno zapytanie zastępuje wiele wywołań REST
+
+## tRPC: end-to-end type-safety
+
+tRPC eliminuje warstwę API w całości. Definiujesz procedury na serwerze, a klient woła je z pełną inferencją typów — bez schematów, bez generacji kodu, bez narzutu w runtime.
+
+### Co tRPC robi dobrze
+
+```typescript
+// server/routers/user.ts
+import { z } from 'zod';
+import { router, publicProcedure, protectedProcedure } from '../trpc';
+
+export const userRouter = router({
+  getById: publicProcedure
+    .input(z.object({ id: z.string().uuid() }))
+    .query(async ({ input, ctx }) => {
+      const user = await ctx.db.users.findUnique({
+        where: { id: input.id },
+        select: { id: true, name: true, avatar: true, role: true },
+      });
+      if (!user) throw new TRPCError({ code: 'NOT_FOUND' });
+      return user;
+    }),
+
+  update: protectedProcedure
+    .input(z.object({
+      name: z.string().min(1).max(100).optional(),
+      avatar: z.string().url().optional(),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      return ctx.db.users.update({
+        where: { id: ctx.session.userId },
+        data: input,
+      });
+    }),
+
+  list: publicProcedure
+    .input(z.object({
+      cursor: z.string().optional(),
+      limit: z.number().min(1).max(100).default(20),
+    }))
+    .query(async ({ input, ctx }) => {
+      const items = await ctx.db.users.findMany({
+        take: input.limit + 1,
+        cursor: input.cursor ? { id: input.cursor } : undefined,
+        orderBy: { createdAt: 'desc' },
+      });
+      const hasMore = items.length > input.limit;
+      return {
+        items: hasMore ? items.slice(0, -1) : items,
+        nextCursor: hasMore ? items[items.length - 1].id : undefined,
+      };
+    }),
+});
+```
+
+```typescript
+// Klient — ZERO generacji kodu, pełna inferencja typów
+'use client';
+
+import { trpc } from '@/lib/trpc';
+
+function UserProfile({ userId }: { userId: string }) {
+  const { data: user } = trpc.user.getById.useQuery({ id: userId });
+  // user jest w pełni otypowane: { id: string; name: string; avatar: string; role: string }
+
+  const updateMutation = trpc.user.update.useMutation();
+  // updateMutation.mutate({ name: 'New Name' }) — sprawdzone typami!
+  // updateMutation.mutate({ invalid: true }) — BŁĄD TypeScript!
+
+  if (!user) return <Skeleton />;
+  return <div>{user.name}</div>;
+}
+```
+
+**Magia:** zmieniasz nazwę pola na serwerze → TypeScript natychmiast pokazuje błędy w każdym kliencie, który go używa. Żadnej dokumentacji API do aktualizacji, żadnej generacji kodu do uruchomienia, żadnych niespodzianek w runtime. To właśnie ten wzrost produktywności sprawia, że tRPC uzależnia.
+
+### tRPC v11 z Next.js Server Components
+
+```typescript
+// lib/trpc/server.ts — server-side caller dla RSC
+import { createCallerFactory } from '@/server/trpc';
+import { appRouter } from '@/server/routers';
+
+const createCaller = createCallerFactory(appRouter);
+
+export async function getServerTRPC() {
+  return createCaller({
+    // Przekaż kontekst żądania (auth, db itd.)
+    session: await getSession(),
+    db: prisma,
+  });
+}
+```
+
+```typescript
+// app/users/page.tsx — Server Component z tRPC
+import { getServerTRPC } from '@/lib/trpc/server';
+
+export default async function UsersPage() {
+  const trpc = await getServerTRPC();
+  const { items } = await trpc.user.list({ limit: 20 });
+
+  return (
+    <ul>
+      {items.map(user => (
+        <li key={user.id}>{user.name}</li>
+      ))}
+    </ul>
+  );
+}
+```
+
+### Co tRPC robi źle
+
+**Wyłącznie TypeScript.** Jeśli którykolwiek konsument nie jest w TypeScripcie (aplikacja mobilna w Swifcie, integracja partnera w Pythonie), tRPC nie zadziała. To czynnik dyskwalifikujący dla publicznych API.
+
+**Ścisłe sprzężenie.** Klient i serwer muszą dzielić ten sam projekt TypeScript (lub monorepo). To zaleta dla aplikacji full-stack, ale ograniczenie dla rozproszonych zespołów.
+
+**Brak cache'owania HTTP.** Podobnie jak GraphQL, tRPC używa własnych protokołów, które nie korzystają ze standardowego cache'owania HTTP.
+
+**Rosnąca złożoność przy skali.** Przy 200+ procedurach router robi się nieporęczny. Potrzebujesz dobrej organizacji i konwencji nazewniczych.
+
+## Kompletny framework decyzyjny
+
+```
+Kto konsumuje to API?
+│
+├── Zewnętrzni deweloperzy / partnerzy / publiczne
+│   └── REST z OpenAPI
+│       (uniwersalna kompatybilność, cache HTTP, dokumentacja)
+│
+├── Twój własny frontend w TypeScripcie (monorepo)
+│   ├── Proste CRUD? → tRPC
+│   │   (zero narzutu, pełne bezpieczeństwo typów)
+│   │
+│   ├── Złożone zagnieżdżone dane z wielu źródeł? → GraphQL
+│   │   (elastyczne zapytania, warstwa agregacyjna)
+│   │
+│   └── Potrzebujesz obu? → tRPC do mutacji, GraphQL do zapytań
+│
+├── Aplikacje mobilne (Swift/Kotlin)
+│   ├── Ten sam zespół kontroluje oba? → REST lub GraphQL
+│   └── Różne zespoły? → GraphQL (schema jako kontrakt)
+│
+├── Komunikacja między usługami (wewnętrzna)
+│   ├── To samo centrum danych, wysoka przepustowość? → gRPC
+│   └── Prosta komunikacja? → REST
+│
+└── Agenci AI / webhooki
+    └── REST (przewidywalny, cache'owalny, udokumentowany)
+```
+
+## Porównanie bezpośrednie
+
+| Czynnik | REST | GraphQL | tRPC |
+|--------|------|---------|------|
+| **Krzywa uczenia** | Niska | Wysoka | Niska (jeśli znasz TS) |
+| **Bezpieczeństwo typów** | Ręczne (OpenAPI) | Generowane | Automatyczne |
+| **Overfetching** | Częsty | Wyeliminowany | Wyeliminowany (z założenia) |
+| **Cache'owanie** | Natywne HTTP | Złożone (znormalizowane) | Ręczne |
+| **Wydajność** | Szybka | Wolniejsza (ryzyko N+1) | Szybka |
+| **Publiczne API** | Doskonałe | Dobre | Niemożliwe |
+| **Klienci mobilni** | Natywne | Dobre (z codegen) | Niemożliwe |
+| **Ekosystem** | Ogromny | Duży | Rosnący |
+| **Narzut narzędziowy** | Niski | Wysoki | Bardzo niski |
+| **Real-time** | WebSockets/SSE | Subscriptions | Subscriptions |
+| **Upload plików** | Natywny | Złożony | Złożony |
+| **Wpływ na rozmiar bundla** | Brak | Apollo ~50KB | ~10KB |
+| **Adopcja w zespole** | Uniwersalna | Wymaga szkolenia | Tylko deweloperzy TS |
+
+## Pragmatyczna architektura 2026
+
+Większość produkcyjnych aplikacji, które buduję w 2026, używa tego stacku:
+
+```
+┌─────────────────────────────────────────────┐
+│ Frontend Next.js (App Router)               │
+│                                             │
+│  Server Components ──→ tRPC (server caller) │
+│  Client Components ──→ tRPC (React Query)   │
+│                                             │
+├─────────────────────────────────────────────┤
+│ Router tRPC (wewnętrzne API)                │
+│  - Procedury użytkowników                   │
+│  - Procedury zamówień                       │
+│  - Procedury analityki                      │
+│                                             │
+├─────────────────────────────────────────────┤
+│ API REST (publiczne, /api/v1/*)             │
+│  - Integracje partnerów                     │
+│  - Endpointy webhooków                      │
+│  - Aplikacja mobilna (jeśli nie-TS)         │
+│  - Dokumentacja OpenAPI                      │
+│                                             │
+├─────────────────────────────────────────────┤
+│ Baza danych (Prisma / Drizzle)              │
+└─────────────────────────────────────────────┘
+```
+
+**tRPC dla frontendu Next.js** — maksymalna prędkość developera, zero utrzymania API.
+
+**REST dla wszystkiego zewnętrznego** — uniwersalna kompatybilność, cache HTTP, przyjazny partnerom.
+
+**Żadnego GraphQL, chyba że** masz wiele zespołów frontendowych, złożone potrzeby agregacji danych lub zespół aplikacji mobilnej, który korzysta z kontraktu schematu.
+
+## Praktyczne wnioski
+
+1. **tRPC to domyślny wybór dla full-stackowego TypeScriptu** — jeśli twój frontend i backend są w tym samym monorepo i oba w TypeScripcie, tRPC eliminuje całą kategorię bugów i boilerplate'u.
+2. **REST dla publicznych API** — zawsze. Partnerzy, integracje, aplikacje mobilne i agenci AI mówią w REST natywnie.
+3. **GraphQL do agregacji danych** — gdy potrzebujesz warstwy BFF, która łączy wiele usług w jeden elastyczny interfejs zapytań.
+4. **Nie używaj GraphQL do prostego CRUD** — podatek od narzędzi (DataLoadery, analiza złożoności, cache'owanie) nie jest uzasadniony, chyba że masz złożone, zagnieżdżone potrzeby danych.
+5. **Większość aplikacji potrzebuje więcej niż jednego** — tRPC wewnętrznie + REST zewnętrznie to zwycięski wzorzec na 2026.
+6. **Bezpieczeństwo typów jest nienegocjowalne** — czy to przez inferencję tRPC, codegen GraphQL, czy generację klienta OpenAPI, twoja warstwa API powinna być otypowana end-to-end.
+7. **Rozważ Hono lub Elysia** dla type-safe REST — dostarczają inferencję w stylu tRPC ze standardową semantyką HTTP.
+8. **Problem N+1 w GraphQL jest realny** — jeśli używasz GraphQL, zaimplementuj DataLoadery od pierwszego dnia. Nie później. Pierwszego dnia.
+9. **Pytanie brzmi „kto to konsumuje?"** — a nie „które jest najlepsze?". Różni konsumenci mają różne potrzeby.
+
+Jeśli używasz tRPC, połącz go z [walidacją Zod](/blog/zod-typescript-validation-complete-guide) dla schematów wejściowych — to naturalne połączenie. A jeśli budujesz frontend z [TanStack Query](/blog/tanstack-ecosystem-complete-guide-2026), integracja tRPC z React Query daje ci to, co najlepsze z obu światów.
+
+Warstwa API to narzędzie, a nie tożsamość. Używaj właściwego narzędzia dla każdego konsumenta i nie pozwól, by lojalność wobec frameworka przeważyła nad pragmatyczną architekturą.
+
+## References
+
+### Źródła
+- [Fordel Studios: GraphQL vs REST 2026](https://fordelstudios.com/research/graphql-vs-rest-2026-honest-take) — szczere porównanie produkcyjne
+- [DEV.to: REST vs GraphQL vs tRPC vs gRPC — The Definitive Guide](https://dev.to/pockit_tools/rest-vs-graphql-vs-trpc-vs-grpc-in-2026-the-definitive-guide-to-choosing-your-api-layer-1j8m) — kompleksowe porównanie 2026
+- [tRPC: React Server Components Setup](https://trpc.io/docs/client/react/server-components) — oficjalny przewodnik integracji z RSC
+- [GraphQL.org: Solving N+1 with DataLoader](https://www.graphql-js.org/docs/n1-dataloader/) — oficjalna dokumentacja DataLoader
+- [JSGuruJobs: API Layer Choice Affects Team Size](https://jsgurujobs.com/blog/rest-api-vs-graphql-vs-trpc-in-2026-and-why-your-api-layer-choice-affects-your-team-size-more-than-your-tech-stack) — analiza wpływu organizacyjnego
+
+### Dalsza lektura
+- [DEV.to: Mastering tRPC with React Server Components 2026](https://dev.to/christadrian/mastering-trpc-with-react-server-components-the-definitive-2026-guide-1i2e) — dogłębne omówienie tRPC v11
+- [PkgPulse: Hono vs Elysia 2026](https://www.pkgpulse.com/blog/hono-vs-elysia-2026) — porównanie type-safe frameworków REST
+- [Shopify Engineering: Solving N+1 for GraphQL Through Batching](https://shopify.engineering/solving-the-n-1-problem-for-graphql-through-batching) — rozwiązanie w skali produkcyjnej
+- [WunderGraph: When to Use Each API Style](https://wundergraph.com/blog/graphql-vs-federation-vs-trpc-vs-rest-vs-grpc-vs-asyncapi-vs-webhooks) — najbardziej kompletne porównanie
+
+---
+
+~Seb 👊
