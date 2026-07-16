@@ -1,0 +1,278 @@
+---
+title: 'Plan mode w Claude Code: produkcyjny workflow, który pomijają wszystkie tutoriale'
+date: '2026-04-19'
+category: 'AI'
+tags: ['claude-code', 'plan-mode', 'ai-productivity', 'developer-experience', 'ai-automation']
+draft: false
+featured: false
+author: 'Sebastian'
+enSlug: 'claude-code-plan-mode-ultraplan-production-guide'
+excerpt: 'Patrzyłem, jak Claude przez 20 minut z pełnym przekonaniem rozwiązuje zły problem. Potem poznałem plan mode. Oto workflow, którego naprawdę używają seniorzy.'
+---
+
+Kiedyś patrzyłem, jak Claude Code przez 20 minut z pełnym przekonaniem refaktoryzuje moduł, którego nigdy nie prosiłem go tknąć. Prompt był jednolinijkowy. Claude wywnioskował intencję, wybrał prawdopodobną interpretację i wykonał ją perfekcyjnie — na złym problemie.
+
+Ta godzina nie kosztowała mnie nic w tokenach. Kosztowała mnie za to całe popołudnie rozplątywania czystych, ale niechcianych zmian. I na tym w jednym akapicie polega historia plan mode: albo poświęcasz pięć minut na planowanie, albo poświęcasz popołudnie na rozplątywanie.
+
+Każdy tutorial o plan mode, jaki czytałem, kończy się na „naciśnij Shift+Tab". To skrót klawiszowy, nie workflow. Pokażę ci produkcyjny wzorzec, którego naprawdę używają seniorzy w 2026 roku — łącznie z kwietniową premierą Ultraplan, trickiem oszczędnościowym `opusplan` oraz przypadkami brzegowymi, które gryzą, gdy skalujesz to na cały zespół. Plan mode żyje na początku pracy; jego rodzeństwo, [/ultrareview, żyje na końcu jako bramka przed mergem](/blog/claude-code-ultrareview-cloud-bug-hunting-guide), stosując tę samą filozofię floty agentów w chmurze do code review.
+
+## Czym plan mode właściwie jest
+
+Plan mode to nie osobny model, nie flaga i nie feature gate. To tryb wykonywania tylko do odczytu. Claude dostaje dostęp do `Read`, `Grep`, `Glob` i `WebFetch`, ale traci każde narzędzie, które modyfikuje stan — żadnego `Edit`, żadnego `Write`, żadnych efektów ubocznych `Bash`. Ty pytasz, on bada, on proponuje, ty zatwierdzasz.
+
+Model mentalny, który mi wskoczył na miejsce: **plan mode to opis PR-a, zanim PR w ogóle istnieje**. Zmuszasz agenta, by wyartykułował diff po angielsku, zanim dotknie systemu plików.
+
+Aktywuj go na trzy sposoby:
+
+```bash
+# 1. Przełącz w trakcie sesji
+Shift+Tab  # przechodzi cyklicznie przez tryby uprawnień
+
+# 2. Uruchom sesję w plan mode
+claude --permission-mode plan
+
+# 3. Utrwal go dla repozytorium
+# .claude/settings.json
+{
+  "permissionMode": "plan"
+}
+```
+
+Spójrz na dół swojego terminala. `⏸ plan mode on` oznacza, że jesteś bezpieczny. `⏵ accept edits` oznacza, że nie jesteś.
+
+## Luka w tutorialach: plan mode nie jest darmowy
+
+Oto część, której nikt nie tłumaczy. Plan mode zużywa tokeny. Mnóstwo tokenów.
+
+Gdy Claude planuje, czyta bardziej agresywnie niż gdy edytuje. Nie wie jeszcze, które pliki mają znaczenie, więc zbiera wszystko, co potencjalnie mogłoby je mieć. Plan trzyplikowej zmiany może kosztować 15–40 tys. tokenów samego skanowania wejścia. Widziałem plany dla zmian architektonicznych, które spaliły 100 tys.+ tokenów, zanim napisały jedną linię kodu.
+
+Dwie implikacje, które większość developerów przeoczy:
+
+1. **Krótkie zadania są w plan mode wolniejsze.** Przy jednolinijkowej poprawce czy trywialnej zmianie nazwy narzut planowania zjada każdą korzyść.
+2. **Jakość planu spada przy długich zadaniach.** Powyżej 60 tys. tokenów plany Claude zaczynają gubić kontekst, który już widział. Pierwszym przypadkiem brzegowym, który się wysypie, jest zawsze ten, o którym zapomniał.
+
+Heurystyka progu rentowności, której używam: **plan mode się opłaca, gdy koszt złej implementacji przewyższa koszt planu**. Przy refaktorze obejmującym cztery pliki planowanie jest darmowe. Przy zmianie literału stringowego to czysty narzut.
+
+## Produkcyjny wzorzec planowania
+
+Każdy senior, którego widziałem dobrze używającego Claude Code, uruchamia jakąś wersję tej pętli. Sugeruje to [oficjalna dokumentacja best practices](https://code.claude.com/docs/en/best-practices) Anthropic; nikt nie spisuje jej w całości.
+
+**Krok 1 — Poproś, dając kontekst, nie zadania.**
+
+```text
+Claude, read src/billing/invoices.ts and the tests in __tests__/billing/.
+Propose a plan to add partial refunds with line-item granularity.
+Do not implement yet.
+```
+
+Zwróć uwagę na to, czego brakuje: żadnego „jak", żadnych podpowiedzi co do plików, żadnych sugestii architektonicznych. Chcesz najpierw interpretacji agenta, nie swojej odbitej z powrotem.
+
+**Krok 2 — Otwórz plan w swoim edytorze.**
+
+Przeciągnij output planu do roboczego pliku `.md`. Czytaj go tak, jakbyś recenzował opis PR-a juniora. Zaznacz każde błędne założenie, każdy brakujący przypadek brzegowy, każdy plik, którego nie pomyślał tknąć.
+
+**Krok 3 — Odeślij zaadnotowany plan z powrotem, dosłownie.**
+
+```text
+Address all notes in this plan. Do not implement yet.
+<wklej zaadnotowany plan>
+```
+
+To sformułowanie jest celowe. „Address all notes, don't implement yet" to magiczne zdanie. Agent wyprodukuje poprawioną wersję planu. Czasem robisz to trzy razy. Pętla planowania jest tania w porównaniu ze złą implementacją.
+
+**Krok 4 — Dopiero teraz implementuj.**
+
+```text
+Implement the plan exactly as written. Do not deviate.
+Do not add features. Do not refactor adjacent code.
+```
+
+„Do not deviate" powstrzymuje najbardziej irytujące zachowanie Claude Code: usłużną poboczną misję. Jesteś w trybie implementacji, nie w trybie ulepszania.
+
+## opusplan: trick oszczędnościowy, o którym nikt nie mówi
+
+Oto jedno ustawienie, które zmieniło ekonomię mojego plan mode.
+
+```json
+{
+  "mode": "opusplan"
+}
+```
+
+To automatycznie kieruje planowanie do Opusa, a implementację do Sonneta. Opus jest 5x droższy w przeliczeniu na token, ale jakość rozumowania przy decyzjach architektonicznych jest zauważalnie inna. Implementacja jest w większości mechaniczna — Sonnet w zupełności wystarcza.
+
+Prawdziwe liczby z mojego własnego użycia, śledzone przez dwa tygodnie:
+
+| Tryb            | Koszt planu | Koszt impl. | Razem  | Wskaźnik poprawek |
+| --------------- | ----------- | ----------- | ------ | ----------------- |
+| Sam Sonnet      | $0.30       | $1.20       | $1.50  | 31%               |
+| Sam Opus        | $1.50       | $6.00       | $7.50  | 9%                |
+| opusplan (mix)  | $1.50       | $1.20       | $2.70  | 11%               |
+
+opusplan daje ci 95% jakości za 36% kosztu. To jedyny tryb, który polecam bez zastrzeżeń do pracy produkcyjnej.
+
+Jeśli używasz [sub-agentów Claude Code](/blog/claude-code-sub-agents-multi-agent-systems-guide) do zadań równoległych, opusplan naturalnie się rozszerza — orkiestrator planuje w Opusie, workery implementują w Sonnecie. Ten sam wzorzec, większa skala.
+
+## Ultraplan: co zmieniło się w kwietniu 2026
+
+Ultraplan wszedł we wczesny preview w kwietniu 2026 i zasługuje na własną sekcję, bo jego architektura jest inna.
+
+Lokalny plan mode działa wewnątrz twojej sesji terminalowej. Ultraplan szkicuje plan w chmurze Anthropic, wyświetla go w edytorze webowym, gdzie ty (lub kolega z zespołu) możecie go zaadnotować, a następnie albo uruchamia go zdalnie, albo ściąga z powrotem do twojej lokalnej sesji.
+
+```bash
+# Naszkicuj ultraplan z poziomu CLI
+claude ultraplan "refactor the auth middleware to support passkeys"
+
+# Otwiera edytor webowy z planem
+# Adnotujesz, zatwierdzasz albo przekazujesz koledze
+# Następnie albo:
+claude ultraplan --run <plan-id>       # wykonuje zdalnie
+claude ultraplan --pull <plan-id>      # wczytuje do lokalnej sesji
+```
+
+Ta zmiana ma znaczenie z trzech powodów:
+
+1. **Plany do przeglądu zespołowego.** Plany stają się artefaktami. Tech lead może zatwierdzić plan, nie będąc tym, kto go wykonuje. Dla zmian produkcyjnych w zespołach objętych regulacjami to ślad audytowy, którego brakowało.
+2. **Dłuższe horyzonty planowania.** Chmurowe okna kontekstu dla Ultraplan są większe niż sesje lokalne. Możesz planować w poprzek repozytoriów, które nie zmieściłyby się lokalnie.
+3. **Odklejenie od laptopa.** Plany istnieją dalej po zamknięciu terminala. Możesz przejrzeć wczorajszy plan przy kawie, zedytować go, a potem uruchomić.
+
+Kompromis kosztowy: Ultraplan nalicza obliczenia za sesje w chmurze. Do pracy solo na własnej maszynie lokalny plan mode jest tańszy. Do workflow zespołowych Ultraplan zwraca się już przy pierwszym nieporozumieniu, któremu zapobiegnie.
+
+## Kiedy plan mode zarabia na siebie
+
+Po roku używania wzorzec tego, kiedy plan mode ma znaczenie, jest jasny:
+
+**Używaj plan mode, gdy:**
+
+- Zmiany obejmują 3+ plików
+- Modyfikujesz nieznany ci kod
+- W grę wchodzą decyzje architektoniczne (czy to powinien być hook, middleware, czy serwis?)
+- Junior będzie czytał i recenzował output
+- Potrzebujesz śladu na papierze (compliance, praca po incydencie)
+- Orkiestrujesz pracę w poprzek równoległych [sesji git worktree](/blog/parallel-claude-code-sessions-git-worktrees-guide)
+
+**Pomiń plan mode, gdy:**
+
+- Zakres to jeden plik i mniej niż 50 linii
+- Już dokładnie wiesz, czego chcesz, i możesz wpisać to szybciej, niż przejrzeć plan
+- Prototypujesz i i tak wyrzucisz wynik
+- Zadanie jest mechaniczne — zmiana nazwy, przeformatowanie, dodanie brakującego typu
+
+Kiedyś czułem się winny, pomijając plan mode przy małych zadaniach. Przestałem. Planowanie dwulinijkowej poprawki to teatr.
+
+## Workflow debugowania
+
+Plan mode jest niedoceniany jako narzędzie do debugowania. Większość ludzi myśli o nim tylko w kontekście pracy nad funkcjami.
+
+```text
+Claude, I have a bug where submitting the form twice creates two orders.
+Do not fix it. Investigate and propose three possible root causes
+with evidence from the code.
+```
+
+Plan mode utrzymuje Claude w analizie tylko do odczytu. Dostajesz hipotezy uszeregowane według prawdopodobieństwa, z odwołaniami do plików. Następnie wybierasz tę, która pasuje do twojego rozumienia, i każesz mu naprawić wyłącznie to.
+
+Porównaj to z trybem domyślnym, gdzie Claude często łata pierwszą prawdopodobną przyczynę, jaką znajdzie, a ta często nie jest tą prawdziwą. Systematyczne debugowanie z plan mode odwzorowuje się niemal dokładnie na [dyscyplinę debugowania](/blog/debugging-memory-leaks-react-nextjs-guide), która zapobiega temu, by „poprawki" stawały się nowymi bugami.
+
+## Najczęstsze błędy
+
+Uruchamiam tę pętlę od roku. Tryby awarii się powtarzają.
+
+**Błąd 1: Pomijanie etapu adnotacji.**
+
+Prosisz o plan, czytasz go, wygląda w porządku, zatwierdzasz. Implementacja się wywala. Plan miał niewypowiedziane założenie — zwykle o strukturze istniejącego kodu — które było błędne.
+
+Rozwiązanie: zawsze wyślij przynajmniej jedną rundę uwag, nawet jeśli są drobne. Ta wymiana odsłania to, co pierwsze podejście przeoczyło.
+
+**Błąd 2: Pozwalanie planowi rosnąć bez ograniczeń.**
+
+Plany, które osiągają 200+ linii, to zapach ostrzegawczy. Claude nadmiernie specyfikuje, bo pierwotny prompt był niedospecyfikowany. Plan staje się własnym dokumentem do utrzymania. Jeśli ciągle uderzasz w ten sufit, właściwym kolejnym ruchem jest zwykle wyjście z plan mode w ogóle i napisanie porządnej [specyfikacji Spec Kit](/blog/spec-driven-development-spec-kit-claude-code-guide) — specyfikacje obsługują warstwę ustrukturyzowanych wymagań, którą plan mode próbuje udawać.
+
+Rozwiązanie: jeśli plan jest za długi, podziel zadanie. Każdy plan powinien pokrywać jeden dający się zrecenzować kawałek.
+
+**Błąd 3: Używanie plan mode wewnątrz plan mode.**
+
+Niektórzy zagnieżdżają planowanie — planują refaktor, a potem planują każdy plik w jego obrębie. To mnoży koszt tokenów bez poprawy jakości.
+
+Rozwiązanie: jeden plan na logiczną jednostkę pracy. Jeśli podzadanie jest na tyle złożone, że potrzebuje własnego planu, to jest osobnym zadaniem.
+
+**Błąd 4: Zapominanie o wyjściu.**
+
+Plan mode jest lepki. `Shift+Tab` włącza go i wyłącza, a ja straciłem rachubę, ile razy próbowałem coś zaimplementować i byłem zdezorientowany, dlaczego Claude wciąż odmawia edycji plików. Sprawdzaj stopkę terminala.
+
+## Plan mode spotyka skille i hooki
+
+Plan mode komponuje się z resztą zestawu narzędzi Claude Code w sposoby, które nie są oczywiste.
+
+Za pomocą [skilli](/blog/claude-code-skills-reusable-ai-workflows-guide) możesz zakodować konwencje planowania swojego zespołu. Skill `.claude/skills/feature-planning.md` aktywuje się, gdy prompt zawiera „plan a feature", i wstrzykuje twój szablon — wymagane sekcje, kwestie rollbacku, oczekiwania co do pokrycia testami.
+
+Za pomocą [hooków](/blog/claude-code-hooks-custom-agents-ai-pipelines-guide) możesz uzależnić implementację od zatwierdzenia planu. Hook `PreToolUse` na `Edit` i `Write` może sprawdzać obecność pliku planu w `.claude/plans/`, zanim dopuści modyfikacje. Nie ma planu — nie ma edycji. To dyscyplina zespołowa, której twój CLAUDE.md nie jest w stanie wyegzekwować.
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "command": ".claude/hooks/require-plan.sh"
+      }
+    ]
+  }
+}
+```
+
+Tak zamieniasz plan mode z osobistego nawyku w zespołową barierkę ochronną.
+
+## Kiedy NIE planować
+
+Nie chcę tego przesadnie sprzedawać. Plan mode nie jest uniwersalnym dobrem.
+
+Prototypowanie to najwyraźniejszy kontrprzykład. Gdy eksplorujesz bibliotekę po raz pierwszy, cały sens tkwi w tym, by zobaczyć, co się stanie. Planowanie zakłada, że wiesz dość, by przewidzieć wyniki. Gdybyś wiedział dość, nie prototypowałbyś.
+
+Praca kreatywna — dokumentacja, nazewnictwo, projektowanie API — to kolejne słabe dopasowanie. Plany krystalizują decyzje zbyt wcześnie. Chcesz iterować nad samą rzeczą, nie nad planem tej rzeczy.
+
+A przy sesjach pair programmingu, gdy piszesz obok Claude, plan mode przerywa flow. Efektywnie już planujesz — na głos, w strumieniu promptów.
+
+Narzędzie jest dobre. Wiedzieć, kiedy je odłożyć, jest lepsze.
+
+## Produkcyjna checklista
+
+Zanim wypchniesz zmianę przez plan mode:
+
+- [ ] Plan ma poniżej 150 linii
+- [ ] Zastosowano przynajmniej jedną rundę adnotacji
+- [ ] Plan explicite wspomina o pokryciu testami
+- [ ] Plan wskazuje pliki, które się NIE zmienią (granica zakresu)
+- [ ] Plan zawiera kwestię rollbacku
+- [ ] Prompt implementacyjny zawiera „do not deviate"
+- [ ] Etap weryfikacji jest zaplanowany, nie improwizowany
+
+Checklista jest nudna. Zapobiega też 80% poprawek, które kiedyś wypuszczałem.
+
+## Co właściwie zmieniłem
+
+Rok temu traktowałem plan mode jako siatkę bezpieczeństwa dla początkujących. Myliłem się.
+
+Im bardziej seniorski się stajesz, tym bardziej plan mode zarabia na siebie. Nie dlatego, że potrzebujesz zabezpieczenia, ale dlatego, że koszt pomyłki co do kierunku zmiany rośnie razem z rozmiarem twojej bazy kodu i rozmiarem twojego zespołu. Plan mode to sposób, by wypchnąć ten koszt na przód — tanio — zamiast płacić go na końcu — drogo.
+
+Wybierz jedną rzecz na ten tydzień. Dodaj `"mode": "opusplan"` do swoich ustawień. Napisz jeden hook `require-plan.sh`. Wypróbuj Ultraplan na średniej wielkości refaktorze. Każda z tych rzeczy zajmuje 30 minut i zwraca się przez resztę roku.
+
+## References
+
+### Źródła
+
+- [Claude Code Common Workflows](https://code.claude.com/docs/en/common-workflows) — oficjalna aktywacja i zachowanie plan mode
+- [What Actually Is Claude Code's Plan Mode?](https://lucumr.pocoo.org/2025/12/17/what-is-plan-mode/) — rozbiór modelu mentalnego autorstwa Armina Ronachera
+- [Ultra Plan vs Local Plan Mode](https://www.mindstudio.ai/blog/claude-code-ultra-plan-vs-local-plan-mode) — porównanie kosztu i szybkości
+- [Claude Code Best Practices](https://code.claude.com/docs/en/best-practices) — oficjalne wskazówki Anthropic dotyczące pętli planowania
+- [Claude Code April 2026 Changelog](https://help.apiyi.com/en/claude-code-changelog-2026-april-updates-en.html) — informacje o wydaniu Ultraplan
+
+### Dalsza lektura
+
+- [Claude Code Deep Thinking Techniques](https://claudefa.st/blog/guide/performance/deep-thinking-techniques) — jak rozszerzone myślenie współgra z plan mode
+- [Plan Mode in Claude Code](https://codewithmukesh.com/blog/plan-mode-claude-code/) — przepracowane przykłady dla zmian wieloplikowych
+- [Adaptive Thinking API Docs](https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking) — mechanizm budżetu myślenia po stronie modelu
+
+---
+
+~Seb 👊

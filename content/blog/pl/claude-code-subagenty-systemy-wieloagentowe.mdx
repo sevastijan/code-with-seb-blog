@@ -1,0 +1,531 @@
+---
+title: 'Subagenty Claude Code: 90% wzrostu wydajności, o którym nikt nie mówi'
+date: '2026-01-15'
+category: 'AI'
+tags: ['claude-code', 'ai-agents', 'multi-agent-systems', 'developer-tools', 'productivity']
+featured: false
+author: 'Sebastian'
+draft: false
+enSlug: 'claude-code-sub-agents-multi-agent-systems-guide'
+excerpt: 'Wewnętrzne testy Anthropic pokazują, że systemy multi-agent biją pojedyncze agenty o 90%. Oto jak budować gotowe do produkcji wzorce orchestration z optymalizacją kosztów.'
+---
+
+Większość użytkowników Claude Code zostawia 90% wydajności na stole. Nie dlatego, że brakuje im umiejętności, ale dlatego, że każdy dostępny tutorial kończy się na "oto jak napisać konfigurację YAML".
+
+Zespół badawczy Anthropic opublikował coś niezwykłego: ich system multi-agent z Claude Opus 4 jako liderem i subagentami Sonnet 4 **przewyższył pojedynczy Claude Opus 4 o 90,2%** w złożonych zadaniach badawczych. To nie jest marginalna poprawa. To prawie podwojenie jakości Twoich wyników.
+
+A jednak większość deweloperów, z którymi rozmawiam, albo w ogóle nie używa subagentów, albo używa ich jak wystawnych wywołań funkcji. Pokażę Ci, co Cię omija.
+
+## Czym są subagenty Claude Code (szybkie wprowadzenie)
+
+Subagent to wyspecjalizowany asystent AI, który działa we własnym oknie kontekstu. Pomyśl o nim jak o odpaleniu skoncentrowanego pracownika, który zajmuje się jednym konkretnym zadaniem, zwraca wyniki i znika — utrzymując Twoją główną konwersację w czystości.
+
+Każdy subagent dostaje:
+
+- **Własne okno kontekstu 200K** (świeże, nieobciążone)
+- **Niestandardowy system prompt** (instrukcje specyficzne dla domeny)
+- **Ograniczenia narzędzi** (tylko to, czego potrzebuje)
+- **Niezależne uprawnienia** (wykonanie w piaskownicy)
+
+Kluczowy wniosek: subagenty nie mogą tworzyć własnych subagentów. Zapobiega to nieskończonemu zagnieżdżaniu i utrzymuje architekturę przewidywalną.
+
+```
+┌─────────────────────────────────────────────┐
+│           Main Claude Agent                 │
+│         (Orchestrator - Opus)               │
+├─────────────────────────────────────────────┤
+│                    │                        │
+│    ┌───────────────┼───────────────┐        │
+│    ▼               ▼               ▼        │
+│ ┌──────┐      ┌──────┐      ┌──────┐        │
+│ │Explore│      │ Plan │      │Custom│        │
+│ │(Haiku)│      │(Sonnet)│    │Agent │        │
+│ └──────┘      └──────┘      └──────┘        │
+└─────────────────────────────────────────────┘
+```
+
+## Wbudowane vs niestandardowe: kiedy który ma sens
+
+Claude Code jest dostarczany z trzema wbudowanymi subagentami. Zanim stworzysz własne, zrozum, co już masz.
+
+### Wbudowany: Explore
+
+**Najlepszy do:** przeszukiwania i analizowania baz kodu bez modyfikacji.
+
+Explore jest tylko do odczytu i zoptymalizowany pod kątem szybkości. Gdy pytasz Claude "gdzie jest zaimplementowane X?", deleguje on do Explore, który potrafi przeskanować całą Twoją bazę kodu bez zanieczyszczania głównego kontekstu.
+
+```bash
+# Claude automatycznie używa Explore, gdy pytasz:
+"Find all usages of the AuthService class"
+"What files handle payment processing?"
+"Show me the test coverage for the user module"
+```
+
+Claude określa dokładność: **quick** dla ukierunkowanych wyszukiwań, **medium** dla zrównoważonej eksploracji, **very thorough** dla wszechstronnej analizy.
+
+### Wbudowany: Plan
+
+**Najlepszy do:** zbierania kontekstu przed przedstawieniem planów implementacji.
+
+Gdy wchodzisz w tryb plan (`/plan`), Claude deleguje research do subagenta Plan. Eksploruje on Twoją bazę kodu, rozumie wzorce i zwraca ustalenia, aby Claude mógł zaproponować spójną strategię. [Pełny produkcyjny workflow trybu Plan Mode](/blog/claude-code-plan-mode-ultraplan-production-guide) szczegółowo omawia pętlę adnotacji i sztuczkę kosztową `opusplan`.
+
+### Wbudowany: general-purpose
+
+**Najlepszy do:** złożonych, wieloetapowych zadań wymagających zarówno eksploracji, jak i działania.
+
+To ciężka artyleria. Claude deleguje do general-purpose, gdy zadania wymagają rozumowania w wielu zależnych krokach. To agent typu "muszę się nad tym zastanowić".
+
+### Kiedy budować niestandardowe subagenty
+
+Buduj niestandardowe subagenty, gdy:
+
+1. **Potrzebujesz wiedzy specyficznej dla domeny** (audyt bezpieczeństwa pod kątem [ataków prompt injection](/blog/prompt-injection-attacks-llm-security-guide), profilowanie wydajności)
+2. **Chcesz opiniotwórczego zachowania** (egzekwowanie standardów kodowania, odrzucanie złych wzorców — możesz nawet [wbudować hooki bezpośrednio w definicje agentów](/blog/claude-code-hooks-custom-agents-ai-pipelines-guide) dla twardych zabezpieczeń)
+3. **Potrzebujesz kontroli kosztów** (kierowanie prostych zadań do Haiku)
+4. **Masz powtarzalne workflow** (code review, generowanie dokumentacji)
+
+**Nie buduj niestandardowych subagentów, gdy:**
+
+- Wbudowane agenty już obsługują Twój przypadek użycia
+- Wykonujesz jednorazowe zadania
+- Chcesz, aby agent wykonywał pracę implementacyjną (więcej o tym poniżej)
+
+## Wzorzec orchestrator-worker: sekretny sos Anthropic
+
+Oto czego większość tutoriali nie zauważa: architektury, która dostarczyła tej 90% poprawy.
+
+System badawczy Anthropic używa **wzorca orchestrator-worker**:
+
+1. **Lead agent (Orchestrator)** — Opus 4, analizuje zapytania, opracowuje strategię, koordynuje
+2. **Subagenty (Workers)** — Sonnet 4, eksplorują konkretne aspekty równolegle
+3. **System pamięci** — utrwala kontekst, gdy konwersacje przekraczają 200K tokenów
+
+Lead agent nie wykonuje czarnej roboty. Myśli strategicznie, a deleguje taktycznie. Jeśli ręczne okablowanie tej orchestration brzmi jak praca, to jest — a od Opus 4.8 możesz pozwolić Claude wygenerować ją za Ciebie za pomocą [dynamicznych workflow, które odpalają setki równoległych subagentów](/blog/claude-code-dynamic-workflows-parallel-subagents-guide) z jednego promptu.
+
+```typescript
+// Koncepcyjny przepływ (nie faktyczne API)
+async function researchTask(query: string) {
+  // Orchestrator analizuje i planuje
+  const strategy = await orchestrator.plan(query)
+
+  // Odpalenie równoległych workerów
+  const results = await Promise.all([
+    subagent.explore('documentation', strategy.docQueries),
+    subagent.explore('codebase', strategy.codeQueries),
+    subagent.explore('issues', strategy.issueQueries),
+  ])
+
+  // Orchestrator syntetyzuje
+  return orchestrator.synthesize(results)
+}
+```
+
+**Kluczowy wniosek z badań Anthropic:** zużycie tokenów wyjaśnia 80% wariancji wydajności. Więcej tokenów = lepsze wyniki. Systemy multi-agent zużywają ~15x więcej tokenów niż interakcje czatowe, ale ta inwestycja zwraca się w jakości — pod warunkiem, że zastosujesz [praktyki optymalizacji tokenów](/blog/claude-code-token-optimization-bill-cut-guide), które zapobiegają temu, by 15x zamieniło się w 50x.
+
+## Tworzenie pierwszego niestandardowego subagenta
+
+Subagenty to pliki Markdown z frontmatterem YAML. Lokalizacja określa zakres:
+
+| Lokalizacja         | Zakres                          |
+| ------------------- | ------------------------------- |
+| `~/.claude/agents/` | Wszystkie projekty (poziom użytkownika) |
+| `.claude/agents/`   | Tylko bieżący projekt           |
+
+### Podstawowa struktura
+
+```markdown
+---
+name: security-reviewer
+description: Reviews code for security vulnerabilities and OWASP Top 10 issues
+model: sonnet
+tools:
+  - Read
+  - Grep
+  - Glob
+---
+
+You are a security-focused code reviewer. Your job is to identify vulnerabilities, not fix them.
+
+## What to Check
+
+- SQL injection vectors
+- XSS vulnerabilities
+- Authentication bypasses
+- Sensitive data exposure
+- Security misconfigurations
+
+## Response Format
+
+Return findings as:
+
+1. Severity (Critical/High/Medium/Low)
+2. Location (file:line)
+3. Issue description
+4. Remediation suggestion
+
+Be thorough but concise. Only report actual vulnerabilities, not style issues.
+```
+
+### Używanie komendy /agents
+
+Sposób interaktywny:
+
+```bash
+# W Claude Code
+/agents
+# → Zobacz wszystkie dostępne subagenty
+# → Utwórz nowego agenta (kreator konfiguracji)
+# → Edytuj istniejące konfiguracje
+```
+
+### Kluczowe opcje konfiguracji
+
+```yaml
+---
+name: code-documenter # Identyfikator (unikaj opisowych nazw - patrz pułapki)
+description: Generates JSDoc... # Kiedy Claude powinien użyć tego agenta
+model: haiku # haiku | sonnet | opus
+tools: # Ogranicz dostępne narzędzia
+  - Read
+  - Glob
+  - Grep
+# Uwaga: Nigdy nie dodawaj 'Task' - subagenty nie mogą tworzyć subagentów
+---
+```
+
+## Strategia doboru modelu: 70% redukcji kosztów
+
+Tutaj większość deweloperów zostawia pieniądze na stole. Strategiczny dobór modelu może obniżyć koszty o 70% bez poświęcania jakości. (Przy rodzinie Claude 5 ma to jeszcze większe znaczenie — napisałem dedykowany [playbook routingu modeli Fable 5](/blog/fable-5-claude-code-model-routing-playbook) dla czteropoziomowej linii.)
+
+### Macierz decyzyjna
+
+| Typ zadania                    | Model      | Dlaczego                                       |
+| ------------------------------ | ---------- | ---------------------------------------------- |
+| Code review, linting, docs     | **Haiku**  | Szybki, tani, wzorce są dobrze zdefiniowane    |
+| Zmiany w wielu plikach, debugowanie | **Sonnet** | Zrównoważone rozumowanie, rekomendacja Anthropic |
+| Architektura, nowatorskie problemy | **Opus**   | Głębokie rozumowanie, warte 5x premii          |
+
+### Dynamiczny dobór w praktyce
+
+```yaml
+# .claude/agents/quick-reviewer.md
+---
+name: quick-reviewer
+model: haiku # Szybkie kontrole
+tools: [Read, Grep]
+---
+# .claude/agents/deep-analyzer.md
+---
+name: deep-analyzer
+model: opus # Złożone rozumowanie
+tools: [Read, Grep, Glob, Bash]
+---
+```
+
+### Realne porównanie kosztów
+
+Z benchmarków produkcyjnych:
+
+| Konfiguracja agenta | Czas | Koszt | Dokładność |
+| ------------------- | ---- | ----- | ---------- |
+| Haiku 4.5           | 8s   | $0.03 | 60%        |
+| Sonnet 4.5          | 45s  | $0.24 | 85%        |
+| Opus 4.5            | 2min | $1.20 | 95%        |
+
+**Pro tip:** Zacznij od Sonnet (`claude --model sonnet`), przełącz się na Opus przy złożonym refaktoringu (`/model opus`), zejdź do Haiku przy operacjach masowych (`/model haiku`).
+
+## 5 częstych błędów, które marnują ponad 700K tokenów
+
+Pewien issue na GitHubie udokumentował krytyczne wzorce marnujące tokeny z rzeczywistego użycia produkcyjnego. Oto czego unikać.
+
+### Błąd #1: Używanie subagentów do implementacji
+
+Adam Wolf z zespołu Claude Code jest jednoznaczny: **"Subagenty działają najlepiej, gdy tylko szukają informacji i dostarczają niewielkie podsumowanie z powrotem do głównego wątku konwersacji."**
+
+```markdown
+# ❌ Źle: subagent implementacyjny
+
+---
+
+name: feature-implementer
+description: Implements new features end-to-end
+tools: [Read, Write, Edit, Bash]
+
+---
+
+# ✅ Dobrze: subagent badawczy
+
+---
+
+name: feature-researcher
+description: Analyzes codebase to understand implementation patterns
+tools: [Read, Grep, Glob]
+
+---
+```
+
+### Błąd #2: Dawanie wszystkich narzędzi każdemu agentowi
+
+Zezwalanie każdemu agentowi na dostęp do wszystkich narzędzi powoduje:
+
+- Przekraczanie uprawnień przez agenty
+- Nadmiarowe wykonywanie zadań
+- Zanieczyszczenie kontekstu
+- Ogromne marnotrawstwo tokenów
+
+```yaml
+# ❌ Źle
+tools: [Read, Write, Edit, Bash, Grep, Glob, WebSearch, WebFetch]
+
+# ✅ Dobrze
+tools: [Read, Grep]  # Tylko to, co potrzebne
+```
+
+### Błąd #3: Opisowe nazwy agentów
+
+Oto paskudna pułapka: Claude Code wnioskuje zachowanie subagenta z jego nazwy. Agent `code-reviewer` dostaje predefiniowane generyczne reguły, które **po cichu nadpisują Twoje instrukcje**.
+
+```yaml
+# ❌ Źle - Claude stosuje domyślne zachowanie "code-reviewer"
+name: code-reviewer
+
+# ✅ Dobrze - Użyj nieopisowych nazw
+name: cr-alpha
+name: reviewer-7x
+```
+
+### Błąd #4: Ignorowanie kompaktowania kontekstu
+
+Preferencje i ostrzeżenia użytkownika są tracone po kompaktowaniu kontekstu. Widziałem, jak to marnuje ponad 80K tokenów na każde powtórzenie, gdy agent popełnia ten sam błąd w kółko.
+
+**Rozwiązanie:** Umieść krytyczne ograniczenia w [pliku `CLAUDE.md`](/blog/claude-md-memory-persistent-context-guide), który przetrwa kompaktowanie.
+
+### Błąd #5: Równoległe edycje plików bez koordynacji
+
+Nie ma wbudowanego mechanizmu zapobiegającego jednoczesnej edycji tych samych plików przez agenty. Powoduje to konflikty, błędy kompilatora i zmarnowaną pracę.
+
+```markdown
+# W CLAUDE.md dodaj jawne reguły koordynacji:
+
+## File Edit Policy
+
+- Only ONE agent may edit a file at a time
+- Use file locks (create .lock files) before editing
+- Announce file edits in agent output
+```
+
+## Debugowanie, gdy agenty zawodzą: techniki, które działają
+
+Agenty zawodzą. Oto jak diagnozować i odzyskiwać.
+
+### Włącz tryb debug
+
+```bash
+claude --mcp-debug
+```
+
+To ujawnia:
+
+- Który subagent został wywołany
+- Jakie narzędzia zostały wywołane
+- Gdzie wystąpiła awaria
+
+### Częste wzorce awarii
+
+**1. Błędy składni frontmattera YAML**
+
+Po cichu ignorowane. Twój agent się nie załaduje, a Ty nie będziesz wiedzieć dlaczego.
+
+```yaml
+# ❌ Źle - brak cudzysłowów wokół description ze znakami specjalnymi
+description: Reviews code for "security" issues
+
+# ✅ Dobrze
+description: 'Reviews code for "security" issues'
+```
+
+**2. Niezgodność wersji CLI**
+
+Agenty przestają się ładować po aktualizacjach. Napraw:
+
+```bash
+claude --version  # Sprawdź bieżącą
+npm update -g @anthropic-ai/claude-code  # Zaktualizuj
+```
+
+**3. Subagent się nie wyzwala**
+
+Sprawdź pole `description`. Claude dopasowuje zadania do opisów. Mgliste opisy = brak delegacji.
+
+```yaml
+# ❌ Zbyt mgliste
+description: Helps with code
+
+# ✅ Konkretne warunki wyzwalania
+description: Analyzes TypeScript files for type safety issues when user asks about types or encounters type errors
+```
+
+### Strategia odzyskiwania
+
+Gdy błędy pojawiają się w trakcie zadania:
+
+1. **Nie zaczynaj od zera** — restarty są kosztowne
+2. **Buduj punkty wznowienia** — zapisuj stan pośredni do plików
+3. **Pozwól agentom się adaptować** — poinformuj je o awariach, dostosowują się zaskakująco dobrze
+
+```markdown
+# W Twoim prompcie po awarii:
+
+"The previous attempt failed at step 3 with error X.
+Resume from step 3, accounting for this constraint."
+```
+
+## Przykład z życia: refaktoring wielu plików
+
+Zrefaktorujmy przestarzałą funkcję używaną w 75 plikach — rodzaj zadania, w którym multi-agent błyszczy.
+
+### Konfiguracja
+
+```markdown
+# .claude/agents/refactor-scout.md
+
+---
+
+name: refactor-scout
+description: Finds all usages of deprecated functions across codebase
+model: haiku
+tools: [Grep, Glob, Read]
+
+---
+
+Find all usages of the specified function. Return:
+
+- File path
+- Line number
+- Current usage context (surrounding 3 lines)
+- Suggested replacement pattern
+```
+
+### Orchestration (w CLAUDE.md)
+
+```markdown
+## Refactoring Workflow
+
+When deprecating a function:
+
+1. Use refactor-scout to find ALL usages
+2. Group findings by file
+3. Process files sequentially (never parallel edits)
+4. Run tests after each file
+5. If tests fail, revert and flag for manual review
+```
+
+### Wykonanie
+
+```text
+Ty: "Deprecate the getCwd function, replace with getCurrentWorkingDirectory"
+
+Claude: I'll use the refactor-scout agent to find all usages first.
+
+[Odpala refactor-scout - 8 sekund z Haiku]
+
+Found 75 usages across 23 files. Grouped by module:
+- auth/ (12 files, 28 usages)
+- api/ (8 files, 31 usages)
+- utils/ (3 files, 16 usages)
+
+Processing auth/session.ts first...
+```
+
+To podejście:
+
+- Używa taniego Haiku do wykrywania
+- Utrzymuje główny kontekst w czystości
+- Przetwarza sekwencyjnie, by uniknąć konfliktów
+- Waliduje po każdej zmianie
+
+## Kiedy NIE używać multi-agent (szczera prawda)
+
+Multi-agent nie zawsze jest lepszy. Własne badania Anthropic identyfikują słabe dopasowania:
+
+### Nie używaj multi-agent, gdy:
+
+**1. Zadania wymagają współdzielonego kontekstu**
+
+Jeśli wszystkie agenty muszą jednocześnie widzieć te same informacje, multi-agent dodaje narzut bez korzyści.
+
+**2. Wysoka współzależność między krokami**
+
+Zadania sekwencyjne, w których każdy krok zależy od poprzedniego, nie zrównoleglają się. Dodajesz tylko narzut koordynacji.
+
+**3. Proste, skoncentrowane zadania**
+
+Przy prostych zmianach w 1-3 plikach pojedynczy agent jest szybszy i tańszy.
+
+**4. Zadania kodowania (zazwyczaj)**
+
+Anthropic zauważa: "Większość zadań kodowania obejmuje mniej naprawdę zrównoleglalnych zadań niż research." Wbudowany agent Explore obsługuje większość potrzeb rozumienia kodu.
+
+### Sprawdzenie rzeczywistości 15x tokenów
+
+Systemy multi-agent zużywają około **15x więcej tokenów** niż interakcje czatowe. To nie błąd — to koszt równoległej eksploracji.
+
+Zrób matematykę:
+
+- Prosty czat: ~2K tokenów
+- Pojedynczy agent: ~8K tokenów (4x)
+- Multi-agent: ~30K tokenów (15x)
+
+Jeśli Twoje zadanie nie zyskuje na równoległej eksploracji, po prostu palisz pieniądze.
+
+## Checklist produkcyjny
+
+Zanim wdrożysz workflow multi-agent:
+
+### Konfiguracja agentów
+
+- [ ] Każdy agent ma JEDEN jasny cel
+- [ ] Narzędzia są ograniczone do wymaganego minimum
+- [ ] Nazwy są nieopisowe (unikaj wnioskowania zachowań)
+- [ ] Opisy określają dokładne warunki wyzwalania
+- [ ] Składnia YAML zwalidowana (użyj lintera)
+
+### Kontrola kosztów
+
+- [ ] Haiku do zadań o dużej objętości, dopasowywania wzorców
+- [ ] Sonnet do zrównoważonego rozumowania (domyślny)
+- [ ] Opus zarezerwowany dla architektury i nowatorskich problemów
+- [ ] Zużycie tokenów monitorowane per workflow
+
+### Obsługa błędów
+
+- [ ] Dostępny tryb debug (`--mcp-debug`)
+- [ ] Punkty odzyskiwania zdefiniowane w CLAUDE.md
+- [ ] Reguły koordynacji edycji plików udokumentowane
+- [ ] Krytyczne ograniczenia przetrwają kompaktowanie kontekstu
+
+### Testowanie
+
+- [ ] Agenty przetestowane indywidualnie przed orchestration
+- [ ] Konflikty równoległego wykonania zidentyfikowane
+- [ ] Zachowanie awaryjne zdefiniowane dla awarii
+
+## Źródła
+
+### Źródła
+
+- [Claude Code Sub-agents Documentation](https://code.claude.com/docs/en/sub-agents) - Oficjalna referencja składni YAML i wbudowanych agentów
+- [How we built our multi-agent research system](https://www.anthropic.com/engineering/multi-agent-research-system) - Architektura Anthropic i dane o wydajności 90,2%
+- [Community Learnings: 7 Critical Token-Wasting Patterns](https://github.com/anthropics/claude-code/issues/13579) - Rzeczywiste dane produkcyjne o marnotrawstwie tokenów
+- [Best practices for Claude Code subagents](https://www.pubnub.com/blog/best-practices-for-claude-code-sub-agents/) - Doświadczenie PubNub z produkcyjnym pipeline'em
+
+### Dalsza lektura
+
+- [VoltAgent/awesome-claude-code-subagents](https://github.com/VoltAgent/awesome-claude-code-subagents) - Ponad 100 gotowych do produkcji szablonów subagentów
+- [Claude Agent SDK: Build Production AI Agents in TypeScript](/blog/claude-agent-sdk-typescript-production-guide) - Kompletny przewodnik budowania niestandardowych agentów z SDK
+- [Claude Code Remote Control & Dispatch](/blog/claude-code-remote-control-dispatch-guide) - Programatyczna kontrola agentów dla pipeline'ów headless
+- [Claude Code Model Configuration](https://code.claude.com/docs/en/model-config) - Oficjalny przewodnik doboru Haiku/Sonnet/Opus
+
+---
+
+~Seb 👊
