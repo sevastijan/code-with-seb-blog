@@ -1,0 +1,233 @@
+---
+title: 'Signals Won 2026 — Except in React: A Fine-Grained Reactivity Guide'
+date: '2026-07-16'
+category: 'Development'
+tags: ['signals', 'frontend', 'react', 'svelte', 'solidjs']
+featured: false
+author: 'Sebastian'
+draft: true
+excerpt: 'Svelte 5, SolidJS, Angular, and Vue all rebuilt on signals — and TC39 wants them in the language itself. React deliberately sat it out. Here is what fine-grained reactivity actually is, how the syntax compares across frameworks, and what it means if you write React every day.'
+---
+
+Open the TC39 Signals proposal and read the acknowledgements: Angular, Solid, Vue, Svelte, Preact, Qwik, MobX. Then notice who isn't there. React — the framework that most developers reach for by default — is the one major name missing from the group trying to standardize reactivity in JavaScript itself.
+
+That's not an accident, and it's not an oversight. It's a bet. Every other framework spent the last two years converging on **fine-grained reactivity** built out of signals, while React doubled down on a compiler and its "re-render everything, then diff" model. In 2026 that split is the single most important architectural fault line in frontend, and most React developers I talk to still can't explain what a signal actually is.
+
+So let's fix that. This is the practical version: what fine-grained reactivity means, how the syntax compares across Svelte 5, SolidJS, Angular, and Vue, why React said no, and — the part nobody writes about honestly — what you should actually *do* about it if React pays your bills.
+
+## What "fine-grained reactivity" actually means
+
+Here's the whole idea in one sentence: **a signal tracks which specific values changed and updates only the DOM nodes that depend on them, instead of re-rendering an entire component tree and diffing the result.**
+
+React's model is coarse-grained. When state changes, React re-runs your component function, builds a new virtual DOM tree, and reconciles it against the old one to figure out what to touch. It's a pull model — React asks "what does the UI look like now?" and works backwards. It's brilliant, it's predictable, and it does a lot of work you never see.
+
+Signals invert that. They form a dependency graph at runtime. A writable signal holds a value; computed signals derive from it; effects subscribe to it. When the value changes, the runtime already *knows* exactly which computeds and effects are downstream, so it re-runs only those. Nothing re-renders. There's no diff. The component function that created the signal typically runs **once**, ever.
+
+That's the "fine-grained" part — the granularity of an update is a single value binding, not a component. And the gap it produces on benchmarks isn't subtle: Solid and Svelte 5 sit at the top of the JS Framework Benchmark, and the distance between them and virtual-DOM frameworks is far larger than the distance between the two of them.
+
+## The syntax, side by side
+
+Every signals framework has the same three primitives under different names: **state** (writable), **computed/derived** (read-only, cached), and **effect** (side effects that re-run when dependencies change). Once you see that, the frameworks stop looking exotic.
+
+### SolidJS — signals as explicit function calls
+
+Solid is the purest expression of the model. Signals are functions. You *call* them to read.
+
+```jsx
+import { createSignal, createMemo, createEffect } from "solid-js";
+
+function Counter() {
+  const [count, setCount] = createSignal(0);
+  const doubled = createMemo(() => count() * 2); // cached derived value
+
+  createEffect(() => {
+    console.log("count is now", count()); // re-runs only when count changes
+  });
+
+  // This function body runs ONCE. The JSX below is compiled into
+  // direct DOM updates wired to the signals — no re-render.
+  return (
+    <button onClick={() => setCount(count() + 1)}>
+      {count()} (doubled: {doubled()})
+    </button>
+  );
+}
+```
+
+The mental adjustment for a React dev: `count` is not a value, it's a getter. If you destructure or pass `count()` too early, you read a snapshot and lose reactivity. The tradeoff for that discipline is that Solid never re-renders anything.
+
+### Svelte 5 — the same model, hidden by a compiler
+
+Svelte 5's runes are the exact same signals model, but the compiler lets you write plain-looking variables. There's no getter call — `$state` returns a value you mutate directly.
+
+```svelte
+<script>
+  let count = $state(0);
+  let doubled = $derived(count * 2);
+
+  $effect(() => {
+    console.log("count is now", count);
+  });
+</script>
+
+<button onclick={() => count++}>
+  {count} (doubled: {doubled})
+</button>
+```
+
+Svelte 5's runes were directly inspired by Solid's signal model — the difference is surface-level. Solid uses function calls (`count()`), Svelte uses compiler transforms so you can write `count` and `count++` directly. Crucially, runes work in `.svelte.js` files outside components too, so your reactive state isn't trapped inside the view layer.
+
+### Angular — signals as a first-class framework primitive
+
+Angular adopted signals to escape Zone.js and its "check everything on every event" change detection. By Angular 20 they're the native, zoneless default.
+
+```typescript
+import { Component, signal, computed, effect } from '@angular/core';
+
+@Component({
+  selector: 'app-counter',
+  template: `<button (click)="increment()">
+    {{ count() }} (doubled: {{ doubled() }})
+  </button>`,
+})
+export class CounterComponent {
+  count = signal(0);
+  doubled = computed(() => this.count() * 2);
+
+  constructor() {
+    effect(() => console.log('count is now', this.count()));
+  }
+
+  increment() {
+    this.count.update((n) => n + 1);
+  }
+}
+```
+
+Same three primitives, same read-by-calling convention as Solid. The payoff for Angular is enormous: fine-grained updates mean it can drop Zone.js entirely and stop re-checking the whole component tree on every click.
+
+### Vue — the framework that was already halfway there
+
+Vue has shipped `ref` and `computed` since Vue 3 in 2020, before "signals" was even the industry word for it. In the browser you read a ref through `.value`; in templates Vue unwraps it for you.
+
+```javascript
+import { ref, computed, watchEffect } from 'vue';
+
+const count = ref(0);
+const doubled = computed(() => count.value * 2);
+
+watchEffect(() => console.log('count is now', count.value));
+
+count.value++; // triggers only the downstream computed + effect
+```
+
+Vue 4 pushes this further with Vapor mode, which compiles components to direct DOM operations and drops the virtual DOM entirely for opted-in trees — closing most of the remaining gap to Solid.
+
+Look at those four snippets together and the convergence is obvious. Different keywords, one idea.
+
+## The proposal that could make this a language feature
+
+The reason 2026 feels like a turning point isn't any single framework — it's that TC39 is trying to move signals *into JavaScript itself*. The [Signals proposal](https://github.com/tc39/proposal-signals) reached Stage 1 in April 2024 with design input from the maintainers of nearly every framework listed at the top of this article.
+
+The core API is deliberately minimal — two types you'd actually touch, plus low-level machinery for framework authors:
+
+```javascript
+import { Signal } from "signal-polyfill";
+
+const count = new Signal.State(0);
+const doubled = new Signal.Computed(() => count.get() * 2);
+
+count.get();     // 0
+count.set(5);
+doubled.get();   // 10 — recomputed lazily, then cached
+```
+
+`Signal.State` is writable, `Signal.Computed` is derived and lazily cached, and a lower-level `Signal.subtle.Watcher` API is what frameworks use to build effects on top. The pitch is the same one that got Promises standardized after years of competing userland implementations: unify the primitive so libraries interoperate and the browser can optimize it natively.
+
+Be realistic about timelines, though. The proposal has sat at Stage 1 for over two years with no push to Stage 2 — by design. The authors decided to prove things out with production-grade polyfills before requesting advancement. So don't wait for it. Treat it as validation that the industry agrees on the shape of the answer, not as something shipping to your users this year.
+
+## Why React said no
+
+Here's the part that gets lost in the "React is behind" hot takes: React's absence is a **considered philosophical position**, argued publicly by the team.
+
+The React view, in Dan Abramov's framing, is roughly *"React was the fix to the problem that signals are."* Before React, fine-grained reactivity (think Knockout, early Angular) meant manually wiring up which things depended on which, and the bugs lived in the wiring. React's pitch was: stop thinking about dependencies, just describe the UI as a function of state, and let the framework figure out the updates. In React, **everything is reactive by default** — making something "computed" is an optimization you can add, not a requirement you write around.
+
+Signals flip that back. You have to decide, up front, what is state, what is derived, and what is an effect — and you have to structure your code inside-out to keep the graph intact. React's counterargument is that this reintroduces exactly the cognitive overhead it set out to remove, and that the semantics get murky at the edges (what does a signal declared inside an `if` even *mean* across renders?).
+
+So instead of signals, React bet on the **compiler**. If unnecessary re-renders are the real cost of the coarse-grained model, the React Compiler auto-memoizes components and hooks so you get near-signal performance without changing the mental model. Same destination — minimal wasted work — different road. If you want the deeper mechanics of that approach, I broke it down in my [React Compiler deep dive on automatic memoization](/blog/react-compiler-deep-dive-automatic-memoization-guide), and the underlying reconciliation it optimizes is covered in [the React Fiber internals piece](/blog/deep-dive-into-react-fiber-the-engine-behind-modern-react).
+
+Whether that bet pays off is the open question of the next two years. Even inside the React team the door isn't fully shut — some members are open to signals as *an implementation detail of the compiler*, just not as an API you write against.
+
+## Can you use signals in React today? (Yes, sort of)
+
+You don't have to leave React to taste this. A few honest options:
+
+**Preact Signals for React.** The `@preact/signals-react` package brings real signals into a React app. A `.value` read inside a component subscribes that component to the signal, and only components reading a changed signal re-render — genuinely more fine-grained than raw `useState`.
+
+```jsx
+import { signal } from "@preact/signals-react";
+
+const count = signal(0); // lives outside the component — no re-mount resets it
+
+function Counter() {
+  // reading .value subscribes THIS component; siblings that don't read it won't re-render
+  return <button onClick={() => count.value++}>{count.value}</button>;
+}
+```
+
+**Signal-flavored state libraries.** Jotai, Valtio, and Zustand all lean on the same idea — subscribe to slices of state so unrelated components don't re-render. They're not the TC39 primitive, but they solve the same practical problem inside React's model, and they interoperate with `useSyncExternalStore`, which is React's official hook for subscribing to external stores.
+
+**Just reach for `useSyncExternalStore`.** If you're building a library and want signal-like external reactivity without a dependency, this is the sanctioned escape hatch. It's what the state libraries build on.
+
+My honest take: don't bolt Preact signals onto a large existing React codebase just to chase the trend. The value is real when a specific hot path — a high-frequency cursor position, a live chart, a design-tool canvas — is drowning in re-renders. For that, reach for a targeted store or signals library. For everything else, the React Compiler is the on-ramp you already have.
+
+## Where it actually matters: interaction latency
+
+Fine-grained reactivity isn't an academic win. It shows up directly in **Interaction to Next Paint (INP)**, the Core Web Vital that replaced First Input Delay. INP measures how long the UI takes to visually respond after a user interacts — and the coarse-grained "re-render the tree, diff it, commit" cycle is exactly the kind of main-thread work that inflates it under load.
+
+On a dashboard with thousands of live rows, a signals framework updates the three cells that changed and nothing else. A virtual-DOM framework reconciles the tree and leans on memoization to *avoid* work it would otherwise do. Both can hit a good INP — but signals get there by structural default, while React gets there by you (or the compiler) doing the optimization work. If you care about interaction latency at scale, this is the concrete reason the debate isn't just aesthetics — and it pairs directly with the discipline I covered in [performance budgets for frontend engineers](/blog/performance-budgets-frontend-engineers-guide).
+
+## Gotchas nobody warns you about
+
+If you migrate a React brain into signals, these are the traps:
+
+- **Reading too early breaks reactivity.** In Solid, passing `count()` instead of `count` hands over a dead snapshot. In Vue, destructuring a reactive object loses the tracking. The dependency graph only works if you read *inside* the reactive scope.
+- **Effects are not `useEffect`.** A signals `effect` has no dependency array — it tracks automatically by reading signals. That's less boilerplate but a different failure mode: read a signal you didn't mean to track and your effect fires more than you expect.
+- **Stale closures move, they don't vanish.** Signals kill the classic React stale-closure bug (the value is always current), but introduce the inverse — forget to make something a signal and it silently never updates.
+- **The component-runs-once model surprises everyone.** Console logs, local `let`s, and setup code run a single time in Solid and Svelte. React devs instinctively expect the body to re-run; it doesn't.
+- **AI assistants are unreliable here.** Models trained on years of React and Svelte 3/4 examples still hallucinate old syntax — suggesting stores where you want runes, or `$:` reactive statements that Svelte 5 replaced. Verify generated signals code against the current docs.
+
+## Testing and debugging
+
+Testing signals is refreshingly direct: because state lives outside the render cycle, you can create a signal, mutate it, and assert on the computed value in a plain unit test — no render harness, no `act()`, no fake timers. In Solid, `createRoot` gives you a disposable reactive scope for tests; in Svelte, `.svelte.js` modules are testable as ordinary functions.
+
+Debugging shifts from "why did this re-render?" to "why did (or didn't) this update?". Solid's devtools visualize the dependency graph; Svelte 5 exposes `$inspect` to trace when a rune changes and what triggered it. The questions are different, but there are fewer of them — you're chasing a single edge in a graph, not a cascade of renders.
+
+## So what should you actually do?
+
+A decision framework, not a manifesto:
+
+- **Greenfield app, performance is a headline feature?** SolidJS or Svelte 5 are legitimately excellent, and the reactivity model is a real advantage. Pick based on ecosystem and hiring, not benchmarks — both are fast enough.
+- **Already deep in React?** Don't rewrite. Adopt the [React Compiler](/blog/react-compiler-deep-dive-automatic-memoization-guide), and reach for a signals-flavored store (Jotai/Valtio/Zustand) only on the specific hot paths that need it. That's where I'd draw the line between overreach and pragmatism — the same instinct I apply in [avoiding premature abstraction](/blog/wet-vs-aha-avoiding-premature-abstraction-in-frontend-development).
+- **On Angular or Vue?** You're already on the signals path — lean into `signal()`/`ref` and, on Angular, go zoneless.
+- **Betting on the language itself?** Watch the TC39 proposal, but build for today. Stage 1 is a signal of consensus, not a shipping date.
+
+The headline "signals won" is half true. Signals won the *reactivity model* argument almost everywhere — and React is making the contrarian bet that a good enough compiler makes the whole debate an implementation detail. In 2026 you don't have to pick a side to be a strong frontend engineer. But you do have to understand both models, because the framework you reach for next is increasingly defined by which one it chose.
+
+## References
+
+### Sources
+- [TC39 Signals Proposal](https://github.com/tc39/proposal-signals) - Signal.State / Signal.Computed API, Stage 1 status, and the list of contributing framework authors
+- [React vs Signals: 10 Years Later](https://dev.to/this-is-learning/react-vs-signals-10-years-later-3k71) - the React team's philosophical case against signals, including Dan Abramov's comments
+- [Svelte $state docs](https://svelte.dev/docs/svelte/$state) - runes semantics and how `$state` differs from a getter-based signal
+- [The state of Solid.js in 2026](https://listiak.dev/blog/the-state-of-solid-js-in-2026-signals-performance-and-growing-influence) - Solid's reactivity primitives and benchmark positioning
+- [Signals: React Compiler vs Signals (RedMonk)](https://redmonk.com/kholterhoff/2025/05/13/javascript-signals-react-compiler/) - the compiler-vs-signals framing for optimizing JS delivery
+
+### Further Reading
+- [Solid.js Reactivity Guide](https://docs.solidjs.com/concepts/intro-to-reactivity) - the clearest mental model for signals, computeds, and effects
+- [Angular Signals Guide](https://angular.dev/guide/signals) - how a large framework migrated its change detection to signals and went zoneless
+- [Preact Signals for React](https://preactjs.com/blog/introducing-signals/) - the practical path to using real signals inside a React codebase
+
+---
+
+~Seb 👊
