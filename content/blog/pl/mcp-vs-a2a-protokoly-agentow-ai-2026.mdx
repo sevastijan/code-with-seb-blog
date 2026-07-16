@@ -1,0 +1,487 @@
+---
+title: 'MCP vs A2A: Jedyne dwa protokoły agentów AI, które musisz znać w 2026'
+date: '2026-01-08'
+category: 'AI'
+tags: ['ai-agents', 'mcp', 'a2a', 'anthropic', 'multi-agent-systems']
+draft: false
+featured: false
+author: 'Sebastian'
+enSlug: 'mcp-vs-a2a-ai-agent-protocols-guide-2026'
+excerpt: 'Gubisz się w MCP, ACP i A2A? Oto czego większość poradników nie mówi: ACP połączył się z A2A, a MCP ma udokumentowane naruszenia bezpieczeństwa.'
+---
+
+Przestań czytać nieaktualne poradniki porównujące trzy protokoły. ACP połączył się z A2A we wrześniu 2025. Teraz liczą się już tylko dwa standardy.
+
+Jeśli badałeś protokoły komunikacji agentów AI, prawdopodobnie natknąłeś się na dezorientującą zupę literkową: MCP, ACP, A2A, ANP, AG-UI. Większość artykułów wciąż przedstawia je jako konkurujące standardy, które trzeba oceniać. Ta informacja jest już przeterminowana.
+
+Oto obecny stan rzeczy: **MCP dla narzędzi, A2A dla agentów**. Tyle. A jeśli wdrażasz którykolwiek z nich, istnieją implikacje bezpieczeństwa, o których wspomina niewiele artykułów — w tym [luka MCP STDIO RCE, której Anthropic odmówił załatania](/blog/mcp-rce-vulnerability-stdio-flaw-guide), która naraziła około 200 000 serwerów w kwietniu 2026.
+
+## Wielka wiadomość: ACP połączył się z A2A
+
+We wrześniu 2025 Agent Communication Protocol (ACP) firmy IBM oficjalnie połączył się z Agent2Agent Protocol (A2A) firmy Google pod egidą Linux Foundation. To nie było przejęcie ani porzucenie — to była celowa konsolidacja.
+
+IBM uruchomił ACP w marcu 2025, aby zasilić BeeAI, ich otwartoźródłową platformę do interoperacyjności agentów. Google wydało A2A w kwietniu 2025. W ciągu kilku miesięcy oba zespoły uznały, że rozwiązują nakładające się problemy, i połączyły siły.
+
+Rezultat: BeeAI działa teraz na A2A. Kate Blair z IBM dołączyła do Komitetu Sterującego ds. Technicznych A2A obok przedstawicieli Google, Microsoftu, AWS, Cisco, Salesforce, ServiceNow i SAP.
+
+**Dlaczego to ma znaczenie?** Jeśli oceniałeś ACP pod kątem nowego projektu, przestań. Użyj zamiast tego A2A — teraz zawiera on mocne strony ACP (lekka komunikacja HTTP, minimalne wymagania SDK) plus funkcje korporacyjne A2A (Agent Cards, zarządzanie cyklem życia zadań, ponad 150 wspierających organizacji).
+
+## MCP: USB-C dla połączeń narzędzi AI
+
+Model Context Protocol (MCP), stworzony przez Anthropic w listopadzie 2024, standaryzuje sposób, w jaki agenci AI łączą się z zewnętrznymi narzędziami i źródłami danych. Analogia, której używa Anthropic, jest trafna: MCP to „port USB-C dla AI".
+
+### Co robi MCP
+
+MCP zapewnia architekturę klient-serwer JSON-RPC, w której:
+
+- **Klienci** to aplikacje AI (Claude, Cursor, twój własny agent)
+- **Serwery** udostępniają narzędzia, zasoby i prompty
+
+Kiedy łączysz Claude Desktop z bazą danych za pomocą MCP, uruchamiasz serwer MCP, który udostępnia zapytania do bazy danych jako narzędzia. Claude (klient) odkrywa te narzędzia i może je wywoływać podczas rozmów.
+
+### Architektura MCP
+
+```
+┌─────────────────┐     JSON-RPC      ┌─────────────────┐
+│   MCP Client    │◄────────────────►│   MCP Server    │
+│  (Claude, etc)  │   stdio or HTTP   │  (Your tools)   │
+└─────────────────┘                   └─────────────────┘
+                                              │
+                                              ▼
+                                      ┌───────────────┐
+                                      │  External     │
+                                      │  Resources    │
+                                      │  (DBs, APIs)  │
+                                      └───────────────┘
+```
+
+### Dlaczego MCP wygrał
+
+MCP stał się de facto standardem dla połączeń agent-narzędzie. OpenAI i Google DeepMind go przyjęły. Istnieją tysiące serwerów MCP do wszystkiego, od GitHuba przez Slacka po bazy danych. Wsparcie SDK jest doskonałe — Python, TypeScript, C#, Java i Rust.
+
+Sam protokół jest prosty. Zdefiniuj narzędzia za pomocą schematów JSON, zaimplementuj obsługę i gotowe. Oto minimalny serwer MCP w TypeScript:
+
+```typescript
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
+
+const server = new McpServer({
+  name: 'weather-server',
+  version: '1.0.0',
+})
+
+// Zdefiniuj narzędzie
+server.tool(
+  'get_weather',
+  'Get current weather for a city',
+  {
+    city: {
+      type: 'string',
+      description: 'City name',
+    },
+  },
+  async ({ city }) => {
+    // W produkcji wywołaj prawdziwe API pogodowe
+    const weather = await fetchWeather(city)
+    return {
+      content: [
+        {
+          type: 'text',
+          text: `Weather in ${city}: ${weather.temp}°C, ${weather.conditions}`,
+        },
+      ],
+    }
+  }
+)
+
+// Uruchom serwer
+const transport = new StdioServerTransport()
+await server.connect(transport)
+```
+
+## A2A: Współpraca agent-agent
+
+Podczas gdy MCP obsługuje komunikację agent-narzędzie, A2A (Agent2Agent Protocol) obsługuje współpracę agent-agent. To fundamentalnie różne problemy.
+
+### Co robi A2A
+
+A2A umożliwia agentom AI zbudowanym na różnych frameworkach, przez różnych dostawców:
+
+- **Odkrywanie** wzajemnych możliwości za pomocą Agent Cards
+- **Negocjowanie** trybów interakcji (tekst, pliki, dane strukturalne)
+- **Delegowanie** zadań z zarządzaniem cyklem życia
+- **Współpracę** bez ujawniania stanu wewnętrznego
+
+Pomyśl o tym tak: MCP pozwala twojemu agentowi używać kalkulatora. A2A pozwala twojemu agentowi poprosić innego agenta o rozwiązanie zadania matematycznego i zdanie relacji.
+
+### Agent Cards: uproszczone odkrywanie
+
+Kluczową koncepcją A2A jest Agent Card — dokument JSON opisujący, co agent potrafi. Agenci publikują swoje karty pod dobrze znanym adresem URL, a inni agenci pobierają je, aby zrozumieć możliwości.
+
+```json
+{
+  "name": "research-agent",
+  "description": "Performs web research and summarization",
+  "url": "https://research.example.com/a2a",
+  "version": "1.0.0",
+  "capabilities": {
+    "streaming": true,
+    "pushNotifications": true
+  },
+  "skills": [
+    {
+      "id": "web-research",
+      "name": "Web Research",
+      "description": "Search the web and synthesize findings",
+      "inputModes": ["text"],
+      "outputModes": ["text", "file"]
+    },
+    {
+      "id": "summarize",
+      "name": "Document Summarization",
+      "description": "Summarize long documents",
+      "inputModes": ["text", "file"],
+      "outputModes": ["text"]
+    }
+  ],
+  "authentication": {
+    "type": "oauth2",
+    "authorizationUrl": "https://auth.example.com/authorize"
+  }
+}
+```
+
+Kiedy agent-klient potrzebuje możliwości badawczych, pobiera Agent Cards ze znanych rejestrów, ocenia, który agent najlepiej pasuje do zadania, i inicjuje współpracę.
+
+### Cykl życia zadania A2A
+
+A2A definiuje jasny cykl życia zadania ze stanami: `pending`, `running`, `completed`, `failed`, `canceled`. Ta struktura jest niezbędna dla długotrwałych operacji, w których agenci muszą pozostawać zsynchronizowani.
+
+```typescript
+// Uproszczona interakcja klienta A2A
+const task = await a2aClient.createTask({
+  targetAgent: 'https://research.example.com/a2a',
+  skill: 'web-research',
+  input: {
+    query: 'Latest developments in quantum computing',
+    depth: 'comprehensive',
+  },
+})
+
+// Odpytuj o ukończenie lub użyj webhooków
+while (task.status === 'running') {
+  await sleep(5000)
+  task = await a2aClient.getTask(task.id)
+}
+
+// Pobierz wyniki
+const artifacts = await a2aClient.getArtifacts(task.id)
+```
+
+## Prosta zasada: MCP dla narzędzi, A2A dla agentów
+
+Oto framework decyzyjny, którego używam:
+
+| Pytanie                                                       | Odpowiedź | Użyj        |
+| ------------------------------------------------------------- | --------- | ----------- |
+| Czy łączysz się z bazą danych, API lub systemem plików?       | Tak       | MCP         |
+| Czy budujesz aplikację jednoagentową?                         | Tak       | tylko MCP   |
+| Czy agenci muszą dynamicznie odkrywać się nawzajem?           | Tak       | A2A         |
+| Czy agenci są budowani przez różne zespoły lub dostawców?     | Tak       | A2A         |
+| Czy potrzebujesz delegowania zadań z zarządzaniem cyklem życia? | Tak     | A2A         |
+
+**Większość projektów potrzebuje tylko MCP.** A2A staje się niezbędny, gdy budujesz [systemy wieloagentowe](/blog/claude-code-sub-agents-multi-agent-systems-guide), w których agenci współpracują jako równi sobie, a nie jeden agent używa drugiego jako narzędzia.
+
+## Bezpieczeństwo: udokumentowane naruszenia MCP
+
+Oto czego większość poradników ci nie powie: MCP miał prawdziwe incydenty bezpieczeństwa. Nie hipotetyczne podatności — rzeczywiste naruszenia.
+
+### Ataki z rzeczywistego świata
+
+**Eksfiltracja WhatsApp**: Badacze bezpieczeństwa z Invariant Labs zademonstrowali, że złośliwy serwer MCP mógł po cichu wyeksfiltrować całą historię WhatsApp użytkownika. Atak łączył „zatruwanie narzędzi" (ukrywanie złośliwych instrukcji w opisach narzędzi) z legalnym serwerem `whatsapp-mcp` w tym samym agencie.
+
+**Dostęp do prywatnych repozytoriów GitHub**: Atak prompt injection przeciwko oficjalnemu serwerowi GitHub MCP pozwolił złośliwej treści w publicznych zgłoszeniach GitHub przejąć asystenta AI. Skompromitowany asystent pobrał dane z prywatnych repozytoriów i wyciekł je do repozytoriów publicznych. Główna przyczyna: szerokie zakresy Personal Access Token w połączeniu z niezaufaną treścią w kontekście LLM.
+
+**Atak na łańcuch dostaw Postmark**: Znaleziono złośliwy pakiet serwera MCP podszywający się pod legalny „Postmark MCP Server", który wstrzykiwał kopie BCC wszystkich komunikacji e-mail na serwer atakującego.
+
+### Wektory ataku
+
+Główne podatności MCP to:
+
+1. **Zatruwanie narzędzi (Tool Poisoning)**: Złośliwe instrukcje ukryte w opisach narzędzi, które manipulują zachowaniem LLM — omawiam pełną taksonomię tych [ataków prompt injection](/blog/prompt-injection-attacks-llm-security-guide) wraz ze strategiami obrony
+2. **Prompt Injection przez sampling**: Serwery MCP mogą żądać uzupełnień od LLM, umożliwiając ukryte wstrzykiwanie instrukcji
+3. **Ukryty Unicode**: Niewidoczne znaki, które ukrywają polecenia przed skanerami bezpieczeństwa, ale są przetwarzane przez LLM
+4. **Łańcuch dostaw**: Fałszywe pakiety serwerów MCP, które wyglądają na legalne
+5. **Command Injection**: Niewłaściwa obsługa danych wejściowych w implementacjach serwera
+
+### Środki zaradcze
+
+Specyfikacja MCP mówi, że wywołania narzędzi „POWINNY zawsze mieć człowieka w pętli". Eksperci ds. bezpieczeństwa zalecają traktowanie tego „POWINNY" jako „MUSZĄ". Dodatkowe środki zaradcze:
+
+- **Waliduj wszystkie dane wejściowe** — traktuj wszystko z serwerów MCP jako niezaufane
+- **Stosuj zasadę najmniejszych uprawnień** — nadawaj serwerom MCP minimalne niezbędne uprawnienia
+- **Audytuj zależności** — weryfikuj pakiety serwerów MCP przed instalacją
+- **Ograniczaj częstotliwość (rate limit)** — zapobiegaj nadużyciom poprzez dławienie żądań
+- **Loguj wszystko** — utrzymuj ślady audytu dla wywołań narzędzi
+- **Izoluj wykonanie (sandbox)** — odseparuj serwery MCP od wrażliwych systemów
+
+```typescript
+// Przykład: walidacja danych wejściowych w handlerze serwera MCP
+server.tool(
+  'execute_query',
+  'Execute a database query',
+  {
+    query: { type: 'string', description: 'SQL query to execute' },
+  },
+  async ({ query }) => {
+    // ZAWSZE waliduj dane wejściowe
+    if (containsSqlInjection(query)) {
+      throw new Error('Invalid query detected')
+    }
+
+    // ZAWSZE używaj zapytań parametryzowanych
+    const sanitizedQuery = sanitize(query)
+
+    // ZAWSZE loguj na potrzeby audytu
+    logger.info({ query: sanitizedQuery, timestamp: Date.now() })
+
+    const results = await db.query(sanitizedQuery)
+    return { content: [{ type: 'text', text: JSON.stringify(results) }] }
+  }
+)
+```
+
+## Budowanie prostego serwera MCP
+
+Przejdźmy przez bardziej kompletny przykład. Ten serwer MCP udostępnia system zarządzania zadaniami.
+
+```typescript
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
+import { z } from 'zod'
+
+interface Task {
+  id: string
+  title: string
+  status: 'todo' | 'in_progress' | 'done'
+  createdAt: Date
+}
+
+const tasks: Map<string, Task> = new Map()
+
+const server = new McpServer({
+  name: 'task-manager',
+  version: '1.0.0',
+})
+
+// Wylistuj wszystkie zadania
+server.tool(
+  'list_tasks',
+  'List all tasks with optional status filter',
+  {
+    status: {
+      type: 'string',
+      enum: ['todo', 'in_progress', 'done'],
+      description: 'Filter by status (optional)',
+    },
+  },
+  async ({ status }) => {
+    let result = Array.from(tasks.values())
+
+    if (status) {
+      result = result.filter((t) => t.status === status)
+    }
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(result, null, 2),
+        },
+      ],
+    }
+  }
+)
+
+// Utwórz nowe zadanie
+server.tool(
+  'create_task',
+  'Create a new task',
+  {
+    title: {
+      type: 'string',
+      description: 'Task title',
+    },
+  },
+  async ({ title }) => {
+    // Walidacja danych wejściowych
+    if (!title || title.trim().length === 0) {
+      throw new Error('Title is required')
+    }
+
+    if (title.length > 200) {
+      throw new Error('Title must be 200 characters or less')
+    }
+
+    const task: Task = {
+      id: crypto.randomUUID(),
+      title: title.trim(),
+      status: 'todo',
+      createdAt: new Date(),
+    }
+
+    tasks.set(task.id, task)
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: `Created task: ${task.id}`,
+        },
+      ],
+    }
+  }
+)
+
+// Zaktualizuj status zadania
+server.tool(
+  'update_task_status',
+  'Update the status of a task',
+  {
+    id: {
+      type: 'string',
+      description: 'Task ID',
+    },
+    status: {
+      type: 'string',
+      enum: ['todo', 'in_progress', 'done'],
+      description: 'New status',
+    },
+  },
+  async ({ id, status }) => {
+    const task = tasks.get(id)
+
+    if (!task) {
+      throw new Error(`Task not found: ${id}`)
+    }
+
+    task.status = status
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: `Updated task ${id} to status: ${status}`,
+        },
+      ],
+    }
+  }
+)
+
+// Uruchom serwer
+async function main() {
+  const transport = new StdioServerTransport()
+  await server.connect(transport)
+  console.error('Task Manager MCP Server running')
+}
+
+main().catch(console.error)
+```
+
+Aby użyć tego serwera z Claude Desktop, dodaj go do swojej konfiguracji:
+
+```json
+{
+  "mcpServers": {
+    "task-manager": {
+      "command": "npx",
+      "args": ["tsx", "/path/to/task-server.ts"]
+    }
+  }
+}
+```
+
+## Framework decyzyjny: który protokół dla twojego przypadku użycia
+
+Podam ci konkretne scenariusze:
+
+### Użyj tylko MCP
+
+- **Budowanie chatbota**, który musi odpytywać bazy danych, wywoływać API lub uzyskiwać dostęp do plików
+- **Rozszerzanie Claude** lub innego LLM o niestandardowe możliwości
+- **Aplikacje jednoagentowe**, w których jedna AI obsługuje wszystko
+- **Rozbudowa narzędziowa** istniejących produktów AI
+
+### Użyj A2A (prawdopodobnie z MCP)
+
+- **Orkiestracja wieloagentowa**, w której wyspecjalizowani agenci obsługują różne domeny
+- **Współpraca między dostawcami**, gdy twój agent musi współpracować z agentami z innych organizacji
+- **Przepływy korporacyjne** wymagające śladów audytu i zarządzania cyklem życia zadań
+- **Rynki agentów (agent marketplaces)**, gdzie agenci dynamicznie odkrywają się nawzajem
+
+### Użyj obu razem
+
+To najczęstszy wzorzec dla zaawansowanych systemów:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Orchestrator Agent                        │
+└────────────────────────────┬────────────────────────────────┘
+                             │ A2A
+              ┌──────────────┼──────────────┐
+              │              │              │
+              ▼              ▼              ▼
+       ┌──────────┐   ┌──────────┐   ┌──────────┐
+       │ Research │   │ Analysis │   │ Writing  │
+       │  Agent   │   │  Agent   │   │  Agent   │
+       └────┬─────┘   └────┬─────┘   └────┬─────┘
+            │ MCP          │ MCP          │ MCP
+            ▼              ▼              ▼
+       ┌─────────┐   ┌─────────┐   ┌─────────┐
+       │ Web API │   │Database │   │  CMS    │
+       └─────────┘   └─────────┘   └─────────┘
+```
+
+W tej architekturze:
+
+- **A2A** łączy orkiestratora z wyspecjalizowanymi agentami
+- **MCP** łączy każdego agenta z jego narzędziami
+- Orkiestrator deleguje zadania badawcze, analityczne i pisarskie do wyspecjalizowanych agentów
+- Każdy agent używa MCP, aby uzyskać dostęp do potrzebnych mu zasobów
+
+## Przyszłość: protokoły komplementarne
+
+Rynek agentów AI ma wzrosnąć z 7,84 miliarda dolarów w 2025 do 52,62 miliarda dolarów do 2030 — CAGR na poziomie 46%. Gartner przewiduje, że 40% aplikacji korporacyjnych będzie miało agentów AI do 2026, w porównaniu z 5% w 2025.
+
+Wraz z tym wzrostem przychodzi standaryzacja. Połączenie ACP z A2A to dopiero początek. Zmierzamy w stronę świata, w którym:
+
+- **MCP** jest uniwersalnym standardem łączenia agentów z narzędziami i danymi
+- **A2A** jest uniwersalnym standardem współpracy agentów
+- Oba są zarządzane przez Linux Foundation przy szerokim wsparciu branży
+
+Jeśli budujesz dzisiaj systemy agentów AI, inwestuj w MCP do integracji narzędzi. Dodaj A2A, gdy potrzebujesz współpracy wieloagentowej. I zawsze, ale to zawsze, zwracaj uwagę na bezpieczeństwo.
+
+Wojny protokołów się uspokajają. Teraz nadszedł czas, aby budować.
+
+## Bibliografia
+
+### Źródła
+
+- [Oficjalna dokumentacja Model Context Protocol](https://modelcontextprotocol.io/) — specyfikacja protokołu i przewodniki SDK
+- [Specyfikacja A2A Protocol](https://a2a-protocol.org/latest/) — oficjalna dokumentacja A2A
+- [ACP łączy siły z A2A](https://lfaidata.foundation/communityblog/2025/08/29/acp-joins-forces-with-a2a-under-the-linux-foundations-lf-ai-data/) — ogłoszenie Linux Foundation o połączeniu
+- [Podatności bezpieczeństwa MCP](https://simonwillison.net/2025/Apr/9/mcp-prompt-injection/) — analiza problemów bezpieczeństwa MCP autorstwa Simona Willisona
+- [Badania bezpieczeństwa MCP Invariant Labs](https://unit42.paloaltonetworks.com/model-context-protocol-attack-vectors/) — szczegółowa analiza podatności
+- [Prognozy Gartnera dotyczące agentów AI](https://www.gartner.com/en/newsroom/press-releases/2025-08-26-gartner-predicts-40-percent-of-enterprise-apps-will-feature-task-specific-ai-agents-by-2026-up-from-less-than-5-percent-in-2025) — statystyki adopcji korporacyjnej
+
+### Dalsza lektura
+
+- [MCP dla początkujących (Microsoft)](https://github.com/microsoft/mcp-for-beginners) — kompleksowy program nauczania z przykładami w wielu językach
+- [MCP TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk) — oficjalne SDK z przykładami
+- [A2A Protocol GitHub](https://github.com/a2aproject/A2A) — implementacje referencyjne i specyfikacje
+- [Framework FastMCP](https://github.com/punkpeye/fastmcp) — uproszczony framework TypeScript dla serwerów MCP
+- [Przewodnik po bezpieczeństwie MCP Red Hat](https://www.redhat.com/en/blog/model-context-protocol-mcp-understanding-security-risks-and-controls) — kwestie bezpieczeństwa korporacyjnego
+
+---
+
+~Seb 👊
