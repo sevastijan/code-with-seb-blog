@@ -67,7 +67,7 @@ Tu zaczyna się część wbrew intuicji. Większość porad o wydajności każe 
 
 Gdy wywołujesz `setState`, React re-renderuje komponent i jego dzieci, uzgadnia drzewo i zatwierdza zmiany w DOM — **synchronicznie, na main thread, wewnątrz fazy processing Twojej interakcji.** Jedno kliknięcie, które przełącza jedną wartość stanu, może wywołać kaskadę re-renderów przez dziesiątki komponentów. Jeśli ta praca zajmie 180 ms, Twój INP dla tej interakcji wynosi co najmniej 180 ms, zanim przeglądarka w ogóle dojdzie do paintu.
 
-Klasycznym winowajcą jest controlled input filtrujący dużą listę. Każde naciśnięcie klawisza ustawia stan, re-renderuje listę, uzgadnia tysiące węzłów i przerysowuje. Wpisz „react" i odpaliłeś pięć kosztownych interakcji z rzędu. To dokładnie ten tryb awarii, który tworzą re-rendery obciążające CPU — ta sama kategoria problemu, którą rozgryzam przy [debugowaniu wycieków pamięci w aplikacjach React i Next.js](/blog/debugging-memory-leaks-react-nextjs-guide), gdzie niekontrolowana praca po cichu kumuluje się przy każdej aktualizacji.
+Klasycznym winowajcą jest controlled input filtrujący dużą listę. Każde naciśnięcie klawisza ustawia stan, re-renderuje listę, uzgadnia tysiące węzłów i przerysowuje. Wpisz „react" i odpaliłeś pięć kosztownych interakcji z rzędu. To dokładnie ten tryb awarii, który tworzą re-rendery obciążające CPU — ta sama kategoria problemu, którą rozgryzam przy [debugowaniu wycieków pamięci w aplikacjach React i Next.js](/pl/blog/debugowanie-wyciekow-pamieci-react-nextjs), gdzie niekontrolowana praca po cichu kumuluje się przy każdej aktualizacji.
 
 ### Hydration blokuje input delay
 
@@ -121,7 +121,7 @@ onINP((metric) => {
 - **Lighthouse** oznacza long taski i Total Blocking Time (TBT), który silnie koreluje z INP. Wysoki TBT to niemal gwarancja złego INP.
 - Testuj z włączonym **throttlingiem CPU 4x**. Twoi użytkownicy nie mają Twojego sprzętu.
 
-Wprowadzenie tej instrumentacji do CI i RUM to dyscyplina sama w sobie. Jeśli chcesz frameworku do przekuwania tych liczb w egzekwowane limity, napisałem cały [przewodnik po budżetach wydajności dla inżynierów frontendu](/blog/performance-budgets-frontend-engineers-guide), który pasuje do tego wprost.
+Wprowadzenie tej instrumentacji do CI i RUM to dyscyplina sama w sobie. Jeśli chcesz frameworku do przekuwania tych liczb w egzekwowane limity, napisałem cały [przewodnik po budżetach wydajności dla inżynierów frontendu](/pl/blog/budzety-wydajnosci-frontend), który pasuje do tego wprost.
 
 ## Poprawki, które faktycznie ruszają INP
 
@@ -154,7 +154,7 @@ async function processLargeDataset(items) {
 
 Uwaga na temat `isInputPending()`: Google **nie zaleca już bramkowania yieldów tym wywołaniem**. Może ono błędnie zwracać `false`, nawet gdy użytkownik wszedł w interakcję, więc obecna rekomendacja to po prostu okresowe oddawanie kontroli, niezależnie od wszystkiego. Powyższy przykład pokazuje je dla kompletności, ale w produkcji oddawaj kontrolę według budżetu czasowego (powiedzmy co 50 ms pracy), zamiast ufać `isInputPending()`.
 
-Dlaczego `scheduler.yield()` zamiast starej sztuczki `setTimeout(fn, 0)`? `setTimeout` przesuwa Twoją kontynuację na **koniec** kolejki tasków, gdzie konkuruje ze wszystkim innym. `scheduler.yield()` wznawia z **przodu**, zaraz po tym, jak oczyści się oczekująca praca o wysokim priorytecie — więc pozostajesz responsywny bez utraty miejsca w kolejce. Głęboka opowieść o tym, jak silnik planuje i wykonuje tę pracę, to osobna królicza nora, którą omawiam w [przewodniku po wnętrznościach silnika V8](/blog/v8-engine-javascript-internals-guide).
+Dlaczego `scheduler.yield()` zamiast starej sztuczki `setTimeout(fn, 0)`? `setTimeout` przesuwa Twoją kontynuację na **koniec** kolejki tasków, gdzie konkuruje ze wszystkim innym. `scheduler.yield()` wznawia z **przodu**, zaraz po tym, jak oczyści się oczekująca praca o wysokim priorytecie — więc pozostajesz responsywny bez utraty miejsca w kolejce. Głęboka opowieść o tym, jak silnik planuje i wykonuje tę pracę, to osobna królicza nora, którą omawiam w [przewodniku po wnętrznościach silnika V8](/pl/blog/v8-silnik-wnetrznosci-javascript).
 
 ### 2. Pozwól Reactowi zdeprioryzować ciężki render
 
@@ -203,13 +203,13 @@ function Results({ query }) {
 }
 ```
 
-Żaden z hooków nie przyspiesza Twojego kodu — czynią go **przerywalnym**, więc kosztowny render nie może już trzymać main threadu jako zakładnika podczas interakcji. To bezpośredni zysk dla fazy processing. Znacznie głębiej wchodzę w model planowania stojący za nimi w [praktycznym przewodniku po React concurrent mode](/blog/react-concurrent-mode-practical-guide), a to, jak komponują się ze streamingiem, w [tutorialu o Suspense i lazy-loadingu](/blog/react-suspense-tutorial-lazy-loading-async-rendering-data-fetching-react-18-19).
+Żaden z hooków nie przyspiesza Twojego kodu — czynią go **przerywalnym**, więc kosztowny render nie może już trzymać main threadu jako zakładnika podczas interakcji. To bezpośredni zysk dla fazy processing. Znacznie głębiej wchodzę w model planowania stojący za nimi w [praktycznym przewodniku po React concurrent mode](/pl/blog/react-concurrent-mode-praktyczny-przewodnik), a to, jak komponują się ze streamingiem, w [tutorialu o Suspense i lazy-loadingu](/pl/blog/react-suspense-poradnik-lazy-loading-async).
 
 ### 3. Zabij niepotrzebne re-rendery
 
 Współbieżność pomaga Ci przetrwać kosztowne rendery; **memoizacja sprawia, że w ogóle się nie zdarzają.** Owijaj kosztowne komponenty w `memo`, stabilizuj callbacki i wartości pochodne oraz ucinaj kaskadę re-renderów u źródła.
 
-Problem w tym, że ręcznie pisane `useMemo`/`useCallback`/`memo` są żmudne i łatwo je spartaczyć. To dokładnie to, co automatyzuje **React Compiler** — memoizuje na etapie buildu, więc dostajesz zyski bez zaśmiecania kodu hookami. To zmiana o najwyższej dźwigni, jaką możesz wprowadzić w aplikacji obciążonej re-renderami, a dokładnie to, jak działa, rozkładam na czynniki w [pogłębionej analizie automatycznej memoizacji React Compilera](/blog/react-compiler-deep-dive-automatic-memoization-guide).
+Problem w tym, że ręcznie pisane `useMemo`/`useCallback`/`memo` są żmudne i łatwo je spartaczyć. To dokładnie to, co automatyzuje **React Compiler** — memoizuje na etapie buildu, więc dostajesz zyski bez zaśmiecania kodu hookami. To zmiana o najwyższej dźwigni, jaką możesz wprowadzić w aplikacji obciążonej re-renderami, a dokładnie to, jak działa, rozkładam na czynniki w [pogłębionej analizie automatycznej memoizacji React Compilera](/pl/blog/react-compiler-automatyczna-memoizacja).
 
 ### 4. Debounce i throttle handlerów inputu
 
@@ -243,7 +243,7 @@ Na długich listach i dashboardach może to dramatycznie zredukować koszt fazy 
 
 ### 6. Odchudź i odrocz sam JavaScript
 
-Mniej JavaScriptu na main thread oznacza mniej input delay i krótsze taski. Agresywnie stosuj code-splitting, odraczaj niekrytyczne skrypty third-party i trzymaj się budżetu bundla — taktyki z mojego [przewodnika po optymalizacji bundla poniżej 200 kB](/blog/dynamic-bundle-optimization-under-200kb-guide) redukują surową ilość pracy, którą main thread musi przeżuć, zanim zdoła zareagować na kliknięcie.
+Mniej JavaScriptu na main thread oznacza mniej input delay i krótsze taski. Agresywnie stosuj code-splitting, odraczaj niekrytyczne skrypty third-party i trzymaj się budżetu bundla — taktyki z mojego [przewodnika po optymalizacji bundla poniżej 200 kB](/pl/blog/dynamiczna-optymalizacja-bundle-ponizej-200kb) redukują surową ilość pracy, którą main thread musi przeżuć, zanim zdoła zareagować na kliknięcie.
 
 ## Workflow debugowania, który działa
 

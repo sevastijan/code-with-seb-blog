@@ -51,7 +51,7 @@ Kluczowy wniosek: **warstwy ładowane wcześniej kosztują więcej tokenów**, b
 
 CLAUDE.md to najpotężniejsza i najdroższa warstwa kontekstu. Jest czytana na starcie sesji i dołączana do każdego pojedynczego wywołania API przez cały czas jej trwania. To czyni ją idealną dla reguł, które obowiązują wszędzie — i fatalną dla czegokolwiek zależnego od sytuacji.
 
-Napisałem [kompletny przewodnik po architekturze CLAUDE.md](/blog/claude-md-memory-persistent-context-guide), który omawia czterowarstwową hierarchię, techniki optymalizacji oraz strategię cache'owania, która znacząco obniżyła moje koszty. Oto perspektywa context engineeringu:
+Napisałem [kompletny przewodnik po architekturze CLAUDE.md](/pl/blog/claude-md-pamiec-trwaly-kontekst), który omawia czterowarstwową hierarchię, techniki optymalizacji oraz strategię cache'owania, która znacząco obniżyła moje koszty. Oto perspektywa context engineeringu:
 
 **Co należy do CLAUDE.md:**
 - Struktura projektu i lokalizacje kluczowych plików
@@ -99,7 +99,7 @@ Nieaktualna pamięć jest gorsza niż jej brak. Jeśli Claude "pamięta", że tw
 
 Tu context engineering robi się ciekawy. Skills to pliki z instrukcjami, które ładują się *tylko przy wywołaniu* — poprzez składnię `/command` lub gdy Claude uzna je za istotne.
 
-Pełną mechanikę opisałem w moim [przewodniku po skills i wielokrotnie używalnych workflowach](/blog/claude-code-skills-reusable-ai-workflows-guide), ale oto dlaczego mają znaczenie dla context engineeringu: **skills realizują progresywne ujawnianie (progressive disclosure).**
+Pełną mechanikę opisałem w moim [przewodniku po skills i wielokrotnie używalnych workflowach](/pl/blog/claude-code-skills-wielokrotne-workflow-ai), ale oto dlaczego mają znaczenie dla context engineeringu: **skills realizują progresywne ujawnianie (progressive disclosure).**
 
 Zamiast upychać każdą procedurę do CLAUDE.md (gdzie kosztuje tokeny w każdej sesji), wydzielasz wyspecjalizowane workflowy do skills, które ładują się tylko wtedy, gdy są potrzebne:
 
@@ -119,7 +119,7 @@ Ze skills Claude zaczyna każdą sesję od 30 linii podstawowego kontekstu. Gdy 
 
 **To jest zasada progresywnego ujawniania:** Claude widzi tylko to, czego potrzebuje do bieżącego zadania. Cała reszta pozostaje na dysku, dopóki jej nie wywołasz.
 
-Nie chodzi tu wyłącznie o koszt tokenów (choć to ma znaczenie — matematyka jest w moim [przewodniku po optymalizacji tokenów](/blog/claude-code-token-optimization-bill-cut-guide)). Chodzi o uwagę. Modele językowe mają skończoną uwagę, a instrukcje konkurują ze sobą. Mniej, ale trafniejszych instrukcji daje lepsze przestrzeganie niż ściana tekstu obejmująca każdy możliwy scenariusz.
+Nie chodzi tu wyłącznie o koszt tokenów (choć to ma znaczenie — matematyka jest w moim [przewodniku po optymalizacji tokenów](/pl/blog/claude-code-optymalizacja-tokenow-rachunek)). Chodzi o uwagę. Modele językowe mają skończoną uwagę, a instrukcje konkurują ze sobą. Mniej, ale trafniejszych instrukcji daje lepsze przestrzeganie niż ściana tekstu obejmująca każdy możliwy scenariusz.
 
 ## Warstwa 4: Serwery MCP — dostawcy kontekstu w czasie rzeczywistym
 
@@ -134,7 +134,7 @@ Statyczny kontekst (CLAUDE.md, skills) mówi Claude'owi, *jak* pracować. Serwer
 
 Kluczowa przewaga nad statycznym kontekstem: dane MCP są zawsze aktualne. Jeśli umieścisz schemat swojego API w CLAUDE.md, przeterminowuje się za każdym razem, gdy API się zmienia. Jeśli podłączysz serwer MCP, który czyta z twojej specyfikacji OpenAPI, Claude zawsze ma najnowszą wersję — i ładuje ją tylko wtedy, gdy faktycznie jej potrzebuje.
 
-Pisałem o [MCP i tym, jak wypada w porównaniu z innymi protokołami agentowymi](/blog/mcp-vs-a2a-ai-agent-protocols-guide-2026). Dla context engineeringu praktyczny wniosek brzmi: **wszystko, co często się zmienia, powinno być serwowane przez MCP, a nie zaszyte na sztywno w plikach statycznych.**
+Pisałem o [MCP i tym, jak wypada w porównaniu z innymi protokołami agentowymi](/pl/blog/mcp-vs-a2a-protokoly-agentow-ai-2026). Dla context engineeringu praktyczny wniosek brzmi: **wszystko, co często się zmienia, powinno być serwowane przez MCP, a nie zaszyte na sztywno w plikach statycznych.**
 
 ```json
 // .claude/settings.json
@@ -263,7 +263,7 @@ Rezultat: Claude stosuje dokładnie ten wzorzec, którego chcę, używa aktualny
 Skąd wiesz, czy twój context engineering działa? Trzy metryki:
 
 ### 1. Współczynnik trafień cache'a promptów (prompt cache hit rate)
-Uruchom `/cost` w Claude Code. Spójrz na procent trafień cache'a. Wysokie trafienia oznaczają, że twój statyczny kontekst (CLAUDE.md, skills) jest stabilny i efektywnie ponownie wykorzystywany. Jeśli twój cache hit rate jest poniżej 40%, twój kontekst prawdopodobnie zbyt mocno zmienia się między requestami — często to oznaka nadmiernie rozwlekłej historii rozmowy lub niedeterministycznego ładowania kontekstu. Pisałem o [strategiach optymalizacji tokenów](/blog/claude-code-token-optimization-bill-cut-guide), które podniosły mój cache rate z 12% do 61%.
+Uruchom `/cost` w Claude Code. Spójrz na procent trafień cache'a. Wysokie trafienia oznaczają, że twój statyczny kontekst (CLAUDE.md, skills) jest stabilny i efektywnie ponownie wykorzystywany. Jeśli twój cache hit rate jest poniżej 40%, twój kontekst prawdopodobnie zbyt mocno zmienia się między requestami — często to oznaka nadmiernie rozwlekłej historii rozmowy lub niedeterministycznego ładowania kontekstu. Pisałem o [strategiach optymalizacji tokenów](/pl/blog/claude-code-optymalizacja-tokenow-rachunek), które podniosły mój cache rate z 12% do 61%.
 
 ### 2. Trafność za pierwszym razem (first-try accuracy)
 Śledź, jak często wynik Claude'a nadaje się do użycia bez modyfikacji. Przed context engineeringiem byłem może na 30% trafności za pierwszym razem dla złożonych zadań. Po przebudowaniu warstw kontekstu jest bliżej 60%. Model nie zmądrzał — po prostu dostał lepsze informacje.

@@ -40,7 +40,7 @@ Dobra wiadomość: to samo Messages API, te same wzorce użycia narzędzi, ten s
 
 ### 1. Myślenie jest zawsze włączone — usuń konfigurację thinking
 
-Fable 5 myśli przy każdym żądaniu i nie da się tego wyłączyć. Jawne `thinking: {"type": "disabled"}` zwraca 400 — co mnie zaskoczyło, bo dokładnie ta konfiguracja jest *akceptowana* w Opus 4.8. `budget_tokens` też zniknął — ten sam twardy break, który opisałem w mojej [recenzji Opus 4.7 z praktyki](/blog/claude-opus-4-7-developer-review-whats-changed), teraz posunięty o krok dalej.
+Fable 5 myśli przy każdym żądaniu i nie da się tego wyłączyć. Jawne `thinking: {"type": "disabled"}` zwraca 400 — co mnie zaskoczyło, bo dokładnie ta konfiguracja jest *akceptowana* w Opus 4.8. `budget_tokens` też zniknął — ten sam twardy break, który opisałem w mojej [recenzji Opus 4.7 z praktyki](/pl/blog/claude-opus-4-7-recenzja-co-sie-zmienilo), teraz posunięty o krok dalej.
 
 ```python
 # Opus 4.8 — to działało bez problemu
@@ -112,7 +112,7 @@ if fallback_ran and response.stop_reason != "refusal":
 
 Dwie uwagi operacyjne z tygodnia uruchamiania tego rozwiązania:
 
-- **Śledź współczynnik fallbacku jako metrykę pierwszej klasy.** Jeśli sterujesz Claude z własnej usługi — wzorce z mojego [przewodnika produkcyjnego po Agent SDK](/blog/claude-agent-sdk-typescript-production-guide) mają tu zastosowanie — traktuj współczynnik odmów dokładnie tak, jak traktujesz współczynnik błędów. „Mniej niż 5% sesji" Anthropic to średnia. Jeśli pracujesz nad czymkolwiek związanym z bezpieczeństwem, twój współczynnik będzie wyższy — deweloperzy zgłaszali, że praca w C/C++/Rust, odwołania do Win32 API oraz pliki zawierające słowa takie jak „security", „unsafe" czy „hook" potrafią uruchomić klasyfikator. Moje obciążenie związane z narzędziami infrastrukturalnymi wynosiło około 8% fallbacku po lipcowym ponownym wdrożeniu.
+- **Śledź współczynnik fallbacku jako metrykę pierwszej klasy.** Jeśli sterujesz Claude z własnej usługi — wzorce z mojego [przewodnika produkcyjnego po Agent SDK](/pl/blog/claude-agent-sdk-typescript-produkcja) mają tu zastosowanie — traktuj współczynnik odmów dokładnie tak, jak traktujesz współczynnik błędów. „Mniej niż 5% sesji" Anthropic to średnia. Jeśli pracujesz nad czymkolwiek związanym z bezpieczeństwem, twój współczynnik będzie wyższy — deweloperzy zgłaszali, że praca w C/C++/Rust, odwołania do Win32 API oraz pliki zawierające słowa takie jak „security", „unsafe" czy „hook" potrafią uruchomić klasyfikator. Moje obciążenie związane z narzędziami infrastrukturalnymi wynosiło około 8% fallbacku po lipcowym ponownym wdrożeniu.
 - **Fallback to cicha degradacja możliwości.** Żądanie się udaje, ale odpowiedział na nie Opus 4.8. Dla większości zadań to w porządku. Dla długodystansowej pracy, dla której wybrałeś Fable 5, chcesz wiedzieć, że tak się stało — stąd sprawdzenie `usage.iterations`.
 
 ## Trzytygodniowe zawieszenie
@@ -121,7 +121,7 @@ Ta część brzmi jak zmyślona, więc oto oś czasu: Fable 5 wystartował 9 cze
 
 Dostęp wrócił 1 lipca z przetrenowanym klasyfikatorem, który blokuje zgłoszoną technikę w ponad 99% przypadków — i, jak sam Anthropic przyznaje, generuje więcej fałszywych pozytywów przy rutynowych zadaniach programistycznych. To źródło pojawiającego się po ponownym wdrożeniu narzekania, które widzieliście w mediach społecznościowych, i jest ono prawdziwe: model jest wymiernie bardziej pochopny przy kodzie na poziomie systemowym niż w pierwszych trzech dniach.
 
-Lekcję architektoniczną nauczyłem się bez kosztów, bo miałem szczęście, ale inaczej byłaby droga: **nigdy nie przypinaj na sztywno produkcyjnego pipeline'u do jednego modelu bez ścieżki fallbacku**. Przez dziewiętnaście dni `claude-fable-5` po prostu nie istniał jako endpoint. Zespoły, które już przeniosły krytyczne obciążenia na niego i usunęły swoje ścieżki do Opus, przepisywały konfigurację pod presją. Moja zasada od tamtej pory: każde ID modelu w produkcyjnej konfiguracji dostarczane jest z przetestowanym modelem fallbackowym obok, a przełączenie to zmiana konfiguracji, nie deploy. (Pełną lekcję architektoniczną przekułem w osobny tekst o [ryzyku dostawcy LLM po zawieszeniu](/blog/fable-5-suspension-llm-vendor-risk-architecture).)
+Lekcję architektoniczną nauczyłem się bez kosztów, bo miałem szczęście, ale inaczej byłaby droga: **nigdy nie przypinaj na sztywno produkcyjnego pipeline'u do jednego modelu bez ścieżki fallbacku**. Przez dziewiętnaście dni `claude-fable-5` po prostu nie istniał jako endpoint. Zespoły, które już przeniosły krytyczne obciążenia na niego i usunęły swoje ścieżki do Opus, przepisywały konfigurację pod presją. Moja zasada od tamtej pory: każde ID modelu w produkcyjnej konfiguracji dostarczane jest z przetestowanym modelem fallbackowym obok, a przełączenie to zmiana konfiguracji, nie deploy. (Pełną lekcję architektoniczną przekułem w osobny tekst o [ryzyku dostawcy LLM po zawieszeniu](/pl/blog/fable-5-zawieszenie-ryzyko-dostawcy-llm).)
 
 ## Matematyka kosztów
 
@@ -129,15 +129,15 @@ Fable 5 kosztuje 2x tyle co Opus 4.8, zarówno na wejściu, jak i wyjściu. Kied
 
 Naiwne porównanie — ten sam prompt, to samo wyjście, dwukrotna cena — sprawia, że Fable 5 wygląda źle. Prawdziwym porównaniem jest **koszt na ukończone zadanie**. Przy moim najtrudniejszym obciążeniu agentowym (migracja obejmująca całe repo z pętlami weryfikacji) Fable 5 kończył w mniejszej liczbie tur z mniejszą liczbą ślepych zaułków. Mniej tur oznacza mniej ponownie wysyłanych tokenów wejściowych, mniej ponownie odczytywanych wyników narzędzi, mniejsze zużycie cache. Premia za token była mniej więcej równoważona ~40% redukcją całkowitej liczby tokenów dla zadania — i kończył przebiegi, które Opus czasem zawodził wprost, co jest tym drogim przypadkiem, którego nikt nie wycenia.
 
-Przy rutynowej pracy matematyka odwraca się mocno. Wywołanie klasyfikacji, endpoint podsumowań, komentarz w code review: Opus 4.8 robi to nie do odróżnienia dobrze za połowę ceny, bez ryzyka odmowy, bez ograniczenia ZDR. Logika podziału na poziomy jest tą samą, której użyłem, by [obciąć rachunek za Claude Code o 70%](/blog/claude-code-token-optimization-bill-cut-guide) — drogi model do trudnego rozumowania, tańszy poziom do całej reszty — tylko z nowym szczeblem na samej górze. Jeszcze jedna subtelność: ponieważ myślenie jest zawsze włączone i fakturowane, nawet trywialne żądanie do Fable 5 niesie narzut myślenia, którego nie da się wyłączyć.
+Przy rutynowej pracy matematyka odwraca się mocno. Wywołanie klasyfikacji, endpoint podsumowań, komentarz w code review: Opus 4.8 robi to nie do odróżnienia dobrze za połowę ceny, bez ryzyka odmowy, bez ograniczenia ZDR. Logika podziału na poziomy jest tą samą, której użyłem, by [obciąć rachunek za Claude Code o 70%](/pl/blog/claude-code-optymalizacja-tokenow-rachunek) — drogi model do trudnego rozumowania, tańszy poziom do całej reszty — tylko z nowym szczeblem na samej górze. Jeszcze jedna subtelność: ponieważ myślenie jest zawsze włączone i fakturowane, nawet trywialne żądanie do Fable 5 niesie narzut myślenia, którego nie da się wyłączyć.
 
 ## Kiedy używać Fable 5 (a kiedy nie)
 
 Użyj Fable 5 do:
 
-- **Długodystansowej autonomicznej pracy** — wielogodzinne przebiegi agentowe, duże migracje, nocne sesje kodowania. Tu przewaga klasy Mythos jest realna. Jeśli już orkiestrujesz [równoległe subagenty z dynamicznymi workflow Opus 4.8](/blog/claude-code-dynamic-workflows-parallel-subagents-guide), Fable 5 jako orkiestrator to najbardziej wpływowy pojedynczy upgrade — połącz go z [komendą /goal](/blog/claude-code-goal-command-fable-5-guide), aby te przebiegi kończyły się na zweryfikowanym ukończeniu, a nie na wyczerpaniu twojej cierpliwości
+- **Długodystansowej autonomicznej pracy** — wielogodzinne przebiegi agentowe, duże migracje, nocne sesje kodowania. Tu przewaga klasy Mythos jest realna. Jeśli już orkiestrujesz [równoległe subagenty z dynamicznymi workflow Opus 4.8](/pl/blog/claude-code-dynamiczne-workflow-subagenty), Fable 5 jako orkiestrator to najbardziej wpływowy pojedynczy upgrade — połącz go z [komendą /goal](/pl/blog/claude-code-komenda-goal-fable-5), aby te przebiegi kończyły się na zweryfikowanym ukończeniu, a nie na wyczerpaniu twojej cierpliwości
 - **Rozumowania najwyższego poziomu** — problemów, przy których Opus 4.8 produkuje wiarygodne, ale błędne odpowiedzi
-- **Zaawansowanych zadań wizyjnych** — jest state-of-the-art na gęstych i zdegradowanych obrazach; mój [przewodnik po pipeline'ach wizyjnych](/blog/fable-5-vision-pipelines-documents-ocr-guide) pokazuje, gdzie to faktycznie się opłaca
+- **Zaawansowanych zadań wizyjnych** — jest state-of-the-art na gęstych i zdegradowanych obrazach; mój [przewodnik po pipeline'ach wizyjnych](/pl/blog/fable-5-vision-pipeline-dokumenty-ocr) pokazuje, gdzie to faktycznie się opłaca
 
 Zostań przy Opus 4.8 do:
 
@@ -159,7 +159,7 @@ Zanim przełączysz string modelu:
 7. Zaplanuj tury trwające minuty: streaming, timeouty, asynchroniczny UX postępu
 8. Utrzymuj żywą ścieżkę do Opus 4.8 w konfiguracji — 12 czerwca może się powtórzyć
 
-Fable 5 to najbardziej zdolny model, jakiego kiedykolwiek używałem, i mówię to dosłownie — a zarazem pierwszy model, w którym historia operacyjna liczy się tak samo jak historia możliwości. Traktuj go jako [poziom eskalacji, a nie domyślny](/blog/fable-5-claude-code-model-routing-playbook), podepnij fallbacki, a zarobi na swoją cenę dokładnie na tej pracy, która to uzasadnia.
+Fable 5 to najbardziej zdolny model, jakiego kiedykolwiek używałem, i mówię to dosłownie — a zarazem pierwszy model, w którym historia operacyjna liczy się tak samo jak historia możliwości. Traktuj go jako [poziom eskalacji, a nie domyślny](/pl/blog/fable-5-routing-modeli-claude-code), podepnij fallbacki, a zarobi na swoją cenę dokładnie na tej pracy, która to uzasadnia.
 
 Jeśli zmigrujesz jedną rzecz w tym tygodniu, niech będzie to obsługa odmów. Twój dashboard kłamie ci właśnie teraz.
 

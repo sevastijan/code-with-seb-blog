@@ -50,9 +50,9 @@ To właśnie ten wzorzec sprawia, że podatność jest naprawdę systemowa. Każ
 
 Trzecia rodzina jest najbardziej bezpośrednio widoczna dla użytkownika. Windsurf — z przypisanym CVE-2026-30615 — był jedynym IDE w badaniu Ox, w którym eksploatacja wymagała zerowej interakcji użytkownika. Otwarcie złośliwej przestrzeni roboczej wystarczało, by wywołać zdalne wykonanie kodu przez transport MCP.
 
-Mechanizm przypomina klasyczne [ataki typu prompt injection](/blog/prompt-injection-llm-security-guide), ale z pewnym haczykiem: wstrzyknięte instrukcje w ogóle nie celują w model. Celują w loader konfiguracji. Plik przestrzeni roboczej zawierający złośliwie spreparowany wpis serwera MCP powoduje, że IDE uruchamia polecenie atakującego przy otwarciu przestrzeni roboczej. Model nigdy nie widzi ładunku, ponieważ atak żyje poniżej warstwy modelu.
+Mechanizm przypomina klasyczne [ataki typu prompt injection](/pl/blog/prompt-injection-bezpieczenstwo-llm), ale z pewnym haczykiem: wstrzyknięte instrukcje w ogóle nie celują w model. Celują w loader konfiguracji. Plik przestrzeni roboczej zawierający złośliwie spreparowany wpis serwera MCP powoduje, że IDE uruchamia polecenie atakującego przy otwarciu przestrzeni roboczej. Model nigdy nie widzi ładunku, ponieważ atak żyje poniżej warstwy modelu.
 
-Dla deweloperów myślących o [bezpieczeństwie LLM jako o „SQL injection ery AI”](/blog/prompt-injection-attacks-llm-security-guide) jest to ostrzegawcza aktualizacja: powierzchnią ataku nie jest wyłącznie prompt i wyjścia narzędzi. Obejmuje ona każdą ścieżkę kodu, która zamienia dostarczoną z zewnątrz konfigurację w uruchomienie procesu.
+Dla deweloperów myślących o [bezpieczeństwie LLM jako o „SQL injection ery AI”](/pl/blog/ataki-prompt-injection-bezpieczenstwo-llm) jest to ostrzegawcza aktualizacja: powierzchnią ataku nie jest wyłącznie prompt i wyjścia narzędzi. Obejmuje ona każdą ścieżkę kodu, która zamienia dostarczoną z zewnątrz konfigurację w uruchomienie procesu.
 
 ### 4. Zatruwanie marketplace'ów
 
@@ -80,21 +80,21 @@ Ta debata będzie się toczyć dalej. Przeniesienie zarządzania MCP do [Agentic
 
 ## Co faktycznie wdrożyć już dziś
 
-Rezygnacja z używania MCP nie jest realnym rozwiązaniem dla większości zespołów w 2026 roku — [deweloperski stack MCP](/blog/developer-mcp-stack-multi-tool-workflow-guide) stał się naprawdę produktywny. Pragmatyczna ścieżka to dalsze korzystanie z niego przy jednoczesnym utwardzaniu warstwy konfiguracji, którą kontroluje Twój zespół.
+Rezygnacja z używania MCP nie jest realnym rozwiązaniem dla większości zespołów w 2026 roku — [deweloperski stack MCP](/pl/blog/developerski-stack-mcp-workflow) stał się naprawdę produktywny. Pragmatyczna ścieżka to dalsze korzystanie z niego przy jednoczesnym utwardzaniu warstwy konfiguracji, którą kontroluje Twój zespół.
 
 **Traktuj konfigurację serwera MCP jako operację uprzywilejowaną.** Każdy, kto może zapisać do Twojego `claude_desktop_config.json`, Twojego `.cursor/mcp.json`, konfiguracji runnera CI lub ustawień Claude Code, ma zdalne wykonanie kodu na Twojej maszynie lub w Twoim środowisku budowania. Jeśli Twoje pliki konfiguracyjne są w repozytorium, to deweloper, który pushuje do tego repo. Jeśli konfiguracja jest provisionowana przez IaC, to każdy, kto może edytować ten IaC. Audytuj odpowiednio.
 
 **Używaj listy dozwolonych serwerów MCP, nie poleceń.** Zamiast zezwalać na `npx`, `node` i `python` oraz próbować sanityzować ich argumenty, zezwalaj na konkretne pakiety serwerów MCP według nazwy i wersji. Jeśli używany przez Ciebie host tego nie obsługuje, zgłoś issue lub owiń host launcherem, który to potrafi.
 
-**Przypinaj wersje serwerów MCP i weryfikuj sumy kontrolne.** Zatruwanie marketplace'ów działa, ponieważ integratorzy instalują najnowsze wersje społecznościowych serwerów MCP. Przypinaj do konkretnych commitów lub konkretnych wersji pakietów, weryfikuj sumy kontrolne i traktuj aktualizacje serwerów MCP z taką samą rutyną przeglądu jak każdą inną aktualizację zależności. Ta sama higiena łańcucha dostaw, którą [playbook po włamaniu do Vercel](/blog/vercel-breach-supply-chain-security-audit-guide) stosuje do aplikacji OAuth i rozszerzeń narzędzi deweloperskich, ma zastosowanie tutaj.
+**Przypinaj wersje serwerów MCP i weryfikuj sumy kontrolne.** Zatruwanie marketplace'ów działa, ponieważ integratorzy instalują najnowsze wersje społecznościowych serwerów MCP. Przypinaj do konkretnych commitów lub konkretnych wersji pakietów, weryfikuj sumy kontrolne i traktuj aktualizacje serwerów MCP z taką samą rutyną przeglądu jak każdą inną aktualizację zależności. Ta sama higiena łańcucha dostaw, którą [playbook po włamaniu do Vercel](/pl/blog/wlamanie-vercel-audyt-supply-chain) stosuje do aplikacji OAuth i rozszerzeń narzędzi deweloperskich, ma zastosowanie tutaj.
 
 **Uruchamiaj środowisko MCP w sandboxie.** Uruchamiaj proces hosta w kontenerze lub z włączonym macOS App Sandbox / przestrzeniami nazw użytkownika w Linuksie. Celem nie jest „powstrzymanie ataku” — zanim STDIO uruchomi polecenie, jest już przegrane — lecz ograniczenie zasięgu rażenia. Skompromitowany host MCP, który nie może dosięgnąć Twoich kluczy SSH, to znacznie mniejszy incydent niż taki, który może.
 
-**Blokuj publiczny ruch wychodzący z hostów MCP, gdzie to możliwe.** Krok eksfiltracji w większości zademonstrowanych exploitów wymaga wychodzącego dostępu do sieci. Jeśli zadanie CI korzystające z MCP nie ma powodu, by komunikować się z dowolnymi zewnętrznymi punktami końcowymi, odmów tej możliwości na poziomie sieci. To ta sama zasada utwardzania co w [playbooku bezpieczeństwa korporacyjnego Claude Code](/blog/claude-code-security-hardening-enterprise-guide) — obrona w głąb, nawet gdy własna granica protokołu jest zbyt luźna.
+**Blokuj publiczny ruch wychodzący z hostów MCP, gdzie to możliwe.** Krok eksfiltracji w większości zademonstrowanych exploitów wymaga wychodzącego dostępu do sieci. Jeśli zadanie CI korzystające z MCP nie ma powodu, by komunikować się z dowolnymi zewnętrznymi punktami końcowymi, odmów tej możliwości na poziomie sieci. To ta sama zasada utwardzania co w [playbooku bezpieczeństwa korporacyjnego Claude Code](/pl/blog/claude-code-hardening-bezpieczenstwa-enterprise) — obrona w głąb, nawet gdy własna granica protokołu jest zbyt luźna.
 
 **Audytuj zainstalowane serwery MCP.** Przeprowadzaj comiesięczną kontrolę względem swojego `mcp.json` lub jego odpowiednika. Wiedz, które serwery są zainstalowane, do jakich wersji są przypięte, o jakie uprawnienia proszą i z których marketplace'ów pochodzą. Wszystko, czego nie potrafisz uzasadnić, usuń.
 
-**Dla aplikacji korzystających z LLM połącz to z obronami przed prompt injection.** Wektor zero-click przeciwko IDE łączy manipulację konfiguracją z dostarczeniem ładunku zbliżonym do prompt injection. [Sześciowarstwowa architektura obrony w głąb](/blog/prompt-injection-attacks-llm-security-guide) przeciwko prompt injection to właściwe uzupełnienie utwardzania specyficznego dla MCP.
+**Dla aplikacji korzystających z LLM połącz to z obronami przed prompt injection.** Wektor zero-click przeciwko IDE łączy manipulację konfiguracją z dostarczeniem ładunku zbliżonym do prompt injection. [Sześciowarstwowa architektura obrony w głąb](/pl/blog/ataki-prompt-injection-bezpieczenstwo-llm) przeciwko prompt injection to właściwe uzupełnienie utwardzania specyficznego dla MCP.
 
 ## Bankowość i środowiska regulowane
 
@@ -130,8 +130,8 @@ Na razie odpowiedź operacyjna jest taka sama jak zawsze, gdy ustawienia domyśl
 
 - [MCP Security Vulnerabilities Complete Guide — Aembit](https://aembit.io/blog/the-ultimate-guide-to-mcp-security-vulnerabilities/) — szerszy krajobraz bezpieczeństwa MCP
 - [MCP Security Risks & Mitigations — SOC Prime](https://socprime.com/blog/mcp-security-risks-and-mitigations/) — operacyjna lista kontrolna działań łagodzących
-- [Przewodnik po protokołach MCP vs A2A](/blog/mcp-vs-a2a-ai-agent-protocols-guide-2026) — kiedy sięgnąć po MCP, a kiedy po A2A
-- [Utwardzanie bezpieczeństwa Claude Code dla przedsiębiorstw](/blog/claude-code-security-hardening-enterprise-guide) — sandboxing, ścieżki audytu i modele uprawnień
+- [Przewodnik po protokołach MCP vs A2A](/pl/blog/mcp-vs-a2a-protokoly-agentow-ai-2026) — kiedy sięgnąć po MCP, a kiedy po A2A
+- [Utwardzanie bezpieczeństwa Claude Code dla przedsiębiorstw](/pl/blog/claude-code-hardening-bezpieczenstwa-enterprise) — sandboxing, ścieżki audytu i modele uprawnień
 
 ---
 

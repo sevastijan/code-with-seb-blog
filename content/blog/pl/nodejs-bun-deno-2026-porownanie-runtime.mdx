@@ -14,14 +14,14 @@ Co pół roku ktoś ogłasza nowy runtime JavaScript „zabójcą Node’a”. S
 
 Node.js nie umarł. Bun nie zastąpił wszystkiego. Deno nie popadło w zapomnienie. Zamiast tego cała trójka zbiegła się wokół wspólnego standardu (WinterCG), każdy wykroił sobie odrębną niszę, a prawdziwym zwycięzcą okazał się wybór programisty.
 
-Przez ostatni rok uruchamiałem całą trójkę na produkcji. Node 24 napędza moje główne aplikacje. Bun 2.0 obsługuje moje [pipeline’y CI](/blog/optimizing-cicd-pipelines-dx-deploy-times-guide) i skrypty. Deno 3.0 uruchamia moje funkcje edge. Oto uczciwe porównanie — bez hype’u, realne benchmarki i praktyczny framework decyzyjny.
+Przez ostatni rok uruchamiałem całą trójkę na produkcji. Node 24 napędza moje główne aplikacje. Bun 2.0 obsługuje moje [pipeline’y CI](/pl/blog/optymalizacja-pipelineow-cicd-dx) i skrypty. Deno 3.0 uruchamia moje funkcje edge. Oto uczciwe porównanie — bez hype’u, realne benchmarki i praktyczny framework decyzyjny.
 
 ## Krajobraz runtime’ów w 2026
 
 Ustalmy tło. Na kwiecień 2026 mamy trzy dojrzałe runtime’y JavaScript:
 
 - **Node.js 24 LTS** — wydany w październiku 2025. Natywne wykonywanie TypeScript (dzięki `--experimental-strip-types` awansującemu do wersji stabilnej), ulepszony model uprawnień oraz ekosystem npm liczący 3,2 miliona pakietów.
-- **Bun 2.0** — stabilny od stycznia 2026. To już nie „szybki, ale zabugowany” nowicjusz. Pełna zgodność z API Node.js, wbudowany bundler, test runner i package manager. 2-4x szybszy serwing HTTP w realnych obciążeniach. Obecnie [należy do Anthropic po przejęciu w grudniu 2025](/blog/anthropic-bun-acquisition-claude-code-strategy), co zmienia pozycjonowanie strategiczne bardziej niż benchmarki.
+- **Bun 2.0** — stabilny od stycznia 2026. To już nie „szybki, ale zabugowany” nowicjusz. Pełna zgodność z API Node.js, wbudowany bundler, test runner i package manager. 2-4x szybszy serwing HTTP w realnych obciążeniach. Obecnie [należy do Anthropic po przejęciu w grudniu 2025](/pl/blog/anthropic-przejecie-bun-strategia-claude-code), co zmienia pozycjonowanie strategiczne bardziej niż benchmarki.
 - **Deno 3.0** — wydany w marcu 2026. Wbudowany magazyn KV, ulepszona zgodność z npm (95%+ pakietów działa od ręki), pierwszoklasowy deployment chmurowy przez Deno Deploy oraz najsilniejszy model bezpieczeństwa z całej trójki.
 
 Kluczowy element, który je łączy: **WinterCG** (Web-Interoperable Runtimes Community Group). Ta grupa społecznościowa W3C ustaliła wspólną, minimalną powierzchnię API — `fetch`, `Request`, `Response`, `crypto`, `URL`, `TextEncoder`, strumienie — którą wszystkie trzy runtime’y teraz implementują. Napisz handler `fetch`, a zadziała on na Node, Bun i Deno bez zmian. Dwa lata temu było to nie do pomyślenia.
@@ -122,7 +122,7 @@ To nie są syntetyczne benchmarki z pustymi handlerami. Test JSON API obejmuje p
 
 - **Surowa szybkość.** 2-4x szybszy dla obciążeń intensywnych pod względem I/O. Jeśli budujesz API o wysokiej przepustowości, ma to znaczenie.
 - **Zestaw all-in-one.** Runtime, bundler, test runner, package manager, script runner — jeden plik binarny. Bez żonglowania pięcioma narzędziami w skryptach `package.json`.
-- **Czasy instalacji.** `bun install` jest 10-20x szybszy niż `npm install`. Już samo to uzasadnia użycie Bun w [pipeline’ach CI/CD](/blog/optimizing-cicd-pipelines-dx-deploy-times-guide) — zespół, z którym pracowałem, skrócił swój pipeline z 8 minut do 3 minut tylko przez podmianę kroku instalacji.
+- **Czasy instalacji.** `bun install` jest 10-20x szybszy niż `npm install`. Już samo to uzasadnia użycie Bun w [pipeline’ach CI/CD](/pl/blog/optymalizacja-pipelineow-cicd-dx) — zespół, z którym pracowałem, skrócił swój pipeline z 8 minut do 3 minut tylko przez podmianę kroku instalacji.
 - **TypeScript i JSX natywnie.** Bez konfiguracji, bez wymaganego `tsconfig.json` do podstawowego użycia. Po prostu uruchamiaj pliki `.ts` i `.tsx`.
 
 **Gdzie Bun 2.0 nie dowozi:**
@@ -145,7 +145,7 @@ Deno zawsze miało najlepsze pomysły — bezpieczeństwo domyślnie, natywny Ty
 
 **Gdzie Deno 3.0 wygrywa:**
 
-- **Model bezpieczeństwa.** Uprawnienia są granularne i obowiązkowe. `deno run --allow-net=api.example.com --allow-read=./data` oznacza, że proces dosłownie nie może dotknąć systemu plików poza `./data` ani wysłać żądań sieciowych gdziekolwiek poza `api.example.com`. Dla [narzędzi CLI](/blog/building-your-own-cli-and-code-generators) uruchamiających kod dostarczony przez użytkownika jest to niezbędne.
+- **Model bezpieczeństwa.** Uprawnienia są granularne i obowiązkowe. `deno run --allow-net=api.example.com --allow-read=./data` oznacza, że proces dosłownie nie może dotknąć systemu plików poza `./data` ani wysłać żądań sieciowych gdziekolwiek poza `api.example.com`. Dla [narzędzi CLI](/pl/blog/budowa-wlasnego-cli-i-generatorow-kodu) uruchamiających kod dostarczony przez użytkownika jest to niezbędne.
 - **Wbudowany magazyn KV.** Brzmi trywialnie, ale to przełom dla prototypowania. Bez Redis, bez PostgreSQL, bez Dockera. `const kv = await Deno.openKv()` i masz bazę danych. Na produkcji na Deno Deploy jest ona replikowana globalnie.
 - **Deployment edge.** Cold starty Deno Deploy to ~20 ms. W połączeniu ze zgodnością z WinterCG to najlepsza platforma dla aplikacji edge-first.
 - **Biblioteka standardowa.** `deno.land/std` jest wyselekcjonowana, przetestowana i wersjonowana. Odpowiednik biblioteki standardowej Go dla JavaScriptu.
@@ -163,7 +163,7 @@ Powiem konkretnie, co ma znaczenie, a co nie.
 
 **Serwing HTTP:** Bun jest 2-4x szybszy niż Node. Ma to znaczenie, jeśli obsługujesz ponad 50 000 żądań na sekundę na instancję. Dla większości aplikacji robiących 500-5000 req/s runtime nie jest wąskim gardłem — jest nim twoja baza danych. Nie wybieraj runtime’u na podstawie syntetycznych benchmarków HTTP, chyba że budujesz CDN albo pipeline danych czasu rzeczywistego.
 
-**I/O plików:** Operacje plikowe Bun oparte na Zig są naprawdę szybsze. Jeśli budujesz narzędzia przetwarzające tysiące plików — [optymalizatory bundli](/blog/dynamic-bundle-optimization-under-200kb-guide), parsery logów, generatory kodu — przekłada się to na realne oszczędności czasu.
+**I/O plików:** Operacje plikowe Bun oparte na Zig są naprawdę szybsze. Jeśli budujesz narzędzia przetwarzające tysiące plików — [optymalizatory bundli](/pl/blog/dynamiczna-optymalizacja-bundle-ponizej-200kb), parsery logów, generatory kodu — przekłada się to na realne oszczędności czasu.
 
 **Cold starty:** Krytyczne dla serverless. Bun (~38 ms) i Deno (~52 ms) są dramatycznie szybsze niż Node (~148 ms). Jeśli wdrażasz funkcje AWS Lambda obsługujące zrywowy ruch, redukcja cold startu o 110 ms pomnożona przez tysiące wywołań jest znacząca.
 
@@ -215,7 +215,7 @@ Po uruchomieniu całej trójki na produkcji oto moja szczera rekomendacja:
 - Zależysz od natywnych addonów (sharp, bcrypt, better-sqlite3)
 - Potrzebujesz sprawdzonego w boju wsparcia frameworków (Next.js, Nest.js na produkcji)
 - Security review i compliance wymagają ugruntowanej historii
-- Budujesz [usługi backendowe](/blog/redis-streams-practical-guide-vs-kafka), gdzie runtime nie jest wąskim gardłem wydajności
+- Budujesz [usługi backendowe](/pl/blog/redis-streams-praktyczny-przewodnik-vs-kafka), gdzie runtime nie jest wąskim gardłem wydajności
 
 ### Wybierz Bun 2.0, gdy:
 
@@ -291,7 +291,7 @@ Po roku uruchamiania całej trójki oto, czego faktycznie używam:
 
 **Node.js 24 do aplikacji produkcyjnych.** Moje główne aplikacje webowe, API i mikroserwisy działają na Node. Ekosystem, narzędzia do debugowania i dojrzałość operacyjna są niezrównane. Gdy coś się psuje o 3 w nocy, chcę dojrzałej obsługi błędów Node i pewności, że każde narzędzie monitorujące działa perfekcyjnie.
 
-**Bun 2.0 do toolingu i skryptów.** Każdy skrypt `package.json`, każde [narzędzie CLI, które buduję](/blog/building-your-own-cli-and-code-generators), każdy pipeline CI — Bun. Różnica w szybkości jest uzależniająca. `bun install` kończący się w 2 sekundy zamiast 30 zmienia to, jak często jesteś skłonny uruchomić świeżą instalację. `bun test` ze zgodnością z Jest oznacza zerowy koszt migracji.
+**Bun 2.0 do toolingu i skryptów.** Każdy skrypt `package.json`, każde [narzędzie CLI, które buduję](/pl/blog/budowa-wlasnego-cli-i-generatorow-kodu), każdy pipeline CI — Bun. Różnica w szybkości jest uzależniająca. `bun install` kończący się w 2 sekundy zamiast 30 zmienia to, jak często jesteś skłonny uruchomić świeżą instalację. `bun test` ze zgodnością z Jest oznacza zerowy koszt migracji.
 
 **Deno 3.0 do funkcji edge i prototypów.** Gdy potrzebuję czegoś wdrożonego na edge w 30 regionach bez zarządzania infrastrukturą, Deno Deploy jest nie do pobicia. A Deno KV oznacza, że mogę prototypować pełnostackową funkcję bez provisionowania bazy danych.
 

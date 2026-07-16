@@ -160,7 +160,7 @@ Haczyk: szybka, synchroniczna ścieżka OPFS (`createSyncAccessHandle`) działa 
 
 To ta część, która oddziela demo od produktu, i ta część, którą strony marketingowe przemilczają.
 
-**Częściowa replikacja** jest nie do pominięcia przy skali. Nie da się synchronizować całej firmowej bazy danych do każdego klienta. Każdy poważny silnik ma na to odpowiedź: *shapes* w ElectricSQL, *sync streams* w PowerSync, *query-scoped sync* w Zero. Definiujesz wycinek — „zadania tego użytkownika plus projekty, których jest członkiem" — i tylko to się replikuje. Dobre trafienie z tymi definicjami to właściwa praca projektowa aplikacji local-first; to twoja warstwa pobierania danych, przemyślana na nowo jako granica subskrypcji. Jeśli mocowałeś się z nadmiernym pobieraniem w [warstwie danych GraphQL vs REST vs tRPC](/blog/graphql-vs-rest-vs-trpc-data-layer-guide), będzie to znajome — rysujesz te same granice, tyle że trwale.
+**Częściowa replikacja** jest nie do pominięcia przy skali. Nie da się synchronizować całej firmowej bazy danych do każdego klienta. Każdy poważny silnik ma na to odpowiedź: *shapes* w ElectricSQL, *sync streams* w PowerSync, *query-scoped sync* w Zero. Definiujesz wycinek — „zadania tego użytkownika plus projekty, których jest członkiem" — i tylko to się replikuje. Dobre trafienie z tymi definicjami to właściwa praca projektowa aplikacji local-first; to twoja warstwa pobierania danych, przemyślana na nowo jako granica subskrypcji. Jeśli mocowałeś się z nadmiernym pobieraniem w [warstwie danych GraphQL vs REST vs tRPC](/pl/blog/graphql-rest-trpc-warstwa-danych), będzie to znajome — rysujesz te same granice, tyle że trwale.
 
 **Uprawnienia** są trudniejsze niż w request/response, bo klient trzyma dane lokalnie, a klientowi nie można ufać. Liczą się dwie warstwy:
 
@@ -175,11 +175,11 @@ Traktuj granicę synchronizacji jako swoją nową granicę zaufania. Wszystko, c
 
 Powód, dla którego local-first *sprawia wrażenie* magii, to **optymistyczne UI**, i warto być precyzyjnym co do tego, jak działa, bo większość zespołów robi już jego okaleczoną wersję.
 
-W zwykłej aplikacji React Query mógłbyś zrobić optymistyczną aktualizację: zmutować cache, wystrzelić żądanie, cofnąć w `onError`. To dobre — sporo pisałem o [optymistycznych aktualizacjach w TanStack Query](/blog/tanstack-query-advanced-caching-rsc-guide) — ale to jest per-mutacja, ręcznie sklecone i szybko robi się kruche, gdy mutacje zależą od siebie nawzajem albo jesteś offline.
+W zwykłej aplikacji React Query mógłbyś zrobić optymistyczną aktualizację: zmutować cache, wystrzelić żądanie, cofnąć w `onError`. To dobre — sporo pisałem o [optymistycznych aktualizacjach w TanStack Query](/pl/blog/tanstack-query-zaawansowane-cache-rsc) — ale to jest per-mutacja, ręcznie sklecone i szybko robi się kruche, gdy mutacje zależą od siebie nawzajem albo jesteś offline.
 
 Local-first to uogólnia. **Każdy zapis jest optymistyczny z założenia konstrukcyjnego.** Mutujesz lokalną replikę; UI odzwierciedla to natychmiast, bo UI czyta z tej repliki; silnik kolejkuje mutację i synchronizuje ją, kiedy może; jeśli serwer odrzuci, silnik cofa zmianę, a twoje reaktywne zapytanie renderuje się ponownie. Nie piszesz logiki cofania per mutacja — silnik jest właścicielem uzgadniania. To różnica między „dodaliśmy optymistyczne aktualizacje do kilku przycisków" a „aplikacja nie ma spinnerów".
 
-W cyklu życia mutacji kryje się prawdziwe myślenie o maszynach stanów — `local → pending → confirmed | rejected → rolled-back` — a jeśli modelujesz to jawnie, zamiast opierać się na silniku, wzorce z [maszyn stanów z XState](/blog/state-machines-react-xstate-patterns-guide) mapują się na to czysto.
+W cyklu życia mutacji kryje się prawdziwe myślenie o maszynach stanów — `local → pending → confirmed | rejected → rolled-back` — a jeśli modelujesz to jawnie, zamiast opierać się na silniku, wzorce z [maszyn stanów z XState](/pl/blog/maszyny-stanow-react-xstate) mapują się na to czysto.
 
 ## Zachowanie offline
 
@@ -198,7 +198,7 @@ Lubię tę architekturę. Uważam też, że większość aplikacji nie powinna j
 - **Rozmiar bundle'a.** Build SQLite w WASM i klient synchronizacji nie są darmowe przy pierwszym załadowaniu.
 - **Lock-in modelu danych.** Migrowanie schematów, gdy klienci trzymają stare repliki, to osobna dyscyplina migracyjna.
 
-**Nie idź w local-first, jeśli:** twoja aplikacja to głównie treści odczytowe (strona marketingowa, portal dokumentacji, dashboard czytający serwerowe agregaty — [inkrementalna rewalidacja w Next.js](/blog/incremental-revalidation-nextjs-ultra-fast-dashboards) albo zwykłe RSC obsłużą to lepiej); twoje dane są ogromne na użytkownika i nie da się ich sensownie częściowo replikować; masz twarde wymagania spójności (płatności, księgi rachunkowe), gdzie serwer *musi* być jedynym źródłem prawdy przy każdym odczycie; albo po prostu nie masz potrzeb współpracy ani offline, w którym to przypadku płacisz złożonością za spinner, który mogłeś zabić dobrze umieszczoną optymistyczną aktualizacją.
+**Nie idź w local-first, jeśli:** twoja aplikacja to głównie treści odczytowe (strona marketingowa, portal dokumentacji, dashboard czytający serwerowe agregaty — [inkrementalna rewalidacja w Next.js](/pl/blog/inkrementalna-rewalidacja-nextjs-szybkie-dashboardy) albo zwykłe RSC obsłużą to lepiej); twoje dane są ogromne na użytkownika i nie da się ich sensownie częściowo replikować; masz twarde wymagania spójności (płatności, księgi rachunkowe), gdzie serwer *musi* być jedynym źródłem prawdy przy każdym odczycie; albo po prostu nie masz potrzeb współpracy ani offline, w którym to przypadku płacisz złożonością za spinner, który mogłeś zabić dobrze umieszczoną optymistyczną aktualizacją.
 
 **Idź w local-first, jeśli:** budujesz narzędzie do produktywności, edytor do współpracy, tracker zadań, CRM, aplikację terenową, która potrzebuje offline, albo cokolwiek, gdzie opóźnienie interakcji *jest* produktem.
 
@@ -218,9 +218,9 @@ Nie przepisujesz. Migrujesz jeden wycinek. Oto ścieżka, którą obrałbym z ty
 
 **6. Resztę aplikacji zostaw na REST.** Te dwa światy dobrze współistnieją. Większość aplikacji kończy jako **hybryda**: local-first dla interaktywnego rdzenia, request/response dla stron ustawień, admina, raportów i wszystkiego, co jest głównie odczytowe. To cecha, nie kompromis.
 
-Jeśli twoja architektura już opiera się na luźno powiązanych zdarzeniach, a nie na głębokich łańcuchach propsów — coś, co omawiałem w [architekturze frontendu sterowanej zdarzeniami](/blog/killing-prop-drilling-event-driven-frontend-architecture) — okaże się, że local-first wchodzi naturalnie, bo synchronizowany lokalny store *jest* źródłem zdarzeń, które subskrybuje całe UI.
+Jeśli twoja architektura już opiera się na luźno powiązanych zdarzeniach, a nie na głębokich łańcuchach propsów — coś, co omawiałem w [architekturze frontendu sterowanej zdarzeniami](/pl/blog/koniec-prop-drilling-architektura-zdarzeniowa) — okaże się, że local-first wchodzi naturalnie, bo synchronizowany lokalny store *jest* źródłem zdarzeń, które subskrybuje całe UI.
 
-Po stronie serwera koordynator synchronizacji musi rozprowadzać zmiany do podłączonych klientów, a jeśli budujesz tę warstwę sam, zamiast ją kupować, log-owy szkielet strumieniowy w rodzaju tego, który opisałem w [przewodniku po Redis Streams](/blog/redis-streams-practical-guide-vs-kafka), jest rozsądnym podłożem dla change feedu.
+Po stronie serwera koordynator synchronizacji musi rozprowadzać zmiany do podłączonych klientów, a jeśli budujesz tę warstwę sam, zamiast ją kupować, log-owy szkielet strumieniowy w rodzaju tego, który opisałem w [przewodniku po Redis Streams](/pl/blog/redis-streams-praktyczny-przewodnik-vs-kafka), jest rozsądnym podłożem dla change feedu.
 
 ## Gdzie nas to zostawia
 
