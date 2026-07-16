@@ -93,7 +93,7 @@ Maglev uses a traditional SSA (Static Single Assignment) based approach with a C
 
 ### Tier 4: TurboFan — The Heavy Optimizer
 
-TurboFan is V8's crown jewel. It's a full speculative optimizing compiler that produces machine code rivaling ahead-of-time compiled languages. For a decade TurboFan was built on a "Sea of Nodes" intermediate representation (IR) — a graph-based model that decouples control flow from data flow. Powerful, but famously hard to reason about, and as of 2025 V8 has largely replaced it (more on that in the Turboshaft section below).
+TurboFan is V8's crown jewel. It's a full speculative optimizing compiler that produces machine code rivaling ahead-of-time compiled languages. TurboFan uses a unique "Sea of Nodes" intermediate representation (IR) — a graph-based model that's more flexible than traditional IR formats.
 
 TurboFan performs:
 
@@ -133,34 +133,6 @@ sum(['a', 'b', 'c']); // BOOM — deoptimization!
 ```
 
 Deoptimization is expensive. V8 has to reconstruct the interpreter state from the optimized machine code, which can cause noticeable pauses. The function will eventually get re-optimized with the new type information, but repeated deoptimization cycles waste significant time.
-
-## Turboshaft: V8 Left the Sea of Nodes
-
-If you learned that "TurboFan uses Sea of Nodes," update that mental model — it's the most significant change to V8's compiler architecture in a decade, and it landed while most of us weren't looking.
-
-Sea of Nodes was elegant on paper but brutal in practice: the graph made control flow implicit, which meant compiler engineers spent enormous effort reasoning about node scheduling and ordering, and compile times suffered. Starting in Chrome 120 (late 2023), V8 began migrating TurboFan's backend to **Turboshaft** — a more traditional **CFG-based IR** (control-flow graph with SSA form) where the order of operations is explicit.
-
-By the time V8 published ["Land ahoy: leaving the Sea of Nodes"](https://v8.dev/blog/leaving-the-sea-of-nodes) in March 2025, Turboshaft already ran **the entire JavaScript backend of TurboFan and the entire WebAssembly compilation pipeline**. The reported payoff: compile time cut roughly in half versus the Sea of Nodes backend, plus a codebase new engineers can actually onboard to.
-
-### Turbolev — closing the last gap
-
-The one piece still riding on Sea of Nodes is TurboFan's *frontend* (the phase that turns bytecode into the optimizer's input graph). The **Turbolev** project replaces it by feeding **Maglev's** existing CFG/SSA graph directly into Turboshaft's optimizer, instead of building a fresh Sea of Nodes graph from scratch. In other words, the tiers are converging on one shared IR:
-
-```
-Ignition  → bytecode + type feedback
-Sparkplug → baseline machine code
-Maglev    → CFG/SSA graph  ─┐
-                            ├─→  Turboshaft optimizer → machine code
-Turbolev  ──────────────────┘  (feeds Maglev's graph straight in)
-```
-
-Maglev itself is no longer experimental — it's **enabled by default** on desktop, so the "mid-tier" I described earlier is now a standard part of the pipeline your code runs through every day.
-
-### What this means for you
-
-Practically? **Nothing changes in how you write code.** The speculative-optimization and deoptimization rules from the previous sections still hold exactly — monomorphic inline caches, stable hidden classes, and consistent types are still what keep you on the fast path. Turboshaft is a *backend* rewrite: same bets, same feedback, same deopts, just compiled faster and with less main-thread jank during warm-up.
-
-The takeaway is about accuracy, not tactics: if you're reading older V8 deep-dives (or repeating interview answers), "TurboFan = Sea of Nodes" is now historical. The modern pipeline is Ignition → Sparkplug → Maglev → **Turboshaft**.
 
 ## Hidden Classes: The Secret to Fast Property Access
 
@@ -430,7 +402,6 @@ For everything else, write clean, readable code and let V8 do its job. Focus on 
 
 ### Sources
 - [V8 Blog: Maglev — V8's Fastest Optimizing JIT](https://v8.dev/blog/maglev) — the official deep dive into Maglev's architecture
-- [V8 Blog: Land ahoy — leaving the Sea of Nodes](https://v8.dev/blog/leaving-the-sea-of-nodes) — the March 2025 post on the Turboshaft migration and why Sea of Nodes was retired
 - [V8 Blog: Trash Talk — The Orinoco Garbage Collector](https://v8.dev/blog/trash-talk) — Orinoco's design and performance characteristics
 - [V8 Blog: Orinoco Parallel Scavenger](https://v8.dev/blog/orinoco-parallel-scavenger) — young generation parallel collection
 - [Chromium Design Elements: Fast Property Access](https://chromium.googlesource.com/external/github.com/v8/v8.wiki/+/60dc23b22b18adc6a8902bd9693e386a3748040a/Design-Elements.md) — hidden classes and inline caching design
