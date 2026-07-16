@@ -1,0 +1,390 @@
+---
+title: 'Implementacja logowania Google w aplikacji React (Vite) z użyciem @react-oauth/google'
+date: '2025-03-26'
+category: 'Development'
+tags: ['React', 'Vite', 'Google OAuth', 'Authentication', 'JWT', 'Frontend Security']
+featured: false
+author: 'Sebastian'
+draft: false
+enSlug: 'implementation-of-google-login-in-react-vite-application-using-react-oauth-google'
+excerpt: 'Naucz się wdrażać logowanie Google w aplikacji Vite + React z @react-oauth/google, bezpiecznie obsługiwać tokeny JWT na frontendzie i zarządzać sesją.'
+---
+
+W tym poradniku przejdziemy przez implementację logowania Google w aplikacji Vite + React z użyciem `@react-oauth/google`. Cały przepływ będzie obsługiwany wyłącznie po stronie klienta — bez potrzeby posiadania backendu.
+
+Zaczniemy od skonfigurowania Google Cloud Console z poświadczeniami OAuth 2.0, a następnie zintegrujemy przycisk logowania przy użyciu oficjalnego SDK Google Identity Services dla Reacta. Nauczysz się, jak:
+
+- Uwierzytelniać użytkowników przez okno pop-up Google
+
+- Uzyskać i zdekodować token ID (JWT) zawierający informacje o profilu użytkownika
+
+- Bezpiecznie przechowywać token po stronie klienta (localStorage, sessionStorage lub pamięć)
+
+- Wykorzystać zdekodowany payload, aby uzyskać dostęp do danych użytkownika, takich jak imię, e-mail czy zdjęcie profilowe
+
+- Opcjonalnie wylogować użytkownika i wyczyścić dane sesji
+
+Ta metoda jest idealna dla aplikacji, które potrzebują prostego logowania bez pełnej logiki uwierzytelniania po stronie serwera. Nadal będziesz mieć dostęp do bezpiecznego przepływu uwierzytelniania Google — bez potrzeby backendu.
+
+# Krok 1: Konfiguracja Google Cloud Console
+
+1. Wejdź na [Google Cloud Console](https://console.cloud.google.com/)
+2. Utwórz nowy projekt
+3. Przejdź do **OAuth Consent Screen** i skonfiguruj go:
+   - Wybierz **External** (dla aplikacji publicznych)
+   - Wypełnij wymagane pola, a następnie kliknij **Publish**
+4. Przejdź do **Credentials** > **Create Credentials** > **OAuth 2.0 Client ID**:
+   - Wybierz **Web Application**
+   - Dodaj `http://localhost:5173` do **Authorized JavaScript Origins** (a jeśli planujesz hostować aplikację, pamiętaj, aby dołączyć również produkcyjny adres URL, np. `https://www.codewithseb.com`)
+   - Redirect URI może być taki sam lub pozostawiony pusty dla przepływu opartego na pop-upie
+5. Skopiuj swój **Client ID**
+
+# Krok 2: Instalacja pakietów
+
+Aby zainstalować wymagane pakiety przy użyciu **npm**:
+
+```bash
+npm install @react-oauth/google jwt-decode
+```
+
+Alternatywnie możesz użyć **yarn**:
+
+```bash
+yarn add @react-oauth/google jwt-decode
+```
+
+Lub **pnpm**:
+
+```bash
+pnpm add @react-oauth/google jwt-decode
+```
+
+# Krok 3: Konfiguracja providera
+
+Utwórz plik `.env` w katalogu głównym projektu:
+
+```env
+VITE_GOOGLE_CLIENT_ID=your-google-client-id.apps.googleusercontent.com
+```
+
+Owiń swoją aplikację React komponentem `GoogleOAuthProvider` w pliku `main.jsx`:
+
+```jsx
+// main.jsx
+import React from 'react'
+import ReactDOM from 'react-dom/client'
+import { GoogleOAuthProvider } from '@react-oauth/google'
+import App from './App'
+
+ReactDOM.createRoot(document.getElementById('root')).render(
+  <GoogleOAuthProvider clientId={import.meta.env.VITE_GOOGLE_CLIENT_ID}>
+    <App />
+  </GoogleOAuthProvider>
+)
+```
+
+# Krok 4: Utworzenie przycisku logowania Google
+
+Powyższy przykład przedstawia minimalistyczną, szkieletową implementację logowania Google z użyciem biblioteki `@react-oauth/google`. Bezpośrednio wykorzystuje komponent GoogleLogin do wyrenderowania przycisku logowania i obsługuje callback onSuccess, dekodując zwrócony token JWT za pomocą jwt-decode, zapisując dane użytkownika w konsoli i przechowując surowy token w localStorage. Jest to pomocne, aby szybko zacząć i zweryfikować, że przepływ logowania działa, ale nie skaluje się dobrze w rzeczywistych aplikacjach.
+
+Istnieje kilka powodów, dla których ta implementacja jest celowo podstawowa. Pomija ona rozdzielenie odpowiedzialności, ma zaszytą na sztywno logikę przechowywania, brak bezpieczeństwa typów i jakiejkolwiek warstwy abstrakcji. Ma być prosta i czytelna — idealna jako punkt kontrolny w poradniku. Jednak w aplikacji gotowej na produkcję warto wyabstrahować obsługę tokenów (np. do hooka), unikać przechowywania wrażliwych danych w localStorage oraz dodać mechanizmy wylogowania, obsługi wygaśnięcia tokenu i współdzielenia stanu użytkownika między komponentami. W następnej sekcji zbudujemy bardziej modułowe i bezpieczne podejście z użyciem TypeScriptu i wzorców bezpiecznych dla sesji.
+
+Utwórz komponent `LoginButton.jsx`:
+
+```jsx
+// LoginButton.jsx
+import { GoogleLogin } from '@react-oauth/google'
+import jwt_decode from 'jwt-decode'
+
+export default function LoginButton() {
+  const handleSuccess = (credentialResponse) => {
+    const token = credentialResponse.credential
+    const user = jwt_decode(token)
+    console.log('User data:', user)
+    localStorage.setItem('googleToken', token)
+  }
+
+  const handleError = () => {
+    console.error('Login Failed')
+  }
+
+  return <GoogleLogin onSuccess={handleSuccess} onError={handleError} />
+}
+```
+
+Użycie w `App.jsx`:
+
+```jsx
+// App.jsx
+import LoginButton from './LoginButton'
+
+export default function App() {
+  return (
+    <div>
+      <h1>Login with Google</h1>
+      <LoginButton />
+    </div>
+  )
+}
+```
+
+# Krok 5: Obsługa tokenu (JWT)
+
+Po udanym logowaniu Google zwraca token ID w postaci JWT (JSON Web Token). Ten token to podpisany, zakodowany w Base64 ciąg znaków zawierający kluczowe informacje o tożsamości użytkownika, takie jak identyfikator Google użytkownika (sub), adres e-mail, imię oraz zdjęcie profilowe. Ponieważ jest podpisany przez Google, możesz ufać jego zawartości, dopóki nie wygaśnie. Token można zdekodować lokalnie na frontendzie i wykorzystać do personalizacji interfejsu lub warunkowego kontrolowania dostępu — bez potrzeby wykonywania dodatkowych zapytań do API Google.
+
+## Gdzie przechowywać token?
+
+| Metoda przechowywania | Zalety                                         | Wady                                             |
+| --------------------- | ---------------------------------------------- | ------------------------------------------------ |
+| `localStorage`        | ✅ Przetrwa przeładowania i restarty przeglądarki | ❌ Podatny na ataki XSS                          |
+| `sessionStorage`      | ✅ Czyszczony po zamknięciu karty/przeglądarki  | ❌ Nadal dostępny przez JS (powierzchnia XSS)    |
+| W pamięci (state)     | ✅ Najbezpieczniejszy, niedostępny z poziomu JS | ❌ Token traci się po przeładowaniu              |
+
+> Używaj `sessionStorage`, aby uzyskać dobry kompromis w aplikacjach działających wyłącznie na frontendzie. Dla bezpieczeństwa na poziomie produkcyjnym używaj ciasteczek `HttpOnly` obsługiwanych przez backend.
+
+## 🚨 Zapobieganie ekspozycji na XSS
+
+Obsługując uwierzytelnianie wyłącznie na frontendzie, kluczowe jest minimalizowanie ryzyka wystawienia wrażliwych tokenów na działanie złośliwych skryptów. Ponieważ tokeny przechowywane w sessionStorage lub localStorage są dostępne z poziomu JavaScriptu, głównym zagrożeniem staje się cross-site scripting (XSS). Choć bez backendu nie osiągniesz pełnej izolacji, możesz zastosować solidne techniki defensywne, aby drastycznie zredukować ekspozycję i poprawić poziom bezpieczeństwa.
+
+### Ustaw silną **Content Security Policy (CSP)**
+
+Jednym z najskuteczniejszych sposobów ochrony aplikacji frontendowej przed atakami XSS jest wdrożenie ścisłej Content Security Policy (CSP). Ten nagłówek HTTP informuje przeglądarkę, które źródła treści mogą być ładowane i wykonywane. Minimalny i bezpieczny domyślny wariant dla aplikacji jednostronicowych wygląda tak:
+
+```http
+Content-Security-Policy: default-src 'self'; script-src 'self';
+```
+
+Ta konfiguracja zapewnia, że wykonywane mogą być wyłącznie skrypty ładowane z Twojej własnej domeny (tj. nie z zewnętrznych źródeł ani z osadzonych tagów` <script>`). Blokuje ona typowe wektory XSS, takie jak wstrzykiwanie złośliwych skryptów inline czy nadużywanie skryptów firm trzecich. Podczas wdrażania aplikacji (np. przez Vercel, Netlify lub Nginx) upewnij się, że skonfigurujesz nagłówki CSP po stronie serwera lub za pomocą tagów meta, jeśli nagłówki nie są dostępne. Możesz dodatkowo wzmocnić CSP, wprost zakazując unsafe-inline, wskazując zaufane domeny dla obrazów, czcionek lub API oraz włączając report-uri do logowania naruszeń.
+
+### Unikaj dangerouslySetInnerHTML w React
+
+Unikaj używania dangerouslySetInnerHTML w React, o ile nie jest to absolutnie konieczne, ponieważ otwiera to drogę do podatności XSS przez wstrzykiwanie surowego HTML bezpośrednio do DOM. Choć React domyślnie escapuje całe wyjście, aby zapobiec wykonaniu złośliwych skryptów, użycie tego API omija tę ochronę. Jeśli musisz renderować dynamiczny HTML (np. z CMS-a), upewnij się, że treść jest w pełni oczyszczona i zwalidowana na backendzie lub przez zaufany sanitizer HTML na frontendzie. W większości przypadków bezpieczniej i prościej jest renderować treść przez JSX z użyciem standardowych bindings Reacta — w ten sposób React automatycznie zajmuje się escapowaniem za Ciebie.
+
+❌ Niebezpieczny przykład (podatny na XSS)
+
+```tsx
+const userInput = '<img src=x onerror="alert(\'XSS\')" />'
+
+return <div dangerouslySetInnerHTML={{ __html: userInput }} />
+```
+
+Jeśli userInput pochodzi na przykład z zapytania URL, formularza lub backendu bez oczyszczenia — może wywołać kod JavaScript w przeglądarce użytkownika.
+
+✅ Bezpieczny przykład
+
+```tsx
+const userInput = '<b>Hello</b>' // lub zwykły tekst
+
+return <div>{userInput}</div>
+```
+
+React potraktuje userInput jako tekst, a nie HTML — więc żaden potencjalnie złośliwy kod nie zostanie wykonany.
+
+Jeśli musisz renderować HTML (np. z Markdown lub CMS-a), rozważ użycie bezpiecznego parsera, takiego jak DOMPurify:
+
+```tsx
+import DOMPurify from 'dompurify'
+
+const safeHtml = DOMPurify.sanitize(userInput)
+
+return <div dangerouslySetInnerHTML={{ __html: safeHtml }} />
+```
+
+### Oczyszczaj/waliduj wszystkie dane wejściowe od użytkownika i parametry zapytań
+
+Każde dane wejściowe pochodzące od użytkownika — czy to z pól formularza, parametrów zapytania w URL, czy z zewnętrznych API — powinny być zawsze traktowane jako niezaufane i potencjalnie złośliwe. Nigdy nie zakładaj, że frontend lub backend „po prostu zadziała” z tym, co przyjdzie na wejściu. Na przykład ciąg zapytania taki jak `?name=<script>alert("XSS")</script>` można łatwo odbić w UI, jeśli nie zostanie właściwie zescapowany lub zwalidowany. Nawet pozornie niewinne dane, jak nazwy użytkowników czy wiadomości, mogą zostać spreparowane, aby wstrzyknąć znaczniki, style lub skrypty, jeśli renderujesz je dynamicznie.
+
+Aby się przed tym bronić, zawsze oczyszczaj lub waliduj dane wejściowe w miejscu ich wejścia i przed renderowaniem. Dla wartości tekstowych polegaj na domyślnym escapowaniu Reacta, używając standardowego JSX (`<div>{value}</div>`). Dla treści HTML oczyszczaj za pomocą bibliotek takich jak DOMPurify. Dla danych strukturalnych waliduj za pomocą narzędzi do walidacji schematów, takich jak zod, yup lub Joi, zwłaszcza jeśli parsujesz odpowiedzi JSON z zewnętrznych źródeł lub obsługujesz przesyłane formularze. Wczesna walidacja struktur danych pomaga wychwycić nieprawidłowe lub nieoczekiwane wartości, zanim rozprzestrzenią się po Twoim UI — czyniąc aplikację bezpieczniejszą i bardziej odporną.
+
+❌ Podatne:
+
+```tsx
+const name = new URLSearchParams(location.search).get('name')
+// name === '<script>alert("XSS")</script>'
+return <div>Hello {name}</div> // React escapuje, ale co jeśli użyto tego gdzie indziej?
+```
+
+✅ Bezpieczne:
+
+```tsx
+const name = new URLSearchParams(location.search).get('name') || ''
+const sanitized = DOMPurify.sanitize(name)
+return <div dangerouslySetInnerHTML={{ __html: sanitized }} />
+```
+
+Albo jeszcze lepiej — unikaj innerHTML w ogóle:
+
+```tsx
+return <div>Hello {name}</div> // Pozwól Reactowi bezpiecznie to zescapować
+```
+
+Wczesna walidacja struktur danych pomaga wychwycić nieprawidłowe lub nieoczekiwane wartości, zanim rozprzestrzenią się po Twoim UI — czyniąc aplikację bezpieczniejszą i bardziej odporną.
+
+## Narzędzie do obsługi tokenów
+
+Aby logika związana z tokenami była czysta, testowalna i wielokrotnego użytku, warto wyodrębnić ją do dedykowanego narzędzia — w tym przypadku do własnego hooka React o nazwie `useSessionToken`. Ten hook enkapsuluje wszystkie kluczowe operacje związane z zarządzaniem tokenem ID Google w przeglądarce: zapisywanie go do `sessionStorage`, odczytywanie, usuwanie i dekodowanie do użytecznego obiektu użytkownika. Centralizuje również obowiązki takie jak sprawdzanie, czy token wygasł (`exp`), i wyzwalanie wylogowania w razie potrzeby. To podejście jest zgodne z zasadami **KISS** i **DRY**, unika duplikacji między komponentami i utrzymuje logikę uwierzytelniania poza warstwą UI.
+
+W bardziej zaawansowanych scenariuszach hook wspiera także **auto-wylogowanie**, odczytując czas wygaśnięcia tokenu i planując `setTimeout`, aby wylogować użytkownika dokładnie w momencie wygaśnięcia sesji. Dodaje to dodatkową warstwę pasywnego bezpieczeństwa, zapewniając, że nawet nieaktywne sesje są unieważniane po stronie klienta. Ponieważ hook wewnętrznie korzysta z `useCallback` i `useRef`, pozostaje wydajny i przewidywalny — nawet gdy używa się go w wielu komponentach lub kontekstach. To fundamentalny element budulcowy, który później możesz zintegrować z globalnym `AuthContext` lub połączyć z logiką odświeżania tokenu przy dodawaniu wsparcia dla backendu.
+
+```ts
+// hooks/useSessionToken.ts
+import { useCallback } from 'react'
+import jwtDecode from 'jwt-decode'
+import { googleLogout } from '@react-oauth/google'
+
+export type AuthToken = string
+
+// Interfejs dla zdekodowanego payloadu tokenu JWT
+interface DecodedUser {
+  sub: string
+  email: string
+  name?: string
+  picture?: string
+  exp?: number // znacznik czasu wygaśnięcia JWT
+  [key: string]: unknown
+}
+
+const SESSION_KEY = 'googleToken'
+
+export const useSessionToken = () => {
+  /**
+   * Zapisz token ID Google do sessionStorage
+   * @param token - token JWT zwrócony z logowania Google
+   */
+  const saveToken = useCallback((token: AuthToken): void => {
+    sessionStorage.setItem(SESSION_KEY, token)
+  }, [])
+
+  /**
+   * Pobierz przechowywany token z sessionStorage
+   * @returns token JWT lub null, jeśli nie istnieje
+   */
+  const getToken = useCallback((): AuthToken | null => {
+    return sessionStorage.getItem(SESSION_KEY)
+  }, [])
+
+  /**
+   * Usuń token z sessionStorage
+   */
+  const removeToken = useCallback((): void => {
+    sessionStorage.removeItem(SESSION_KEY)
+  }, [])
+
+  /**
+   * Wyloguj użytkownika, wywołując googleLogout i czyszcząc token sesji
+   */
+  const logout = useCallback(() => {
+    googleLogout()
+    removeToken()
+  }, [removeToken])
+
+  /**
+   * Sprawdź, czy dany token wygasł na podstawie pola exp
+   */
+  const isTokenExpired = useCallback((token: AuthToken): boolean => {
+    try {
+      const decoded = jwtDecode<DecodedUser>(token)
+      if (!decoded.exp) return true
+      const nowInSeconds = Math.floor(Date.now() / 1000)
+      return decoded.exp < nowInSeconds
+    } catch {
+      return true
+    }
+  }, [])
+
+  /**
+   * Zdekoduj przechowywany token JWT i wyodrębnij dane profilu użytkownika
+   * @returns obiekt DecodedUser lub null, jeśli token jest brakujący/nieprawidłowy
+   */
+  const getUserFromToken = useCallback((): DecodedUser | null => {
+    const token = getToken()
+    if (!token || isTokenExpired(token)) {
+      removeToken() // automatyczne czyszczenie, jeśli wygasł
+      return null
+    }
+    try {
+      return jwtDecode<DecodedUser>(token)
+    } catch {
+      return null
+    }
+  }, [getToken, isTokenExpired, removeToken])
+
+  return {
+    saveToken,
+    getToken,
+    removeToken,
+    getUserFromToken,
+    logout,
+    isTokenExpired,
+  }
+}
+```
+
+Użyj tego w swoim komponencie logowania:
+
+```tsx
+import { GoogleLogin } from '@react-oauth/google'
+import { useSessionToken } from '../lib/useSessionToken'
+
+export const LoginButton = () => {
+  const { saveToken, getUserFromToken, logout } = useSessionToken()
+
+  const handleSuccess = (response: any) => {
+    const token = response?.credential
+    if (!token) return
+
+    /**
+     * Tutaj możesz też zaimplementować autoryzację Supabase.com,
+     * która idealnie nadaje się do projektów MVP, aby przetestować model biznesowy
+     */
+
+    saveToken(token)
+    const user = getUserFromToken()
+    console.log('User:', user)
+  }
+
+  const handleError = () => {
+    console.error('Login failed')
+  }
+
+  return (
+    <>
+      <GoogleLogin onSuccess={handleSuccess} onError={handleError} />
+      <button onClick={logout}>Logout</button>
+    </>
+  )
+}
+```
+
+Zdekodowane dane mogą zawierać:
+
+```json
+{
+  "sub": "1234567890",
+  "name": "John Doe",
+  "email": "john@example.com",
+  "picture": "https://..."
+}
+```
+
+Wykorzystaj to do personalizacji interfejsu użytkownika — na przykład wyświetlając imię użytkownika na pasku nawigacji lub pokazując jego awatar w menu profilu. Poprawia to komfort korzystania z aplikacji, zapewniając poczucie tożsamości i świadomość sesji w całej aplikacji.
+
+Po zintegrowaniu logowania Google oraz wdrożeniu obsługi i przechowywania tokenów JWT kolejnym logicznym krokiem jest zbudowanie scentralizowanego kontekstu uwierzytelniania (AuthContext). Pozwala on zarządzać stanem uwierzytelnionego użytkownika w całej aplikacji React, udostępniać komponentom wartości user oraz isAuthenticated, a opcjonalnie zaimplementować auto-wylogowanie po wygaśnięciu tokenu. Możesz również włączyć auto-logowanie po odświeżeniu strony, sprawdzając obecność przechowywanego tokenu w sessionStorage i ustawiając stan użytkownika w useEffect.
+
+Dla lepszego bezpieczeństwa powinieneś także obsłużyć wygaśnięcie tokenu — dekodując claim exp z tokenu i wyzwalając automatyczne wylogowanie, gdy token stanie się nieprawidłowy. Można to zrobić proaktywnie podczas sprawdzania użytkownika lub planując setTimeout(logout, msUntilExpiry) w momencie logowania, co zapewnia unieważnienie sesji dokładnie na czas.
+
+Jeśli planujesz połączenie z backendem (do operacji CRUD, profili użytkowników czy dostępu do API), możesz przesyłać token za pomocą nagłówka `Authorization: Bearer <id_token>` do walidacji po stronie serwera. Możesz też zaimplementować kontrolę dostępu opartą na rolach (RBAC), warunkowo renderować komponenty (np. AdminPanel vs UserPanel) lub rozszerzyć przepływ uwierzytelniania o wsparcie dla wielu providerów, takich jak GitHub, Facebook czy własny provider OAuth, poprzez modułowy interfejs.
+
+# Podsumowanie
+
+Wdrożenie uwierzytelniania Google w aplikacji Vite + React z @react-oauth/google to czyste i wydajne rozwiązanie do obsługi logowania użytkowników na frontendzie bez konieczności posiadania backendu. Wykorzystując tokeny ID, sessionStorage i modułowe narzędzia takie jak useSessionToken, zyskujesz bezpieczny i skalowalny fundament do obsługi sesji, personalizacji UI oraz przyszłej kontroli dostępu.
+
+Niezależnie od tego, czy budujesz MVP, czy dodajesz OAuth do istniejącej aplikacji SPA, ta konfiguracja stanowi solidną bazę, którą łatwo rozszerzysz o funkcje takie jak globalny kontekst uwierzytelniania, logika odświeżania tokenu czy integracja z zewnętrznymi API i usługami backendu, gdy zajdzie taka potrzeba.
+
+# Źródła
+
+- [@react-oauth/google GitHub](https://github.com/MomenSherif/react-oauth)
+- [Google Identity Services](https://developers.google.com/identity/gsi/web/guides/overview)
+- [JWT.io Debugger](https://jwt.io/)
+
+~Seb 👊

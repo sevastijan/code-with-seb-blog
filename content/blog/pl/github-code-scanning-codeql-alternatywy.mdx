@@ -1,0 +1,361 @@
+---
+title: 'GitHub Code Scanning z CodeQL: pełny przewodnik konfiguracji (plus darmowe alternatywy)'
+date: '2026-07-10'
+category: 'Development'
+tags: ['security', 'github-actions', 'codeql', 'sast', 'devsecops']
+draft: false
+featured: false
+author: 'Sebastian'
+enSlug: 'github-code-scanning-codeql-setup-free-alternatives'
+excerpt: 'CodeQL to jeden z najlepszych silników SAST — ale „darmowy" kończy się, gdy repo staje się prywatne. Oto jak go poprawnie skonfigurować i zbudować darmowy stack.'
+---
+
+GitHub daje Ci za darmo jeden z najlepszych silników analizy statycznej w branży. Jest tylko jeden gwiazdek przy tym zdaniu — i jest to gwiazdek warty 30 dolarów za commitującego miesięcznie: CodeQL jest darmowy wyłącznie dla repozytoriów **publicznych**. W chwili, gdy Twój kod staje się prywatny, code scanning zamienia się w płatną funkcję GitHub Code Security — a przy zespole 20-osobowym to 7200 dolarów rocznie za jedno narzędzie.
+
+Konfigurowałem GitHub code scanning z CodeQL po obu stronach tej granicy: w publicznych projektach open-source, gdzie nie kosztuje nic, i w prywatnych repozytoriach, gdzie faktura wymusiła poważną rozmowę o alternatywach. Ten przewodnik obejmuje obie ścieżki — pełną konfigurację CodeQL (domyślną, zaawansowaną i zapytania niestandardowe) oraz naprawdę darmowy stack SAST zbudowany na Semgrep i skanerach specyficznych dla języków, który możesz wkleić do workflow jeszcze dziś.
+
+## Jak CodeQL naprawdę działa (to nie jest grep)
+
+Większość narzędzi do analizy statycznej, których używałeś, to dopasowywacze wzorców z kilkoma dodatkami. CodeQL jest fundamentalnie inny: **kompiluje Twoją bazę kodu do bazy danych, którą można odpytywać**.
+
+Gdy uruchamia się skan, CodeQL wyodrębnia z Twojego kodu drzewo składni abstrakcyjnej, przepływ sterowania i relacje przepływu danych do relacyjnej bazy danych. Następnie uruchamia na tej bazie zapytania — napisane w języku o smaku SQL zwanym QL. Zapytanie nie pyta „czy ten plik zawiera napis `eval(`?". Pyta „czy niezaufane dane wejściowe użytkownika trafiają do miejsca wykonania kodu bez przejścia przez sanitizer?".
+
+To rozróżnienie ma znaczenie w praktyce. Śledzenie skażenia (taint tracking) ponad granicami funkcji to właśnie to, co wyłapuje wstrzyknięcie SQL, gdzie parametr żądania wędruje przez trzy funkcje pomocnicze, zanim trafi do buildera zapytania. Narzędzia oparte na wyrażeniach regularnych gubią trop już po pierwszym skoku.
+
+Klasy podatności, w których CodeQL jest naprawdę dobry:
+
+- **Wstrzyknięcia (injection)** — SQL injection, command injection, code injection przez `eval`
+- **Cross-site scripting** — reflected i stored, w tym przepływy oparte na DOM
+- **Path traversal** — dane wejściowe użytkownika docierające do API systemu plików
+- **Niebezpieczna deserializacja** — niezaufane dane trafiające do deserializatorów
+- **Zaszyte na sztywno poświadczenia** i słabe wzorce kryptograficzne
+- **Niebezpieczne użycie przestarzałych lub groźnych API**
+
+Języki wspierane w 2026: C/C++, C#, Go, Java/Kotlin, JavaScript/TypeScript, Python, Ruby, Swift, Rust (ogólnie dostępny od października 2025), a nawet same pliki workflow GitHub Actions. Jeśli Twój stack to PHP, Elixir lub coś bardziej egzotycznego, CodeQL nie wchodzi w grę — przejdź od razu do sekcji z alternatywami.
+
+## Konfiguracja domyślna: cztery kliknięcia, szczerze
+
+Dla repo publicznego włączenie code scanning zajmuje mniej niż minutę:
+
+1. Przejdź do swojego repozytorium → **Settings** → **Advanced Security** (lub **Code security**, zależnie od interfejsu Twojego planu)
+2. Znajdź **CodeQL analysis** w sekcji Code scanning
+3. Kliknij **Set up** → **Default**
+4. Sprawdź wykryte języki i kliknij **Enable CodeQL**
+
+Konfiguracja domyślna automatycznie wykrywa Twoje języki, wybiera standardowy zestaw zapytań i skanuje przy każdym pushu do gałęzi domyślnej, każdym pull requeście oraz według harmonogramu tygodniowego. W repo nie pojawia się żaden plik workflow — GitHub zarządza konfiguracją po stronie serwera.
+
+Jeden niuans warty odnotowania: konfiguracja domyślna automatycznie analizuje JavaScript/TypeScript, Python, Ruby i Go bez żadnych problemów. Języki kompilowane (Java/Kotlin, C/C++, C#) też działają teraz w konfiguracji domyślnej, ale jeśli Twój build jest nietypowy — niestandardowe skrypty budowania, kroki generowania kodu, egzotyczne toolchainy — automatyczny build może się nie powieść, i to jest Twój sygnał, by przejść do konfiguracji zaawansowanej.
+
+Dla wielu projektów konfiguracja domyślna to naprawdę wszystko, czego potrzebujesz. Włącz ją, napraw to, co znajdzie, i idź dalej. Reszta tego artykułu jest na moment, gdy z niej wyrośniesz.
+
+## Konfiguracja zaawansowana: plik YAML workflow, objaśniony
+
+Konfiguracja zaawansowana generuje plik `.github/workflows/codeql.yml`, który w pełni kontrolujesz. Oto wersja w kształcie produkcyjnym z opisanymi częściami, które faktycznie mają znaczenie:
+
+```yaml
+name: 'CodeQL Analysis'
+
+on:
+  push:
+    branches: ['main']
+  pull_request:
+    branches: ['main']
+  schedule:
+    - cron: '30 5 * * 1' # cotygodniowy skan w poniedziałek wychwytuje nowo dodane zapytania
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write # wymagane do przesłania wyników
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: javascript-typescript
+            build-mode: none
+          - language: python
+            build-mode: none
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+          queries: security-extended # większe pokrycie niż zestaw domyślny
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: '/language:${{ matrix.language }}'
+```
+
+Elementy, które ludzie robią źle:
+
+**`permissions: security-events: write`** — bez tego przesłanie wyników kończy się błędem 403. To najczęstsza pojedyncza przyczyna sytuacji „mój skan się wykonał, ale nie pojawiły się żadne alerty".
+
+**Matryca** — każdy język dostaje własny runner. To zrównoleglenie, ale to także rachunek: w repozytoriach prywatnych każda gałąź matrycy spala minuty Actions.
+
+**`queries: security-extended`** — domyślny zestaw jest dostrojony pod niski poziom fałszywych alarmów. `security-extended` dodaje zapytania o niższej pewności; `security-and-quality` dokłada na to jeszcze kontrole jakości kodu. Moja rekomendacja: zacznij od domyślnego i zwiększaj poziom dopiero po przetriażowaniu pierwszej partii. Włączenie wszystkiego pierwszego dnia zakopuje trzy krytyczne znaleziska pod dwustoma drobiazgami stylistycznymi, a Twój zespół uczy się ignorować zakładkę bezpieczeństwa — najgorszy możliwy rezultat.
+
+**Przełączenie z domyślnej na zaawansowaną** — pułapka, która raz gryzie każdego: jeśli konfiguracja domyślna jest włączona i dodasz plik workflow, przesyłane przez niego pliki SARIF zostaną odrzucone. Wyłącz konfigurację domyślną w ustawieniach repo *najpierw*, a dopiero potem zacommituj workflow.
+
+Jeśli już uruchamiasz inne pipeline'y z GitHub Actions, workflow CodeQL wskakuje obok nich — opisałem wzorce strukturyzowania automatyzacji wyzwalanej przez PR w moim [przewodniku po Claude Code GitHub Actions](/blog/claude-code-github-actions-pr-automation-guide), i ta sama higiena workflow (uprawnienia o najmniejszych przywilejach, przypięte wersje akcji) obowiązuje również tutaj.
+
+## Czytanie wyników: alerty, SARIF i CWE
+
+Znaleziska lądują w zakładce **Security** Twojego repo pod **Code scanning alerts**. Każdy alert pokazuje:
+
+- **Poziom istotności** — critical, high, medium, low, zmapowany z metadanych zapytania
+- **Dokładną ścieżkę przepływu** — dla zapytań taint-tracking możesz przejść przez każdy skok od źródła do miejsca docelowego, co zamienia „narzędzie mówi, że to złe" w „widzę dokładnie, jak dane wejściowe atakującego docierają do tego zapytania"
+- **Odniesienia do CWE** — każda reguła mapuje się na wpisy Common Weakness Enumeration, co ma ogromne znaczenie, jeśli masz wymagania zgodności; „skanujemy pod kątem CWE-89" to zdanie, które audytorzy rozumieją
+
+W pull requestach nowe alerty pojawiają się jako kontrole (checks) i adnotacje inline, więc podatności są wychwytywane w czasie review, a nie w kwartalnym raporcie z pentestu.
+
+Pod maską wszystko jest w **SARIF** (Static Analysis Results Interchange Format) — standardzie JSON dla wyjścia analizy statycznej. To większa sprawa, niż brzmi: ponieważ API code scanning GitHuba przyjmuje SARIF z *dowolnego* narzędzia, interfejs alertów, adnotacje PR i dostęp przez API działają identycznie niezależnie od tego, czy znaleziska pochodzą z CodeQL, Semgrep, czy skanera, który napisałeś sam. To właśnie ta furtka, na której zbudowana jest sekcja o darmowym stacku poniżej.
+
+Jeśli masz dostęp do Copilota, **Copilot Autofix** może proponować poprawki do alertów CodeQL bezpośrednio w PR. Traktuj jego wyjście jak pracę juniora — sprawdź diff, nie ufaj etykiecie — ale dla mechanicznych poprawek, takich jak parametryzacja zapytania, to realna oszczędność czasu.
+
+## Pisanie pierwszego niestandardowego zapytania
+
+Standardowe zestawy zapytań pokrywają generyczne klasy podatności. Nie znają *Twojej* bazy kodu — wewnętrznego helpera autoryzacji, który każdy musi wywoływać, przestarzałego API, które właśnie wycofujesz, konwencji nazewnictwa sekretów w Twojej warstwie konfiguracji. Do tego właśnie służą zapytania niestandardowe.
+
+Niestandardowy pakiet zapytań to katalog z manifestem `qlpack.yml` i jednym lub kilkoma plikami `.ql`:
+
+```yaml
+# qlpack.yml
+name: my-org/custom-queries
+version: 1.0.0
+dependencies:
+  codeql/javascript-all: '*'
+```
+
+Oraz zapytanie, które flaguje wywołania funkcji zakazanej przez Twój zespół:
+
+```ql
+/**
+ * @name Use of deprecated internal API
+ * @description legacyAuth() bypasses the session validation layer.
+ * @kind problem
+ * @problem.severity warning
+ * @id my-org/js/legacy-auth-usage
+ * @tags security maintainability
+ */
+
+import javascript
+
+from CallExpr call
+where call.getCalleeName() = "legacyAuth"
+select call, "legacyAuth() is deprecated - use validateSession() instead."
+```
+
+Struktura czyta się jak SQL wywrócony na lewą stronę: `from` deklaruje, po czym iterujesz (wszystkie wyrażenia wywołań), `where` filtruje (wywołania `legacyAuth`), `select` raportuje znalezisko z komunikatem. Komentarze z metadanymi na górze nie są dekoracją — `@id` i `@problem.severity` określają, jak alert renderuje się w zakładce Security.
+
+Pętla developerska, która działa:
+
+1. Zainstaluj **rozszerzenie CodeQL dla VS Code** — dołącza ono CodeQL CLI, więc nie ma osobnej instalacji
+2. Zbuduj bazę danych swojego projektu: `codeql database create my-db --language=javascript --source-root=.`
+3. Iteruj nad zapytaniem względem tej lokalnej bazy z natychmiastowym feedbackiem
+4. Uruchom `codeql pack install` w katalogu pakietu, aby rozwiązać zależności
+5. Wepnij pakiet do swojego workflow
+
+Aby użyć zapytań niestandardowych w CI, wskaż na nie w kroku init:
+
+```yaml
+- uses: github/codeql-action/init@v3
+  with:
+    languages: javascript-typescript
+    queries: security-extended
+    packs: my-org/custom-queries@1.0.0
+```
+
+Do współdzielenia w obrębie organizacji opublikuj pakiet do GitHub Container Registry poleceniem `codeql pack publish` — wtedy workflow każdego repo pobiera te same, centralnie utrzymywane zapytania, a inżynier bezpieczeństwa poprawiający jedno zapytanie poprawia skanowanie wszędzie naraz. Ten model centralizacji to miejsce, w którym CodeQL zarabia na siebie w większych organizacjach.
+
+Szczerość z życia wzięta: QL ma krzywą uczenia. Pierwsze zapytanie zajmuje popołudnie; dziesiąte — dwadzieścia minut. Zacznij od skopiowania standardowego zapytania z [repozytorium github/codeql](https://github.com/github/codeql) i jego modyfikacji, zamiast pisać od zera.
+
+## Ściana licencyjna: co „darmowy" naprawdę oznacza
+
+Oto część, którą większość tutoriali pomija, i jest to część decydująca, czy cokolwiek z powyższego w ogóle Cię dotyczy.
+
+**Repozytoria publiczne:** wszystko jest darmowe. Code scanning, CodeQL, pełny interfejs alertów, przesyłanie SARIF. GitHub w całości subsydiuje bezpieczeństwo open-source.
+
+**Repozytoria prywatne:** code scanning wymaga **GitHub Code Security** — 30 dolarów za aktywnego commitującego miesięcznie (od kwietnia 2025, gdy GitHub rozdzielił Advanced Security na dwa samodzielne produkty; druga połowa, Secret Protection, kosztuje 19 dolarów). Jest dostępny w planach Team i Enterprise. „Aktywny commitujący" oznacza każdego, kto zacommitował do repo z włączonym skanowaniem w ciągu ostatnich 90 dni — i tak właśnie zespoły dorabiają się niespodziewanych pozycji na fakturze, gdy kontraktor wypchnie jeden commit.
+
+I szczegół, który łapie osoby budujące własne pipeline'y: **licencja CodeQL CLI zezwala wyłącznie na analizę kodu open-source**. Nie możesz legalnie pobrać darmowego CLI i uruchomić go na prywatnej bazie kodu Twojej firmy we własnym CI, żeby ominąć opłatę. Licencja wprost wyklucza analizę kodu zamkniętego bez umowy komercyjnej.
+
+Jeszcze jedno ograniczenie: **przesyłanie SARIF do zakładki Security prywatnego repo również wymaga włączonego Code Security**. Nie uruchomisz darmowego skanera i nie skorzystasz za darmo z interfejsu alertów GitHuba dla prywatnego kodu — sam endpoint przesyłania jest bramkowany.
+
+Tak więc dla prywatnych repozytoriów przy ograniczonym budżecie alternatywy poniżej nie są miłym dodatkiem. Są całą grą.
+
+## Darmowe alternatywy, które naprawdę działają
+
+Dobra wiadomość: ekosystem open-source SAST w 2026 jest na tyle silny, że „nie stać nas na Code Security" nie oznacza „nie skanujemy".
+
+### Semgrep Community Edition — uniwersalny koń roboczy
+
+[Semgrep CE](https://semgrep.dev/products/community-edition/) to najbliższy darmowy odpowiednik CodeQL. Jest na licencji LGPL, wspiera ponad 30 języków, a jego zabójczą cechą jest to, że **reguły wyglądają jak kod, który dopasowują**:
+
+```yaml
+rules:
+  - id: dangerous-eval
+    pattern: eval(...)
+    message: Avoid eval() - it executes arbitrary code
+    languages: [javascript, typescript]
+    severity: ERROR
+```
+
+To kompletna, działająca reguła. Porównaj to z krzywą uczenia QL — cały Twój zespół potrafi pisać reguły Semgrep do końca pierwszego dnia. Rejestr dostarcza ponad 2000 społecznościowych reguł pokrywających wzorce OWASP Top 10 w każdym głównym języku.
+
+Konfiguracja w GitHub Actions (uwaga: stara `semgrep-action` jest przestarzała — zamiast niej uruchamiaj CLI z oficjalnego kontenera):
+
+```yaml
+name: Semgrep
+on:
+  pull_request:
+  push:
+    branches: ['main']
+
+jobs:
+  semgrep:
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep
+    steps:
+      - uses: actions/checkout@v4
+      - run: semgrep scan --config p/default --error
+```
+
+`--config p/default` pobiera wyselekcjonowany zestaw reguł o wysokiej pewności; `--error` powoduje niepowodzenie joba przy znaleziskach, co czyni z niego prawdziwą bramkę, a nie raport, którego nikt nie czyta. Dodawaj `p/owasp-top-ten` lub pakiety językowe takie jak `p/python` w miarę strojenia. Do użytku lokalnego wystarczy `pip install semgrep && semgrep scan --config p/default` — te same reguły, ten sam silnik, jeszcze zanim zrobisz push.
+
+Z czego rezygnujesz w porównaniu z CodeQL: analiza skażenia międzyplikowa (to jest w płatnym poziomie Semgrep) oraz głębokie modelowanie przepływu danych. Semgrep CE jest w większości wewnątrzplikowy. W praktyce i tak wyłapuje ogromną ilość, bo większość realnych znalezisk nie wymaga trzyskokowego śledzenia skażenia. Warto wiedzieć: po zaostrzeniu licencji Semgrep w 2025 społeczność sforkowała silnik jako **Opengrep** — kompatybilny z API, w pełni otwarty i wart obserwacji, jeśli czystość licencyjna ma znaczenie dla Twojej organizacji.
+
+### SonarQube Community Build — bramki jakości plus bezpieczeństwo
+
+Darmowy poziom SonarQube łatwo hostuje się samodzielnie i łączy reguły bezpieczeństwa z code smells, duplikacją i śledzeniem pokrycia. To mniej czyste narzędzie SAST, a bardziej platforma zdrowia kodu z bezpieczeństwem w pakiecie:
+
+```yaml
+# docker-compose.yml — uruchamianie lokalnie lub na małym VM
+services:
+  sonarqube:
+    image: sonarqube:community
+    ports:
+      - '9000:9000'
+    volumes:
+      - sonarqube_data:/opt/sonarqube/data
+volumes:
+  sonarqube_data:
+```
+
+Następnie w CI akcja skanera przesyła analizę do Twojej instancji:
+
+```yaml
+- uses: SonarSource/sonarqube-scan-action@v4
+  env:
+    SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+    SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+```
+
+Kompromis jest operacyjny: uruchamiasz teraz serwer. Dla samotnego dewelopera to narzut; dla zespołu, który i tak chce bramek jakości i dashboardów trendów, to jeden kontener.
+
+### Skanery specyficzne dla języków — małe, ostre, darmowe
+
+Te jednojęzykowe narzędzia są wąskie, ale głębokie, i wszystkie dodaje się jedną linijką:
+
+- **Bandit** (Python) — `pip install bandit && bandit -r src/` — wyłapuje niebezpieczny `pickle`, `subprocess` z `shell=True`, słabe hashowanie
+- **gosec** (Go) — skanowanie oparte na AST pod kątem specyficznych dla Go pułapek, jak nieobsłużone błędy przy operacjach kryptograficznych
+- **Brakeman** (Rails) — złoty standard dla aplikacji Rails, głęboko rozumie konwencje Rails
+- **Wtyczki bezpieczeństwa ESLint** (JS/TS) — `eslint-plugin-security` dokleja podstawowy SAST do lintowania, które już uruchamiasz
+
+### Trivy — skaner całej reszty
+
+[Trivy](https://github.com/aquasecurity/trivy) nie jest narzędziem SAST, ale pokrywa sąsiadującą powierzchnię, której CodeQL i tak nigdy nie dotykał: podatności zależności, obrazy kontenerów, błędne konfiguracje infrastructure-as-code i wycieki sekretów. Darmowy, szybki, jeden plik binarny.
+
+## Kompletny darmowy stack skanowania
+
+Oto kombinacja, którą wdrożyłbym dziś na prywatnym repo — Semgrep dla kodu, Trivy dla zależności/sekretów/IaC, plus Twoje narzędzie specyficzne dla języka:
+
+```yaml
+name: Security Scan
+on:
+  pull_request:
+  push:
+    branches: ['main']
+
+jobs:
+  semgrep:
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep
+    steps:
+      - uses: actions/checkout@v4
+      - run: semgrep scan --config p/default --config p/owasp-top-ten --error
+
+  trivy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scanners: 'vuln,secret,misconfig'
+          exit-code: '1'
+          severity: 'CRITICAL,HIGH'
+
+  bandit: # zamień na gosec/brakeman zależnie od Twojego stacku
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: pipx run bandit -r src/ -ll
+```
+
+Całkowity koszt: minuty Actions. Na repo publicznym dodałbyś kroki przesyłania SARIF, aby wszystko trafiało do zakładki Security; na repo prywatnym bez Code Security znaleziska żyją w logach joba i kontrolach PR — mniej ładnie, tak samo działanie do podjęcia, bo nieudane kontrole i tak blokują merge.
+
+To odzwierciedla myślenie o obronie w głąb (defense-in-depth), które opisałem w moim [przewodniku po hartowaniu bezpieczeństwa narzędzi AI do kodowania](/blog/claude-code-security-hardening-enterprise-guide): żadna pojedyncza warstwa nie wyłapuje wszystkiego, więc układasz w stos tanie warstwy. Jeśli duża część Twojego kodu jest generowana przez AI, połącz zautomatyzowany stack z ręcznymi przejściami review z mojej [listy kontrolnej audytu bezpieczeństwa vibe codingu](/blog/vibe-coding-security-audit-checklist) — skanery i ludzka weryfikacja wyłapują różne tryby awarii. A jeśli generujesz agentami AI więcej kodu, niż piszesz ręcznie — coraz częstsza rzeczywistość, którą opisałem w [moim porównaniu narzędzi AI do kodowania](/blog/ai-coding-tools-2026-developer-guide) — zautomatyzowane skanowanie przestaje być opcjonalne, bo nikt nie sprawdza ręcznie każdej wygenerowanej linii pod kątem wstrzyknięć.
+
+## Rama decyzyjna: płacić czy iść za darmo?
+
+**Użyj CodeQL (za darmo), gdy:** Twoje repozytoria są publiczne. Nie ma powodu, by tego nie robić. Włącz konfigurację domyślną już dziś; to cztery kliknięcia.
+
+**Zapłać za GitHub Code Security, gdy:** jesteś na prywatnych repozytoriach *i* spełnione są co najmniej dwa z poniższych — masz wymagania zgodności, które oczekują znalezisk zmapowanych na CWE w audytowalnym interfejsie, Twoja baza kodu jest na tyle duża, że międzyplikowe śledzenie skażenia znajduje rzeczy, które umykają narzędziom wewnątrzplikowym, chcesz Copilot Autofix w pętli naprawczej lub zespół bezpieczeństwa będzie utrzymywał ogólnoorganizacyjne pakiety zapytań niestandardowych. W tym momencie 30 dolarów za commitującego wypada korzystnie na tle komercyjnych dostawców SAST, którzy w większości liczą sobie więcej.
+
+**Idź w darmowy stack, gdy:** jesteś startupem, projektem pobocznym lub zespołem dbającym o koszty na prywatnych repozytoriach. Semgrep + Trivy + skaner specyficzny dla języka pokrywa dużą większość tego, co wyłapałby CodeQL, przy zerowym koszcie licencji. Pozostała luka to głębokie błędy przepływu danych — realne, ale znacznie mniejsze ryzyko niż brak skanowania w ogóle, co jest faktyczną alternatywą dla większości zespołów rozważających tę kwestię.
+
+**Cokolwiek wybierzesz, po kolei:**
+
+1. Włącz *cokolwiek* w tym tygodniu — niedostrojony skaner bije idealnie zaplanowany, który wejdzie w przyszłym kwartale
+2. Zacznij od zestawów reguł o wysokiej pewności i przerywaj build tylko przy znaleziskach high/critical
+3. Przetriażuj początkowy backlog, zanim rozszerzysz pokrycie — zmęczenie alertami zabija programy skanowania szybciej niż jakiekolwiek cięcie budżetu
+4. Skanuj przy pull requestach, nie tylko według harmonogramu — znaleziska w czasie review są naprawiane; znaleziska w tygodniowym raporcie są ignorowane
+5. Dodawaj reguły niestandardowe dla własnych konwencji, gdy warstwa generyczna ucichnie
+
+Analiza statyczna to jedna z rzadkich inwestycji w bezpieczeństwo o wręcz zawstydzającym stosunku wysiłku do wartości. Cztery kliknięcia na repo publicznym. Jeden plik YAML na prywatnym. Zacznij od tego.
+
+## Bibliografia
+
+### Źródła
+
+- [About code scanning with CodeQL](https://docs.github.com/code-security/code-scanning/introduction-to-code-scanning/about-code-scanning-with-codeql) - podstawowe koncepcje, model bazy danych i wspierane języki
+- [Configuring default setup for code scanning](https://docs.github.com/en/code-security/code-scanning/enabling-code-scanning/configuring-default-setup-for-code-scanning) - zachowanie konfiguracji domyślnej i automatyczne wykrywanie języków
+- [About the CodeQL CLI](https://docs.github.com/en/code-security/codeql-cli/getting-started-with-the-codeql-cli/about-the-codeql-cli) - warunki licencji CLI dla analizy open-source vs closed-source
+- [Creating and working with CodeQL packs](https://docs.github.com/en/code-security/codeql-cli/using-the-advanced-functionality-of-the-codeql-cli/creating-and-working-with-codeql-packs) - struktura qlpack.yml i publikowanie pakietów
+- [Uploading a SARIF file to GitHub](https://docs.github.com/en/code-security/code-scanning/integrating-with-code-scanning/uploading-a-sarif-file-to-github) - wymagania i uprawnienia przy przesyłaniu SARIF
+- [GitHub Secret Protection and Code Security announcement](https://github.blog/changelog/2025-03-04-introducing-github-secret-protection-and-github-code-security/) - rozdzielenie produktu w 2025 i cennik
+- [Semgrep Community Edition in CI](https://semgrep.dev/docs/deployment/oss-deployment) - samodzielne wdrożenie CI bez platformy chmurowej
+
+### Dalsza lektura
+
+- [CodeQL zero to hero series (GitHub Blog)](https://github.blog/developer-skills/github/codeql-zero-to-hero-part-2-getting-started-with-codeql/) - najlepsze wprowadzenie do pisania QL, jeśli interesują Cię zapytania niestandardowe
+- [github/codeql repository](https://github.com/github/codeql) - standardowe biblioteki zapytań; czytanie prawdziwych zapytań bije każdy tutorial
+- [semgrep/semgrep-rules](https://github.com/semgrep/semgrep-rules) - ponad 2000 społecznościowych reguł wartych przejrzenia przed napisaniem własnych
+- [Trivy documentation](https://github.com/aquasecurity/trivy) - obejmuje skanowanie zależności, kontenerów i IaC, którego ten artykuł tylko dotknął
+
+---
+
+~Seb 👊
