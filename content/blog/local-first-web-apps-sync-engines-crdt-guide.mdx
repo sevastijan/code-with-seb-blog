@@ -1,0 +1,257 @@
+---
+title: 'Local-First Web Apps in 2026: Sync Engines, CRDTs, and No More Spinners'
+date: '2026-07-16'
+category: 'Development'
+tags: ['local-first', 'crdt', 'sync', 'architecture', 'frontend']
+featured: false
+author: 'Sebastian'
+draft: true
+excerpt: 'Local-first web apps kill spinners for good. Here is how sync engines, CRDTs, Yjs, and ElectricSQL work, the real tradeoffs, and how to actually build one.'
+---
+
+I spent an afternoon this year watching a Linear board update. Not loading. Updating. I dragged an issue between columns and it was just *there* — no spinner, no optimistic-then-reconcile flicker, no "saving..." toast. Then I killed my Wi-Fi, kept working for ten minutes, reconnected, and everything I'd done was already merged with what my colleague had done in the meantime. No conflict modal. No lost edits.
+
+That experience is not a UX polish job. It is a different architecture. The request/response model most of us have shipped for fifteen years — click, `POST`, spinner, refetch, render — is being replaced in a specific class of apps by something called **local-first**, and 2026 is the year the tooling finally got good enough that you don't have to build the hard parts yourself.
+
+I've now shipped two local-first features into production and torn apart most of the sync engines that promise to make it easy. This is the honest map: what local-first actually means, how CRDTs and sync engines work under the hood, the tradeoffs nobody puts on the landing page, and how you'd migrate a normal REST + React Query app toward it without a rewrite.
+
+## What "Local-First" Actually Means
+
+The term comes from a 2019 essay by Martin Kleppmann and the team at **Ink & Switch**. Their pitch was a reaction against pure cloud apps, where your data lives on someone else's server and your UI is a thin, network-bound puppet. They laid out **seven ideals**:
+
+1. **No spinners** — work happens at the speed of your device, not your network.
+2. **Multi-device** — your data follows you across laptop, phone, tablet.
+3. **The network is optional** — offline is a normal state, not an error state.
+4. **Collaboration without conflict** — multiple people edit the same thing, nothing gets lost.
+5. **The long now** — your data still works in ten years, even if the vendor is gone.
+6. **Security and privacy by default.**
+7. **User ownership** — you control your data.
+
+Most teams don't care about all seven. In practice, the two that drive adoption are **no spinners** and **collaboration without conflict**. The mental model flip is this: instead of the server being the source of truth that the client queries, **the client holds a full local replica of the data it cares about**, reads and writes happen against that local copy instantly, and a **sync engine** reconciles your replica with the server (and everyone else's) in the background.
+
+The server stops being a database you talk to over HTTP and becomes a sync coordinator. Your UI never waits for it.
+
+### Why now?
+
+Three things converged. First, **CRDTs matured** from research curiosities into fast, boring libraries. Second, browsers got **real storage** — OPFS and SQLite-in-WASM mean you can keep gigabytes locally, not the couple hundred megabytes IndexedDB tolerates. Third, a wave of **sync engines** shipped 1.0 releases in 2025–2026 that handle the replication, partial sync, and conflict plumbing so you write app code, not distributed-systems code.
+
+## The Two Families of Sync
+
+The single most useful distinction I can give you: **there are two fundamentally different problems here, and the tools split cleanly along that line.**
+
+**Family one: collaborative documents.** Rich text, whiteboards, shared canvases, nested JSON blobs where two people type in the same paragraph at the same time. This is CRDT territory — **Yjs**, **Automerge**, **Loro**.
+
+**Family two: relational app data.** Issues, invoices, tasks, users — rows in tables with foreign keys, where you want the local copy to behave like a real database you can query. This is sync-engine territory — **ElectricSQL**, **Zero** (Rocicorp), **PowerSync**, **Convex**, **Jazz**, **Triplit**.
+
+People conflate these constantly and then pick the wrong tool. If you're building Figma, you want a CRDT. If you're building Linear, you want a relational sync engine. Let's take them in turn.
+
+## CRDTs, Explained Pragmatically
+
+A **CRDT** — Conflict-free Replicated Data Type — is a data structure engineered so that when two replicas are edited independently and later merged, the merge is **deterministic and never loses data**, without any central coordinator deciding a winner.
+
+The classic alternative is **Operational Transformation (OT)**, the algorithm behind Google Docs. OT works but requires a central server to transform and order every operation, which makes it awful for offline and peer-to-peer. CRDTs push the merge logic into the data structure itself, so any two replicas that have seen the same set of operations converge to the same state regardless of the order they arrived in. That property — **convergence without coordination** — is the whole game.
+
+The pragmatic version you need to hold in your head: every change is an **operation** tagged with a unique ID (usually a client ID plus a logical clock). Operations are commutative — apply them in any order, get the same result. For text, characters get stable identities so "insert 'x' after character #7" still makes sense even after your collaborator deleted character #3. Deletes become **tombstones** (marked-dead, not removed) so a concurrent edit can't resurrect or corrupt them.
+
+Here's what that looks like with **Yjs**, which is the production default — biggest ecosystem, fastest for text, bindings for every editor:
+
+```js
+import * as Y from 'yjs'
+import { WebsocketProvider } from 'y-websocket'
+
+// A Y.Doc is the CRDT container. Everything lives inside it.
+const doc = new Y.Doc()
+
+// Shared types: text, arrays, maps. These merge automatically.
+const ytext = doc.getText('content')
+const ymeta = doc.getMap('meta')
+
+// A provider handles transport + persistence. Swap it for
+// WebRTC, or a local IndexedDB provider for offline.
+const provider = new WebsocketProvider('wss://sync.example.com', 'doc-42', doc)
+
+// Local edits are instant — this mutates the local replica now.
+ytext.insert(0, 'Hello ')
+ymeta.set('title', 'Draft')
+
+// React to remote (and local) changes. No refetch, no diffing.
+ytext.observe(() => {
+  render(ytext.toString())
+})
+```
+
+Notice what's *missing*: no `await`, no loading state, no HTTP call in your handler. You mutate the local `Y.Doc`, the UI re-renders synchronously, and the provider ships the encoded update to peers whenever the network is available. Two people typing in the same sentence merge character-by-character.
+
+**Automerge** covers the same ground with a more Git-like philosophy — it keeps full change history and gives you an immutable, JSON-shaped API — at the cost of some speed and bundle size. **Loro** is the newer, WASM-heavy option that wins raw benchmarks. My rule: **pick Yjs unless you specifically need Automerge's history model or Loro's numbers.** For 99% of collaborative editors, Yjs is fast enough and has the ecosystem.
+
+The catch with document CRDTs: they are *documents*. You can't efficiently ask "give me all issues assigned to me, sorted by due date." That's what the other family is for.
+
+## Sync Engines for Relational Data
+
+This is where the interesting 2026 action is. These tools give you a **local database** — usually SQLite via WASM, sometimes an in-memory store over IndexedDB — that stays in sync with a server-side Postgres (or Mongo, MySQL). You query locally, you write locally, and the engine handles replication both ways. Here's the honest landscape.
+
+**ElectricSQL** syncs Postgres into client-side SQLite using **shapes** — declarative subscriptions that describe the slice of data a client needs (think: a `WHERE` clause you ship to the sync layer). After a "clean rebuild" (the `electric-next` line) it's leaner and read-path focused: it's excellent at getting server data *down* to the client reactively, and you handle writes through your own API. It's the simplest on-ramp if you already live in Postgres.
+
+**Zero** (by Rocicorp, the Replicache folks) hit **1.0 in mid-2026** and is the one that made me sit up. Its core trick is **queries as the primitive**: you write ZQL queries directly in client code, they run against the local replica for instant results, and Zero syncs exactly the rows those queries touch. Combined with fine-grained reactivity and built-in optimistic mutations, it has the snappiest perceived performance of the bunch. It uses IndexedDB locally, which caps you at hundreds of MB, not gigabytes.
+
+**PowerSync** is the mature, battle-tested one — full SQLite locally, genuinely offline-capable, supports Postgres/Mongo/MySQL/SQL Server, and you declaratively define **Sync Streams** for what replicates. If you're shipping mobile or need real offline durability, it's the safe pick.
+
+**Convex** takes the object-sync-engine approach: a reactive backend-as-a-service where the whole object graph syncs to clients. **Jazz** bundles sync, auth, permissions, and end-to-end encryption around a CRDT core (CoJSON) — the most "batteries-included" if you want ownership and E2E crypto. **Triplit** is solid but was acqui-hired into Supabase in 2025 and is now community-maintained, so I'd weigh its momentum carefully.
+
+Conceptually, working with a query-driven engine like Zero looks like this:
+
+```ts
+// Define the schema once — shared between client and server.
+const schema = createSchema({
+  tables: {
+    issue: {
+      columns: {
+        id: 'string',
+        title: 'string',
+        status: 'string',
+        assigneeId: 'string',
+        updatedAt: 'number',
+      },
+      primaryKey: 'id',
+    },
+  },
+})
+
+// Reads: a query runs against the LOCAL replica and stays live.
+// No await, no fetch — results are here now and update reactively.
+const { data: myIssues } = useQuery(
+  z.query.issue
+    .where('assigneeId', myUserId)
+    .where('status', '!=', 'done')
+    .orderBy('updatedAt', 'desc')
+)
+
+// Writes: an optimistic mutation. Local state updates instantly;
+// the engine reconciles with the server and rolls back on rejection.
+function closeIssue(id: string) {
+  z.mutate.issue.update({ id, status: 'done', updatedAt: Date.now() })
+}
+```
+
+The `useQuery` above never shows a spinner after the first sync, because the data it needs already lives on the device. That's the whole point.
+
+## Conflict Resolution: What Actually Happens
+
+Two families, two strategies.
+
+For **CRDTs**, conflict resolution is *automatic and semantic* — the data structure guarantees convergence. Concurrent inserts in text interleave deterministically; concurrent map writes resolve by a last-writer-wins rule keyed on logical clocks. You rarely think about it.
+
+For **relational sync engines**, most default to **last-write-wins (LWW) per row or per column**, tie-broken by timestamp or a Lamport clock. That's fine for "assign issue" or "change status" — genuinely concurrent edits to the *same field* are rare and LWW is acceptable. It is **not** fine for anything that needs invariants: account balances, inventory counts, "only one person can claim this slot." For those you keep an **authoritative server check** in the write path, or model the operation as a CRDT counter, or accept that the server can reject a mutation and the client rolls back. The engines that expose custom mutators (Zero, Replicache-style) let you run server-side validation and reject — the client's optimistic write simply reverts.
+
+The rule I follow: **use automatic merge for collaborative and additive data; keep a server referee for anything with a hard constraint.** Local-first does not repeal the need for authoritative validation — it just moves the happy path off the network.
+
+## Storage: Where the Replica Lives
+
+The local replica has to live somewhere durable. Your options in 2026:
+
+- **IndexedDB** — universal, but slow for large datasets and awkward for relational queries. Practical ceiling around a few hundred MB. Zero and many CRDT persistence providers use it.
+- **OPFS (Origin Private File System)** — a newer API giving random-access, origin-private file storage at near-native speed. This is what makes real databases in the browser viable.
+- **SQLite compiled to WASM, backed by OPFS** — the gold standard for the relational family. You get a full SQL engine locally, gigabytes of capacity, and real query performance. PowerSync and ElectricSQL lean on this.
+
+The catch: the fast, synchronous OPFS path (`createSyncAccessHandle`) only works **inside a Web Worker**, which adds real architectural complexity — your DB runs in a worker and you message it. Chrome and Edge have full OPFS support, Firefox is catching up, and Safari still lags, so test your target browsers. If you're choosing an engine, this is mostly abstracted away, but it's why "SQLite in the browser" was hard until recently and why capacity differs so much between engines.
+
+## Auth, Partial Replication, and Permissions
+
+This is the part that separates a demo from a product, and the part the marketing pages gloss over.
+
+**Partial replication** is non-negotiable at scale. You cannot sync your entire company's database to every client. Every serious engine has an answer: ElectricSQL's *shapes*, PowerSync's *sync streams*, Zero's *query-scoped sync*. You define the slice — "this user's issues, plus the projects they're a member of" — and only that replicates. Getting these definitions right is the actual design work of a local-first app; it's your data-fetching layer, reimagined as a subscription boundary. If you've wrestled with over-fetching in a [GraphQL vs REST vs tRPC data layer](/blog/graphql-vs-rest-vs-trpc-data-layer-guide), this will feel familiar — you're drawing the same boundaries, just persistently.
+
+**Permissions** are trickier than in request/response, because the client holds the data locally and you can't trust the client. Two layers matter:
+
+1. **Read authorization** at the sync boundary — the server decides which rows a client is allowed to replicate. This must be enforced server-side; the shape/stream definition is filtered by the authenticated user.
+2. **Write authorization** — even though writes are optimistic and local, the server validates every mutation before it's durable. A malicious client can *attempt* anything; the server rejects and the optimistic state rolls back.
+
+**Auth** typically rides on a JWT you hand the sync engine, which the server uses to scope reads and authorize writes. Jazz goes further with capability-based permissions and E2E encryption baked into the CRDT layer, which is compelling if data ownership is a selling point of your product.
+
+Treat the sync boundary as your new trust boundary. Everything the client can replicate, assume the user can read; everything the client can mutate, validate on the server.
+
+## Optimistic UI and the Death of the Spinner
+
+The reason local-first *feels* magic is **optimistic UI**, and it's worth being precise about how it works because most teams already do a crippled version of it.
+
+In a normal React Query app you might do an optimistic update: mutate the cache, fire the request, roll back `onError`. That's good — I've written a lot about [optimistic updates in TanStack Query](/blog/tanstack-query-advanced-caching-rsc-guide) — but it's per-mutation, hand-rolled, and gets brittle fast when mutations depend on each other or you're offline.
+
+Local-first generalizes it. **Every write is optimistic by construction.** You mutate the local replica; the UI reflects it immediately because the UI reads from that replica; the engine queues the mutation and syncs it when it can; if the server rejects, the engine rolls back and your reactive query re-renders. You don't write rollback logic per mutation — the engine owns the reconciliation. That's the difference between "we added optimistic updates to a few buttons" and "the app has no spinners."
+
+There's real state-machine thinking hiding in a mutation's lifecycle — `local → pending → confirmed | rejected → rolled-back` — and if you're modeling that explicitly rather than leaning on the engine, the patterns from [state machines with XState](/blog/state-machines-react-xstate-patterns-guide) map cleanly onto it.
+
+## Offline Behavior
+
+Because reads and writes hit the local replica, **offline is just the network being unavailable** — the app doesn't notice or care. Mutations queue in a durable local log; when connectivity returns, the engine flushes the queue and merges. The user experience of going offline is *nothing happens differently*, which is exactly the goal.
+
+The subtle part is **what happens on reconnect after a long offline stint**: a burst of queued mutations, possible rejections (a mutation you made offline is now invalid because someone else changed the world), and a re-sync of shapes that may have shifted. Good engines handle ordering and rebasing; you handle the UX of the rare rejection — usually a quiet toast, not a modal.
+
+## The Real Tradeoffs — and When NOT to Go Local-First
+
+I like this architecture. I also think most apps shouldn't adopt it. The costs are real:
+
+- **Complexity.** You've added a distributed database to the client. Debugging "why is this row stale on device B" is genuinely harder than reading a server log.
+- **Partial replication is your new hard problem.** Get the sync boundaries wrong and you either over-sync (slow, expensive, privacy risk) or under-sync (missing data, broken queries).
+- **Storage and browser limits.** IndexedDB caps, OPFS worker complexity, Safari quirks, storage eviction under pressure.
+- **Auth and permissions cost more.** Two-layer authorization is more surface area than a REST endpoint with a middleware check.
+- **Bundle size.** A WASM SQLite build and a sync client aren't free on first load.
+- **Data model lock-in.** Migrating schemas when clients hold old replicas is its own migration discipline.
+
+**Don't go local-first if:** your app is mostly read-heavy content (a marketing site, a docs portal, a dashboard reading server-computed aggregates — [incremental revalidation in Next.js](/blog/incremental-revalidation-nextjs-ultra-fast-dashboards) or plain RSC serves those better); your data is enormous per user and can't be partially replicated sensibly; you have hard consistency requirements (payments, ledgers) where the server *must* be the sole truth on every read; or you simply don't have collaboration or offline needs, in which case you're paying complexity for a spinner you could've killed with a well-placed optimistic update.
+
+**Do go local-first if:** you're building a productivity tool, a collaborative editor, an issue tracker, a CRM, a field app that needs offline, or anything where interaction latency *is* the product.
+
+## A Migration Path from REST + React Query
+
+You don't rewrite. You migrate a slice. Here's the path I'd take from a typical React Query app.
+
+**1. Pick one high-interaction surface.** Not the whole app — the board, the editor, the inbox. Something where snappiness and/or collaboration obviously matters.
+
+**2. Choose your family.** Free-form collaborative content → Yjs. Relational rows → a sync engine (Zero for web DX, PowerSync for offline/mobile, ElectricSQL if you want to stay close to Postgres).
+
+**3. Define the replication boundary.** This is the big design step. For that one surface, what data does the client need? Write it as a shape/stream/query. This replaces your `useQuery` keys with a persistent subscription.
+
+**4. Move reads first.** Swap the surface's reads from `fetch`/React Query to reads against the local replica. The UI now renders from local state; the engine keeps it fresh. You'll immediately notice navigation gets instant.
+
+**5. Move writes to optimistic mutations.** Replace `mutation.mutate()` + manual cache updates with engine mutations. Delete your hand-rolled rollback code. Keep your server-side validation — wire it into the engine's mutator/reject path.
+
+**6. Keep the rest of the app on REST.** The two coexist fine. Most apps end up **hybrid**: local-first for the interactive core, request/response for settings pages, admin, reports, and anything read-mostly. That's a feature, not a compromise.
+
+If your architecture already leans on decoupled events rather than deep prop chains — the kind of thing I covered in [event-driven frontend architecture](/blog/killing-prop-drilling-event-driven-frontend-architecture) — you'll find local-first slots in naturally, because a synced local store *is* an event source the whole UI subscribes to.
+
+On the server side, the sync coordinator does need to fan changes out to connected clients, and if you're building that layer yourself rather than buying it, a log-based streaming backbone like the one I described in the [Redis Streams guide](/blog/redis-streams-practical-guide-vs-kafka) is a reasonable substrate for the change feed.
+
+## Where This Leaves Us
+
+Local-first is the biggest architectural shift for frontend since React Server Components, and like RSC it is not a silver bullet you spray on every app. It is a targeted answer to a specific pain: **latency and collaboration in interaction-heavy apps.** The 2026 tooling — Yjs and Automerge for documents, Zero and PowerSync and ElectricSQL for relational data, OPFS and SQLite-WASM for storage — has finally made the hard parts a dependency instead of a research project.
+
+My advice: don't adopt it ideologically. Find the one surface in your product where users feel the network, and move just that surface local-first. Kill that spinner. Then decide if the rest earns it.
+
+## References
+
+### Sources
+
+- [Local-first software: You own your data, in spite of the cloud — Ink & Switch](https://www.inkandswitch.com/essay/local-first/)
+- [The Architecture of Local-First Web Development — Smashing Magazine](https://www.smashingmagazine.com/2026/05/architecture-local-first-web-development/)
+- [Zero Reaches 1.0, the First Stable Release of Rocicorp's Web Sync Engine — InfoQ](https://www.infoq.com/news/2026/06/zero-version-1/)
+- [ElectricSQL vs PowerSync vs Zero: Best Local-First Sync Engine (2026) — BuildPilot](https://trybuildpilot.com/648-electric-sql-vs-powersync-vs-zero-2026)
+- [Choosing a Sync Engine for Local-First in 2026 — johnny.sh](https://johnny.sh/blog/choosing-a-sync-engine-in-2026/)
+- [Yjs vs Automerge vs Loro: CRDT Libraries 2026 — PkgPulse](https://www.pkgpulse.com/guides/yjs-vs-automerge-vs-loro-crdt-libraries-2026)
+- [SQLite Wasm in the browser backed by OPFS — Chrome for Developers](https://developer.chrome.com/blog/sqlite-wasm-in-the-browser-backed-by-the-origin-private-file-system)
+- [The Current State of SQLite Persistence on the Web: May 2026 — PowerSync](https://powersync.com/blog/sqlite-persistence-on-the-web)
+- [An Object Sync Engine for Local-first Apps — Convex](https://stack.convex.dev/object-sync-engine)
+
+### Further Reading
+
+- [Yjs Documentation](https://docs.yjs.dev/)
+- [Automerge Documentation](https://automerge.org/)
+- [Zero by Rocicorp](https://zero.rocicorp.dev/)
+- [ElectricSQL](https://electric-sql.com/)
+- [PowerSync Docs](https://docs.powersync.com/)
+- [Jazz — local-first with auth, sync, and E2E encryption](https://jazz.tools/)
+- [awesome-local-first — curated links](https://github.com/alexanderop/awesome-local-first)
+- [localfirst.fm podcast](https://www.localfirst.fm/)
+
+---
+
+~Seb 👊
