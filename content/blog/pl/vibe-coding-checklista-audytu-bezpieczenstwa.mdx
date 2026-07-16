@@ -1,0 +1,554 @@
+---
+title: 'Kryzys bezpieczeństwa vibe codingu: jak zaudytować kod wygenerowany przez AI, zanim trafi na produkcję'
+date: '2026-03-23'
+category: 'AI'
+tags: ['ai', 'security', 'code-review', 'best-practices', 'development']
+draft: false
+featured: false
+author: 'Sebastian'
+enSlug: 'vibe-coding-security-audit-checklist'
+excerpt: 'Kod generowany przez AI ma luki dwa razy częściej niż kod pisany przez ludzi. Oto 7-punktowa checklista security audit, którą wyłapuję 90% problemów.'
+---
+
+W zeszłym miesiącu założyciel startupu poprosił mnie o przejrzenie ich aplikacji przed premierą. Całość była zrobiona w stylu vibe coding — Claude Code do backendu, Cursor do frontendu, Replit do skryptów deploymentu. „Działa świetnie" — powiedział mi. „Potrzebujemy tylko kogoś, kto podpisze się pod bezpieczeństwem".
+
+Znalezienie drogi do całej ich bazy danych użytkowników zajęło mi 20 minut.
+
+Nie dlatego, że jestem jakimś elitarnym hakerem. Dlatego, że AI wygenerowało endpoint REST bez żadnej weryfikacji uwierzytelnienia, trasę administracyjną chronioną wyłącznie przez flagę `isAdmin` po stronie klienta oraz handler przesyłania plików, który akceptował dowolny typ pliku do publicznie dostępnego bucketu S3. Trzy osobne drzwi zostawione na oścież. AI napisało działający kod, który robił dokładnie to, o co go poproszono — i żadnej z rzeczy, o które nie poproszono.
+
+To nie jest odosobniona historia. Niedawny audyt Claude Code, Codex, Cursor, Replit i Devin przetestował 15 aplikacji zbudowanych tymi narzędziami i znalazł 69 luk. Zero ochrony CSRF we wszystkich. Zero nagłówków bezpieczeństwa. Luki SSRF w outpucie każdego pojedynczego narzędzia. Lovable, kreator aplikacji AI, miał 170 z 1645 przeskanowanych aplikacji ujawniających publicznie dane użytkowników. A Moltbook — platforma społecznościowa zrobiona w vibe codingu — wyciekł 1,5 miliona tokenów uwierzytelniających, bo nikt nie zaudytował tego, co zbudowało AI.
+
+Dane potwierdzają to, co widzę co tydzień: 24,7% kodu generowanego przez AI zawiera lukę bezpieczeństwa. To mniej więcej 1,5 do 2 razy częściej niż w kodzie pisanym przez ludzi. Twoja aplikacja zrobiona w vibe codingu prawdopodobnie ma ich co najmniej pięć już teraz.
+
+Rzecz w tym — nie jestem przeciwnikiem kodowania z AI. Używam tych narzędzi codziennie. Ale istnieje przepaść między „kod działa" a „kod jest bezpieczny", a narzędzia AI są spektakularnie słabe w jej zasypywaniu — zwłaszcza jeśli chodzi o zagrożenia takie jak [prompt injection, luka bezpieczeństwa LLM numer 1](/blog/prompt-injection-llm-security-guide). Pozwól więc, że przeprowadzę Cię dokładnie przez to, co znajduję za każdym razem, gdy audytuję kod zrobiony w vibe codingu, oraz przez checklistę, którą wyłapuję 90% problemów, zanim trafią na produkcję.
+
+## Czym jest vibe coding i dlaczego cierpi na tym bezpieczeństwo
+
+Vibe coding — praktyka opisywania w języku naturalnym tego, czego chcesz, i pozwalania AI wygenerować implementację — fundamentalnie zmienił tempo, w jakim dostarczamy oprogramowanie. Samodzielny developer może zbudować full-stackowy SaaS w weekend. Startup może przejść od pomysłu do MVP w dni zamiast miesięcy.
+
+Ale szybkość i bezpieczeństwo zawsze były w napięciu, a narzędzia AI do kodowania pogłębiają to napięcie z konkretnego powodu: **LLM-y optymalizują pod funkcjonalność, nie pod bezpieczeństwo.**
+
+Kiedy poprosisz AI, żeby „zbudowało system uwierzytelniania użytkowników", buduje ono coś, co uwierzytelnia użytkowników. Nie dodaje rate limitingu. Nie hashuje haseł z bcrypt — może użyć MD5, a nawet przechowywać je jako czysty tekst, jeśli dane treningowe tak sugerują. Nie implementuje blokady konta po nieudanych próbach. Nie dodaje tokenów CSRF. Nie ustawia nagłówków bezpieczeństwa.
+
+Dlaczego? Bo nie prosiłeś o te rzeczy. I w przeciwieństwie do doświadczonego developera, który został sparzony przez incydent produkcyjny o 2 w nocy, AI nie ma blizn. Nie ma modelu zagrożeń. Generuje happy path i idzie dalej.
+
+Drugi problem to ślepota okna kontekstowego. Kiedy uprawiasz vibe coding, zwykle pracujesz funkcja po funkcji. „Dodaj stronę profilu użytkownika". „Dodaj przesyłanie plików". „Dodaj endpoint API do wyszukiwania". Każdy prompt dostaje rozsądną odpowiedź w izolacji. Ale bezpieczeństwo jest właściwością na poziomie systemu — wyłania się z tego, jak wszystkie elementy współdziałają. AI nie widzi pełnego obrazu, i tak samo developer, który promptuje po jednej funkcji naraz.
+
+## 7 grzechów głównych kodu generowanego przez AI
+
+Po zaudytowaniu dziesiątek aplikacji zrobionych w vibe codingu odkryłem, że te same luki pojawiają się w kółko. Nazywam je 7 grzechami głównymi, bo występują z niemal religijną konsekwencją.
+
+### Grzech 1: brak walidacji danych wejściowych
+
+To najczęstszy problem, pojawiający się w niemal każdym kodzie generowanym przez AI, który przeglądam. AI buduje endpointy, które całkowicie ufają danym wejściowym użytkownika.
+
+**Podatny (co generuje AI):**
+
+```typescript
+// Trasa Express - wygenerowana przez AI
+app.post('/api/users', async (req, res) => {
+  const { name, email, role } = req.body;
+  const user = await db.user.create({
+    data: { name, email, role }
+  });
+  res.json(user);
+});
+```
+
+Widzisz problem? Pole `role` pochodzi prosto z ciała żądania. Każdy użytkownik może ustawić się jako administrator. Nie ma walidacji formatu e-maila, limitów długości nazwy, niczego.
+
+**Bezpieczny (jak powinno być):**
+
+```typescript
+import { z } from 'zod';
+
+const CreateUserSchema = z.object({
+  name: z.string().min(1).max(100).trim(),
+  email: z.string().email().max(255).toLowerCase(),
+  // role NIE jest przyjmowane z danych wejściowych użytkownika
+});
+
+app.post('/api/users', async (req, res) => {
+  const result = CreateUserSchema.safeParse(req.body);
+
+  if (!result.success) {
+    return res.status(400).json({
+      error: 'Validation failed',
+      details: result.error.issues
+    });
+  }
+
+  const user = await db.user.create({
+    data: {
+      ...result.data,
+      role: 'user', // zakodowana wartość domyślna, nigdy z danych wejściowych
+    }
+  });
+
+  res.json(user);
+});
+```
+
+Poprawka nie jest skomplikowana — schemat Zod, jawna lista dozwolonych pól, rola ustawiana po stronie serwera. Ale AI prawie nigdy nie generuje tego wzorca, chyba że wyraźnie poprosisz o walidację.
+
+### Grzech 2: zakodowane na sztywno sekrety i klucze API
+
+Modele AI widziały tysiące tutoriali i odpowiedzi ze Stack Overflow z zakodowanymi na sztywno danymi uwierzytelniającymi. Zgadnij, co reprodukują.
+
+**Podatny:**
+
+```typescript
+// AI uwielbia wstawiać sekrety prosto do kodu
+const stripe = new Stripe('sk_live_abc123def456ghi789');
+
+const dbConnection = mysql.createConnection({
+  host: 'production-db.amazonaws.com',
+  user: 'admin',
+  password: 'SuperSecret123!',
+  database: 'production'
+});
+
+// Albo trochę lepiej, ale nadal źle — .env zacommitowany do gita
+// bez wpisu w .gitignore
+```
+
+**Bezpieczny:**
+
+```typescript
+import { z } from 'zod';
+
+// Zwaliduj istnienie zmiennych środowiskowych przy starcie, fail fast
+const envSchema = z.object({
+  STRIPE_SECRET_KEY: z.string().startsWith('sk_'),
+  DATABASE_URL: z.string().url(),
+  JWT_SECRET: z.string().min(32),
+});
+
+const env = envSchema.parse(process.env);
+
+const stripe = new Stripe(env.STRIPE_SECRET_KEY);
+```
+
+A Twój `.gitignore` musi zawierać `.env*`. Zawsze. Zweryfikuj, że to istnieje po każdej sesji scaffoldingu z AI. Widziałem, jak narzędzia AI generują pliki `.gitignore`, które zawierają node_modules, ale pomijają `.env`. Jeśli używasz Claude Code, możesz [skonfigurować hook PreToolUse, który automatycznie blokuje zapisy zawierające sekrety](/blog/claude-code-hooks-custom-agents-ai-pipelines-guide) — to jednorazowa konfiguracja, która wyłapuje tę klasę problemów, zanim się zdarzą.
+
+### Grzech 3: brakujące weryfikacje uwierzytelnienia
+
+To ten grzech, który dał mi dostęp do bazy danych tamtego startupu. Narzędzia AI generują trasy i czasami dodają middleware uwierzytelniający, a czasami nie. Nie ma żadnej konsekwencji.
+
+**Podatny:**
+
+```typescript
+// AI wygenerowało wszystkie trasy CRUD, ale na niektórych zapomniało auth
+app.get('/api/users', authMiddleware, getUsers);        // chronione
+app.get('/api/users/:id', authMiddleware, getUser);     // chronione
+app.put('/api/users/:id', updateUser);                  // UPS - brak auth
+app.delete('/api/users/:id', deleteUser);               // UPS - brak auth
+
+// Jeszcze gorzej: trasy admina chronione tylko po stronie klienta
+app.get('/api/admin/analytics', getAnalytics);          // w ogóle brak auth
+// AI umieściło ochronę w komponencie React zamiast tego:
+// if (user.isAdmin) { <AdminDashboard /> }
+```
+
+**Bezpieczny:**
+
+```typescript
+// Domyślne odrzucenie: zastosuj auth globalnie, dodaj trasy publiczne do whitelisty
+const publicRoutes = ['/api/auth/login', '/api/auth/register', '/api/health'];
+
+app.use((req, res, next) => {
+  if (publicRoutes.includes(req.path)) return next();
+  return authMiddleware(req, res, next);
+});
+
+// Middleware oparte na rolach dla tras admina
+const requireRole = (role: string) => (req, res, next) => {
+  if (req.user?.role !== role) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+  next();
+};
+
+app.get('/api/admin/analytics', requireRole('admin'), getAnalytics);
+```
+
+Zasadą jest domyślne odrzucenie (default-deny). Wszystko wymaga uwierzytelnienia, chyba że zostanie jawnie dodane do whitelisty. AI generuje domyślne zezwolenie (default-allow), bo buduje trasy po jednej naraz.
+
+### Grzech 4: SQL injection i NoSQL injection
+
+Wydawałoby się, że w 2026 roku mamy SQL injection już za sobą. Narzędzia AI przywracają go z entuzjazmem.
+
+**Podatny:**
+
+```typescript
+// Endpoint wyszukiwania wygenerowany przez AI
+app.get('/api/search', async (req, res) => {
+  const { query } = req.query;
+  const results = await db.$queryRawUnsafe(
+    `SELECT * FROM products WHERE name LIKE '%${query}%'`
+  );
+  res.json(results);
+});
+
+// Wariant NoSQL z MongoDB
+app.post('/api/login', async (req, res) => {
+  const user = await User.findOne({
+    email: req.body.email,
+    password: req.body.password  // dodatkowo: porównywanie hasła w czystym tekście
+  });
+});
+```
+
+To zapytanie do MongoDB jest podatne na NoSQL injection. Wyślij `{"password": {"$ne": ""}}` i jesteś w środku.
+
+**Bezpieczny:**
+
+```typescript
+// Zapytanie sparametryzowane
+app.get('/api/search', async (req, res) => {
+  const query = String(req.query.query || '').slice(0, 100);
+  const results = await db.product.findMany({
+    where: {
+      name: { contains: query, mode: 'insensitive' }
+    },
+    take: 50,
+  });
+  res.json(results);
+});
+
+// Poprawne uwierzytelnianie z hashowanymi hasłami
+app.post('/api/login', async (req, res) => {
+  const { email, password } = req.body;
+  const user = await User.findOne({ email });
+  if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
+    return res.status(401).json({ error: 'Invalid credentials' });
+  }
+  // wystaw JWT / sesję
+});
+```
+
+Zawsze używaj query buildera swojego ORM-a. Nigdy nie używaj `$queryRawUnsafe` ani konkatenacji stringów. Jeśli Twoje AI generuje surowe stringi SQL, to czerwona flaga dla całego kodu.
+
+### Grzech 5: brak ochrony CSRF
+
+W audycie pięciu głównych narzędzi AI do kodowania zero z nich dodało ochronę CSRF do którejkolwiek z 15 wygenerowanych aplikacji. Zero.
+
+**Podatny:**
+
+```typescript
+// AI konfiguruje Express z parserem ciała JSON i uznaje to za skończone
+app.use(express.json());
+app.use(cors({ origin: '*' })); // bonusowa luka: wildcard CORS
+
+// Nigdzie żadnych tokenów CSRF. Każde żądanie zmieniające stan
+// może zostać wywołane z dowolnej strony internetowej.
+```
+
+**Bezpieczny:**
+
+```typescript
+import csrf from 'csurf';
+import helmet from 'helmet';
+
+// Restrykcyjny CORS
+app.use(cors({
+  origin: process.env.ALLOWED_ORIGIN, // np. 'https://myapp.com'
+  credentials: true,
+}));
+
+// Ochrona CSRF dla tras poza API
+const csrfProtection = csrf({ cookie: true });
+app.use('/api', csrfProtection);
+
+// Dla architektur SPA/API użyj ciasteczek SameSite + niestandardowych nagłówków
+app.use((req, res, next) => {
+  if (['POST', 'PUT', 'DELETE', 'PATCH'].includes(req.method)) {
+    const csrfHeader = req.headers['x-requested-with'];
+    if (csrfHeader !== 'XMLHttpRequest') {
+      return res.status(403).json({ error: 'CSRF validation failed' });
+    }
+  }
+  next();
+});
+```
+
+Dla nowoczesnych SPA używających `fetch` z JSON-em kombinacja ciasteczek `SameSite=Strict`, restrykcyjnego CORS i niestandardowego nagłówka żądania zapewnia silną ochronę CSRF. Ale AI nie dodaje żadnej z tych warstw.
+
+### Grzech 6: niebezpieczne bezpośrednie odwołania do obiektów (IDOR)
+
+To jest subtelne i AI prawie nigdy nie radzi sobie z tym poprawnie. Kiedy użytkownik żąda `/api/invoices/123`, czy kod weryfikuje, że faktura 123 należy do niego?
+
+**Podatny:**
+
+```typescript
+// AI generuje czysty CRUD, ale bez weryfikacji własności
+app.get('/api/invoices/:id', authMiddleware, async (req, res) => {
+  const invoice = await db.invoice.findUnique({
+    where: { id: req.params.id }
+  });
+  if (!invoice) return res.status(404).json({ error: 'Not found' });
+  res.json(invoice);
+});
+// Każdy uwierzytelniony użytkownik może odczytać KAŻDĄ fakturę, zgadując ID
+```
+
+**Bezpieczny:**
+
+```typescript
+app.get('/api/invoices/:id', authMiddleware, async (req, res) => {
+  const invoice = await db.invoice.findUnique({
+    where: {
+      id: req.params.id,
+      userId: req.user.id,  // weryfikacja własności
+    }
+  });
+  if (!invoice) return res.status(404).json({ error: 'Not found' });
+  res.json(invoice);
+});
+
+// Jeszcze lepiej: użyj wzorca middleware
+const requireOwnership = (model: string, foreignKey = 'userId') =>
+  async (req, res, next) => {
+    const record = await db[model].findUnique({
+      where: { id: req.params.id }
+    });
+    if (!record || record[foreignKey] !== req.user.id) {
+      return res.status(404).json({ error: 'Not found' });
+    }
+    req.resource = record;
+    next();
+  };
+
+app.get('/api/invoices/:id', authMiddleware, requireOwnership('invoice'), handler);
+```
+
+Zwróć uwagę, że w bezpiecznej wersji zwracamy 404 zamiast 403 dla rekordów należących do innych użytkowników. Zapobiega to enumeracji — atakujący nie może odróżnić „nie istnieje" od „istnieje, ale nie należy do Ciebie".
+
+### Grzech 7: brakujące nagłówki bezpieczeństwa
+
+Każda przeglądarka ma wbudowane mechanizmy bezpieczeństwa. Trzeba je tylko aktywować przez nagłówki HTTP. Narzędzia AI nigdy ich nie ustawiają.
+
+**Podatny:**
+
+```typescript
+// AI generuje aplikację Next.js z zerem nagłówków bezpieczeństwa
+// next.config.js jest albo pusty, albo ma tylko przekierowania
+module.exports = {
+  reactStrictMode: true,
+};
+```
+
+**Bezpieczny:**
+
+```typescript
+// next.config.js
+const securityHeaders = [
+  { key: 'X-Content-Type-Options', value: 'nosniff' },
+  { key: 'X-Frame-Options', value: 'DENY' },
+  { key: 'X-XSS-Protection', value: '1; mode=block' },
+  { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
+  { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=()' },
+  {
+    key: 'Content-Security-Policy',
+    value: "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' https://fonts.gstatic.com;"
+  },
+  {
+    key: 'Strict-Transport-Security',
+    value: 'max-age=63072000; includeSubDomains; preload'
+  },
+];
+
+module.exports = {
+  reactStrictMode: true,
+  async headers() {
+    return [{ source: '/(.*)', headers: securityHeaders }];
+  },
+};
+```
+
+Dla aplikacji Express po prostu użyj `helmet()`. Jedna linia. Ale narzędzia AI nie dodają jej bez promptu, a nawet wtedy czasami importują ją bez wywołania.
+
+## 7-punktowa checklista security audit
+
+Oto checklista, którą przepuszczam każdy kod zrobiony w vibe codingu. Zajmuje od 30 minut do 2 godzin w zależności od rozmiaru aplikacji i wyłapuje mniej więcej 90% krytycznych problemów.
+
+### 1. Skanowanie sekretów
+
+```bash
+# Uruchom trufflehog lub gitleaks na repozytorium
+gitleaks detect --source . --verbose
+
+# Ręczny grep dla typowych wzorców
+grep -rn "sk_live\|sk_test\|AKIA\|password.*=.*['\"]" --include="*.ts" --include="*.js" .
+grep -rn "BEGIN.*PRIVATE KEY" .
+```
+
+Jeśli gitleaks coś znajdzie, załóż, że te dane uwierzytelniające są skompromitowane. Zrotuj natychmiast, potem napraw kod.
+
+### 2. Audyt uwierzytelniania
+
+- Wypisz każdą trasę/endpoint w aplikacji
+- Zweryfikuj, że każdy ma odpowiednie middleware uwierzytelniające
+- Sprawdź wzorzec default-deny kontra default-allow
+- Test: czy nieuwierzytelniony użytkownik może trafić na chronione endpointy?
+- Test: czy zwykły użytkownik może trafić na endpointy administracyjne?
+
+### 3. Przegląd walidacji danych wejściowych
+
+- Sprawdź każdy handler żądania pod kątem walidacji danych wejściowych
+- Szukaj surowego użycia `req.body`, `req.query`, `req.params` bez walidacji
+- Zweryfikuj, że handlery przesyłania plików sprawdzają typ, rozmiar i miejsce docelowe pliku
+- Szukaj `$queryRawUnsafe`, konkatenacji stringów w zapytaniach lub `eval()`
+
+### 4. Testowanie IDOR
+
+- Dla każdego endpointu przyjmującego parametr ID przetestuj z ID innego użytkownika
+- Sprawdź, że własność/autoryzacja jest weryfikowana na poziomie zapytania do bazy danych, a nie tylko w middleware
+- Szukaj sekwencyjnych/zgadywalnych ID (używaj UUID)
+
+### 5. Sprawdzenie CSRF i CORS
+
+```bash
+# Sprawdź konfigurację CORS
+grep -rn "cors\|Access-Control" --include="*.ts" --include="*.js" .
+
+# Szukaj wildcardowych origin
+grep -rn "origin.*\*\|origin.*true" --include="*.ts" --include="*.js" .
+```
+
+- Zweryfikuj, że CORS nie jest ustawiony na `*` ani `true`
+- Sprawdź ochronę CSRF na endpointach zmieniających stan
+- Zweryfikuj, że ciasteczka mają flagi `SameSite`, `Secure` i `HttpOnly`
+
+### 6. Weryfikacja nagłówków bezpieczeństwa
+
+```bash
+# Szybkie sprawdzenie przez curl
+curl -I https://your-app.com | grep -i "x-frame\|x-content\|strict-transport\|content-security"
+
+# Albo użyj securityheaders.com dla pełnego raportu
+```
+
+Każda aplikacja produkcyjna powinna uzyskać co najmniej A na securityheaders.com. Większość aplikacji zrobionych w vibe codingu dostaje F.
+
+### 7. Audyt zależności
+
+```bash
+# Sprawdź znane luki w zależnościach
+npm audit
+# lub
+pnpm audit
+
+# Dla głębszej analizy
+npx better-npm-audit audit
+```
+
+Narzędzia AI często instalują przestarzałe wersje pakietów, bo tak było w danych treningowych. Widziałem projekty generowane przez AI z zależnościami mającymi znane krytyczne CVE.
+
+## Narzędzia, które wyłapują to automatycznie
+
+Ręczne audyty są dokładne, ale wolne. Oto zestaw narzędzi, którego używam do zautomatyzowania pierwszego przejścia.
+
+### SAST (Static Application Security Testing)
+
+- **Semgrep** — mój top pick. Ma zestawy reguł specyficzne dla AI, które wyłapują wzorce typowe dla kodu generowanego przez LLM. Darmowy dla open source, a reguły są znakomite.
+- **SonarQube** — świetny do integracji z CI/CD. Ustaw go jako bramkę jakości i blokuj merge'e wprowadzające luki. Konkretnie dla diffów generowanych przez AI [agenty chmurowe /ultrareview w Claude Code](/blog/claude-code-ultrareview-cloud-bug-hunting-guide) wyłapują błędy współbieżności i graniczne, które oparty na wzorcach SAST przeoczy.
+- **CodeQL** (GitHub) — jeśli jesteś na GitHubie, włącz to natychmiast. Działa na każdym PR za darmo dla repozytoriów publicznych — omawiam pełną konfigurację, niestandardowe zapytania oraz haczyk cenowy dla repozytoriów prywatnych w moim [przewodniku po skanowaniu kodu na GitHubie z CodeQL](/blog/github-code-scanning-codeql-setup-free-alternatives).
+
+```bash
+# Szybki skan Semgrep z regułami zorientowanymi na AI
+semgrep --config "p/owasp-top-ten" --config "p/nodejs" .
+```
+
+### DAST (Dynamic Application Security Testing)
+
+- **OWASP ZAP** — darmowy, open source, wyłapuje CSRF, brakujące nagłówki i luki injection w czasie działania.
+- **Burp Suite** — profesjonalny standard. Wart licencji dla każdego zespołu dostarczającego aplikacje produkcyjne.
+
+### Skanowanie sekretów
+
+- **Gitleaks** — szybki, przyjazny dla hooków pre-commit. Wyłapuje sekrety, zanim trafią do repozytorium.
+- **TruffleHog** — skanuje historię gita. Użyj go na istniejących repozytoriach, żeby znaleźć sekrety w starych commitach.
+
+### Minimalny opłacalny pipeline bezpieczeństwa
+
+```yaml
+# .github/workflows/security.yml
+name: Security Checks
+on: [pull_request]
+
+jobs:
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Semgrep
+        uses: returntocorp/semgrep-action@v1
+        with:
+          config: >-
+            p/owasp-top-ten
+            p/nodejs
+            p/typescript
+
+      - name: Run Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+
+      - name: NPM Audit
+        run: npm audit --audit-level=high
+```
+
+Skonfigurowanie tego zajmuje 10 minut i wyłapuje dużą część luk generowanych przez AI, zanim dotrą na produkcję.
+
+## Kiedy zatrudnić ludzkiego audytora, a kiedy użyć narzędzi automatycznych
+
+Narzędzia automatyczne to Twoja pierwsza linia obrony. Są szybkie, konsekwentne i tanie. Ale mają martwe pola.
+
+**Użyj narzędzi automatycznych, gdy:**
+- Uruchamiasz rutynowe kontrole na każdym PR
+- Musisz szybko przeskanować duży kod
+- Szukasz znanych wzorców luk (SQLi, XSS, zakodowane sekrety)
+- Chcesz ciągłego monitoringu w CI/CD
+
+**Zatrudnij ludzkiego audytora, gdy:**
+- Obsługujesz dane wrażliwe (dokumentacja medyczna, dane finansowe, PII)
+- Zaraz uruchamiasz coś publicznie po raz pierwszy
+- Twoja aplikacja przetwarza płatności
+- Miałeś incydent bezpieczeństwa i musisz zrozumieć pełny promień rażenia
+- Luki w logice biznesowej, których narzędzia nie wykryją (np. użytkownik może zastosować kod rabatowy nieskończoną liczbę razy)
+
+Koszt profesjonalnego security audit waha się od 5 000 do 30 000 dolarów w zależności od zakresu. Koszt naruszenia obejmującego dane użytkowników zaczyna się od 150 000 dolarów i rośnie stamtąd. Matematyka jest prosta.
+
+## Niewygodna prawda
+
+Narzędzia AI do kodowania są niesamowitymi mnożnikami produktywności. Używam ich codziennie i dostarczam szybciej dzięki nim. Ale mają fundamentalne ograniczenie: generują kod, który działa, a nie kod, który jest bezpieczny.
+
+To się szybko nie zmieni. Bezpieczeństwo wymaga myślenia adwersaryjnego — wyobrażania sobie, co zrobiłby złośliwy użytkownik — a obecne LLM-y są trenowane, żeby były pomocne, nie paranoiczne. Budują to, o co prosisz. Nie budują obrony przed tym, o czym nie pomyślałeś, żeby zapytać.
+
+Więc odpowiedzialność spoczywa na nas. Każda funkcja zrobiona w vibe codingu potrzebuje przeglądu bezpieczeństwa. Każdy endpoint generowany przez AI potrzebuje weryfikacji uwierzytelnienia. Każdy deployment potrzebuje tego podstawowego pipeline'u bezpieczeństwa.
+
+7-punktowa checklista powyżej zajmuje mniej niż godzinę. Automatyczny pipeline zajmuje 10 minut do skonfigurowania. Nie ma usprawiedliwienia dla dostarczania aplikacji zrobionych w vibe codingu bez ich uruchomienia.
+
+Twój programista-partner AI pisze kod. To Ty musisz upewnić się, że nie wyciekną przez niego dane Twoich użytkowników.
+
+## Referencje
+
+### Źródła
+
+- [Badanie Stanford/UC San Diego: bezpieczeństwo kodu wspomaganego przez LLM](https://arxiv.org/abs/2211.03622) — badanie pokazujące, że kod generowany przez AI ma luki bezpieczeństwa częściej niż kod pisany przez ludzi
+- [Backslash Security: raport z audytu vibe codingu](https://www.backslash.security/blog) — audyt Claude Code, Codex, Cursor, Replit i Devin, który znalazł 69 luk w 15 testowych aplikacjach
+- [Wyniki skanowania bezpieczeństwa Lovable](https://www.endorlabs.com/) — analiza 1645 aplikacji wygenerowanych przez Lovable ujawniająca powszechne wystawianie danych
+- [OWASP Top 10 2025](https://owasp.org/www-project-top-ten/) — branżowy standard klasyfikacji ryzyk bezpieczeństwa aplikacji webowych
+- [Ujawnienie naruszenia Moltbook](https://www.theregister.com/) — raport o 1,5 mln tokenów uwierzytelniających wystawionych z aplikacji zrobionej w vibe codingu
+
+### Dalsza lektura
+
+- [Reguły Semgrep dla kodu generowanego przez AI](https://semgrep.dev/docs/) — reguły SAST celujące konkretnie we wzorce typowe dla outputu LLM
+- [Przewodnik startowy OWASP ZAP](https://www.zaproxy.org/getting-started/) — darmowe narzędzie DAST do skanowania luk w czasie działania
+- [Dokumentacja Gitleaks](https://github.com/gitleaks/gitleaks) — konfiguracja skanowania sekretów pre-commit
+- [Najlepsze praktyki bezpieczeństwa Node.js](https://nodejs.org/en/docs/guides/security/) — oficjalne wskazówki bezpieczeństwa Node.js
+- [Dokumentacja Helmet.js](https://helmetjs.github.io/) — middleware nagłówków bezpieczeństwa dla Express
+
+---
+
+~Seb 👊

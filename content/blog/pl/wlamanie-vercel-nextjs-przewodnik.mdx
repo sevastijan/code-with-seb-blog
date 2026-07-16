@@ -1,0 +1,318 @@
+---
+title: 'Vercel został zhakowany: co to oznacza dla każdego programisty Next.js (i co zrobić teraz)'
+date: '2026-04-22'
+category: 'Development'
+tags: ['vercel', 'security', 'nextjs', 'supply-chain', 'incident-response']
+draft: false
+featured: false
+author: 'Sebastian'
+enSlug: 'vercel-security-breach-nextjs-developer-guide'
+excerpt: 'Vercel potwierdził włamanie 19 kwietnia 2026. Zmienne środowiskowe klientów wyciekły przez narzędzie AI. Sprawdź, co się stało i jak zareagować.'
+---
+
+Obudziłem się w sobotę rano, 19 kwietnia, na wiadomość na Slacku od kolegi: „Widziałeś tę sprawę z Vercelem?". Nie widziałem. W ciągu godziny rotowałem już każdy sekret w trzech projektach produkcyjnych.
+
+Jeśli wdrażasz cokolwiek na Vercelu — a jeśli czytasz tego bloga, jest spora szansa, że tak — musisz zrozumieć, co się stało, co faktycznie jest zagrożone i co z tym zrobić już teraz. Nie jutro. Nie w następnym sprincie. Teraz.
+
+Oto pełne zestawienie.
+
+## Co się stało: oś czasu
+
+**19 kwietnia 2026** Vercel opublikował ostrzeżenie bezpieczeństwa (security advisory) potwierdzające nieautoryzowany dostęp do systemów wewnętrznych. Ujawnienie było — jak na standardy branżowe — niezwykle szybkie; większość firm potrzebuje na to tygodni lub miesięcy. Vercel zasługuje za to na uznanie. Ale szczegóły, które nadeszły później, były już mniej uspokajające.
+
+Oto oś czasu w takiej postaci, jaką znamy:
+
+- **Początek kwietnia 2026**: pracownik Vercela instaluje Context.ai, rozszerzenie do przeglądarki reklamowane jako narzędzie produktywności dla programistów napędzane AI. Rozszerzenie prosi o dostęp OAuth do konta GitHub pracownika oraz do danych sesji przeglądarki.
+- **~12-15 kwietnia**: atakujący powiązani z grupą ShinyHunters wykorzystują skompromitowane rozszerzenie Context.ai do przechwycenia tokenów OAuth pracownika. Tokeny te dają dostęp do wewnętrznych repozytoriów i systemów Vercela.
+- **17-18 kwietnia**: ruch boczny (lateral movement) w infrastrukturze Vercela. Atakujący uzyskują dostęp do wewnętrznych paneli i metadanych dotyczących klientów, w tym do magazynów zmiennych środowiskowych.
+- **19 kwietnia 2026**: Vercel wykrywa włamanie (breach), unieważnia skompromitowane poświadczenia i zaczyna powiadamiać dotkniętych klientów. Publiczne ostrzeżenie zostaje opublikowane na stronie statusu i na blogu bezpieczeństwa.
+- **20 kwietnia 2026**: ShinyHunters twierdzi na forum w dark webie, że wyeksfiltrował dane z Vercela, i wystawia zbiór danych z ceną wywoławczą 2 mln dolarów. Do oświadczenia dołączono przykładowe dane pokazujące nazwy zmiennych środowiskowych i zaszyfrowane wartości z projektów klientów.
+- **20-21 kwietnia**: badacze bezpieczeństwa oraz dziennikarze z BleepingComputer i TechCrunch niezależnie weryfikują fragmenty oświadczenia ShinyHunters. Vercel aktualizuje ostrzeżenie, potwierdzając, że dostęp uzyskano do „podzbioru zmiennych środowiskowych klientów".
+
+Okno włamania to około 3-5 dni aktywnego dostępu przed wykryciem. To nie jest dobry wynik, ale nie jest też katastrofalny — włamanie do Okty w 2024 roku pozostawało niewykryte przez miesiące.
+
+## Jak naprawdę przebiegło włamanie
+
+Tu robi się ciekawie — i tu kryje się lekcja dla każdego programisty, nie tylko dla zespołu bezpieczeństwa Vercela.
+
+Punktem wejścia nie był exploit typu zero-day. Nie był to źle skonfigurowany bucket S3. Nie był to nawet e-mail phishingowy. **Wektorem ataku było rozszerzenie do przeglądarki.**
+
+### Krok 1: rozszerzenie do przeglądarki
+
+Context.ai to (lub raczej było — zostało wycofane z Chrome Web Store) narzędzie AI, które integruje się z twoim procesem pracy programistycznej. Odczytuje kontekst przeglądarki — karty, zawartość stron, dane formularzy — i wykorzystuje go do podpowiedzi generowanych przez AI. Żeby robić to skutecznie, prosi o szerokie uprawnienia: odczyt danych ze wszystkich stron, dostęp do tokenów OAuth, dostęp do schowka.
+
+Inżynier Vercela je zainstalował. To nic nietypowego. Programiści instalują rozszerzenia do przeglądarki nieustannie. Ale to konkretne było skompromitowane — albo przez złośliwą aktualizację wypchniętą do rozszerzenia, albo przez atak na łańcuch dostaw (supply chain) samej infrastruktury Context.ai. Dokładny mechanizm nie został jeszcze publicznie potwierdzony.
+
+### Krok 2: kradzież tokenów OAuth
+
+Gdy skompromitowane rozszerzenie było już aktywne, przechwyciło tokeny OAuth z sesji przeglądarki inżyniera. Wśród nich były tokeny dostępu do GitHuba oraz — co kluczowe — tokeny sesyjne do wewnętrznych narzędzi Vercela.
+
+Tokeny OAuth to tokeny na okaziciela (bearer tokens). Kto je ma, ten może ich użyć. Nie ma żadnej dodatkowej weryfikacji uwierzytelnienia — token _jest_ uwierzytelnieniem. Tak to zaprojektowano. I właśnie dlatego kradzież tokenów jest tak niszcząca.
+
+### Krok 3: ruch boczny
+
+Mając ważne wewnętrzne tokeny sesyjne, atakujący poruszali się bocznie po systemach Vercela. Uzyskali dostęp do wewnętrznych paneli, metadanych systemu buildów i magazynu zmiennych środowiskowych. Wewnętrzna architektura Vercela korzysta z szyfrowanego przechowywania zmiennych środowiskowych, ale uzyskany poziom dostępu pozwalał odpytywać warstwę deszyfrującą — co oznacza, że atakujący mogli odczytać wartości w postaci jawnej.
+
+To kluczowy szczegół, który pierwsze ostrzeżenie Vercela nieco przemilczało. Skompromitowane dane opisano jako „niewrażliwe zmienne środowiskowe". Porozmawiajmy o tym, dlaczego takie ujęcie jest mylące.
+
+## „Niewrażliwe" zmienne środowiskowe: niebezpieczna etykieta
+
+Ostrzeżenie Vercela zakwalifikowało zmienne środowiskowe, do których uzyskano dostęp, jako „niewrażliwe". W ich wewnętrznej klasyfikacji oznacza to prawdopodobnie zmienne, które nie są oznaczone jako sekrety — takie rzeczy jak `NEXT_PUBLIC_API_URL`, `NODE_ENV`, identyfikatory analityczne, klucze feature flag i podobne wartości konfiguracyjne.
+
+Ale tu jest problem: **granica między „wrażliwym" a „niewrażliwym" nie przebiega tam, gdzie większość zespołów sądzi.**
+
+Zastanów się, co atakujący może zrobić z „niewrażliwymi" zmiennymi środowiskowymi:
+
+- **Adresy URL endpointów API** zdradzają architekturę twojego backendu. Atakujący wie teraz, gdzie żyją twoje usługi, jakich konwencji nazewniczych używasz i które usługi wewnętrzne są potencjalnie wystawione na zewnątrz.
+- **Identyfikatory usług zewnętrznych** (klucze publiczne Stripe, identyfikatory analityczne, DSN-y do śledzenia błędów) umożliwiają ukierunkowane ataki na te usługi z wykorzystaniem kontekstu twojego konta.
+- **Klucze feature flag i konfiguracja** zdradzają, które funkcje są w budowie, które są testowane metodą A/B i jak zbudowany jest twój [system feature flag](/blog/feature-flags-progressive-rollouts-nextjs-guide). To rekonesansowa żyła złota.
+- **Zmienne czasu builda** mogą ujawnić ścieżki wewnętrzne, szczegóły konfiguracji CI/CD i topologię wdrożenia.
+
+A to przy założeniu, że etykieta „niewrażliwe" jest prawdziwa. Z mojego doświadczenia wynika, że co najmniej 30% zespołów ma prawdziwe sekrety wsadzone w pola zwykłych, „niesekretnych" zmiennych środowiskowych. Adresy URL baz danych z wbudowanymi poświadczeniami. Klucze API, które powinny być w magazynie sekretów, ale trafiły do zwykłych zmiennych środowiskowych podczas nocnej sesji debugowania i nigdy nie zostały przeniesione.
+
+Jeśli wdrażasz na Vercelu, załóż, że twoje zmienne środowiskowe wyciekły. Wszystkie. Postępuj zgodnie z tym założeniem.
+
+## Lekcja o łańcuchu dostaw, której nikt nie chciał
+
+Powiem wprost, czym naprawdę jest to włamanie: **atakiem na łańcuch dostaw (supply chain) przez narzędzie AI dla programistów**.
+
+Nie przez skompromitowany pakiet npm. Nie przez złośliwą akcję GitHub Action. Przez rozszerzenie do przeglądarki — jeden z najmniej weryfikowanych, a najbardziej uprzywilejowanych elementów codziennego procesu pracy programisty.
+
+Rozszerzenia do przeglądarki działają z nadzwyczajnymi uprawnieniami. Rozszerzenie Chrome z uprawnieniem „odczyt danych ze wszystkich stron" widzi wszystko, co widzisz ty — każdą stronę, każdy formularz, każdy token, każde ciasteczko. Rozszerzenia mogą przechwytywać żądania sieciowe, modyfikować zawartość strony i odczytywać dane ze schowka. I w przeciwieństwie do pakietów npm nie ma tu odpowiednika `package-lock.json`, który przypinałby wersje rozszerzeń. Rozszerzenia aktualizują się po cichu, automatycznie.
+
+To ten sam wzorzec, którego przyspieszenie obserwujemy w całej branży. [Powierzchnia ataku na łańcuch dostaw narzędzi AI](/blog/prompt-injection-attacks-llm-security-guide) szybko się poszerza. Context.ai to narzędzie AI. Było reklamowane programistom. Obiecywało wzrost produktywności. I stało się punktem wejścia do jednego z najpoważniejszych włamań na platformę w 2026 roku.
+
+Ironia jest gęsta. Prowadzimy intensywne debaty o bezpieczeństwie AI i [hartowaniu bezpieczeństwa narzędzi AI do kodowania](/blog/claude-code-security-hardening-enterprise-guide), podczas gdy zwykłe rozszerzenie AI do przeglądarki — coś znacznie mniej wyrafinowanego niż autonomiczny agent kodujący — okazało się faktycznym wektorem ataku.
+
+To powinno zmienić sposób, w jaki każdy zespół inżynieryjny myśli o rozszerzeniach do przeglądarki na komputerach służbowych. Kropka.
+
+## Lista działań natychmiastowych
+
+Jeśli wdrażasz na Vercelu, oto twoja lista reakcji. Uporządkowałem ją według priorytetu — najpierw zrób pozycje z góry, dzisiaj, zanim zrobisz cokolwiek innego.
+
+### Priorytet 1: rotuj wszystkie sekrety (zrób to teraz)
+
+```bash
+# 1. Wylistuj wszystkie zmienne środowiskowe w projekcie Vercel
+vercel env ls
+
+# 2. Dla każdej zmiennej sekretnej/wrażliwej wygeneruj nową wartość
+# i zaktualizuj ją w Vercelu
+vercel env rm SECRET_NAME production
+vercel env add SECRET_NAME production
+
+# 3. Wykonaj redeploy, aby pobrać nowe wartości
+vercel --prod
+```
+
+Rotuj wszystko:
+- Ciągi połączeń do baz danych (i rotuj same hasła baz danych)
+- Klucze API do wszystkich usług zewnętrznych (Stripe, Twilio, SendGrid itd.)
+- Sekrety podpisywania JWT
+- Klucze szyfrujące
+- Sekrety klienta OAuth
+- Wszelkie sekrety podpisywania webhooków
+
+Nie rotuj tylko wartości po stronie Vercela. Rotuj faktyczne poświadczenia u źródła. Jeśli twój `DATABASE_URL` zawiera hasło, zmień hasło w bazie danych, a potem zaktualizuj Vercela.
+
+### Priorytet 2: wygeneruj na nowo tokeny GitHub
+
+Ścieżka włamania przechodziła przez tokeny OAuth GitHuba. Nawet jeśli twoje zmienne środowiskowe na Vercelu nie zostały bezpośrednio skompromitowane, integracja między Vercelem a GitHubem oznacza, że twoje tokeny GitHub mogły wyciec.
+
+1. Wejdź w **GitHub → Settings → Developer Settings → Personal Access Tokens** i unieważnij/wygeneruj na nowo wszystkie tokeny używane z Vercelem
+2. Wejdź w **GitHub → Settings → Applications → Authorized OAuth Apps** i przejrzyj integrację Vercela. Unieważnij ją i autoryzuj ponownie
+3. Sprawdź **GitHub → Settings → Security → Sessions** pod kątem sesji, których nie rozpoznajesz
+
+### Priorytet 3: audyt aplikacji OAuth i rozszerzeń przeglądarki
+
+To jest lekcja płynąca z samego włamania:
+
+```
+# Sprawdź zainstalowane rozszerzenia Chrome
+# Przejdź do chrome://extensions/
+# Dla każdego rozszerzenia zadaj pytania:
+# 1. Czy faktycznie tego używam?
+# 2. Jakie ma uprawnienia?
+# 3. Kto je stworzył? Czy pochodzi od zweryfikowanego wydawcy?
+# 4. Kiedy było ostatnio aktualizowane?
+```
+
+Usuń każde rozszerzenie, którego aktywnie nie używasz. Usuń każde rozszerzenie z szerokimi uprawnieniami, których nie potrafisz uzasadnić. Context.ai zostało już wycofane z Chrome Web Store, ale jeśli miałeś je zainstalowane, odinstaluj je natychmiast i potraktuj swój komputer jako potencjalnie skompromitowany.
+
+### Priorytet 4: sprawdź logi buildów
+
+Logi buildów Vercela mogą zawierać sekrety, które zostały przypadkowo zalogowane. Sprawdź swoje ostatnie buildy:
+
+1. Wejdź w panel Vercela → Deployments
+2. Wejdź w ostatnie wdrożenia i sprawdź logi buildów
+3. Poszukaj wartości, które wyglądają jak sekrety, tokeny lub poświadczenia
+4. Jeśli znajdziesz w logach buildów sekrety, które wyciekły, natychmiast je rotuj
+
+To także dobry moment na audyt skryptów buildów. Upewnij się, że podczas buildów nic nie wykonuje `echo $SECRET` ani `printenv`. Twój [potok lintowania i buildowania](/blog/advanced-linting-type-safety-eslint-typescript-guide) powinien to wychwycić, ale zweryfikuj to ręcznie.
+
+### Priorytet 5: włącz dodatkowy monitoring
+
+- Włącz log audytu Vercela (Team Settings → Audit Log), jeśli jeszcze tego nie zrobiłeś
+- Skonfiguruj alerty dla nowych wdrożeń i zmian zmiennych środowiskowych
+- Monitoruj usługi zewnętrzne pod kątem nietypowych wzorców użycia API przez najbliższe 30 dni
+
+## Jak to wpływa konkretnie na programistów Next.js
+
+Jeśli budujesz na Next.js, włamanie do Vercela ma konkretne konsekwencje, których ogólne porady bezpieczeństwa nie obejmują. Sposób, w jaki Next.js obsługuje zmienne środowiskowe, tworzy unikalne wzorce ekspozycji.
+
+### Czas builda a czas działania: poznaj różnicę
+
+Next.js ma dwie kategorie zmiennych środowiskowych:
+
+**Zmienne czasu builda** (z prefiksem `NEXT_PUBLIC_`):
+```env
+NEXT_PUBLIC_API_URL=https://api.example.com
+NEXT_PUBLIC_ANALYTICS_ID=UA-123456
+NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=pk_live_xxx
+```
+
+Te są wbudowane w bundle JavaScript w czasie builda. Są widoczne dla każdego, kto podejrzy źródło twojej strony. Były _już_ publiczne przed włamaniem. Włamanie nie zmienia ich profilu ryzyka.
+
+**Zmienne czasu działania / po stronie serwera** (bez prefiksu `NEXT_PUBLIC_`):
+```env
+DATABASE_URL=postgresql://user:password@host:5432/db
+STRIPE_SECRET_KEY=sk_live_xxx
+JWT_SECRET=your-signing-key
+RESEND_API_KEY=re_xxx
+```
+
+Te są dostępne tylko w kodzie po stronie serwera — trasach API, komponentach serwerowych (Server Components), middleware. To o nie musisz się martwić. Nigdy nie powinny pojawiać się w bundle'ach po stronie klienta, ale włamanie do Vercela potencjalnie wystawiło je na poziomie infrastruktury.
+
+### .env.local a panel Vercela
+
+Twój plik `.env.local` NIE został skompromitowany przez to włamanie. Żyje on na twoim lokalnym komputerze i jest (a przynajmniej powinien być) w twoim `.gitignore`. Włamanie było wymierzone w infrastrukturę Vercela — konkretnie w magazyn zmiennych środowiskowych zasilający ustawienia w panelu Vercela.
+
+Jeśli ustawiłeś zmienną przez panel Vercela lub CLI, potencjalnie wyciekła. Jeśli istnieje tylko w twoim lokalnym `.env.local`, nie wyciekła.
+
+To dobry argument, żeby całkowicie oddzielać sekrety deweloperskie od produkcyjnych — inne klucze API, inne poświadczenia baz danych, inne klucze podpisywania. Wiele zespołów używa tych samych sekretów w różnych środowiskach „dla wygody". Ta wygoda jest teraz obciążeniem.
+
+### Komponenty serwerowe a ekspozycja sekretów
+
+W przypadku komponentów serwerowych Next.js łatwo przypadkowo odwołać się do zmiennych środowiskowych w sposób, który może je wystawić:
+
+```tsx
+// NIEBEZPIECZNE: to może wyciekać sekrety, jeśli komponent
+// kiedykolwiek zostanie przypadkowo wyrenderowany po stronie klienta
+export default function Dashboard() {
+  const apiKey = process.env.INTERNAL_API_KEY;
+  // Jeśli ten komponent działa po stronie klienta, apiKey jest undefined
+  // Ale jeśli twój proces builda jest skompromitowany, zmienna
+  // może i tak zostać wstrzyknięta
+  return <div>...</div>;
+}
+```
+
+Obrona jest prosta: używaj importów `server-only` dla każdego modułu, który sięga po sekrety:
+
+```tsx
+import 'server-only';
+
+export function getApiClient() {
+  const key = process.env.INTERNAL_API_KEY;
+  if (!key) throw new Error('INTERNAL_API_KEY not configured');
+  return new ApiClient({ key });
+}
+```
+
+Powoduje to błąd w czasie builda, jeśli moduł zostanie kiedykolwiek zaimportowany z komponentu klienckiego. To twarda granica, a nie konwencja.
+
+## Co Vercel zrobił dobrze (a co źle)
+
+### Co zrobił dobrze
+
+**Szybkie ujawnienie.** Ostrzeżenie z 19 kwietnia pojawiło się w ciągu godzin od wykrycia, a nie tygodni. Porównaj to z włamaniem do Okty (miesiące ciszy) czy włamaniem do LastPass (ujawnianie w kroplówce przez sześć miesięcy). Szybkość Vercela była tu naprawdę dobra.
+
+**Bezpośrednie powiadomienie klientów.** Dotknięci klienci dostali e-maile z konkretnymi wskazówkami, a nie tylko ogólne oświadczenie „bezpieczeństwo traktujemy poważnie".
+
+**Unieważnienie poświadczeń.** Vercel szybko unieważnił skompromitowane wewnętrzne poświadczenia, ograniczając okno włamania.
+
+### Co zrobił źle
+
+**Ujęcie „niewrażliwe".** Nazwanie skompromitowanych zmiennych środowiskowych „niewrażliwymi" było mylące i dało niektórym zespołom fałszywe poczucie bezpieczeństwa. Poprawne ujęcie brzmiałoby: „Uzyskano dostęp do zmiennych środowiskowych. Załóżcie, że wszystkie wartości są skompromitowane. Rotujcie wszystko".
+
+**Niewystarczająco szczegółowy zakres.** Pierwsze ostrzeżenie nie precyzowało jasno, których klientów dotyczy problem, jakiego okna czasowego dotyczy ani dokładnie do których systemów uzyskano dostęp. To zmusiło każdego klienta Vercela do założenia najgorszego — co jest właściwą postawą bezpieczeństwa, ale generuje niepotrzebne obciążenie pracą, jeśli dostępne były jaśniejsze informacje o zakresie.
+
+**Brak wskazówek dotyczących ekspozycji tokenów GitHub.** Skoro ścieżka ataku przechodziła przez tokeny OAuth, ostrzeżenie powinno było wprost zalecać wszystkim klientom ponowną autoryzację integracji z GitHubem i rotację powiązanych tokenów. Ta wskazówka pojawiła się później, ukryta w aktualizacji bazy wiedzy, zamiast w głównym ostrzeżeniu.
+
+## Szerszy obraz: ryzyko łańcucha dostaw narzędzi AI
+
+Context.ai to mały, stosunkowo nieznany startup AI. Ich rozszerzenie do przeglądarki miało umiarkowaną popularność — prawdopodobnie dziesiątki tysięcy instalacji, a nie miliony. A mimo to stało się punktem wejścia do skompromitowania jednej z najważniejszych platform w ekosystemie JavaScriptu.
+
+To dokładnie to ryzyko łańcucha dostaw AI, przed którym ostrzegali badacze bezpieczeństwa, tylko urealnione.
+
+Ekosystem narzędzi AI eksploduje. Co tydzień przynosi nowe rozszerzenia do przeglądarki napędzane AI, wtyczki do IDE, narzędzia CLI i produkty SaaS. Większość z nich prosi o szerokie uprawnienia. Wiele z nich buduje małe zespoły albo pojedynczy programiści. Bardzo niewiele przechodzi poważne audyty bezpieczeństwa.
+
+Oto co po tym incydencie zmieniam we własnym procesie pracy:
+
+1. **Zero rozszerzeń do przeglądarki na profilach służbowych.** Używam teraz osobnego profilu Chrome do pracy programistycznej, który ma dokładnie zero rozszerzeń. Jeśli potrzebuję narzędzia AI, działa ono jako samodzielna aplikacja, a nie jako rozszerzenie przeglądarki z dostępem do każdej odwiedzanej strony.
+
+2. **Przeglądy zakresów OAuth.** Za każdym razem, gdy autoryzuję integrację OAuth, robię zrzut ekranu prośby o uprawnienia i przeglądam zakresy. Jeśli prosi o więcej, niż potrzebuje, nie autoryzuję.
+
+3. **Rotacja sekretów według harmonogramu.** Nie tylko wtedy, gdy zdarza się włamanie. Wdrażam 90-dniową rotację wszystkich sekretów produkcyjnych, zautomatyzowaną tam, gdzie się da. Tak, to irytujące. Ale reagowanie na incydent o 2 w nocy w sobotę też jest.
+
+4. **Higiena zmiennych środowiskowych.** Każda zmienna w panelu Vercela ma teraz właściciela i uzasadnienie. Jeśli nikt nie potrafi wyjaśnić, po co istnieje dana zmienna, zostaje usunięta. Zepsute buildy naprawia się łatwiej niż incydenty bezpieczeństwa.
+
+5. **Rozdzielenie odpowiedzialności.** Tokeny CI/CD, tokeny wdrożeniowe i sekrety aplikacji są w osobnych magazynach z osobnymi kontrolami dostępu. Skompromitowanie jednej kategorii nie powinno kaskadowo przenosić się na pozostałe.
+
+## Twoja 30-dniowa lista kontrolna po włamaniu
+
+Poza natychmiastową reakcją, oto co warto zrobić przez najbliższy miesiąc:
+
+**Tydzień 1:**
+- [ ] Rotuj wszystkie zmienne środowiskowe Vercela i poświadczenia u źródła
+- [ ] Wygeneruj na nowo tokeny GitHub i autoryzuj ponownie aplikacje OAuth
+- [ ] Audytuj i usuń zbędne rozszerzenia przeglądarki na wszystkich komputerach zespołu
+- [ ] Przejrzyj logi audytu Vercela pod kątem podejrzanej aktywności w oknie 12-19 kwietnia
+
+**Tydzień 2:**
+- [ ] Wdróż zabezpieczenia `server-only` we wszystkich modułach po stronie serwera, które sięgają po sekrety
+- [ ] Oddziel sekrety deweloperskie od produkcyjnych, jeśli jeszcze tego nie zrobiono
+- [ ] Skonfiguruj monitoring nietypowego użycia API w usługach zewnętrznych
+- [ ] Udokumentuj wszystkie zmienne środowiskowe wraz z właścicielami i przeznaczeniem
+
+**Tydzień 3:**
+- [ ] Wdróż automatyczną rotację sekretów dla poświadczeń, które to obsługują
+- [ ] Dodaj kontrole w czasie builda, które oznaczają każdy `console.log` lub `echo` zmiennych środowiskowych
+- [ ] Przejrzyj i zawęź zakresy OAuth dla wszystkich integracji zewnętrznych
+- [ ] Przeprowadź zespołowy przegląd bezpieczeństwa — omówcie włamanie wspólnie
+
+**Tydzień 4:**
+- [ ] Stwórz lub zaktualizuj swój playbook reagowania na incydenty o wnioski z tego włamania
+- [ ] Ustanów politykę rozszerzeń przeglądarki dla swojego zespołu inżynieryjnego
+- [ ] Ustaw przypomnienia w kalendarzu dla 90-dniowej rotacji sekretów
+- [ ] Przeprowadź ćwiczenie sztabowe (tabletop): „Co, jeśli nasza platforma wdrożeniowa znów zostanie skompromitowana?"
+
+## Na koniec
+
+Włamanie do Vercela jest niewygodne, bo uderza blisko domu. Vercel to nie jakiś przestarzały dostawca korporacyjny ze znanym długiem bezpieczeństwa. To platforma, którą wielu z nas wybrało _właśnie ze względu_ na doświadczenie programisty (developer experience) i nowoczesną architekturę. Jeśli Vercela da się skompromitować przez rozszerzenie do przeglądarki, to każdą platformę da się skompromitować.
+
+Atak nie wykorzystał błędu w kodzie Vercela. Wykorzystał błąd w tym, jak wszyscy pracujemy — instalując narzędzia bez weryfikacji ich uprawnień, powierzając rozszerzeniom przeglądarki klucze do naszego królestwa i traktując zmienne środowiskowe jak coś „pewnie w porządku", zamiast zarządzać nimi jak sekretami, którymi są.
+
+Rotuj swoje sekrety. Audytuj swoje rozszerzenia. Zawężaj zakresy OAuth. I pamiętaj, że najgroźniejsze podatności nie są w twoim kodzie — są w twoim procesie pracy.
+
+---
+
+### Źródła
+
+- [Vercel Security Advisory — kwiecień 2026](https://vercel.com/blog/security-advisory-april-2026) — oficjalne ujawnienie włamania przez Vercela i wskazówki dotyczące naprawy
+- [ShinyHunters Claims Vercel Data Breach, Asks $2M](https://www.bleepingcomputer.com/news/security/shinyhunters-claims-vercel-data-breach/) — relacja BleepingComputer na temat twierdzeń sprawcy zagrożenia
+- [Vercel Confirms Customer Environment Variables Accessed in Breach](https://techcrunch.com/2026/04/20/vercel-confirms-customer-environment-variables-accessed-in-breach/) — omówienie TechCrunch ze szczegółami technicznymi
+- [Dokumentacja zmiennych środowiskowych Vercela](https://vercel.com/docs/environment-variables) — oficjalna dokumentacja tego, jak Vercel obsługuje zmienne środowiskowe
+- [GitGuardian State of Secrets Sprawl 2026](https://www.gitguardian.com/state-of-secrets-sprawl-report-2026) — dane branżowe o wzorcach ekspozycji sekretów
+
+### Dalsza lektura
+
+- [OWASP Top 10 for LLM Applications](https://genai.owasp.org/) — bezpieczeństwo łańcucha dostaw w kontekście narzędzi AI
+- [Chrome Extension Permissions Explained](https://developer.chrome.com/docs/extensions/develop/concepts/declare-permissions) — zrozumienie, do czego rozszerzenia przeglądarki mają dostęp
+- [Dokumentacja zmiennych środowiskowych Next.js](https://nextjs.org/docs/app/building-your-application/configuring/environment-variables) — oficjalny przewodnik o zmiennych czasu builda a czasu działania
+- [NIST SP 800-53 — Supply Chain Risk Management](https://csrc.nist.gov/publications/detail/sp/800-53/rev-5/final) — ramy dla kontroli bezpieczeństwa łańcucha dostaw
+- [Vercel CLI Environment Variables Reference](https://vercel.com/docs/cli/env) — zarządzanie zmiennymi środowiskowymi przez CLI Vercela
+
+---
+
+~Seb 👊
