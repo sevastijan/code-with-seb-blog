@@ -15,9 +15,19 @@ interface RelatedPost {
 
 interface RelatedPostsProps {
   posts: RelatedPost[];
+  basePath?: string;
+  labelText?: string;
+  title?: string;
+  viewAllLabel?: string;
 }
 
-export function RelatedPosts({ posts }: RelatedPostsProps) {
+export function RelatedPosts({
+  posts,
+  basePath = '',
+  labelText = 'RELATED',
+  title = 'Keep reading',
+  viewAllLabel = 'View all articles',
+}: RelatedPostsProps) {
   const cardRefs = useRef<(HTMLAnchorElement | null)[]>([]);
 
   const handleMouseMove = useCallback((e: React.MouseEvent<HTMLAnchorElement>, index: number) => {
@@ -62,11 +72,11 @@ export function RelatedPosts({ posts }: RelatedPostsProps) {
         {/* Section header */}
         <div className="related-header">
           <div className="related-label">
-            <span className="related-label-text">RELATED</span>
+            <span className="related-label-text">{labelText}</span>
             <div className="related-label-line" />
             <span className="related-label-num">{String(posts.length).padStart(2, '0')}</span>
           </div>
-          <h2 className="related-title">Keep reading</h2>
+          <h2 className="related-title">{title}</h2>
         </div>
 
         {/* Cards grid */}
@@ -75,7 +85,7 @@ export function RelatedPosts({ posts }: RelatedPostsProps) {
             <Link
               key={post.slug}
               ref={(el) => { cardRefs.current[index] = el; }}
-              href={`/blog/${post.slug}`}
+              href={`${basePath}/blog/${post.slug}`}
               className="related-card"
               onMouseMove={(e) => handleMouseMove(e, index)}
               onMouseLeave={() => handleMouseLeave(index)}
@@ -105,8 +115,8 @@ export function RelatedPosts({ posts }: RelatedPostsProps) {
 
         {/* View all link */}
         <div className="related-cta">
-          <Link href="/blog" className="btn-magnetic">
-            <span>View all articles</span>
+          <Link href={`${basePath}/blog`} className="btn-magnetic">
+            <span>{viewAllLabel}</span>
             <ArrowUpRight className="w-5 h-5" />
           </Link>
         </div>

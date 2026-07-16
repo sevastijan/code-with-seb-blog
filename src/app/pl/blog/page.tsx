@@ -5,42 +5,41 @@ import { ScrollProgress } from '@/components/ScrollProgress';
 import { FooterAwwwards } from '@/components/FooterAwwwards';
 import { BlogArchiveClient } from '@/components/blog/BlogArchiveClient';
 
+const LOCALE = 'pl' as const;
+
 export const metadata: Metadata = {
-  title: 'Blog — AI, Development & Technical Leadership',
+  title: 'Blog — AI, Development i Technical Leadership',
   description:
-    'Practical insights on AI automation, web development, and technical leadership. Code examples, architecture patterns, and lessons from real projects.',
+    'Praktyczne wskazówki o automatyzacji AI, web developmencie i przywództwie technicznym. Przykłady kodu, wzorce architektoniczne i lekcje z prawdziwych projektów.',
   alternates: {
-    canonical: 'https://www.codewithseb.com/blog',
+    canonical: 'https://www.codewithseb.com/pl/blog',
     languages: {
       en: 'https://www.codewithseb.com/blog',
       pl: 'https://www.codewithseb.com/pl/blog',
     },
   },
   openGraph: {
-    title: 'Blog — AI, Development & Technical Leadership',
+    title: 'Blog — AI, Development i Technical Leadership',
     description:
-      'Practical insights on AI automation, web development, and technical leadership from real projects.',
+      'Praktyczne wskazówki o automatyzacji AI, web developmencie i przywództwie technicznym z prawdziwych projektów.',
   },
 };
 
-export default function BlogPage() {
-  const allPosts = getAllPosts();
-  const featuredPosts = getFeaturedPosts();
-  const categoryNames = getAllCategories();
+export default function BlogPagePL() {
+  const allPosts = getAllPosts(LOCALE);
+  const featuredPosts = getFeaturedPosts(LOCALE);
+  const categoryNames = getAllCategories(LOCALE);
 
-  // Get featured post
   const featuredPost = featuredPosts[0] || allPosts[0];
 
-  // Prepare categories with counts
   const categories = [
     { name: 'All', count: allPosts.length },
     ...categoryNames.map(name => ({
       name,
-      count: allPosts.filter(p => p.category === name).length
-    }))
+      count: allPosts.filter(p => p.category === name).length,
+    })),
   ];
 
-  // Posts without featured
   const postsWithoutFeatured = allPosts.filter(p => p.slug !== featuredPost?.slug);
 
   return (
@@ -50,6 +49,7 @@ export default function BlogPage() {
 
       <BlogArchiveClient
         totalPosts={allPosts.length}
+        basePath="/pl"
         featuredPost={featuredPost ? {
           slug: featuredPost.slug,
           title: featuredPost.title,

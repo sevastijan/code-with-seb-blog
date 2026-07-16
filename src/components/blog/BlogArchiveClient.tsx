@@ -36,6 +36,7 @@ interface BlogArchiveClientProps {
   featuredPost: FeaturedPost | null;
   posts: Post[];
   categories: CategoryCount[];
+  basePath?: string;
 }
 
 const POSTS_PER_PAGE = 8;
@@ -45,6 +46,7 @@ export function BlogArchiveClient({
   featuredPost,
   posts,
   categories,
+  basePath = '',
 }: BlogArchiveClientProps) {
   const [activeCategory, setActiveCategory] = useState('All');
   const [visibleCount, setVisibleCount] = useState(POSTS_PER_PAGE);
@@ -91,6 +93,7 @@ export function BlogArchiveClient({
           category={featuredPost.category}
           date={featuredPost.date}
           readTime={featuredPost.readTime}
+          basePath={basePath}
         />
       )}
 
@@ -102,7 +105,7 @@ export function BlogArchiveClient({
       />
 
       {/* Bento Grid */}
-      <BentoGrid posts={visiblePosts} />
+      <BentoGrid posts={visiblePosts} basePath={basePath} />
 
       {/* Load More */}
       <div className="container">

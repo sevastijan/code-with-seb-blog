@@ -11,11 +11,12 @@ interface ArticleHeroProps {
   date: string;
   readTime: string;
   author?: string;
+  basePath?: string;
 }
 
 const SCRAMBLE_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ@#$%&*';
 
-export function ArticleHero({ title, excerpt, category, date, readTime, author }: ArticleHeroProps) {
+export function ArticleHero({ title, excerpt, category, date, readTime, author, basePath = '' }: ArticleHeroProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
   const [isRevealed, setIsRevealed] = useState(false);
@@ -128,7 +129,7 @@ export function ArticleHero({ title, excerpt, category, date, readTime, author }
         <div className={`article-hero-topbar ${isRevealed ? 'revealed' : ''}`}>
           {/* Back link - glitch style */}
           <Link
-            href="/blog"
+            href={`${basePath}/blog`}
             className={`article-hero-back ${isBackHovered ? 'hovered' : ''}`}
             onMouseEnter={handleBackHover}
             onMouseLeave={handleBackLeave}

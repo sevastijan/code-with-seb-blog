@@ -11,6 +11,7 @@ interface FeaturedPostProps {
   category: string;
   date: string;
   readTime: string;
+  basePath?: string;
 }
 
 // Glitch text component
@@ -86,7 +87,7 @@ function GlitchLabel() {
   );
 }
 
-export function FeaturedPostBrutalist({ slug, title, excerpt, category, date, readTime }: FeaturedPostProps) {
+export function FeaturedPostBrutalist({ slug, title, excerpt, category, date, readTime, basePath = '' }: FeaturedPostProps) {
   const sectionRef = useRef<HTMLElement>(null);
   const revealRef = useRef<HTMLDivElement>(null);
   const cardRef = useRef<HTMLAnchorElement>(null);
@@ -325,7 +326,7 @@ export function FeaturedPostBrutalist({ slug, title, excerpt, category, date, re
         {/* Main content */}
         <Link
           ref={cardRef}
-          href={`/blog/${slug}`}
+          href={`${basePath}/blog/${slug}`}
           className={`featured-card ${isHovered ? 'hovered' : ''}`}
           onMouseEnter={() => setIsHovered(true)}
           onMouseLeave={() => setIsHovered(false)}

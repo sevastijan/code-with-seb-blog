@@ -1,8 +1,16 @@
 import fs from 'fs';
 import path from 'path';
 import matter from 'gray-matter';
+import { Locale, defaultLocale, localeToBCP47 } from './i18n';
 
-const postsDirectory = path.join(process.cwd(), 'content/blog');
+const rootPostsDirectory = path.join(process.cwd(), 'content/blog');
+
+// Content lives in content/blog for English and content/blog/<locale> for others.
+function postsDirectoryFor(locale: Locale): string {
+  return locale === defaultLocale
+    ? rootPostsDirectory
+    : path.join(rootPostsDirectory, locale);
+}
 
 export interface PostMeta {
   slug: string;
@@ -16,6 +24,9 @@ export interface PostMeta {
   tags?: string[];
   featured?: boolean;
   draft?: boolean;
+  locale: Locale;
+  // For non-default locales, the slug of the corresponding English article.
+  enSlug?: string;
 }
 
 export interface Post extends PostMeta {
@@ -29,17 +40,18 @@ export interface TableOfContentsItem {
 }
 
 // Ensure content directory exists
-function ensureContentDirectory() {
-  if (!fs.existsSync(postsDirectory)) {
-    fs.mkdirSync(postsDirectory, { recursive: true });
+function ensureContentDirectory(locale: Locale = defaultLocale) {
+  const dir = postsDirectoryFor(locale);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
   }
 }
 
-// Get all post slugs
-export function getPostSlugs(): string[] {
-  ensureContentDirectory();
+// Get all post slugs for a locale
+export function getPostSlugs(locale: Locale = defaultLocale): string[] {
+  ensureContentDirectory(locale);
   try {
-    return fs.readdirSync(postsDirectory)
+    return fs.readdirSync(postsDirectoryFor(locale))
       .filter(file => file.endsWith('.md') || file.endsWith('.mdx'))
       .map(file => file.replace(/\.(md|mdx)$/, ''));
   } catch {
@@ -47,15 +59,16 @@ export function getPostSlugs(): string[] {
   }
 }
 
-// Get post by slug
-export function getPostBySlug(slug: string): Post | null {
-  ensureContentDirectory();
+// Get post by slug within a locale
+export function getPostBySlug(slug: string, locale: Locale = defaultLocale): Post | null {
+  ensureContentDirectory(locale);
   const realSlug = slug.replace(/\.(md|mdx)$/, '');
+  const dir = postsDirectoryFor(locale);
 
   // Try .mdx first, then .md
-  let fullPath = path.join(postsDirectory, `${realSlug}.mdx`);
+  let fullPath = path.join(dir, `${realSlug}.mdx`);
   if (!fs.existsSync(fullPath)) {
-    fullPath = path.join(postsDirectory, `${realSlug}.md`);
+    fullPath = path.join(dir, `${realSlug}.md`);
   }
 
   if (!fs.existsSync(fullPath)) {
@@ -69,32 +82,35 @@ export function getPostBySlug(slug: string): Post | null {
   const wordsPerMinute = 200;
   const wordCount = content.split(/\s+/g).length;
   const readTime = Math.ceil(wordCount / wordsPerMinute);
+  const readTimeUnit = locale === 'pl' ? 'min czytania' : 'min read';
 
   return {
     slug: realSlug,
     title: data.title || 'Untitled',
     excerpt: data.excerpt || data.description || '',
-    date: data.date ? new Date(data.date).toLocaleDateString('en-US', {
+    date: data.date ? new Date(data.date).toLocaleDateString(localeToBCP47[locale], {
       year: 'numeric',
       month: 'long',
       day: 'numeric'
     }) : '',
     category: data.category || 'Uncategorized',
-    readTime: `${readTime} min read`,
+    readTime: `${readTime} ${readTimeUnit}`,
     author: data.author || 'Sebastian',
     coverImage: data.coverImage || data.cover || null,
     tags: data.tags || [],
     featured: data.featured || false,
     draft: data.draft || false,
+    locale,
+    enSlug: data.enSlug || (locale === defaultLocale ? realSlug : undefined),
     content,
   };
 }
 
-// Get all posts sorted by date
-export function getAllPosts(): PostMeta[] {
-  const slugs = getPostSlugs();
+// Get all posts for a locale sorted by date
+export function getAllPosts(locale: Locale = defaultLocale): PostMeta[] {
+  const slugs = getPostSlugs(locale);
   const posts = slugs
-    .map(slug => getPostBySlug(slug))
+    .map(slug => getPostBySlug(slug, locale))
     .filter((post): post is Post => post !== null)
     .filter(post => process.env.NODE_ENV === 'development' || !post.draft)
     .map(({ content, ...meta }) => meta)
@@ -108,32 +124,61 @@ export function getAllPosts(): PostMeta[] {
 }
 
 // Get featured posts
-export function getFeaturedPosts(): PostMeta[] {
-  return getAllPosts().filter(post => post.featured);
+export function getFeaturedPosts(locale: Locale = defaultLocale): PostMeta[] {
+  return getAllPosts(locale).filter(post => post.featured);
 }
 
 // Get posts by category
-export function getPostsByCategory(category: string): PostMeta[] {
-  return getAllPosts().filter(
+export function getPostsByCategory(category: string, locale: Locale = defaultLocale): PostMeta[] {
+  return getAllPosts(locale).filter(
     post => post.category.toLowerCase() === category.toLowerCase()
   );
 }
 
 // Get all categories
-export function getAllCategories(): string[] {
-  const posts = getAllPosts();
+export function getAllCategories(locale: Locale = defaultLocale): string[] {
+  const posts = getAllPosts(locale);
   const categories = new Set(posts.map(post => post.category));
   return Array.from(categories);
 }
 
 // Get related posts (same category, excluding current)
-export function getRelatedPosts(slug: string, limit = 3): PostMeta[] {
-  const currentPost = getPostBySlug(slug);
+export function getRelatedPosts(slug: string, limit = 3, locale: Locale = defaultLocale): PostMeta[] {
+  const currentPost = getPostBySlug(slug, locale);
   if (!currentPost) return [];
 
-  return getAllPosts()
+  return getAllPosts(locale)
     .filter(post => post.slug !== slug && post.category === currentPost.category)
     .slice(0, limit);
+}
+
+// Given a post slug in `fromLocale`, find the equivalent slug in `toLocale`.
+// Uses the `enSlug` frontmatter that Polish posts carry to link translations.
+export function getCounterpartSlug(
+  slug: string,
+  fromLocale: Locale,
+  toLocale: Locale
+): string | null {
+  if (fromLocale === toLocale) return slug;
+
+  // Resolve the English "anchor" slug for the source post.
+  let enSlug: string | null = null;
+  if (fromLocale === defaultLocale) {
+    enSlug = slug;
+  } else {
+    const post = getPostBySlug(slug, fromLocale);
+    enSlug = post?.enSlug ?? null;
+  }
+  if (!enSlug) return null;
+
+  if (toLocale === defaultLocale) {
+    // Confirm the English article actually exists.
+    return getPostBySlug(enSlug, defaultLocale) ? enSlug : null;
+  }
+
+  // Find the target-locale post whose enSlug matches our anchor.
+  const match = getAllPosts(toLocale).find(p => p.enSlug === enSlug);
+  return match ? match.slug : null;
 }
 
 // Extract table of contents from markdown

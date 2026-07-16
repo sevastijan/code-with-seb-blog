@@ -15,6 +15,7 @@ interface Post {
 
 interface BentoGridProps {
   posts: Post[];
+  basePath?: string;
 }
 
 type CardSize = 'large' | 'wide' | 'normal';
@@ -33,10 +34,12 @@ function BentoCard({
   post,
   index,
   size,
+  basePath = '',
 }: {
   post: Post;
   index: number;
   size: CardSize;
+  basePath?: string;
 }) {
   const cardRef = useRef<HTMLAnchorElement>(null);
   const [isHovered, setIsHovered] = useState(false);
@@ -92,7 +95,7 @@ function BentoCard({
   return (
     <Link
       ref={cardRef}
-      href={`/blog/${post.slug}`}
+      href={`${basePath}/blog/${post.slug}`}
       className={`bento-card bento-card-${size} ${isHovered ? 'hovered' : ''} ${isRevealed ? 'revealed' : ''}`}
       onMouseMove={handleMouseMove}
       onMouseLeave={() => {
@@ -145,7 +148,7 @@ function BentoCard({
   );
 }
 
-function ListCard({ post, index }: { post: Post; index: number }) {
+function ListCard({ post, index, basePath = '' }: { post: Post; index: number; basePath?: string }) {
   const [isRevealed, setIsRevealed] = useState(false);
 
   useEffect(() => {
@@ -155,7 +158,7 @@ function ListCard({ post, index }: { post: Post; index: number }) {
 
   return (
     <Link
-      href={`/blog/${post.slug}`}
+      href={`${basePath}/blog/${post.slug}`}
       className={`blog-list-item ${isRevealed ? 'revealed' : ''}`}
     >
       <div className="blog-list-item-num">
@@ -179,7 +182,7 @@ function ListCard({ post, index }: { post: Post; index: number }) {
   );
 }
 
-export function BentoGrid({ posts }: BentoGridProps) {
+export function BentoGrid({ posts, basePath = '' }: BentoGridProps) {
   const [viewMode, setViewMode] = useState<ViewMode>('grid');
 
   return (
@@ -211,13 +214,14 @@ export function BentoGrid({ posts }: BentoGridProps) {
                 post={post}
                 index={index}
                 size={getCardSize(index, posts.length)}
+                basePath={basePath}
               />
             ))}
           </div>
         ) : (
           <div className="blog-list">
             {posts.map((post, index) => (
-              <ListCard key={post.slug} post={post} index={index} />
+              <ListCard key={post.slug} post={post} index={index} basePath={basePath} />
             ))}
           </div>
         )}
