@@ -1,0 +1,278 @@
+---
+title: 'Jak działa HTTPS (kulisy bezpiecznej komunikacji w sieci)'
+date: '2025-04-16'
+category: 'Development'
+tags: ['HTTPS', 'TLS', 'WebSecurity', 'Encryption', 'Certificates', 'NetworkSecurity']
+featured: false
+author: 'Sebastian'
+draft: false
+enSlug: 'how-https-works-under-the-hood-of-secure-web-communication'
+excerpt: 'HTTPS rozszerza protokół HTTP, szyfrując i weryfikując dane za pomocą TLS, dzięki czemu przesyłane informacje pozostają poufne i odporne na manipulację ze strony atakujących.'
+---
+
+HTTPS to skrót od HyperText Transfer Protocol Secure. Jest to bezpieczna wersja protokołu HTTP, którego twoja przeglądarka używa do komunikacji ze stronami internetowymi. HTTPS wykorzystuje szyfrowanie (poprzez TLS, Transport Layer Security), aby zapewnić, że dane przesyłane między klientem (na przykład przeglądarką) a serwerem pozostają poufne i nienaruszone. W tym artykule wyjaśnimy, czym jest HTTPS, dlaczego jest tak ważny i jak działa od podszewki – w tym rolę TLS, kluczy publicznych i prywatnych, certyfikatów cyfrowych oraz przebieg TLS handshake krok po kroku. Zobaczymy również, w jaki sposób HTTPS gwarantuje poufność, integralność i uwierzytelnianie komunikacji w sieci.
+
+# Czym jest HTTPS i dlaczego jest ważny?
+
+HTTPS (HyperText Transfer Protocol Secure) to w istocie dobrze znany protokół HTTP wzbogacony o warstwę szyfrowania. W praktyce HTTPS to po prostu ruch HTTP przesyłany przez bezpieczne połączenie TLS (dawniej SSL). Oznacza to, że wszystkie żądania i odpowiedzi HTTP (strony HTML, wywołania API itd.) są szyfrowane przed przesłaniem, co czyni je nieczytelnymi dla podsłuchujących. HTTPS jest niezwykle ważny, ponieważ bez niego dane są wysyłane przez sieć zwykłym tekstem. Każdy pośrednik na trasie (na przykład ktoś podsłuchujący publiczne Wi-Fi lub przejęty router) mógłby z łatwością przechwycić lub zmodyfikować niezabezpieczony ruch HTTP.
+
+Dla szybkiego przykładu rozważmy, co mógłby zobaczyć atakujący przechwytujący ruch:
+Bez HTTPS (HTTP): przechwycona wiadomość mogłaby ujawnić wrażliwe informacje zwykłym tekstem, np. `username=alice&password=Wonderland123`. Jest to oczywiście czytelne i całkowicie niebezpieczne.
+Z HTTPS: ta sama wiadomość w tranzycie wyglądałaby jak losowy ciąg bełkotu (ciphertext) zamiast rzeczywistych danych logowania. Nawet po przechwyceniu jest bezsensowna bez klucza deszyfrującego.
+
+Oprócz ochrony wrażliwych danych, takich jak dane logowania, HTTPS zapobiega także złośliwej manipulacji. Bez HTTPS atakujący, a nawet dostawcy internetu, mogliby wstrzykiwać treści do strony (na przykład niechciane reklamy lub złośliwe skrypty), gdy dane wędrują do twojej przeglądarki.
+
+Szyfrowanie HTTPS udaremnia to, gwarantując, że do przeglądarki dociera dokładnie to, co wysłał serwer (w przeciwnym razie przeglądarka wykryje manipulację). Nowoczesne przeglądarki oznaczają strony HTTP jako „Not Secure” i wyświetlają ikonę kłódki przy stronach HTTPS, sygnalizując bezpieczne połączenie. Krótko mówiąc, przejście z HTTP na HTTPS jest niezbędne dla prywatności, integralności danych i zaufania użytkowników w sieci.
+
+---
+
+# HTTP vs HTTPS: na czym polega różnica?
+
+Chociaż oba protokoły umożliwiają przesyłanie danych między klientem a serwerem, HTTP wysyła informacje zwykłym tekstem, co czyni je łatwo czytelnymi dla potencjalnych atakujących. Z kolei HTTPS szyfruje te dane i wykorzystuje certyfikaty cyfrowe do uwierzytelniania, zapewniając bezpieczne i odporne na manipulację połączenie.
+
+## Bezpieczeństwo transportu
+
+Sam HTTP nie zapewnia żadnego szyfrowania ani weryfikacji. Oznacza to, że wszelkie dane przesyłane przez HTTP – takie jak adresy URL, nagłówki, cookies czy dane formularzy – wędrują przez sieć jako czytelny tekst. Osoby przechwytujące ruch mogą go podglądać, rejestrować, a nawet modyfikować, co stanowi poważne zagrożenie przy obsłudze wrażliwych informacji, takich jak hasła czy dane osobowe.
+
+HTTPS natomiast oznacza HTTP przesyłany przez szyfrowany kanał TLS. Opakowując żądania i odpowiedzi HTTP w TLS, HTTPS zapewnia, że wszystkie dane aplikacji – w tym nagłówki, treść i cookies – są szyfrowane przed opuszczeniem klienta i deszyfrowane dopiero przez serwer. Ta warstwa szyfrowania nie tylko chroni poufność przed podsłuchującymi, ale także zapewnia weryfikację poprzez certyfikaty cyfrowe, budując zaufanie, że użytkownicy komunikują się z prawdziwym serwerem, który zamierzali odwiedzić.
+
+## Domyślny port
+
+Zgodnie z konwencją HTTP używa portu `80`, natomiast HTTPS portu `443`. Ta standaryzacja sprawia, że przeglądarki i serwery wiedzą, na którym porcie komunikować się dla ruchu nieszyfrowanego (HTTP) i szyfrowanego (HTTPS), umożliwiając wyraźne rozdzielenie transmisji bezpiecznych od niezabezpieczonych.
+
+Dlatego właśnie adresy URL często zawierają `http://` lub `https://`. Schemat protokołu wskazuje, który port i warstwę bezpieczeństwa należy zastosować, instruując przeglądarki, aby nawiązały albo połączenie zwykłym tekstem przez port 80, albo szyfrowaną sesję TLS przez port 443.
+
+## Certyfikaty
+
+HTTPS wymaga zainstalowania na serwerze certyfikatu cyfrowego. Certyfikat ten, zwykle wydawany przez zaufany urząd certyfikacji (Certificate Authority), jest udostępniany podczas TLS handshake w celu uwierzytelnienia tożsamości serwera. Weryfikując, że certyfikat jest ważny i pasuje do domeny, klient wie, że rozmawia z prawdziwym serwerem, a nie z podszywającym się oszustem.
+
+HTTP natomiast nie ma takiego wymogu. Ponieważ nie istnieje uwierzytelnianie oparte na certyfikatach, klient nie może zweryfikować, czy serwer jest tym, za kogo się podaje, co naraża połączenie na ataki man-in-the-middle i podszywanie się.
+
+## Adres URL i wskaźniki
+
+Adresy URL zaczynające się od `https://` uruchamiają interfejs bezpieczeństwa przeglądarki (jak ikona kłódki), a ruch jest szyfrowany. Adresy URL z `http://` nie są szyfrowane, a przeglądarki mogą nawet ostrzegać użytkowników przed załadowaniem takich stron.
+
+Podsumowując, HTTPS nie jest całkowicie odrębnym protokołem, lecz raczej HTTP przesyłanym przez bezpieczne połączenie TLS.
+
+Z perspektywy dewelopera żądanie HTTPS jest obsługiwane w kodzie bardzo podobnie do żądania HTTP – nadal wysyłasz żądania GET/POST i otrzymujesz odpowiedzi – ale warstwa transportowa pod spodem wykonuje dodatkową pracę, aby zabezpieczyć dane.
+
+---
+
+# Czym jest TLS (Transport Layer Security)?
+
+TLS (Transport Layer Security) to protokół bezpieczeństwa, który napędza HTTPS. Zapewnia szyfrowanie, kontrolę integralności oraz mechanizmy uwierzytelniania komunikacji. TLS jest następcą starszego protokołu SSL (w rzeczywistości wiele osób wciąż nazywa TLS „SSL-em”). Kiedy widzisz odniesienia do SSL/TLS, mowa jest o tej samej fundamentalnej idei zabezpieczania danych w tranzycie. Na wysokim poziomie TLS gwarantuje, że dane wymieniane między klientem a serwerem pozostają prywatne i niezmodyfikowane. Osiąga to dzięki połączeniu technik kryptograficznych:
+
+## Szyfrowanie
+
+TLS używa silnych algorytmów szyfrujących, aby zaszyfrować dane przed wysłaniem ich przez sieć, gwarantując, że tylko zamierzony odbiorca – posiadający pasujący klucz deszyfrujący – może przekształcić ciphertext z powrotem w czytelną postać. Ten proces szyfrowania symetrycznego (symmetric encryption) znacząco zmniejsza ryzyko naruszenia przechwyconych danych, ponieważ wszelkie przechwycone wiadomości wyglądają dla nieuprawnionych stron jak bełkot.
+
+Dzięki temu TLS zapobiega podsłuchiwaniu, blokując atakującym możliwość podglądania lub przechwytywania wrażliwych informacji podczas ich przesyłania. Niezależnie od tego, czy chodzi o dane logowania, dokumenty finansowe czy prywatne dane użytkowników, warstwa szyfrowania sprawia, że wścibskie oczy nie odczytają treści, wzmacniając ogólne bezpieczeństwo nowoczesnej komunikacji w sieci.
+
+## Integralność
+
+TLS wykorzystuje kryptograficzne funkcje skrótu (hash) oraz kody uwierzytelniania wiadomości (MAC, message authentication codes), aby chronić dane przed manipulacją. Te narzędzia kryptograficzne generują unikalne „odciski palców” każdego fragmentu danych, które odbiorca weryfikuje po ich otrzymaniu. Jeśli podczas przesyłania zmieni się choćby jeden bit, wyliczony odcisk palca przestanie się zgadzać, sygnalizując, że dane zostały uszkodzone lub złośliwie zmodyfikowane.
+
+W ten sposób, jeśli bit zostanie przekręcony lub zmanipulowany, odbiorca się o tym dowie. Ponieważ zarówno nadawca, jak i odbiorca opierają się na wspólnym sekrecie ustalonym podczas TLS handshake, tylko uprawnione strony mogą tworzyć lub weryfikować te kryptograficzne sygnatury. Uniemożliwia to atakującym niezauważone modyfikowanie ruchu HTTPS, zachowując wiarygodność i autentyczność przesyłanych informacji.
+
+## Uwierzytelnianie
+
+TLS wymaga, aby serwer (i opcjonalnie klient) udowodnił swoją tożsamość za pomocą certyfikatów kryptograficznych. Zapobiega to podszywaniu się w atakach typu „man-in-the-middle”.
+
+TLS jest zwykle zaimplementowany w bibliotekach (takich jak OpenSSL, NSS czy wbudowane biblioteki platformowe), więc jako deweloper zazwyczaj nie musisz pisać kodu TLS od zera. Wystarczy, że skonfigurujesz swój serwer lub klienta do korzystania z HTTPS, a biblioteka zajmie się za ciebie TLS handshake i szyfrowaniem. Najnowszą wersją w chwili pisania tego tekstu jest TLS 1.3, który oferuje lepsze bezpieczeństwo i wydajność niż wcześniejsze wersje. Niezależnie od wersji, cel podstawowy jest ten sam: ustanowić bezpieczny kanał, któremu ufają zarówno klient, jak i serwer.
+
+> (Uwaga: historycznie używano terminu „SSL” – na przykład wciąż mówimy „certyfikaty SSL”. Ale SSL 3.0 został zastąpiony przez TLS 1.0 pod koniec lat 90. Dzisiejsze „certyfikaty SSL” w rzeczywistości opierają się na TLS. TLS 1.2 i TLS 1.3 to obecnie najczęściej używane wersje.)
+
+---
+
+# Kryptografia klucza publicznego a prywatnego w HTTPS
+
+Jedną z fundamentalnych technologii, które umożliwiają HTTPS, jest kryptografia klucza publicznego (public key cryptography, znana także jako kryptografia asymetryczna). W przeciwieństwie do szyfrowania symetrycznego (gdzie ten sam klucz służy do szyfrowania i deszyfrowania), kryptografia asymetryczna używa pary kluczy: jeden klucz jest publiczny, a drugi prywatny.
+
+- **Public key (klucz publiczny)**: ten klucz można udostępniać wszystkim. Zwykle jest osadzony w certyfikacie cyfrowym serwera i wysyłany do każdego łączącego się klienta. Jak sama nazwa wskazuje, nie jest tajny.
+
+- **Private key (klucz prywatny)**: ten klucz musi być trzymany w tajemnicy przez właściciela (serwer). Klucz prywatny jest matematycznie powiązany z kluczem publicznym, ale nie da się go w praktyce z niego wyprowadzić.
+
+Jak działają razem: dane zaszyfrowane public key można odszyfrować wyłącznie private key, i odwrotnie. Ma to dwie ważne konsekwencje dla HTTPS:
+
+## Bezpieczna wymiana klucza
+
+Gdy klient chce nawiązać bezpieczną sesję, może wygenerować losowy sekret (który zostanie później użyty jako klucz symetryczny) i zaszyfrować go za pomocą public key serwera. Tylko serwer posiadający odpowiadający mu private key może odszyfrować tę wiadomość i odzyskać sekret. Gwarantuje to, że podsłuchujący nie może wykraść klucza sekretnego potrzebnego do odszyfrowania reszty sesji.
+
+**Analogia**: wyobraź sobie kłódkę i klucz. Wysyłasz komuś otwartą kłódkę (public key), a ta osoba wkłada swoją tajną wiadomość do skrzynki i zamyka ją tą kłódką. Teraz tylko ty (posiadający private key otwierający kłódkę) możesz otworzyć skrzynkę i odczytać ukryty w środku sekret.
+
+## Uwierzytelnianie za pomocą podpisów cyfrowych
+
+Kluczy publicznych i prywatnych można również użyć w odwrotny sposób, aby zweryfikować tożsamość. Na przykład serwer może cyfrowo podpisać pewne dane (jak część wiadomości handshake) za pomocą swojego private key. Klient może następnie zweryfikować ten podpis, używając public key serwera (z certyfikatu). Jeśli podpis jest ważny, dowodzi to, że dane mogły pochodzić wyłącznie od właściciela private key (czyli prawdziwego serwera). Pomaga to zapobiegać podszywaniu się.
+
+**Analogia**: to tak, jakby serwer miał pieczęć woskową (private key), którą może oznaczać dokumenty. Każdy dysponujący public key serwera może zweryfikować odcisk pieczęci. Jeśli pasuje, dokument jest autentyczny i niezmieniony.
+
+## Szyfrowanie symetryczne w HTTPS
+
+Po zakończeniu początkowego handshake z użyciem kryptografii klucza publicznego, klient i serwer przełączają się na szyfrowanie symetryczne (symmetric encryption) dla większości wymiany danych. Algorytmy symetryczne (jak AES) używają jednego wspólnego klucza sekretnego (na który klient i serwer uzgodnili się podczas handshake). Jest to znacznie szybsze obliczeniowo, dlatego HTTPS nie szyfruje wszystkiego asymetrycznie – używa kryptografii asymetrycznej wyłącznie do bezpiecznego ustalenia wspólnego sekretu, a następnie wykorzystuje ten wspólny sekret do wydajnego szyfrowania symetrycznego rzeczywistego ruchu sieciowego.
+
+---
+
+# Certyfikaty cyfrowe i urzędy certyfikacji (CA)
+
+Gdy odwiedzasz stronę HTTPS, twoja przeglądarka nie zaczyna od razu ślepo wymieniać zaszyfrowanych danych – najpierw musi zweryfikować, że serwer jest tym, za kogo się podaje. Tu właśnie wkraczają certyfikaty cyfrowe i urzędy certyfikacji (Certificate Authorities, CA). Certyfikat cyfrowy (w tym kontekście certyfikat SSL/TLS) to w istocie elektroniczny dowód tożsamości strony internetowej. Zawiera ważne informacje, w tym:
+
+- Nazwę domeny (i ewentualnie subdomen), dla której certyfikat jest ważny.
+- Organizację lub osobę, której wydano certyfikat (właściciela strony).
+- Public key strony (którego przeglądarki użyją do szyfrowania i weryfikacji podpisu).
+- Nazwę urzędu certyfikacji, który wydał certyfikat.
+- Podpis cyfrowy urzędu certyfikacji, który ręczy za autentyczność certyfikatu.
+- Daty ważności (data wydania i wygaśnięcia certyfikatu).
+
+Certyfikat ten jest zwykle zainstalowany na serwerze WWW. Gdy klient łączy się przez HTTPS, serwer wysyła mu ten certyfikat w ramach TLS handshake. Klient (np. twoja przeglądarka) wykonuje wtedy kilka kontroli:
+
+## Ważność i zgodność domeny
+
+Przeglądarka sprawdza, czy certyfikat nie wygasł oraz czy nazwa domeny w certyfikacie pasuje do domeny, z którą próbuje się połączyć (aby zapobiec używaniu przez kogoś certyfikatu dla example.com na innej stronie).
+
+## Weryfikacja łańcucha zaufania
+
+Przeglądarka weryfikuje podpis cyfrowy certyfikatu. Certyfikat jest podpisany przez urząd certyfikacji (CA), któremu przeglądarka ufa, bezpośrednio lub poprzez certyfikat pośredni. Przeglądarki i systemy operacyjne dostarczane są z wstępnie zainstalowanym magazynem zaufania (trust store) zawierającym certyfikaty głównych urzędów (od firm takich jak DigiCert, Let’s Encrypt, Comodo itd.). Jeśli certyfikat dostarczony przez serwer jest podpisany przez jeden z tych zaufanych certyfikatów głównych (lub przez certyfikat pośredni prowadzący do zaufanego korzenia), certyfikat jest uznawany za ważny. Przeglądarka zasadniczo próbuje powiązać certyfikat serwera z zaufanym głównym CA.
+
+Jeśli uda jej się ustanowić ten łańcuch zaufania, certyfikat jest akceptowany jako prawdziwy. Jeśli nie (na przykład gdy certyfikat jest podpisany samodzielnie lub przez nieznany urząd), przeglądarka ostrzeże użytkownika, że połączenie nie jest zaufane.
+
+Mówiąc prościej, certyfikat mówi klientowi: „Oto public key dla example.com, a ja, urząd certyfikacji, ręczę, że jest to autentyczne”. Przeglądarka używa public key CA (ze swojego trust store), aby zweryfikować podpis CA na certyfikacie, potwierdzając tym samym, że certyfikat nie został sfałszowany ani zmanipulowany. Po weryfikacji przeglądarka może z pełnym zaufaniem użyć public key strony (z certyfikatu) do zaszyfrowania sekretów, wiedząc, że rozmawia z prawdziwą stroną, a nie z oszustem.
+
+## Urzędy certyfikacji (CA)
+
+Urzędy certyfikacji to zaufane organizacje, które wydają certyfikaty. Aby uzyskać certyfikat dla swojej strony, zwykle generujesz parę kluczy (trzymając private key w tajemnicy) oraz żądanie podpisania certyfikatu (Certificate Signing Request, CSR), które zawiera public key oraz informacje o twojej domenie/organizacji. Wysyłasz CSR do CA (jak Let’s Encrypt, DigiCert itd.), a on weryfikuje twoją kontrolę nad domeną (i ewentualnie twoją tożsamość w przypadku certyfikatów o wyższym poziomie walidacji). Następnie wydaje podpisany certyfikat. Ponieważ przeglądarki ufają certyfikatom głównym tych CA, każdy podpisany przez nie certyfikat będzie zaufany przez przeglądarki (o ile łańcuch pozostaje nienaruszony).
+
+Łańcuch zaufania często obejmuje główny CA podpisujący certyfikat pośredniego CA, który z kolei podpisuje twój certyfikat serwera. Robi się to dla bezpieczeństwa i skalowalności PKI (Public Key Infrastructure). Do przeglądarki wysyłany jest certyfikat serwera (i zwykle certyfikat pośredni), a ona używa łańcucha do zweryfikowania zaufania aż do korzenia.
+
+### Praktyczny przykład
+
+Jako deweloper możesz uzyskać certyfikat TLS od CA dla swojej strony. Konfigurując serwer WWW, dostarczasz mu dwa pliki kluczy: certyfikat (public key) oraz private key. Na przykład w Node.js możesz zrobić coś takiego:
+
+```javascript
+const https = require('https')
+const fs = require('fs')
+
+const options = {
+  key: fs.readFileSync('server-key.pem'), // Klucz prywatny twojego serwera
+  cert: fs.readFileSync('server-cert.pem'), // Certyfikat twojego serwera (klucz publiczny + tożsamość)
+}
+
+https
+  .createServer(options, (req, res) => {
+    res.writeHead(200)
+    res.end('Hello, HTTPS!')
+  })
+  .listen(443)
+```
+
+W tym fragmencie obiekt options dostarcza serwerowi HTTPS private key oraz certyfikat. Serwer użyje ich podczas TLS handshake: wyśle certyfikat do klientów (aby otrzymali public key i mogli zweryfikować tożsamość) oraz użyje private key wewnętrznie do odszyfrowania sekretów i/lub podpisywania wiadomości w razie potrzeby. Jako deweloper nie musisz obsługiwać niskopoziomowej kryptografii – robi to biblioteka TLS, gdy dostarczysz klucz i certyfikat.
+
+---
+
+# TLS handshake: krok po kroku
+
+Zanim jakiekolwiek bezpieczne dane mogą zostać wymienione, klient i serwer muszą wykonać TLS handshake. Handshake to seria kroków, które realizują kilka celów: klient i serwer uzgadniają protokoły szyfrowania, serwer dowodzi swojej tożsamości, a następnie bezpiecznie ustanawiają wspólny klucz sekretny do szyfrowania rzeczywistych danych. Oto krok po kroku typowy przebieg TLS handshake (uproszczony dla przejrzystości):
+
+![TLS](/static/images/61080ef1-a00a-4677-a4c4-ff3bb6025d4e.png)
+
+Źródło: https://www.cloudflare.com/pl-pl/learning/ssl/what-happens-in-a-tls-handshake/
+
+> Uproszczona sekwencja TLS handshake (wraz z początkowym TCP handshake). Klient i serwer wymieniają kilka wiadomości (ClientHello, ServerHello, Certificates, Key Exchange itd.), zanim zostaną wysłane jakiekolwiek dane aplikacji. Proces ten negocjuje parametry bezpieczeństwa i ustanawia wspólne klucze w niezabezpieczonej z natury sieci.
+
+## TCP handshake
+
+Najpierw klient i serwer nawiązują podstawowe połączenie TCP (fundament wszelkiej komunikacji TCP/IP). Obejmuje to trójstronny handshake (three-way handshake): klient wysyła pakiet SYN, serwer odpowiada SYN-ACK, a klient odpowiada ACK, aby nawiązać połączenie. (TCP zapewnia niezawodne dostarczanie; TLS działa na szczycie tego połączenia.)
+
+## Client Hello
+
+Gdy połączenie TCP jest już nawiązane, klient inicjuje TLS handshake, wysyłając wiadomość ClientHello. Wiadomość ta zawiera: najwyższą wersję TLS, którą klient obsługuje; listę cipher suites (algorytmów i protokołów szyfrowania), których klient jest w stanie użyć; oraz liczbę losową (client random), która zostanie użyta przy generowaniu kluczy.
+(Oraz kilka innych szczegółów, jak obsługiwana kompresja czy rozszerzenia, ale nie są one kluczowe dla podstawowego zrozumienia.)
+
+## Server Hello
+
+Serwer odpowiada wiadomością ServerHello. W tej wiadomości serwer: potwierdza wersję TLS do użycia (zwykle wybierając najwyższą wersję obsługiwaną przez obie strony); wybiera jeden z cipher suites zaproponowanych przez klienta (i użyje go w tej sesji); wysyła własną liczbę losową (server random).
+
+## Certyfikat serwera
+
+Bezpośrednio po ServerHello serwer wysyła klientowi swój certyfikat cyfrowy. Certyfikat ten zawiera public key serwera i jest podpisany przez CA, jak omówiono wcześniej. Klient otrzymuje certyfikat i później zweryfikuje go, aby uwierzytelnić serwer. (W niektórych cipher suites serwer może również wysłać osobną wiadomość Server Key Exchange z dodatkowymi informacjami o kluczu, szczególnie przy użyciu Diffie-Hellman, ale w podstawowym handshake opartym na RSA ten krok nie jest używany. Zachowamy tu prostotę.)
+
+## Server Hello Done
+
+Serwer sygnalizuje, że zakończył na razie swoją część handshake. W tym momencie klient ma public key serwera (z certyfikatu) oraz szczegóły wybranego cipher suite.
+
+## Weryfikacja certyfikatu
+
+Teraz kolej na działanie klienta. Przed kontynuacją klient weryfikuje certyfikat serwera – sprawdza łańcuch zaufania oraz ważność certyfikatu, jak opisano w poprzedniej sekcji. Ten krok jest kluczowy dla uwierzytelniania: gwarantuje, że klient naprawdę rozmawia z prawdziwym serwerem, a nie z oszustem. Jeśli weryfikacja certyfikatu się nie powiedzie, handshake zostaje tutaj przerwany (a przeglądarka wyświetliłaby ostrzeżenie bezpieczeństwa). Jeśli się powiedzie, klient ufa, że public key rzeczywiście należy do serwera.
+
+## Client Key Exchange
+
+Następnie klient musi ustanowić wspólny sekret do szyfrowania symetrycznego. Dokładna metoda różni się w zależności od cipher suite:
+
+- W klasycznym handshake RSA (TLS 1.2 i wcześniejsze): klient generuje losowy pre-master secret (zasadniczo losowy ciąg bajtów) i szyfruje go za pomocą public key serwera, po czym wysyła go do serwera. Tylko private key serwera może odszyfrować tę wiadomość, aby odzyskać pre-master secret.
+
+- W handshake z efemerycznym Diffie-Hellman (DHE/ECDHE, powszechnie stosowanym dla Perfect Forward Secrecy oraz w TLS 1.3): klient i serwer wykonują wymianę kluczy Diffie-Hellman. Na przykład Server Key Exchange serwera zawierałby parametry DH lub klucz publiczny EC; klient wysyła następnie własny parametr DH. Wspólnie matematycznie wyprowadzają wspólny sekret z tej wymiany. (W TLS 1.3 handshake jest usprawniony: obie strony wymieniają udziały kluczy wcześniej i wyprowadzają sekret.)
+
+- (Szczegóły mogą się różnić, ale efekt końcowy jest ten sam: obie strony dochodzą do wspólnego pre-master secret, którego nikt inny nie może zdobyć.)
+
+## Wyprowadzanie kluczy sesji
+
+Zarówno klient, jak i serwer mają teraz pre-master secret (przesłany wiadomością zaszyfrowaną RSA lub obliczony przez DH), a także dwie wartości losowe z wiadomości hello. Łączą te dane wejściowe, aby obliczyć klucze sesji.
+
+Zwykle obejmuje to przepuszczenie wartości przez funkcję pseudolosową w celu wygenerowania zestawu kluczy: jednego do szyfrowania, jednego do deszyfrowania (z przeciwnej perspektywy) oraz kluczy do integralności (MAC). W nowoczesnym TLS (szczególnie 1.3) wyprowadzanie kluczy realizowane jest zaawansowanymi algorytmami, ale koncepcyjnie obie strony kończą z tym samym kluczem symetrycznym do dalszego szyfrowania.
+
+## Change Cipher Spec
+
+Klient wysyła teraz do serwera wiadomość ChangeCipherSpec, aby zasygnalizować **„od teraz szyfrujmy nasze wiadomości uzgodnionymi kluczami/cipher”**. Bezpośrednio potem klient wysyła wiadomość Finished zaszyfrowaną nowym kluczem sesji. Wiadomość Finished zawiera skrót (hash) wiadomości handshake, który obie strony weryfikują, aby upewnić się, że nic nie zostało zmanipulowane. Serwer odpowiada następnie własną wiadomością ChangeCipherSpec oraz zaszyfrowaną wiadomością Finished. Ta wymiana potwierdza, że zarówno klient, jak i serwer zdołali wyprowadzić te same klucze oraz że dane handshake nie zostały zmienione w tranzycie.
+
+## Bezpieczne połączenie ustanowione
+
+W tym momencie TLS handshake jest zakończony. Klient i serwer mają wzajemne porozumienie co do cipher suite, uwierzytelnili serwer (oraz klienta, jeśli używane są certyfikaty klienta, choć jest to rzadkie w typowym HTTPS) i dzielą klucze szyfrowania symetrycznego. Teraz przechodzą do wymiany danych aplikacji (żądań i odpowiedzi HTTP), ale każdy bajt jest szyfrowany i chroniony pod względem integralności za pomocą kluczy sesji. Gdyby atakujący próbował teraz podsłuchać połączenie, zobaczyłby jedynie ciphertext, którego nie może odszyfrować.
+
+W całym tym procesie realizowane są cele TLS: komunikacja jest poufna (zaszyfrowana), integralna (wszelka manipulacja jest wykrywana), a strony są uwierzytelnione (przynajmniej tożsamość serwera jest zweryfikowana). Handshake może wydawać się skomplikowany, ale w rzeczywistości odbywa się bardzo szybko (często w kilka milisekund). Co więcej, TLS 1.3 uprościł handshake, wymagając mniejszej liczby wymian między klientem a serwerem, przez co konfiguracja jest jeszcze szybsza.
+
+---
+
+# Jak HTTPS zapewnia poufność, integralność i uwierzytelnianie
+
+Do tej pory wielokrotnie już widziałeś te pojęcia. HTTPS (poprzez TLS) zapewnia trzy fundamentalne właściwości bezpieczeństwa ruchu sieciowego – poufność, integralność i uwierzytelnianie – szyfrując dane, wykrywając i uniemożliwiając wszelkie nieautoryzowane zmiany oraz weryfikując, że klient jest połączony z prawdziwym serwerem. To połączenie szyfrowania, sum kontrolnych i certyfikatów cyfrowych stanowi podstawę zaufania, jakim użytkownicy i przeglądarki obdarzają HTTPS jako standard bezpiecznej komunikacji online.
+
+## Poufność
+
+Oznacza to, że dane są trzymane w tajemnicy przed każdym, kto mógłby podsłuchiwać. HTTPS osiąga poufność poprzez szyfrowanie. Tylko klient i serwer znają klucze symetryczne używane do szyfrowania i deszyfrowania danych, więc podsłuchujący nie może odczytać treści. Na przykład, jeśli wysyłasz dane karty kredytowej przez połączenie HTTPS, szyfrowanie uniemożliwia atakującemu w tej samej sieci Wi-Fi kradzież twoich informacji. Nawet jeśli przechwyci zaszyfrowane pakiety, nie zdoła ich odszyfrować. Podsumowując, HTTPS gwarantuje, że wymieniane dane są szyfrowane i chronione przed podsłuchującymi.
+
+## Integralność
+
+Integralność gwarantuje, że dane nie zostały zmienione ani uszkodzone podczas tranzytu. HTTPS wykorzystuje do tego kryptograficzne skróty (hash) oraz MAC (lub szyfry AEAD w TLS 1.3). Każda zaszyfrowana wiadomość zawiera swego rodzaju odcisk palca (albo sam schemat szyfrowania z natury zapewnia integralność), dzięki czemu odbiorca może wykryć, czy jakikolwiek bajt został zmanipulowany. Jeśli atakujący spróbuje ataku „man-in-the-middle”, aby zmodyfikować treść (na przykład zmieniając kwotę transakcji lub wstrzykując złośliwe oprogramowanie do pobieranego pliku), modyfikacja zostanie wykryta, a połączenie zerwane. Tym samym HTTPS gwarantuje, że wszelka modyfikacja danych w tranzycie zostanie wykryta – dane, które otrzymujesz, są dokładnie tym, co wysłał serwer.
+
+## Uwierzytelnianie
+
+W kontekście HTTPS uwierzytelnianie odnosi się głównie do uwierzytelniania tożsamości serwera (i opcjonalnie klienta). Dzięki użyciu certyfikatów i TLS handshake klient może mieć pewność, z kim rozmawia. Gdy widzisz kłódkę w przeglądarce, oznacza to, że strona przedstawiła ważny certyfikat i udowodniła, że jest właścicielem odpowiadającego mu private key, więc wiesz, że rzeczywiście jesteś połączony (na przykład) z example.com, a nie z oszustem. Zapobiega to podszywaniu się i atakom man-in-the-middle, w których ktoś mógłby w przeciwnym razie wmówić ci, że jego serwer jest serwerem twojego banku:
+
+Uwierzytelnianie klienta również można przeprowadzić w HTTPS za pomocą certyfikatów klienta, ale jest to mniej powszechne na publicznych stronach – stosuje się je w niektórych API lub systemach wewnętrznych do wzajemnego uwierzytelniania TLS (mutual TLS).
+
+Zbierając wszystko razem: **HTTPS = HTTP + TLS**, co zapewnia szyfrowanie (dla poufności), certyfikaty + podpisy cyfrowe (dla uwierzytelniania) oraz kontrolę integralności. Prawidłowo skonfigurowany i używany HTTPS gwarantuje, że gdy junior deweloper (lub dowolny użytkownik) wysyła żądanie do strony, może ufać, że rozmawia z prawdziwą witryną, że nikt nie może podsłuchać rozmowy oraz że dane dotrą bez zakłóceń.
+
+---
+
+# Podsumowanie
+
+HTTPS stał się fundamentem nowoczesnego web developmentu i bezpieczeństwa. Jako junior deweloper, zrozumienie działania HTTPS pomoże ci docenić, dlaczego konfigurujemy certyfikaty, dlaczego pojawiają się pewne błędy jak **„certificate not trusted”** czy **„invalid certificate”** oraz w jaki sposób dane pozostają bezpieczne w drodze. W praktyce korzystanie z HTTPS jest tak proste, jak skonfigurowanie serwera WWW z certyfikatem i używanie adresów `https://`. Ale pod spodem, jak zbadaliśmy, kryje się wyrafinowany taniec wymian kryptograficznych – TLS handshake – który ustanawia bezpieczny kanał.
+
+Zapewniając poufność, integralność i uwierzytelnianie, HTTPS pozwala użytkownikom z pełnym zaufaniem korzystać z bankowości internetowej, zakupów i komunikacji bez obaw, że ktoś podsłucha lub zmanipuluje ich dane. Jako deweloper zawsze staraj się używać HTTPS dla każdej wrażliwej lub publicznie dostępnej aplikacji webowej. Nie chodzi tylko o szyfrowanie – chodzi o budowanie zaufania w internecie. Po tym przeglądzie powinieneś już solidnie rozumieć, jak działa HTTPS i dlaczego jest tak istotny.
+
+---
+
+# Źródła:
+
+- [Cloudflare, What is HTTPS?](https://www.cloudflare.com/pl-pl/learning/ssl/what-is-https/)
+
+- [Cloudflare, What is an SSL certificate?](https://www.cloudflare.com/pl-pl/learning/ssl/what-is-an-ssl-certificate/)
+
+- [Cloudflare, What happens in a TLS handshake?](https://www.cloudflare.com/pl-pl/learning/ssl/what-happens-in-a-tls-handshake/)
+
+- [Dev.to, HTTPS: How HTTPS Works – Handshake](https://dev.to/zeeshanali0704/https-how-https-works-handshake-1mjo)
+
+- [SSL Store, Explaining the Chain of Trust](https://www.thesslstore.com/knowledgebase/ssl-support/explaining-the-chain-of-trust/)
+
+Udanego (bezpiecznego) kodowania!
+
+~Seb 👊
