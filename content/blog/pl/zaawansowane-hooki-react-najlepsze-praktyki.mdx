@@ -1,0 +1,1053 @@
+---
+title: 'Zaawansowane hooki React: najlepsze praktyki w React z Next.js i Remix'
+date: '2025-04-23'
+category: 'Development'
+tags: ['react-hooks', 'custom-hooks', 'nextjs', 'remix', 'react', 'performance-optimization']
+featured: false
+author: 'Sebastian'
+draft: false
+enSlug: 'advanced-react-hooks-best-practices-in-react-with-nextjs-and-remix'
+excerpt: 'Poznaj zaawansowane techniki pracy z hookami React. Najlepsze praktyki z Next.js i Remix do budowy szybszych, skalowalnych i łatwiejszych w utrzymaniu aplikacji.'
+---
+
+Hooki React zrewolucjonizowały sposób, w jaki programiści budują logikę komponentów, umożliwiając operacje na stanie i efekty uboczne w komponentach funkcyjnych. Najnowsze wersje Reacta wprowadziły nowe hooki oraz możliwości renderowania współbieżnego (concurrent rendering), przez co zrozumienie nowoczesnych najlepszych praktyk stało się kluczowe dla starszych inżynierów frontendu. W tym artykule zagłębiamy się w efektywne wykorzystanie wbudowanych hooków, wzorce tworzenia custom hooks oraz zaawansowane zagadnienia, takie jak renderowanie współbieżne i React Suspense. Omawiamy również, jak popularne frameworki, takie jak Next.js i Remix, wpływają na sposób używania hooków (szczególnie w kontekście renderowania po stronie serwera i React Server Components). Celem jest dostarczenie kompleksowego, głęboko technicznego przewodnika po opanowaniu hooków w rzeczywistych, dużych aplikacjach.
+
+Omówimy:
+
+- Najlepsze praktyki korzystania z wbudowanych hooków, takich jak `useState`, `useEffect`, `useMemo`, `useCallback`, `useRef`, `useContext`, `useReducer`, `useLayoutEffect` oraz `useSyncExternalStore`, wraz z przykładami kodu i typowymi pułapkami.
+- Wzorce tworzenia skalowalnych custom hooks, które enkapsulują logikę, są kompozytowalne i poprawnie zarządzają zależnościami.
+- Zagadnienia zaawansowane: renderowanie współbieżne (funkcje z React 18+), Suspense i obsługa stanu asynchronicznego, kompatybilność z React Server Components oraz synchronizacja stanu między kontekstami lub zewnętrznymi magazynami (external stores).
+- Przykłady i przypadki użycia, które przejrzyście ilustrują każdą koncepcję wraz z uzasadnieniem architektonicznym.
+- Wskazówki dotyczące testowania custom hooks (przy użyciu React Testing Library), profilowania wydajności (React DevTools Profiler) oraz unikania typowych błędów w używaniu hooków.
+- Porady specyficzne dla frameworków Next.js i Remix – obejmujące SSR, granice między komponentami klienckimi i serwerowymi oraz kwestie cyklu życia tras (routes) przy korzystaniu z hooków.
+
+Doświadczeni programiści powinni znaleźć tu wartościowe przypomnienie i aktualizację wiedzy o hookach React w nowoczesnych aplikacjach.
+
+> Ten artykuł ma formę zbioru skoncentrowanych, punktowych spostrzeżeń, aby oddać ogromną objętość i złożoność nowoczesnych praktyk związanych z hookami w React. Zamiast rozwijać każdą sekcję w wyczerpujące eseje — co łatwo mogłoby przerodzić się w pełnoprawnego ebooka — postawiliśmy na zwięzłe, praktyczne wyjaśnienia poparte przykładami kodu i konkretnymi najlepszymi praktykami. Taki format jest zaprojektowany tak, by dało się go zarówno przeskanować wzrokiem, jak i był bogaty technicznie, dzięki czemu łatwo zastosujesz konkretne wzorce lub pogłębisz wiedzę wtedy, gdy tego potrzebujesz.
+
+Zaczynajmy. 👏
+
+---
+
+# Najlepsze praktyki dla wbudowanych hooków React
+
+React dostarcza podstawowy zestaw wbudowanych hooków, które pokrywają większość potrzeb w zakresie zarządzania stanem i efektami ubocznymi. Nawet doświadczeni programiści zyskują na ponownym przyjrzeniu się niuansom tych hooków, aby korzystać z nich najefektywniej. Poniżej analizujemy każdy z najważniejszych wbudowanych hooków oraz związane z nim najlepsze praktyki.
+
+## useState: podstawy zarządzania stanem
+
+Hook useState to fundamentalny sposób dodawania lokalnego stanu do komponentów funkcyjnych. Zwraca zmienną stanu oraz funkcję ustawiającą (setter). Najlepsze praktyki obejmują:
+
+- Podawaj sensowną wartość początkową. Jeśli wartość początkowa wymaga kosztownych obliczeń, wylicz ją leniwie, przekazując funkcję do `useState(() => expensiveComputation())`. Odracza to obliczenia wyłącznie do pierwszego renderu.
+- Jeśli aktualizujesz stan na podstawie poprzedniego stanu (np. inkrementujesz licznik), użyj funkcyjnej formy setState, aby uniknąć nieaktualnych domknięć (stale closures). Na przykład: `setCount(prev => prev + 1)`. Dzięki temu masz pewność, że korzystasz z najnowszego stanu, nawet jeśli wiele aktualizacji zostanie zbatchowanych.
+- Nie przenoś wartości do stanu, jeśli można je wyprowadzić z propsów lub innego stanu. Utrzymywanie tylko minimalnie niezbędnego stanu zmniejsza złożoność.
+- W React wiele wywołań setState (nawet w asynchronicznych callbackach) jest automatycznie batchowanych w jeden render, więc nie potrzebujesz już obejść do grupowania aktualizacji. Poprawia to wydajność dzięki ograniczeniu ponownych renderów.
+
+**Przykład – aktualizacja funkcyjna zapobiegająca nieaktualnemu stanowi:**
+
+```jsx
+function Counter() {
+  const [count, setCount] = React.useState(0)
+  // Używamy aktualizacji funkcyjnej, aby zawsze inkrementować od najnowszego count
+  const increment = () => setCount((c) => c + 1)
+  return <button onClick={increment}>Count: {count}</button>
+}
+```
+
+W tym przykładzie increment używa `c => c + 1`, aby niezawodnie inkrementować, nawet jeśli nastąpi wiele kliknięć, zanim React przetworzy aktualizacje.
+
+## useEffect: efekty uboczne i cykl życia
+
+Hook useEffect pozwala wykonywać efekty uboczne, takie jak pobieranie danych, subskrypcje czy ręczne manipulacje DOM, w komponentach funkcyjnych. Uruchamia się po renderze i opcjonalnie sprząta po sobie. Kluczowe najlepsze praktyki dla useEffect:
+
+- Unikaj używania useEffect do czysto obliczeniowych zadań lub innej logiki, która mogłaby wykonać się podczas renderowania. Ograniczaj efekty do interakcji z systemami zewnętrznymi (jak API, event listenery, logowanie itd.). Do danych wyprowadzonych lub obliczeń rozważ zamiast tego useMemo.
+
+- Zawsze podawaj tablicę zależności, aby zapewnić przewidywalne wykonanie. Uwzględniaj wszystkie zmienne używane wewnątrz efektu. Dzięki temu efekt uruchamia się ponownie tylko wtedy, gdy to konieczne. Reguła lintera React „exhaustive-deps" pomaga wychwycić brakujące zależności.
+
+- Często lepiej używać wielu hooków useEffect do różnych, niepowiązanych efektów ubocznych niż jednego wielkiego efektu. Dzięki temu kod jest bardziej uporządkowany i łatwiejszy do debugowania. Na przykład jeden efekt obsługuje pobieranie z API, a inny event listener.
+
+- Jeśli efekt subskrybuje coś (zdarzenia, interwały, external stores), zwróć funkcję sprzątającą (cleanup), aby wypisać się z subskrypcji przy odmontowaniu komponentu lub przed kolejnym uruchomieniem efektu. Prawidłowe sprzątanie zapobiega wyciekom pamięci i pozostawionym obsługom zdarzeń.
+
+- Upewnij się, że aktualizacje stanu wewnątrz efektów są odpowiednio warunkowane lub uwzględnione w zależnościach. Efekt aktualizujący stan, który powoduje ponowne uruchomienie tego efektu, może prowadzić do nieskończonej pętli, jeśli nie zostanie zabezpieczony.
+
+- Pamiętaj, że efekty uruchamiają się wyłącznie na kliencie (po hydratacji). W SSR w Next.js/Remix kod efektu nie wykona się na serwerze. Planuj krytyczną logikę odpowiednio (np. dane wstępnie pobrane na serwerze nie powinny być ponownie pobierane w natychmiastowym efekcie bez warunków).
+
+**Przykład – pobieranie danych przy montowaniu z funkcją sprzątającą:**
+
+```jsx
+function UserList() {
+  const [users, setUsers] = React.useState([])
+  React.useEffect(() => {
+    let isSubscribed = true
+    fetch('/api/users')
+      .then((res) => res.json())
+      .then((data) => {
+        if (isSubscribed) {
+          setUsers(data)
+        }
+      })
+    // Cleanup, aby nie ustawiać stanu, jeśli komponent odmontuje się przed zakończeniem fetcha
+    return () => {
+      isSubscribed = false
+    }
+  }, []) // pusta tablica zależności = uruchom raz przy montowaniu
+
+  // ...
+}
+```
+
+Tutaj pobieramy dane przy montowaniu komponentu. Używamy flagi **isSubscribed**, aby zapobiec ustawianiu stanu, jeśli komponent odmontuje się przed zakończeniem fetcha. Ten wzorzec pomaga ograniczać wycieki pamięci. Pusta tablica zależności sygnalizuje, że efekt uruchamia się tylko raz (gdy komponent się montuje).
+
+Inne najlepsze praktyki: rozdzielaj odpowiedzialności (gdybyśmy potrzebowali też event listenera, użylibyśmy drugiego useEffect) i upewnij się, że wszystkie zmienne (tutaj żadnych) są wypisane w zależnościach.
+
+## useMemo: memoizacja kosztownych obliczeń
+
+**Uwaga:** Odkąd [React Compiler jest już stabilny](/blog/react-compiler-deep-dive-automatic-memoization-guide), spora część opisanej niżej ręcznej pracy z useMemo/useCallback jest wykonywana automatycznie na etapie budowania. Zrozumienie tych wzorców pozostaje jednak wartościowe — kompilator opiera się na tym samym modelu mentalnym, a istnieją przypadki brzegowe, w których ręczna memoizacja wciąż jest potrzebna.
+
+Hook useMemo memoizuje obliczony wynik, aby uniknąć ponownego obliczania przy każdym renderze. Przyjmuje funkcję i tablicę zależności, a zwraca zbuforowaną wartość, która aktualizuje się tylko wtedy, gdy zmienią się zależności. Używaj go do kosztownych obliczeń lub aby uniknąć niepotrzebnego przeliczania danych wyprowadzonych. Najlepsze praktyki dla useMemo:
+
+- Wprowadzaj useMemo tylko wtedy, gdy obliczenie jest ciężkie lub jeśli uniknięcie jego ponownego przeliczania znacząco poprawia wydajność. Przedwczesna memoizacja tanich obliczeń może dodać złożoności przy niewielkim zysku.
+
+- Uwzględnij w tablicy zależności wszystkie dane wejściowe używane w obliczeniu. W przeciwnym razie możesz korzystać z nieaktualnych wartości. Jeśli obliczona wartość jest wyprowadzana z propsów i stanu, wypisz je.
+
+- Kod powinien nadal działać po usunięciu memoizacji – useMemo to wskazówka wydajnościowa, a nie gwarancja semantyczna. Jeśli Twój kod psuje się bez niej, prawdopodobnie masz problem z zależnościami lub brakującą aktualizacją stanu.
+
+- Przy dostarczaniu kontekstu zaleca się opakowanie wartości kontekstu w useMemo, aby zapobiec wywoływaniu ponownych renderów konsumentów przy każdej aktualizacji providera (kontekst omówimy szczegółowo poniżej).
+
+**Przykład – memoizacja danych wyprowadzonych:**
+
+```jsx
+function PriceList({ items }) {
+  // Załóżmy, że przeliczanie łącznej ceny jest kosztowne
+  const totalPrice = React.useMemo(() => {
+    return items.reduce((sum, item) => sum + item.price, 0)
+  }, [items])
+  return <div>Total: ${totalPrice}</div>
+}
+```
+
+W tym przykładzie `useMemo` zapewnia, że przeliczamy łączną cenę tylko wtedy, gdy zmieni się tablica `items`. Może to zaoszczędzić pracy, jeśli items jest duża, a komponent często renderuje się ponownie z innych powodów. Uwzględniamy `[items]` jako zależność, ponieważ obliczenie zależy od propsa `items`.
+
+## useCallback: memoizacja funkcji
+
+`useCallback` jest spokrewniony z `useMemo` – memoizuje definicję funkcji tak, aby pozostawała ta sama między renderami, chyba że zmienią się jej zależności. Jest to przydatne przy przekazywaniu callbacków do komponentów potomnych, aby zapobiec zbędnym ponownym renderom (gdy dzieci używają React.memo) lub aby uniknąć tworzenia funkcji na nowo przy każdym renderze.
+
+Najlepsze praktyki dla useCallback:
+
+- Opakowuj obsługi zdarzeń lub inne funkcje w useCallback, jeśli są przekazywane do zoptymalizowanych komponentów potomnych lub używane w tablicach zależności. Na przykład, jeśli komponent potomny przyjmuje props typu onClick, użycie useCallback dla tej obsługi może zapobiec ponownemu renderowaniu dziecka za każdym razem (ponieważ funkcja przekazywana jako props pozostaje stabilna między renderami).
+
+- Podobnie jak w przypadku useMemo, wypisz w tablicy zależności wszystkie zmienne używane wewnątrz funkcji. Jeśli callback korzysta z jakiegoś stanu lub propsów, uwzględnij je, aby przy ich zmianie tworzona była nowa funkcja.
+
+- Nie każda funkcja potrzebuje useCallback. Jeśli komponent nie cierpi z powodu zbędnych ponownych renderów albo funkcja nie jest przekazywana w dół, możesz go pominąć. Nadużywanie useCallback może faktycznie zaszkodzić wydajności przez tworzenie wielu memoizowanych funkcji. Używaj go, gdy masz konkretny cel optymalizacyjny (jak ciężki ponowny render dziecka lub kosztowne tworzenie funkcji od nowa).
+
+- Jeśli piszesz custom hook zwracający funkcje, rozważ opakowanie ich w useCallback wewnątrz hooka. Dzięki temu konsumenci hooka otrzymują stabilne referencje do funkcji, co może być istotne, jeśli używają tych funkcji we własnych efektach lub przekazują je dalej w dół.
+
+**Przykład – stabilny callback zapobiegający ponownym renderom dziecka:**
+
+```jsx
+const SearchBar = React.memo(function SearchBar({ onSearch }) {
+  console.log('SearchBar rendered')
+  return <input placeholder="Search..." onChange={(e) => onSearch(e.target.value)} />
+})
+
+function ParentComponent() {
+  const [query, setQuery] = React.useState('')
+  // Używamy useCallback, aby referencja onSearch nie zmieniała się, gdy stan `query` zmienia się gdzie indziej
+  const handleSearch = React.useCallback((term) => {
+    setQuery(term)
+  }, []) // brak zależności, pozostaje stała
+
+  return (
+    <>
+      <SearchBar onSearch={handleSearch} />
+      <div>Searching for: {query}</div>
+    </>
+  )
+}
+```
+
+W tym przykładzie `<SearchBar>` to dziecko zoptymalizowane przy użyciu `React.memo`. Rodzic dostarcza callback `onSearch`. Opakowujemy `handleSearch` w `useCallback` z pustą tablicą zależności, co oznacza, że funkcja nie będzie tworzona na nowo przy każdym renderze. Dzięki temu, gdy rodzic renderuje się ponownie (być może z powodu jakiejś innej zmiany stanu), `<SearchBar>` nie zrenderuje się niepotrzebnie, ponieważ jego props `onSearch` pozostaje referencyjnie równy poprzedniemu renderowi. (Gdybyśmy pominęli `useCallback`, `onSearch` byłby nową funkcją za każdym razem, zmuszając memoizowane dziecko do ponownego renderu.)
+
+## useRef: trwałe, mutowalne referencje
+
+Hook `useRef` daje sposób na przechowywanie mutowalnej wartości, która utrzymuje się między renderami bez wywoływania ponownych renderów przy jej zmianie. Typowe zastosowania to odwoływanie się do elementów DOM (jak przechowywanie referencji z `useRef()` na elemencie JSX) lub przechowywanie mutowalnych zmiennych/instancji, które przetrwają ponowne rendery.
+
+Najlepsze praktyki dla useRef:
+
+- Używaj useRef do dostępu do węzłów DOM lub komponentów potomnych. Np. `const inputRef = useRef(null); <input ref={inputRef} ...>` daje dostęp do faktycznego elementu DOM input.
+
+- Przechowuj wartości w ref, gdy potrzebujesz utrzymać jakiś stan, który nie wyzwala ponownego renderu. Na przykład ID interwału, poprzednią wartość (dla hooka `usePrevious`) lub dowolną wartość, którą chcesz odczytywać/zapisywać imperatywnie. Aktualizacja `ref.current` nie powoduje ponownego renderu.
+
+- Nie zastępuj stanu refami, chyba że celowo chcesz ominąć ponowne rendery. Jeśli wartość jest używana w wyniku renderowania lub do określenia, co renderować, powinna być stanem. Refy służą do przechowywania informacji, które są ortogonalne wobec wyniku UI (lub do interakcji z systemami zewnętrznymi).
+
+- Właściwość `.current` refa jest inicjalizowana argumentem przekazanym do `useRef(initialValue)` przy pierwszym renderze. Kolejne rendery ignorują ten argument. Nie oczekuj więc, że reinicjalizuje się on, jeśli wyrażenie `initialValue` się zmieni; tak się nie stanie (chyba że komponent odmontuje się i zamontuje na nowo).
+
+```jsx
+function ChatRoom({ roomId }) {
+  const prevRoomIdRef = React.useRef()
+  React.useEffect(() => {
+    prevRoomIdRef.current = roomId
+  }) // aktualizuj ref po każdym renderze
+
+  const prevRoomId = prevRoomIdRef.current
+  React.useEffect(() => {
+    console.log('Room changed from', prevRoomId, 'to', roomId)
+  }, [roomId])
+
+  // ...
+}
+```
+
+Tutaj używamy refa do śledzenia poprzedniej wartości propsa roomId między renderami (często nazywane wzorcem hooka `usePrevious`). Wartość refa utrzymuje się i jest aktualizowana w efekcie. Możemy następnie porównać poprzednią i bieżącą wartość. To podejście nie wyzwala dodatkowych renderów.
+
+**Kolejny przykład: ustawianie fokusu na input po renderze:**
+
+```jsx
+function TextInputWithFocus() {
+  const inputRef = React.useRef(null)
+  React.useEffect(() => {
+    inputRef.current?.focus()
+  }, []) // fokus przy montowaniu
+
+  return <input ref={inputRef} type="text" />
+}
+```
+
+Ref daje nam dostęp do węzła DOM input, dzięki czemu możemy wywołać na nim `.focus()` w efekcie.
+
+## useContext: współdzielenie danych przez Context API
+
+Hook `useContext` pozwala komponentom subskrybować wartości kontekstu React. To sposób na przekazywanie danych przez drzewo komponentów bez prop drillingu. Przy kontekście każda aktualizacja wartości kontekstu spowoduje ponowny render wszystkich komponentów konsumujących. Dlatego kwestie wydajnościowe są istotne.
+
+Najlepsze praktyki dla useContext:
+
+- Używaj kontekstu do danych, których potrzebuje wiele komponentów (motyw, lokalizacja, bieżący użytkownik itd.) lub aby uniknąć głęboko zagnieżdżonego przekazywania propsów. Unikaj jednak nadużywania kontekstu do każdego drobiazgu stanu – korzystaj z niego tylko tam, gdzie daje wyraźną przewagę.
+
+- Jeśli wartość kontekstu jest obiektem lub tablicą, która się zmienia, opakuj ją w useMemo przed przekazaniem. Zapobiega to zbędnym ponownym renderom konsumentów, gdy komponent nadrzędny renderuje się ponownie bez faktycznej zmiany danych kontekstu. Na przykład `value={useMemo(() => ({ data, setData }), [data])}` w providerze (jak pokazano niżej).
+
+- Jeśli masz odrębne fragmenty stanu, rozważ użycie osobnych providerów kontekstu, aby aktualizacje jednego kontekstu nie wpływały niepotrzebnie na konsumentów drugiego. Np. `ThemeContext` i `AuthContext` zamiast jednego wielkiego kontekstu, tak aby zmiana motywu nie renderowała ponownie wszystkich komponentów, które interesuje tylko autoryzacja, i odwrotnie.
+
+- Wywołuj `useContext` na najwyższym poziomie komponentu (zgodnie z Regułami Hooków). Skonsumuj wartość kontekstu, a następnie użyj jej w renderze lub innych hookach. Nie wywołuj `useContext` warunkowo.
+
+- Kontekst służy do współdzielenia stanu między komponentami. Każdy komponent konsumujący dostaje własny render z wartością kontekstu. Jeśli potrzebujesz jednego źródła prawdy, które wiele komponentów zarówno aktualizuje, jak i odczytuje, możesz połączyć kontekst z reducerem lub external store (aby uniknąć zbyt częstego rozgłaszania aktualizacji).
+
+**Przykład – provider kontekstu z optymalizacją useMemo:**
+
+```jsx
+const UserContext = React.createContext()
+
+function App() {
+  const [user, setUser] = React.useState(null)
+  // Twórz wartość kontekstu na nowo tylko gdy zmieni się `user`:
+  const contextValue = React.useMemo(() => ({ user, setUser }), [user])
+
+  return (
+    <UserContext.Provider value={contextValue}>
+      <Toolbar />
+    </UserContext.Provider>
+  )
+}
+
+function Toolbar() {
+  // ... być może inne providery lub układ
+  return <UserProfile />
+}
+
+function UserProfile() {
+  const { user, setUser } = React.useContext(UserContext)
+  // Teraz używaj `user` i `setUser` według potrzeb...
+}
+```
+
+W tym przykładzie `App` dostarcza `UserContext`. Opakowujemy obiekt `{ user, setUser }` w `useMemo`, aby jeśli user pozostaje taki sam między renderami, referencja wartości kontekstu była ta sama. Oznacza to, że komponenty konsumujące kontekst (jak `UserProfile`) nie zrenderują się ponownie, chyba że user faktycznie się zmieni, co poprawia wydajność. Bez `useMemo` nawet aktualizacja stanu w `App`, która nie zmienia user, wciąż tworzyłaby nowy obiekt i wyzwalała ponowny render konsumentów kontekstu.
+
+Dodatkowo rozdzieliliśmy odpowiedzialności, używając osobnego kontekstu wyłącznie dla informacji o użytkowniku. Gdybyśmy mieli inne dane warte kontekstu (motyw itd.), użylibyśmy innego providera kontekstu, tak aby zmiany w jednym nie wpływały na drugi.
+
+## useReducer: złożony stan i maszyny stanów
+
+Hook `useReducer` to alternatywa dla `useState` do zarządzania logiką stanu, która obejmuje wiele podwartości lub złożone przejścia. Przyjmuje funkcję reducera i stan początkowy, a zwraca bieżący stan oraz funkcję dispatch. Jest to bardzo podobne do zarządzania stanem w stylu Redux, ale zlokalizowane w komponencie (lub współdzielone przez kontekst).
+
+Najlepsze praktyki dla useReducer:
+
+- Jeśli masz stan obejmujący wiele pól, które zmieniają się razem, lub rozbudowaną logikę obliczania kolejnego stanu, reducer może być czystszy. Na przykład stan formularza z wieloma polami wejściowymi lub komponent z kilkoma współzależnymi zmiennymi stanu zyskuje na spakowaniu w jeden `useReducer` ze zdefiniowanymi akcjami.
+
+- Funkcja dispatch z `useReducer` jest stabilna (nie zmienia się między renderami), więc można ją przekazywać w dół do dzieci bez potrzeby `useCallback`. Ponadto użycie reducera potrafi zlokalizować aktualizacje stanu tak, że providery kontekstu (jeśli używasz) nie muszą dostarczać wielu różnych setterów – wystarczy jeden dispatch.
+
+- useReducer pozwala na leniwą funkcję inicjalizacji: `useReducer(reducer, initialArg, initFunction)`. Jeśli obliczenie stanu początkowego jest kosztowne, użyj tego wzorca, aby wyliczyć go tylko raz.
+
+- W reducerze unikaj mutowania stanu – zwracaj nowy obiekt stanu, aby React mógł wykryć zmiany. Zwykle jest to oczywiste, ale warto zaznaczyć, bo mutowanie i zwracanie tego samego obiektu może prowadzić do błędów.
+
+- Jeśli łapiesz się na zarządzaniu wieloma `useState`, które często zmieniają się razem (np. kilka powiązanych pól aktualizowanych w jednym zdarzeniu), lub piszesz złożoną logikę aktualizacji (jak resetowanie wielu pól czy obliczanie jednego pola na podstawie innego), reducer może scentralizować tę logikę. Ułatwia też dodawanie logowania lub debugowanie, bo wszystkie przejścia stanu przechodzą przez jedną funkcję.
+
+**Przykład – useReducer dla stanu formularza:**
+
+```jsx
+const initialForm = { username: '', password: '' }
+function formReducer(state, action) {
+  switch (action.type) {
+    case 'CHANGE_FIELD':
+      return { ...state, [action.field]: action.value }
+    case 'RESET':
+      return initialForm
+    default:
+      return state
+  }
+}
+
+function LoginForm() {
+  const [formState, dispatch] = React.useReducer(formReducer, initialForm)
+
+  const handleChange = (e) => {
+    dispatch({ type: 'CHANGE_FIELD', field: e.target.name, value: e.target.value })
+  }
+  const handleReset = () => dispatch({ type: 'RESET' })
+
+  return (
+    <>
+      <input name="username" value={formState.username} onChange={handleChange} />
+      <input name="password" value={formState.password} onChange={handleChange} type="password" />
+      <button onClick={handleReset}>Reset</button>
+    </>
+  )
+}
+```
+
+W tym `LoginForm` używamy pojedynczego `useReducer` do zarządzania dwoma polami. Reducer w przejrzysty sposób definiuje, jak każda akcja aktualizuje stan. `handleChange` dispatchuje aktualizację pola na podstawie nazwy inputu, a `handleReset` resetuje oba pola naraz. To podejście dobrze się skaluje wraz z rozrostem formularza, w przeciwieństwie do osobnych wywołań `useState` dla każdego pola i porozrzucanej logiki aktualizacji.
+
+## useLayoutEffect: synchroniczne efekty uboczne dotyczące układu
+
+`useLayoutEffect` to wariant efektu, który uruchamia się synchronicznie po wszystkich mutacjach DOM, ale przed tym, jak przeglądarka wykona malowanie (paint). Blokuje aktualizację przeglądarki, więc przydaje się do zadań, które muszą wydarzyć się, zanim użytkownik zobaczy wynik, jak mierzenie układu lub synchroniczne ponowne renderowanie w celu korekt.
+
+Najlepsze praktyki dla useLayoutEffect:
+
+- Używaj useLayoutEffect tylko wtedy, gdy musisz jednocześnie odczytać i zapisać informacje o układzie lub właściwości DOM przed ponownym malowaniem przez przeglądarkę. Typowe zastosowania to odczyt rozmiaru/pozycji elementu, a następnie synchroniczna korekta czegoś (jak pozycja przewijania) przed namalowaniem klatki.
+
+- Ponieważ blokuje malowanie, utrzymuj pracę wewnątrz useLayoutEffect minimalną, aby uniknąć zacinania (jank). Długie zadania tutaj opóźnią moment, w którym użytkownik zobaczy UI.
+
+- Pamiętaj, że `useLayoutEffect` nie uruchamia się na serwerze. Co więcej, React wyrzuci ostrzeżenie, jeśli komponent użyje `useLayoutEffect` podczas SSR, bo nie ma środowiska przeglądarki, które by go spełniło. React i tak spróbuje uruchomić go na kliencie po hydratacji. Aby uniknąć ostrzeżeń, możesz zabezpieczyć taki kod (np. sprawdzić `typeof window !== 'undefined'`) lub preferować `useEffect`, jeśli praca może wydarzyć się po malowaniu. W Next.js 13 React automatycznie odracza uruchomienie useLayoutEffect do momentu po hydratacji, aby zapobiec ostrzeżeniom SSR, ale warto o tym pamiętać.
+
+- Podobnie jak w useEffect, dostarcz funkcję sprzątającą, jeśli rejestrujesz listenery lub mutujesz stan globalny. Na przykład jeśli dodasz resize observer w useLayoutEffect, odpowiednio go posprzątaj.
+
+- Mierzenie szerokości elementu, a następnie ustawianie stanu wpływającego na renderowanie (jak włączenie paska przewijania lub przemieszczenie czegoś) może wykorzystać useLayoutEffect, aby uniknąć migotania. Gdybyś zrobił to w zwykłym useEffect, użytkownik mógłby przez jedną klatkę zobaczyć nieskorygowany stan.
+
+**Przykład – useLayoutEffect do pomiaru układu:**
+
+```jsx
+function Tooltip({ text }) {
+  const tooltipRef = React.useRef()
+  const [position, setPosition] = React.useState({})
+
+  React.useLayoutEffect(() => {
+    // Ustaw element tooltipa nad jego elementem docelowym
+    const { top, left, height } = tooltipRef.current.getBoundingClientRect()
+    setPosition({ top: top - height - 8, left }) // 8px nad elementem
+  }, [text])
+
+  return (
+    <div ref={tooltipRef} style={{ position: 'absolute', ...position }}>
+      {text}
+    </div>
+  )
+}
+```
+
+Tutaj tooltip oblicza swoją pozycję względem elementu wyzwalającego (w uproszczony sposób). Używamy `useLayoutEffect`, aby pomiar (`getBoundingClientRect()`) i aktualizacja stanu wydarzyły się przed ponownym malowaniem przez przeglądarkę. Dzięki temu tooltip jest ustawiony poprawnie od pierwszego malowania, unikając wizualnego skoku. Uwzględniamy `[text]` jako zależność, zakładając, że treść tooltipa lub cel mogą się zmienić, gdy zmieni się text.
+
+## useSyncExternalStore: synchronizacja stanu z external store
+
+Jednym z nowszych hooków w React jest `useSyncExternalStore`, zaprojektowany do odczytu i subskrybowania zewnętrznych źródeł danych (jak globalne magazyny, API przeglądarki czy inne źródła stanu spoza Reacta) w sposób bezpieczny dla trybu współbieżnego. Pomaga zapewnić spójność między Twoimi komponentami React a external store, szczególnie przy funkcjach renderowania współbieżnego (unikając problemów takich jak tearing).
+
+Kluczowe punkty i najlepsze praktyki dla useSyncExternalStore:
+
+- Używaj tego hooka, gdy masz dane żyjące poza stanem Reacta i potrzebujesz, aby komponent aktualizował się, gdy te dane się zmienią. Na przykład magazyn Redux, globalny event emitter, a nawet zdarzenia localStorage. Przed tym hookiem można było użyć useEffect z event listenerem do subskrypcji/wypisania się, ale useSyncExternalStore dostarcza ustandaryzowane podejście, które dobrze współgra z renderowaniem współbieżnym Reacta.
+
+- `useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot?)`. Dostarczasz funkcję subscribe, która rejestruje callback dla aktualizacji magazynu (i zwraca funkcję wypisującą), oraz getSnapshot, który odczytuje bieżącą wartość. React wywoła getSnapshot, aby pobrać najnowsze dane i zrenderować komponent ponownie w razie potrzeby. Opcjonalny getServerSnapshot jest używany podczas renderowania na serwerze do uzyskania migawki (snapshot), która będzie zgodna z tym, co wygeneruje klient. Zawsze dostarczaj getServerSnapshot dla SSR, aby uniknąć niezgodności hydratacji, jeśli external store może mieć inną wartość początkową na kliencie.
+
+- W przeciwieństwie do naiwnej subskrypcji przez useEffect, useSyncExternalStore jest zbudowany tak, aby unikać tearingu (niespójnego stanu między renderem a commitem), dbając o to, by odczyt migawki był skoordynowany z cyklem renderowania Reacta. Zespół React wyraźnie zaleca ten hook do zewnętrznych subskrypcji, aby były bezpieczne przy funkcjach takich jak selektywna hydratacja i time-slicing.
+
+- Często nie będziesz wywoływać useSyncExternalStore bezpośrednio w każdym komponencie. Zamiast tego możesz opakować go w custom hook dopasowany do Twojego magazynu lub API. Na przykład utwórz hook useOnlineStatus, który wewnętrznie używa useSyncExternalStore do subskrybowania zdarzeń online/offline przeglądarki (jak pokazano w dokumentacji React i poniżej).
+
+- Przy useEffect subskrybowałbyś przy montowaniu i aktualizował jakiś stan. useSyncExternalStore łączy subskrypcję i stan w jednym hooku, co bywa wydajniejsze. Zapewnia też, że wartość jest aktualizowana synchronicznie przed malowaniem, gdy trzeba, co bywa ważne dla spójności.
+
+- Hook zrenderuje Twój komponent ponownie, ilekroć external store zasygnalizuje zmianę i wartość migawki faktycznie się zmieni (używa pod spodem sprawdzania równości, aby unikać ponownych renderów, jeśli wartość jest niezmieniona). Zadbaj, aby Twój getSnapshot zwracał stabilną wartość prymitywną lub referencję obiektu dla tej samej wartości, tak aby unikać zbędnych ponownych renderów.
+
+**Przykład – useSyncExternalStore w custom hooku (status online):**
+
+```jsx
+// Zewnętrzne narzędzia subskrypcji
+function subscribeToOnlineStatus(callback) {
+  window.addEventListener('online', callback)
+  window.addEventListener('offline', callback)
+  return () => {
+    window.removeEventListener('online', callback)
+    window.removeEventListener('offline', callback)
+  }
+}
+function getOnlineSnapshot() {
+  return navigator.onLine
+}
+function getServerSnapshot() {
+  // Zakładamy, że po stronie serwera domyślnie "online"
+  return true
+}
+
+// Custom hook używający useSyncExternalStore
+function useOnlineStatus() {
+  return React.useSyncExternalStore(subscribeToOnlineStatus, getOnlineSnapshot, getServerSnapshot)
+}
+
+function OnlineIndicator() {
+  const isOnline = useOnlineStatus()
+  return <span>{isOnline ? '🟢 Online' : '🔴 Offline'}</span>
+}
+```
+
+W tym przykładzie `useOnlineStatus` enkapsuluje logikę subskrybowania zdarzeń online/offline przeglądarki. Wewnętrznie używa `useSyncExternalStore`: funkcja `subscribeToOnlineStatus` ustawia listenery dla zdarzeń i zwraca funkcję wypisującą; getOnlineSnapshot odczytuje bieżący status (`navigator.onLine`), a `getServerSnapshot` dostarcza migawkę do renderowania na serwerze (zakładając true, aby uniknąć niezgodności). Komponenty takie jak `OnlineIndicator` mogą używać `useOnlineStatus` i automatycznie renderować się ponownie, gdy zmieni się status połączenia przeglądarki, bez potrzeby własnej logiki efektów. To podejście jest czyste i bezpieczne dla trybu współbieżnego – React wie, jak obsłużyć to zewnętrzne źródło danych przy hydratacji i aktualizacjach współbieżnych.
+
+Innym typowym przypadkiem użycia jest integracja z bibliotekami zarządzania stanem (Redux, Zustand itd.). Biblioteki te używają teraz `useSyncExternalStore` pod spodem dla swoich hooków, ale jeśli piszesz własny globalny magazyn lub choćby prosty event emitter, ten hook jest właściwym wyborem, aby Twój hook własnego źródła stanu (np. `useGlobalValue`) był odporny na przyszłe zmiany w React.
+
+---
+
+# Wzorce tworzenia custom hooks
+
+Custom hooks pozwalają enkapsulować i wielokrotnie wykorzystywać logikę stanową między komponentami. To zwykłe funkcje JavaScript, które wewnętrznie używają omówionych wbudowanych hooków. Tworzenie efektywnych custom hooks polega na zadbaniu, aby były enkapsulowane, kompozytowalne i poprawnie obsługiwały zależności. Poniżej przedstawiamy kilka najlepszych praktyk i wzorców dla custom hooks w kodzie przeznaczonym do skalowania.
+
+## Enkapsulacja i abstrakcja logiki
+
+Jedną z głównych motywacji custom hooks jest enkapsulacja złożonej logiki, tak aby komponenty używające hooka nie musiały martwić się szczegółami implementacji. Dobrze zaprojektowany hook ukrywa „zawiłe" detale implementacyjne (jak event listenery, timery czy zarządzanie subskrypcjami) za prostym, deklaratywnym interfejsem. Prowadzi to do bardziej czytelnego kodu komponentów skupionego na tym, co robi, a nie jak to robi.
+
+Wytyczne:
+
+- Jeśli wiele komponentów musi integrować się z zewnętrznym API lub API przeglądarki, rozważ napisanie custom hooka. Na przykład useOnlineStatus (jak wyżej), useGeolocation, useMediaQuery czy useKeyboardShortcut to hooki, które abstrahują API przeglądarki. Podobnie podpięcie się pod niestandardową usługę analityczną lub logikę pobierania danych (z cachowaniem) może być hookiem.
+
+- Komponent używający hooka nie powinien musieć wiedzieć, jak zarządza on stanem lub efektami. Na przykład hook `useForm` może wewnętrznie używać `useReducer` i wielu efektów, ale wystawiać prosty interfejs jak `{ fields, handleFieldChange, handleSubmit }`.
+
+- Zaprojektuj wartość zwracaną przez hook (stan i funkcje) jako minimalny interfejs, którego potrzebuje komponent. Ułatwia to późniejszą zmianę wnętrza hooka. Ponadto zwracając mniej rzeczy, zmniejszasz ryzyko wywoływania ponownych renderów (bo React sprawdza wszystkie zwracane wartości pod kątem zmian).
+
+- Zawsze prefiksuj custom hooks słowem „use" (np. `useSomething`), aby zasygnalizować, że obowiązują Reguły Hooków. Pozwala to również linterowi prawidłowo egzekwować reguły.
+
+**Przykład – enkapsulacja event listenera w hooku:**
+
+Utwórzmy custom hook useWindowSize, który śledzi rozmiar okna przeglądarki i aktualizuje się przy zmianie rozmiaru. Bez hooka musiałbyś powtarzać logikę listenera resize w każdym komponencie, który tego potrzebuje.
+
+```jsx
+function useWindowSize() {
+  const [size, setSize] = React.useState({
+    width: window.innerWidth,
+    height: window.innerHeight,
+  })
+  React.useEffect(() => {
+    function handleResize() {
+      setSize({ width: window.innerWidth, height: window.innerHeight })
+    }
+    window.addEventListener('resize', handleResize)
+    // Zainicjalizuj rozmiar na wypadek zmian układu
+    handleResize()
+    return () => window.removeEventListener('resize', handleResize)
+  }, [])
+  return size
+}
+
+// Użycie w komponencie:
+function ShowWindowSize() {
+  const { width, height } = useWindowSize()
+  return (
+    <div>
+      Window size: {width} x {height}
+    </div>
+  )
+}
+```
+
+Hook `useWindowSize` enkapsuluje logikę dodawania/usuwania listenera zdarzenia `'resize'` oraz zarządzania stanem szerokości/wysokości. Dowolny komponent może użyć tego hooka, aby uzyskać bieżące wymiary okna bez duplikowania tej logiki. Hook czysto enkapsuluje system zewnętrzny (obiekt `window`) i utrzymuje kod komponentu prostym.
+
+## Kompozytowalność hooków
+
+Hooki są z natury kompozytowalne – custom hook może wywoływać inne hooki (wbudowane, a nawet inne custom hooks), aby budować funkcjonalność. Oznacza to, że możesz używać małych, skupionych hooków jako klocków wewnątrz większych hooków lub sprawić, by komponenty używały wielu hooków obok siebie. Wykorzystaj tę kompozytowalność:
+
+- Jeśli fragment logiki komponentu można logicznie wydzielić, możesz utworzyć dwa hooki. Na przykład możesz mieć `useAuth()` dostarczający dane uwierzytelniania użytkownika i `usePermissions()` dostarczający informacje o autoryzacji. Komponent może w razie potrzeby używać obu niezależnie. Albo jeden custom hook może wewnętrznie wywoływać te mniejsze.
+
+- Dla złożonych hooków rozbij logikę na mniejsze hooki, jeśli upraszcza to projekt. Na przykład, implementując hook dla dashboardu, wewnętrznie mógłby on używać hooka `useFetch` dla danych i hooka usePolling do okresowego odświeżania, a następnie łączyć wyniki.
+
+- Pamiętaj, że hooki (wbudowane lub własne) podlegają Regułom Hooków – muszą być wywoływane bezwarunkowo w tej samej kolejności przy każdym renderze. Zadbaj, aby wszelki przepływ sterowania był obsłużony wewnątrz implementacji hooków lub przez wczesne zwroty (early returns), a nie przez warunkowe wywoływanie hooków. W razie potrzeby można wywoływać hooki warunkowo, dzieląc je na osobne hooki lub komponenty (np. hook, który uruchamia coś tylko przy spełnionym warunku, można zbudować tak, aby warunek strzegł logiki wewnątrz hooka, a nie samego wywołania hooka).
+
+- Jest to całkowicie w porządku i często przydatne. Na przykład `useCombinedData(userId)` mógłby wewnętrznie wywoływać `useUser(userId)` i `usePosts(userId)` oraz zwracać scalony wynik. To realizuje zasadę hooków o pojedynczej odpowiedzialności, które można dowolnie łączyć.
+
+**Przykład – komponowanie hooków:**
+
+Wyobraź sobie aplikację czatu, w której chcemy hooka zarządzającego subskrypcją pokoju czatu oraz nasłuchującego statusu online (może po to, by pokazać, czy połączenie zostało utracone). Mamy już dwa proste hooki: `useChatRoom(roomId)` i `useOnlineStatus()`. Możemy je skomponować:
+
+```jsx
+// Hook dostarczający wiadomości czatu oraz informację, czy sieć jest online
+function useChat(roomId) {
+  const messages = useChatRoom(roomId) // custom hook obsługujący WebSocket lub polling wiadomości
+  const isOnline = useOnlineStatus() // custom hook z wcześniejszego przykładu
+  // Być może łączymy ich dane lub logikę:
+  const statusMessage = isOnline ? 'Connected' : 'Disconnected'
+  return { messages, statusMessage }
+}
+
+function ChatUI({ roomId }) {
+  const { messages, statusMessage } = useChat(roomId)
+  // Renderuj wiadomości i pokaż status połączenia...
+}
+```
+
+W tym fragmencie `useChat` to hook wyższego poziomu, który wywołuje dwa inne hooki, aby zebrać potrzebne dane. Następnie zwraca obiekt łączący oba aspekty (wiadomości oraz przyjazny dla użytkownika łańcuch statusu połączenia). Komponent `ChatUI` teraz po prostu wywołuje jeden hook `useChat`, aby uzyskać wszystko, czego potrzebuje. To pokazuje hooki jako klocki: małe hooki obsługujące jedną odpowiedzialność (dane czatu, status sieci) i większy hook komponujący je dla konkretnej funkcji.
+
+## Prawidłowa obsługa zależności w custom hooks
+
+Custom hooks często przyjmują parametry i używają wewnętrznego stanu lub efektów. Zarządzanie zależnościami i unikanie nieaktualnych danych w custom hooks jest kluczowe dla ich poprawności i wydajności.
+
+Kwestie do rozważenia:
+
+- Jeśli Twój custom hook przyjmuje argumenty (np. `useFetch(url)` lub `useChatRoom(roomId)`), działają one jak propsy dla wewnętrznej logiki hooka. Jeśli się zmienią, każdy wewnętrzny efekt powinien traktować je jako nowe dane wejściowe. Pamiętaj, aby umieścić takie parametry w tablicach zależności wewnętrznych wywołań `useEffect` lub `useMemo`. Jeśli parametr jest obiektem, który może mieć tę samą referencję albo nową, rozważ wymaganie stabilnych tożsamości lub ostrożne używanie głębokich porównań.
+
+- Jeśli Twój hook używa starej wartości propsa lub stanu wewnątrz efektu, możesz napotkać problem nieaktualnego domknięcia (stale closure). Rozwiązania obejmują dodanie odpowiedniej zmiennej do zależności lub użycie refa, aby zawsze mieć najnowszą wartość. Innym rozwiązaniem jest użycie reducera do enkapsulacji zmian stanu, jak moglibyśmy zrobić w niektórych hookach.
+
+- Jeśli hook zwraca funkcję (jak obsługę zdarzenia lub funkcję API wyzwalającą jakąś logikę), często chcesz, aby ta funkcja była taka sama między renderami, chyba że zmieni się coś istotnego. Aby to osiągnąć, możesz opakować funkcję w `useCallback` wewnątrz hooka. Dzięki temu komponenty używające hooka nie otrzymują nieustannie nowego callbacka jako props, co mogłoby powodować potencjalne pętle ponownych renderów. Na przykład hook `useToggle(initialValue)` mógłby zwracać `[value, toggleFunction]`; implementacja toggleFunction z `useCallback([value])` zapewnia, że zmienia się ona tylko, gdy zmieni się value (choć w tym przypadku zmieni się za każdym razem, gdy boolean się przełączy, co jest oczekiwane).
+
+- Jeśli Twój hook zwraca obiekt lub tablicę konstruowaną przy każdym wywołaniu, rozważ użycie useMemo do memoizacji tej wartości zwracanej (jeśli wartości wewnątrz się nie zmieniły). Może to ułatwić konsumentom optymalizację (poprzez porównywanie referencji). Zwykle jednak, jeśli hook zwraca prymitywy lub małe obiekty wyprowadzone ze stanu, może to nie być konieczne; skup się na sytuacjach, w których stabilność referencyjna wyniku hooka ma znaczenie dla komponentów konsumujących.
+
+- Udokumentuj lub zadbaj o jasność, którymi zależnościami zajmuje się hook, a które musi obsłużyć konsument. Na przykład, jeśli masz `useSearch(query)`, który pobiera dane, gdy zmieni się query, hook wewnętrznie używa useEffect na query. Konsument po prostu go wywołuje i nie martwi się zależnościami. Ale jeśli hook zwraca callback, który powinien być wywoływany z dynamicznymi wartościami, konsument może musieć coś obsłużyć. Utrzymuj takie API intuicyjnymi, aby uniknąć błędnego użycia.
+
+**Przykład – custom hook z zależnością i callbackiem:**
+
+```jsx
+// Custom hook zarządzający wartością debounce'owaną (często używany do debounce'owania inputów wyszukiwania)
+function useDebouncedValue(value, delay) {
+  const [debouncedValue, setDebouncedValue] = React.useState(value)
+
+  React.useEffect(() => {
+    const handler = setTimeout(() => {
+      setDebouncedValue(value)
+    }, delay)
+    return () => clearTimeout(handler)
+  }, [value, delay]) // uruchom efekt ponownie, gdy zmieni się value lub delay
+
+  return debouncedValue
+}
+
+// Użycie:
+function SearchInput({ onSearch }) {
+  const [text, setText] = React.useState('')
+  const debouncedText = useDebouncedValue(text, 300)
+  // Powiadom rodzica o zmianie debounce'owanego tekstu
+  React.useEffect(() => {
+    if (debouncedText !== '') {
+      onSearch(debouncedText)
+    }
+  }, [debouncedText, onSearch])
+
+  return <input value={text} onChange={(e) => setText(e.target.value)} />
+}
+```
+
+W `useDebouncedValue` starannie uwzględniamy value i delay w zależnościach, tak aby ilekroć któreś z nich się zmieni, efekt zresetował timeout i odpowiednio zaktualizował wartość. Użytkownik hooka (jak SearchInput) po prostu dostaje debounce'owany wynik i nie zarządza logiką czasu.
+
+Ten hook nie zwraca funkcji, tylko wartość. Gdybyśmy mieli hook, który jednak zwraca funkcję, np.:
+
+```jsx
+function useToggle(initial = false) {
+  const [on, setOn] = React.useState(initial)
+  const toggle = React.useCallback(() => setOn((prev) => !prev), [])
+  return [on, toggle]
+}
+```
+
+Funkcja `toggle` jest opakowana w `useCallback` z pustą zależnością (bo wywołuje tylko `setOn`, które jest stabilne). Dzięki temu toggle ma tę samą referencję przy ponownych renderach komponentu używającego hooka (referencja zmieniłaby się tylko, gdybyśmy uwzględnili on jako zależność, ale celowo nie potrzebujemy on do wyliczenia zachowania toggle). Utrzymanie jej stabilnej może pomóc, jeśli rodzic używa `toggle` w innych hookach lub przekazuje ją w dół.
+
+Na koniec pamiętaj o radzie **Dana Abramova**: myśl o kodzie wewnątrz Twojego custom hooka tak, jakby znajdował się on wewnątrz komponentu, który go używa. Te same reguły i wzorce, które obowiązują dla kodu komponentu (np. unikanie efektów ubocznych w renderze, obsługa sprzątania itd.), obowiązują dla implementacji hooków, ponieważ są one faktycznie częścią wykonania komponentu.
+
+---
+
+# Renderowanie współbieżne, Suspense
+
+Nowoczesny React (zwłaszcza React 18+) wprowadza zaawansowane możliwości, które wpływają na zachowanie hooków oraz na to, jak powinniśmy pisać nasze komponenty i hooki. Przyjrzyjmy się kilku zaawansowanym zagadnieniom: renderowaniu współbieżnemu (i temu, jak hooki z nim współdziałają), Suspense dla operacji asynchronicznych, kompatybilności z React Server Components oraz wzorcom synchronizowania stanu między różnymi częściami aplikacji.
+
+## Renderowanie współbieżne a hooki
+
+Renderowanie współbieżne (Concurrent Rendering) odnosi się do zdolności Reacta do przygotowywania wielu wersji UI jednocześnie, wstrzymywania i wznawiania pracy renderującej oraz priorytetyzowania pilnych aktualizacji (jak wprowadzanie danych przez użytkownika) ponad mniej pilne. W React jest to domyślnie włączone w pewnych scenariuszach i można je ręcznie wykorzystać za pomocą hooków takich jak `useTransition` i `useDeferredValue`.
+
+Kluczowe punkty i najlepsze praktyki:
+
+- W trybie React Strict Mode (development) React celowo montuje komponenty dwukrotnie (i natychmiast wywołuje cleanup efektów), aby pomóc wyłapać problemy z efektami ubocznymi. Oznacza to, że Twoje funkcje efektów muszą być idempotentne i nie mogą zakładać jednorazowego uruchomienia. Zawsze konstruuj efekty tak, aby wykonanie ich dwa razy z rzędu (z cleanupem pomiędzy) nie zepsuło logiki. Zwykle oznacza to unikanie efektów ubocznych w fazie renderowania oraz zadbanie, aby cleanupy naprawdę cofały efekt.
+
+- React wprowadził `useTransition` do oznaczania aktualizacji stanu jako niskopriorytetowych (transitions). Używając `const [isPending, startTransition] = useTransition();`, możesz opakować aktualizację stanu w `startTransition(() => setState(...))`, aby powiedzieć Reactowi, że tę aktualizację można odroczyć. Korzyść jest taka, że React utrzyma responsywność UI, nie blokując się na tej aktualizacji – może ją wstrzymać, jeśli użytkownik zrobi coś pilnego. Używaj tego do kosztownych ponownych renderów, które nie muszą odzwierciedlać się natychmiast (np. aktualizacja listy na podstawie inputu filtra). Najlepsza praktyka: opakowuj tylko niepilne, wizualne aktualizacje; utrzymuj aktualizacje związane z inputem użytkownika poza transitions, aby input był natychmiastowy. Na przykład aktualizuj stan zapytania wyszukiwania natychmiast dla pola tekstowego, ale aktualizuj listę wyników w transition.
+
+- Ten hook przyjmuje wartość i zwraca jej odroczoną wersję, która pozostaje w tyle, dopóki system nie będzie gotowy. Przydaje się do przekazywania w dół wartości, której natychmiastowe użycie może być kosztowne. Na przykład input wyszukiwania może użyć `const deferredQuery = useDeferredValue(query)` przy filtrowaniu dużej listy. UI może pokazywać wyniki dla `deferredQuery`, aktualizując się nieco później niż faktyczne naciśnięcia klawiszy, aby nie blokować pisania. Najlepsza praktyka: `useDeferredValue` dla wartości, które wyzwalają ciężkie obliczenia lub rendery, aby automatycznie ograniczać ich wpływ na UI. Współpracuje też ręka w rękę z Suspense w niektórych przypadkach użycia.
+
+- W trybie współbieżnym aktualizacje stanu nie są gwarantowane do zastosowania natychmiast; React może poczekać na zbatchowanie lub nawet wstrzymać renderowanie komponentu w połowie obliczeń. Dlatego unikaj polegania na tym, że efekty uboczne wydarzą się w określonej kolejności, lub zakładania, że aktualizacja stanu jest zastosowana do momentu wykonania kolejnej linii (co generalnie jest złym założeniem nawet w trybie synchronicznym).
+
+- Gdy wiele komponentów odczytuje z external store, renderowanie współbieżne mogłoby prowadzić do tearingu (jeden komponent widzi starą wartość, a inny nową). useSyncExternalStore wprowadzono, aby to rozwiązać, zapewniając spójne migawki. Jeśli piszesz jakikolwiek kod subskrybujący źródła zewnętrzne (jak nasze custom hooks powyżej), preferuj useSyncExternalStore, aby uniknąć takich problemów.
+
+- Często nie musisz wywoływać `startTransition` jawnie w kodzie aplikacji. Biblioteki (jak router Next.js czy React Router) oznaczają nawigacje jako transitions wewnętrznie. Na przykład Next.js może opakować zmiany trasy tak, aby aktualizacje stanu z nawigacji (które mogą wyzwolić mnóstwo ponownych renderów komponentów) były traktowane jako przejściowe. Jako autor hooka po prostu miej świadomość, że jeśli Twój hook wyzwala kosztowne aktualizacje (jak ustawienie dużego stanu listy), możesz rozważyć udostępnienie sposobu na użycie `startTransition` dla niego lub udokumentować takie użycie.
+
+**Przykład – użycie useTransition do priorytetyzacji aktualizacji:**
+
+```jsx
+function FilterableList({ items }) {
+  const [filter, setFilter] = React.useState('')
+  const [filteredItems, setFilteredItems] = React.useState(items)
+  const [isPending, startTransition] = React.useTransition()
+
+  function handleInput(e) {
+    const value = e.target.value
+    setFilter(value) // pilna aktualizacja dla natychmiastowego feedbacku (kontrolowany input)
+    startTransition(() => {
+      // niepilna aktualizacja: filtrowanie dużej listy
+      const result = items.filter((item) => item.includes(value))
+      setFilteredItems(result)
+    })
+  }
+
+  return (
+    <>
+      <input value={filter} onChange={handleInput} placeholder="Type to filter" />
+      {isPending && <p>Updating list…</p>}
+      <ul>
+        {filteredItems.map((item) => (
+          <li key={item}>{item}</li>
+        ))}
+      </ul>
+    </>
+  )
+}
+```
+
+W tym komponencie pisanie w inpucie wyzwala `handleInput`. Aktualizujemy filter natychmiast (aby pole input aktualizowało się bez opóźnienia). Opakowujemy kosztowną logikę filtrowania w `startTransition`. Jeśli lista jest duża, filtrowanie może być wolne; oznaczając je jako transition, React będzie płynnie przetwarzać zdarzenia inputu i zaktualizuje wyniki listy, gdy będzie gotowy. Flaga isPending mówi nam, czy transition trwa, więc możemy pokazać drobny wskaźnik. Ten wzorzec zapewnia responsywne UI w trybie współbieżnym.
+
+## Suspense dla pobierania danych i operacji asynchronicznych
+
+Suspense to funkcja React, która pozwala komponentom „czekać" na zakończenie jakiejś operacji asynchronicznej poprzez rzucenie promise'a i przechwycenie go w granicy `<Suspense>`, która następnie może wyświetlić fallbackowe UI. Początkowo Suspense był używany do dzielenia kodu (code-splitting, przez `React.lazy`), ale w React jego użycie do pobierania danych staje się coraz bardziej realne (zwłaszcza przy wsparciu frameworków i bibliotek).
+
+Kluczowe punkty dla Suspense z hookami:
+
+- Hook pobierający dane (np. `useData(query)`) można zaprojektować tak, aby korzystał albo z tradycyjnego podejścia ze stanem ładowania, albo integrował się z Suspense. W przypadku Suspense hook może rzucić promise, jeśli dane nie są gotowe, i rzucić błąd dla błędów, pozwalając error boundaries i suspense boundaries je przechwycić. To zaawansowany wzorzec, zwykle realizowany w bibliotekach (jak React Relay czy SWR w trybie suspense).
+
+- Zgodnie z zespołem React, używanie Suspense do pobierania danych działa najlepiej, gdy jest wbudowane w warstwę danych Twojego frameworka. Next.js 13+, Remix, Relay itd. mają mechanizmy do korzystania z Suspense (np. Remix może strumieniować HTML z granicami `<Suspense>`; Next.js ma hook `use` w Server Components, który współpracuje z Suspense). Doraźne pobieranie danych przez Suspense (jak ręczne rzucanie promise'ów w każdym custom hooku) jest możliwe, ale generalnie niezalecane w dużych aplikacjach bez koordynującej biblioteki.
+
+- Rozwiązują różne problemy, ale mogą się uzupełniać. Suspense polega na czekaniu, aż coś się skończy, zanim pokaże sekcję UI (z fallbackiem w międzyczasie). useTransition polega na nieblokowaniu UI podczas renderowania aktualizacji. Możesz użyć obu: np. zainicjować pobieranie danych wewnątrz transition i użyć Suspense, aby opóźnić pokazanie nowej listy, dopóki dane nie będą gotowe.
+
+- W React wiele granic Suspense może być w toku. Zadbaj, aby każdy custom hook używający Suspense (rzucający promise) był napisany tak, aby działał z wieloma wyzwoleniami. Zwykle oznacza to, że promise jest inicjowany poza renderem (np. w obsłudze zdarzenia lub spontanicznie przy ładowaniu modułu albo przez startTransition) lub cachowany, tak aby wiele renderów wielokrotnie używało tego samego promise'a, dopóki się nie rozwiąże.
+
+- Jeśli używasz Suspense w hookach, rozważ też error boundaries. Custom hook danych może rzucić błąd (lub promise, który zostanie odrzucony), który powinien zostać przechwycony przez Error Boundary. Projektuj więc hooki tak, aby ewentualnie zwracały krotkę `[data, error]` do tradycyjnego użycia, albo rzucały, aby granice mogły przechwycić, w zależności od Twojej strategii obsługi błędów.
+
+**Przykład – prosty hook danych z Suspense (koncepcyjnie):**
+
+```jsx
+const cache = new Map()
+function useUserData(userId) {
+  if (!cache.has(userId)) {
+    // Rozpocznij fetch (można to poprawić lepszą strategią cachowania)
+    const promise = fetch(`/api/user/${userId}`)
+      .then((res) => res.json())
+      .then((data) => cache.set(userId, data))
+    throw promise // rzuć promise, aby Suspense go przechwycił
+  }
+  return cache.get(userId)
+}
+
+// Użycie:
+function Profile({ userId }) {
+  const user = useUserData(userId)
+  return <h1>Welcome, {user.name}</h1>
+}
+
+// Gdzieś wyżej w drzewie:
+;<Suspense fallback={<Spinner />}>
+  <Profile userId={42} />
+</Suspense>
+```
+
+W tym uproszczonym przykładzie `useUserData` rzuci promise przy pierwszym wywołaniu dla danego userId, powodując pokazanie fallbackowego UI `<Suspense>`. Gdy dane zostaną pobrane i zbuforowane, zwraca dane przy kolejnych renderach. Ten wzorzec działa, ale w rzeczywistych aplikacjach użyłbyś biblioteki (jak React Query lub Relay) do obsługi cachowania, pobierania w tle i uniknięcia trzymania własnej globalnej mapy cache jak tutaj.
+
+Główny wniosek jest taki, że Suspense może uprościć logikę komponentu (brak potrzeby jawnych stanów ładowania w komponencie), ale przenosi złożoność do warstwy danych. Jest potężny w połączeniu z frameworkami: na przykład Next.js 13 Server Components mogą pobierać dane na serwerze i strumieniować HTML, używając granic Suspense do wyznaczania stanów ładowania, a hydratacja klienta może kontynuować obsługę Suspense.
+
+Jeśli piszesz custom hooks w kodzie mocno opartym na Suspense, możesz mieć dwa tryby: hook może oferować zarówno wersję z Suspense, jak i bez Suspense (React Cache lub use w server components może tu pomóc). Miej oko na ewoluujące funkcje Reacta – zespół React sygnalizował przyszłe prymitywy, które mogą jeszcze bardziej uprościć pobieranie danych z Suspense.
+
+## React Server Components a hooki
+
+React Server Components (RSC) to wschodząca funkcja (zapoczątkowana we frameworkach takich jak Next.js 13 App Router), w której komponenty uruchamiają się na serwerze na etapie budowania lub na żądanie i wypuszczają serializowany JSX do połączenia z komponentami klienckimi. Ta architektura ma implikacje dla używania hooków:
+
+- Server Components w ogóle nie mogą używać hooków stanowych ani efektowych. Hooki takie jak `useState`, `useEffect`, `useReducer`, `useRef` itd. opierają się na trwałym środowisku uruchomieniowym w przeglądarce i dlatego nie zadziałają w kontekście serwerowym. Jeśli spróbujesz użyć ich w Server Component, dostaniesz błąd budowania lub błąd runtime. Server Components mogą używać tylko hooków, które są wyraźnie dozwolone (np. eksperymentalny use do oczekiwania na promise'y lub odczyt kontekstu, jeśli jest dostarczony).
+
+- Niektóre hooki, jak `useContext`, mogą działać w Server Components do odczytu kontekstu (zwłaszcza jeśli kontekst jest dostarczany z otaczającego układu, który sam może być Server Component). Ale ponieważ server components mogą bezpośrednio wywoływać funkcje asynchroniczne (jak baza danych czy fetch) i pobierać dane, użycie kontekstu na serwerze zwykle ogranicza się do rzeczy takich jak motyw czy konfiguracja przekazywana od rodzica.
+
+- W Next.js jawnie oznaczasz pliki (komponenty lub hooki) jako komponenty klienckie, dodając `'use client'` na górze. Jeśli piszesz custom hook używający funkcji tylko klienckich (stan, efekty, API przeglądarki), możesz musieć albo umieścić `'use client'` na górze jego pliku, albo zadbać, by był używany tylko z komponentów klienckich. Na przykład, jeśli masz hook `useBrowserTitle(title)`, który wywołuje `useEffect(() => { document.title = title; }, [title])`, ten hook musi uruchamiać się tylko na kliencie. Oznaczenie go `'use client'` sprawia, że jeśli server component spróbuje go zaimportować, wystąpi błąd, tym samym wymuszając używanie tego hooka tylko w kontekście klienckim.
+
+- Czasami możesz chcieć hooka, który działa zarówno na serwerze, jak i na kliencie, ale robi różne rzeczy. Na przykład hook `useAuthSession` mógłby na serwerze pobierać informacje o sesji przez wywołanie serwerowe (bez potrzeby stanu, po prostu zwraca dane), a na kliencie ewentualnie nic nie robić (jeśli już zserializowane) lub wywołać endpoint. W takich przypadkach możesz podzielić implementacje: np. jedno narzędzie dla serwera (może nawet nie hook, tylko funkcja, bo serwer może to zrobić synchronicznie) i jeden hook dla klienta, który używa stanu/efektu do pobrania sesji przy montowaniu. To, którego użyjesz, zależy od środowiska (można wykrywać przez `typeof window` lub przez podział przez bundler z użyciem warunków).
+
+- Remix nie ma React Server Components; uruchamia zwykłe komponenty React na serwerze dla SSR, więc możesz używać hooków, ale po prostu nie uruchomią się one aż do strony klienta (podobnie jak strony Next.js). Koncepcja „server components" jest wyjątkowa o tyle, że komponent nigdy nie staje się interaktywny, podczas gdy SSR + hydratacja (Remix, strony Next) oznaczają, że komponent ostatecznie uruchomi się na kliencie. Dla Remix nie martwisz się więc `'use client'`, ale wciąż uwzględniasz SSR (jak to, że efekty nie uruchamiają się na serwerze).
+
+- W projektach Next.js App Router projektuj komponenty tak, aby czysta logika UI i pobierania danych mogła rezydować w Server Components (bez potrzeby hooków, tylko funkcje asynchroniczne), a cała logika interaktywna/kliencka była izolowana w małych komponentach/hookach klienckich. Custom hooks używające interaktywności powinny być wyraźnie tylko klienckie. Możesz też zapewnić dobre doświadczenie deweloperskie, jasno dokumentując, czy custom hook wymaga środowiska klienckiego.
+
+**Przykład – hook tylko kliencki z 'use client':**
+
+```jsx
+// useScrollPosition.js
+'use client'
+import { useEffect, useState } from 'react'
+
+export function useScrollPosition() {
+  const [scrollY, setScrollY] = useState(0)
+  useEffect(() => {
+    function handleScroll() {
+      setScrollY(window.scrollY)
+    }
+    window.addEventListener('scroll', handleScroll)
+    return () => window.removeEventListener('scroll', handleScroll)
+  }, [])
+  return scrollY
+}
+```
+
+Tutaj mamy custom hook, który oczywiście ma sens tylko w przeglądarce (odczytuje `window.scrollY`). Oznaczamy plik jako `'use client'`, aby można go było zaimportować w Server Component Next.js 13 tylko wtedy, gdy ten Server Component użyje go w kontekście klienckim (w praktyce zwykle zaimportujesz go bezpośrednio w komponencie klienckim). Gdyby Server Component spróbował go użyć, Next.js zaprotestowałby lub zapewnił, że uruchomi się on po stronie klienta. Dyrektywa `'use client'` efektywnie tworzy granicę – nic, co to importuje, nie będzie mogło być renderowane czysto po stronie serwera. Tak zapewniasz, że takie hooki uruchamiają się tam, gdzie powinny.
+
+Podsumowując, przy pracy z frameworkami:
+
+- W Next.js (z RSC) miej świadomość, gdzie uruchamiają się hooki. Używaj 'use client' dla hooków, które dotykają stanu lub przeglądarki. Utrzymuj ciężką, nieinteraktywną logikę danych w server components tam, gdzie to możliwe (bez potrzeby hooków, tylko `async/await`).
+
+- W Remix (i tradycyjnych frameworkach SSR) pamiętaj, że początkowy render odbywa się na serwerze bez DOM. Unikaj lub zabezpiecz każdy kod (nawet wewnątrz hooków), który zepsułby się bez `window` lub `document`. Często oznacza to robienie tego w `useEffect`, który naturalnie pomija SSR. Remix dostarcza funkcje loader do danych, więc hook do danych może nie być potrzebny przy początkowym ładowaniu (po prostu użyj `useLoaderData` dostarczanego przez Remix). Możesz jednak mieć hooki do zachowań po stronie klienta w Remix, tak jak w każdym SPA, i te powinny działać dobrze (Remix zhydratuje i je uruchomi).
+
+- W obu przypadkach różnice w cyklu życia trasy oznaczają, że powinieneś prawidłowo sprzątać. Np. nawigacja między stronami Next.js odmontowuje komponenty – jeśli Twój custom hook coś ustawia (np. subskrypcję) globalnie, zadbaj, aby nie żyło to dłużej niż komponent, który go użył. W Remix przejścia między trasami mogą utrzymywać niektóre komponenty zamontowane (jeśli układ się nie zmienia), ale odmontowują zagnieżdżone; Twoje hooki w tych odmontowanych komponentach powinny sprzątać automatycznie, jeśli są poprawnie napisane (z return w useEffect).
+
+## Wzorce synchronizacji stanu
+
+W złożonych aplikacjach możesz potrzebować synchronizować stan między różnymi częściami aplikacji lub z systemami zewnętrznymi. Dotknęliśmy już kontekstów i external stores; tutaj podsumujemy wzorce utrzymywania stanu w synchronizacji:
+
+- Najprostszym wzorcem synchronizacji w React jest podniesienie stanu (lifting state) do wspólnego przodka, tak aby dwa komponenty potomne widziały ten sam stan. Czasem jednak komponenty są daleko od siebie lub chcesz uniknąć zbyt wysokiego umiejscowienia. Kontekst (z `useContext`) to jeden sposób na współdzielenie stanu bez prop drillingu. Innym jest external store (jak Redux, Zustand), który subskrybuje wiele komponentów (z hookami być może używającymi `useSyncExternalStore` wewnętrznie).
+
+- Jeśli masz jakieś źródło stanu spoza Reacta (jak pamięć przeglądarki, globalna magistrala zdarzeń czy strumień danych), napisanie custom hooka z `useSyncExternalStore` zapewnia, że wszystkie komponenty otrzymują spójny widok tych danych. Na przykład, aby synchronizować stan między kartami przeglądarki, możesz użyć `window.localStorage` lub BroadcastChannel; możesz sprawić, by hook subskrybował zdarzenie „storage" i odpowiednio aktualizował stan React. Ważne jest, że `useSyncExternalStore` zadba, aby każda aktualizacja wyzwoliła wszystkich subskrybentów, a przy trybie współbieżnym zapobiegła częściowym aktualizacjom (tearing).
+
+- Przykład – załóżmy, że chcesz utrwalać preferencję motywu i mieć ją aktualizowaną między otwartymi kartami. Mógłbyś mieć hook useTheme(), który pod spodem używa custom store lub nawet kontekstu i zapisuje do `localStorage`. Albo prostsze podejście: użyj `useSyncExternalStore` do subskrybowania zdarzeń `'storage'` (które uruchamiają się, gdy `localStorage` zostanie zmienione w innej karcie). W ten sposób, jeśli użytkownik przełączy motyw w jednej karcie, hook innej karty usłyszy zdarzenie i zaktualizuje się.
+
+- Czasem złożoną synchronizację można obsłużyć przez event emitter: komponenty emitują zdarzenia, a inne nasłuchują. Kontekst React lub external store może być tą centralną magistralą zdarzeń. Na przykład custom hook mógłby dostarczać interfejs jak `useGlobalState(key)`, który pod spodem używa magazynu obiektowego i `useSyncExternalStore` do subskrybowania zmian tego klucza. Biblioteki takie jak Zustand implementują globalny magazyn z hookami, które robią to elegancko.
+
+- Jeśli wiele źródeł może aktualizować dany fragment stanu (powiedzmy, użytkownik może aktualizować ustawienia lokalnie, a także otrzymuje aktualizacje z serwera), zapewnij jedno źródło prawdy lub strategię rozwiązywania konfliktów. Może to wykraczać poza same hooki React, ale Twój hook może enkapsulować taką logikę (np. wygrywa ostatni zapis, albo ignoruj zdalne aktualizacje, gdy lokalne zmiany nie są zapisane itd.).
+
+- Innym wzorcem jest synchronizacja w czasie, jak implementacja debounce'owanej synchronizacji lub okresowej synchronizacji (jak autozapis co X sekund). Hook może zarządzać interwałem (`useEffect` z `setInterval`), aby okresowo wypychać aktualizacje na serwer lub do `localStorage`. Albo użyj efektu do synchronizacji przy każdej zmianie stanu, ale z throttlingiem.
+
+- Przy automatycznym batchowaniu i współbieżności, jeśli wydarzy się wiele aktualizacji, mogą zostać zastosowane razem. Zwykle jest to w porządku. Jedną potencjalną pułapką jest to, jak często Twój useSyncExternalStore wyzwala ponowne rendery, jeśli external store jest aktualizowany bardzo szybko – hook zbatchuje je, jeśli to możliwe w trybie współbieżnym. Mimo to rozważ debounce'owanie zdarzeń zewnętrznych, jeśli jest to potrzebne dla wydajności.
+
+**Przykład – useSyncExternalStore dla globalnego magazynu (pseudokod), wyobraź sobie prosty obiekt globalnego magazynu:**
+
+```jsx
+// Prosty magazyn z event emitterem dla demonstracji
+const globalStore = {
+  state: { color: 'blue', user: null },
+  listeners: new Set(),
+  setState(updater) {
+    this.state = updater(this.state)
+    this.listeners.forEach((listener) => listener())
+  },
+  subscribe(listener) {
+    this.listeners.add(listener)
+    return () => this.listeners.delete(listener)
+  },
+}
+
+// Custom hook do użycia klucza z globalnego magazynu
+function useGlobalState(selector) {
+  // selektor wybiera fragment stanu (aby unikać ponownego renderu dla niepowiązanych części)
+  return React.useSyncExternalStore(
+    React.useCallback((cb) => globalStore.subscribe(cb), []),
+    () => selector(globalStore.state),
+    () => selector(globalStore.state) // migawka serwerowa (jeśli potrzebna, tu po prostu ta sama początkowa)
+  )
+}
+
+// Użycie
+function DisplayColor() {
+  const color = useGlobalState((state) => state.color)
+  return <p>Color is {color}</p>
+}
+function Button() {
+  return <button onClick={() => globalStore.setState((s) => ({ ...s, color: 'red' }))}>Red</button>
+}
+```
+
+Tutaj `useGlobalState` używa `useSyncExternalStore` do subskrybowania zmian w naszym globalStore. Selektor pozwala nam zwrócić tylko fragment stanu (np. `state.color`) w celu optymalizacji. Funkcja subscribe używa subscribe magazynu, a getSnapshot odczytuje bieżący stan przez selektor. Teraz DisplayColor zrenderuje się ponownie, ilekroć zmieni się `state.color`, a Button po kliknięciu aktualizuje globalny magazyn, co wyzwala wszystkich listenerów. Ten wzorzec (globalny magazyn z subscribe/getSnapshot) to zasadniczo sposób, w jaki wewnętrznie działają biblioteki takie jak Redux (z jego useSelector) i Zustand. Pokazuje synchronizowanie stanu między rozproszonymi komponentami przez wspólny mechanizm subskrypcji.
+
+W kontekstach SSR często chcesz zhydratować aplikację z tym samym stanem, który zrenderował serwer. React zajmuje się tym dla lokalnego stanu i propsów. Dla danych zewnętrznych zadbasz, aby Twój wynik serwera (Next.js `getServerSideProps` lub loadery Remix) dostarczał dane używane przy pierwszym renderze. Hooki takie jak `useSyncExternalStore` mają ten `getServerSnapshot` do dostarczania spójnej wartości podczas hydratacji. Zawsze implementuj `getServerSnapshot`, gdy używasz `useSyncExternalStore` dla czegoś, co może różnić się na serwerze/kliencie (np. odczyt z window powinien mieć fallback serwerowy). Unika to niezgodności, gdzie np. serwer powiedział „offline", bo `navigator.onLine` nie był dostępny, ale klient mówi „online" – React ostrzegłby o niezgodności treści. Nasz przykład useOnlineStatus obsłużył to, zwracając bezwarunkowo true na serwerze jako założenie; w rzeczywistej aplikacji serwer mógłby osadzić faktyczny status, jeśli jest znany.
+
+---
+
+# Testowanie i kwestie wydajności
+
+Wysokiej jakości praktyki inżynierii oprogramowania obejmują testowanie hooków i monitorowanie wydajności. Hooki mogą zawierać złożoną logikę, więc ważne jest sprawdzenie, czy działają w różnych scenariuszach. Ponadto, ponieważ hooki często zarządzają stanem i powodują ponowne rendery, zrozumienie ich wpływu na wydajność jest kluczowe. Przyjrzyjmy się, jak testować hooki i profilować ich wydajność, a także niektórym typowym pułapkom i jak ich unikać.
+
+## Testowanie custom hooks
+
+Testowanie hooków można wykonywać w izolacji przy użyciu narzędzi lub testując je przez komponenty. React Testing Library dostarcza narzędzie o nazwie `renderHook` (w pakiecie `@testing-library/react-hooks`), które szczególnie pomaga w testowaniu logiki hooków. Podejścia do testowania hooków:
+
+- Ta funkcja pozwala wywołać hook tak, jakby był wewnątrz komponentu, i uzyskać jego wartość zwracaną. Możesz następnie robić asercje na wyniku hooka, a nawet symulować aktualizacje. Na przykład możesz przetestować, że Twój custom `useCounter` inicjalizuje się na 0 i inkrementuje do 1 po wywołaniu zwróconej funkcji. Narzędzie `renderHook` zajmie się uruchomieniem hooka w specjalnym komponencie testowym, więc nie musisz go ustawiać ręcznie. Przykład: `const { result } = renderHook(() => useMyHook(initialProps)); expect(result.current.value).toBe(...)`. Testowanie hooków w React Testing Library wspiera też aktualizowanie propsów hooka i ponowne renderowanie oraz narzędzie `act()`, aby zapewnić zastosowanie aktualizacji stanu przed asercjami.
+
+- Zanim `renderHook` stał się popularny, można było napisać mały komponent testowy używający hooka, wyrenderować go przez testing library lub Enzyme i robić asercje, inspekcjonując komponent lub jego stan. To wciąż wykonalne, zwłaszcza jeśli zachowanie hooka jest widoczne przez wynik komponentu. Jednak `renderHook` jest bardziej bezpośredni i prostszy w większości przypadków.
+
+- Jeśli Twój hook zwraca funkcję (jak callback wyzwalający coś), możesz wywołać `result.current.someFunction()` w teście. Jeśli ta funkcja powoduje aktualizacje stanu, prawdopodobnie będziesz musiał opakować ją w narzędzie React `act()`, aby prawidłowo wypłukać efekty i aktualizacje stanu przed asercją. Testing library często ostrzega, jeśli zapomnisz o `act()`.
+
+- Jeśli Twój hook robi coś asynchronicznego (jak pobieranie danych), Twój test powinien poczekać, aż to się ustabilizuje. Na przykład możesz `await waitFor(() => expect(result.current.data).toBeDefined())` lub użyć fałszywych timerów. Jeśli Twój hook używa setTimeout lub debounce'owania, możesz użyć fałszywych timerów Jest, aby przewijać czas w testach.
+
+- Jeśli Twój hook ustawia subskrypcje (jak event listenery), zadbaj, aby przy odmontowaniu hooka (testing library odmontuje, gdy komponent testowy zostanie usunięty lub gdy wywołasz `result.unmount()` z `renderHook`) te subskrypcje zostały posprzątane. Możesz szpiegować removeEventListener lub funkcję-mock, aby upewnić się, że została wywołana.
+
+**Przykład – testowanie custom hooka z `renderHook()`, załóżmy, że mamy prosty custom hook:**
+
+```jsx
+function useCounter(initialCount = 0) {
+  const [count, setCount] = React.useState(initialCount)
+  const increment = () => setCount((c) => c + 1)
+  return { count, increment }
+}
+```
+
+Możemy przetestować go następująco:
+
+```jsx
+import { renderHook, act } from '@testing-library/react-hooks'
+import { useCounter } from './useCounter'
+
+test('useCounter initializes and increments correctly', () => {
+  // Wyrenderuj hook z początkowym count równym 5
+  const { result } = renderHook(() => useCounter(5))
+  // Stan początkowy
+  expect(result.current.count).toBe(5)
+
+  // Act: wywołaj funkcję increment
+  act(() => {
+    result.current.increment()
+  })
+  // Teraz count powinien być zinkrementowany
+  expect(result.current.count).toBe(6)
+})
+```
+
+W tym teście użyliśmy `renderHook` do zamontowania naszego hooka i zdestrukturyzowaliśmy result.current, które trzyma wartość zwracaną hooka (tu obiekt z `{ count, increment }`). Robimy asercję na początkowym count. Następnie używamy `act()`, aby opakować wywołanie result.current.increment(), ponieważ wyzwoli ono aktualizację stanu wewnątrz hooka. Po act oczekujemy, że count wzrósł. Odzwierciedla to, jak hook zachowałby się w komponencie. Testing library zapewnia posprzątanie hooka po teście, uruchamiając wszelki cleanup efektów.
+
+Zauważ, że przekazaliśmy 5 jako początkowy count. `renderHook` pozwala nam przekazywać parametry przez wywołanie `renderHook(() => useCounter(5))`. Jeśli chcemy przetestować różne scenariusze lub zmieniające się propsy, możemy użyć drugiego argumentu do `renderHook` o nazwie `initialProps` oraz funkcji rerender. Na przykład:
+
+```jsx
+const { result, rerender } = renderHook(({ initial }) => useCounter(initial), {
+  initialProps: { initial: 0 },
+})
+expect(result.current.count).toBe(0)
+rerender({ initial: 10 }) // to zreinicjalizuje hook z nowymi propsami (uwaga: nasz hook ignoruje props po pierwszej inicjalizacji, bo to inicjalizator stanu)
+expect(result.current.count).toBe(10)
+```
+
+Ale bądź ostrożny: jeśli Twój hook używa `useState(initial)` bez logiki resetowania, zmiana propsa nie zresetuje stanu (jak w tym przykładzie). Może być konieczne przetestowanie z nową instancją hooka (remount) w razie potrzeby lub zaprojektowanie hooka tak, aby reagował na zmiany propsów.
+
+Dla hooków integrujących się z kontekstem lub potrzebujących drzewa React (np. hook wywołujący `useContext(ThemeContext)`), renderHook pozwala opakować hook w provider kontekstu. Jest opcja wrapper, w której możesz przekazać komponent dostarczający kontekst. Na przykład, aby przetestować hook używający kontekstu, mógłbyś zrobić:
+
+```jsx
+const wrapper = ({ children }) => (
+  <ThemeContext.Provider value="dark">{children}</ThemeContext.Provider>
+)
+const { result } = renderHook(() => useThemeColor(), { wrapper })
+expect(result.current).toBe('dark')
+```
+
+Zapewnia to, że hook ma dostępny niezbędny kontekst podczas testu.
+
+Ogólnie testowanie hooków bezpośrednio pozwala skupić testy na logice w hooku bez potrzeby symulowania interakcji użytkownika na UI. Jest to szczególnie przydatne dla custom hooks, które enkapsulują złożoną logikę (jak hook pobierający dane z logiką cachowania itd.).
+
+## Profilowanie i strojenie wydajności
+
+Pracując w dużych aplikacjach, ważne jest, aby mieć oko na wydajność. Same hooki są lekkie, ale sposób ich użycia może wpłynąć na wydajność renderowania. Kilka wskazówek i narzędzi:
+
+- React DevTools Profiler. To podstawowe narzędzie do profilowania wydajności aplikacji React. Pozwala nagrać sekwencję interakcji, a następnie zbadać, jak komponenty renderowały się i jak długo to trwało. Za pomocą Profilera możesz zobaczyć, czy komponent (lub hook) powoduje częste aktualizacje. Na przykład możesz zauważyć, że komponent renderuje się ponownie znacznie częściej niż oczekiwano lub trwa to zbyt długo, co może wskazywać, że problematyczny jest hook w jego wnętrzu (jak niememoizowane kosztowne obliczenie).
+
+- Używanie Profilera lub nawet dodanie `console.log` w renderze może ujawnić, czy komponent renderuje się ponownie, gdy nie powinien. Jeśli widzisz zmarnowane rendery, zastanów się dlaczego. Być może wartość providera kontekstu zmienia się zbyt często (napraw przez memoizację, jak omówiono) lub rodzic przekazuje nowy props obiektowy za każdym razem (napraw przez useMemo lub podział propsów).
+
+- `useMemo`/`useCallback` dla wydajności. Jak omówiono, powinny być stosowane, gdy masz dowody na problem wydajnościowy. Na przykład profilowanie może pokazać, że komponent renderuje się wolno, bo przelicza dużą różnicę listy przy każdym naciśnięciu klawisza – to kandydat do `useMemo`. Albo głębokie drzewo renderuje się ponownie, bo props callbacka zmienił tożsamość – kandydat do useCallback lub przeniesienia tej funkcji na zewnątrz.
+
+- Dla komponentów funkcyjnych używaj React.memo, aby zapobiec ponownemu renderowi, jeśli propsy się nie zmieniły. Często hooki idą z tym w parze. Przykład: `<Child data={data} onChange={callback} />` może być opakowane w React.memo, aby polegać na równości propsów. Wtedy to rodzic musi zapewnić, że data i callback są stabilne (przez hooki), aby uniknąć ponownych renderów. Jeśli w Profilerze widzisz, że dane poddrzewo aktualizuje się często, mimo że jego propsy są takie same, upewnij się, że jest memoizowane lub w inny sposób nierenderowane ponownie.
+
+- React dostarcza też komponent `<Profiler>`, którym możesz opakować części drzewa, aby programowo zbierać informacje o czasach. Jest to bardziej zaawansowane i często niepotrzebne, jeśli DevTools wystarcza. Ale można go używać w buildach deweloperskich do logowania czasów renderowania konkretnych komponentów.
+
+- Jeśli podejrzewasz, że wewnętrzna logika hooka jest wolna (np. duży algorytm w `useMemo` lub wolny efekt), możesz to zmierzyć. Wewnątrz implementacji hooka mógłbyś użyć `performance.now()` lub console.time wokół kosztownej części, aby to ocenić. Ale bardziej systematycznie, w razie potrzeby napisz testy wydajnościowe lub benchmarki (rzadko konieczne, chyba że piszesz szeroko używaną bibliotekę).
+
+- Warto zaznaczyć, że nie każde użycie hooka wymaga mikrooptymalizacji. Preferuj czytelną logikę; a potem optymalizuj, jeśli profilowanie wskazuje wąskie gardło. Zespół React często to podkreśla: np. nie opakowuj domyślnie każdego providera kontekstu w useMemo bez zrozumienia, czy kontekst zmienia się na tyle często, by miało to znaczenie. W praktyce jednak niektóre wzorce (jak wartości providerów kontekstu) są znane z powodowania renderów, więc są to nisko wiszące optymalizacje, jak omówiliśmy.
+
+- Użyj karty performance przeglądarki do śledzenia pamięci w razie potrzeby. Jeśli komponent używający hooka jest często montowany/odmontowywany, zadbaj o brak wycieków (np. nieusuniętych event listenerów). Wyciek może objawiać się rosnącym zużyciem pamięci lub coraz większą liczbą event listenerów w czasie. Testowanie w dev ze strict mode (który montuje/odmontowuje dwukrotnie) może pomóc wcześnie wychwycić niektóre wycieki (jeśli coś zawiedzie lub zobaczysz zduplikowane logi).
+
+- Tryb współbieżny Reacta oznacza, że Twoja aplikacja częściej pozostaje responsywna. Ale źle zoptymalizowany komponent wciąż może blokować wątek JS (np. masywne obliczenie w renderze). Jeśli zidentyfikujesz taki przypadek, możesz podzielić pracę (może przy użyciu hooka `useWorker`, aby przenieść do web workera w skrajnych sytuacjach, lub rozbić komponent na mniejsze części z Suspense lub transitions).
+
+- Pamiętaj, że tryb development jest znacznie wolniejszy (z powodu dodatkowych sprawdzeń, jak Strict Mode). Zawsze rób sprawdzenie wydajności w buildzie produkcyjnym, aby uzyskać realistyczne liczby. Jednak względne różnice (który komponent renderuje się częściej niż to konieczne) zwykle pokażą się także w trybie dev.
+
+## Typowe pułapki i jak ich unikać
+
+Na koniec podsumujmy kilka typowych pułapek przy używaniu hooków oraz jak je łagodzić:
+
+- Być może footgun numer jeden. Zapomnienie o uwzględnieniu zależności w `useEffect` lub `useMemo` może powodować błędy z nieaktualnymi danymi. Zawsze albo uwzględniaj zależność, albo, jeśli celowo ją pomijasz (rzadkie przypadki), udokumentuj dlaczego (i wycisz regułę lintera komentarzem eslint) – ale zwykle staraj się raczej przebudować niż pomijać. Jeśli dodanie zależności powoduje nieskończoną pętlę, to znak, że efekt robił coś, co powinno być obsłużone inaczej (jak obliczanie stanu ze stanu – rozważ useReducer lub inne podejście).
+
+- Odwrotny problem: uwzględnianie w tablicy zależności obiektów lub funkcji, które nie muszą tam być lub mogłyby być stabilne. Może to powodować zbyt wiele ponownych renderów. Rozwiązanie: albo zawęź zależność (może wybierając konkretną właściwość lub używając useCallback do ustabilizowania funkcji), albo przebuduj logikę. Przykład: efekt zależy od propsa, który jest literałem obiektowym przekazywanym w rodzicu – rodzic redefiniuje ten obiekt przy każdym renderze. W takim przypadku albo rodzic powinien ustabilizować ten obiekt (useMemo), albo efekt powinien zależeć od stabilnego jego fragmentu.
+
+- Nie jest to dozwolone (poza konkretnymi, zaawansowanymi wzorcami współbieżnymi), ale czasem początkujący próbują wywołać setter stanu poza useEffect. Zadbaj, aby wszystkie aktualizacje stanu były wykonywane w obsługach zdarzeń, efektach lub callbackach, a nie bezpośrednio w ciele komponentu lub hooka po odczytaniu jakiejś wartości. Jeśli musisz wyprowadzić nowy stan z propsów przy montowaniu, użyj albo funkcji inicjalizującej useState, albo efektu do aktualizacji po pierwszym renderze.
+
+- Pamiętaj, hooki muszą być wywoływane w tej samej kolejności. Jeśli masz wzorzec jak `if (someCondition) useEffect(...);`, narusza to reguły, jeśli nie jest spójne przy każdym renderze. Naprawa polega często na przeniesieniu warunku do callbacka hooka lub użyciu dwóch komponentów lub hooków do rozdzielenia ścieżek. Na przykład zamiast `if(x) useEffect(fetchX, [x])`, zrób `useEffect(() => { if(x) fetchX(); }, [x])`. W ten sposób hook jest zawsze wywoływany, ale efekt nic nie robi, jeśli warunek jest fałszywy.
+
+- Hooki mogą być wywoływane tylko w komponentach funkcyjnych React lub innych hookach. Nie wywołuj ich w zwykłych funkcjach, komponentach klasowych ani poza renderowaniem Reacta. Custom hooks tu pomagają – jeśli masz jakieś narzędzie potrzebujące hooka, opakuj je w custom hook.
+
+- Wyzwalanie zbyt wielu aktualizacji stanu w krótkim czasie może powodować problemy z wydajnością lub nawet wizualne zacinanie. Dzięki automatycznemu batchowaniu większość sekwencyjnych aktualizacji w zdarzeniu jest batchowana, ale jeśli masz pętle asynchroniczne lub zalew zdarzeń, rozważ throttling aktualizacji. Na przykład zdarzenie scroll okna może uruchamiać się setki razy na sekundę – aktualizowanie stanu przy każdym z nich mogłoby być przesadą; zamiast tego możesz je próbkować (aktualizować maks. 60fps lub użyć `requestAnimationFrame`).
+
+- Hooki takie jak useEffect i useLayoutEffect mają konkretny timing (useLayoutEffect uruchamia się wcześniej). Jeśli robisz mutacje DOM w useEffect i masz też coś w useLayoutEffect w innym komponencie, zdaj sobie sprawę z kolejności: wszystkie useLayoutEffect uruchamiają się przed jakimkolwiek useEffect. Może to powodować subtelne problemy, na przykład jeśli useLayoutEffect rodzica oczekuje, że ref DOM dziecka będzie zaktualizowany, zadbaj o kolejność (jeśli są w tej samej fazie lub różnych).
+
+- Jak wspomniano, zawsze sprzątaj po efektach ubocznych. Jeśli Twój custom hook ustawia subskrypcję, zwróć cleanup. Jeśli uruchamia timer, wyczyść go przy cleanupie. Częstym niedopatrzeniem jest zapomnienie o wyczyszczeniu timeoutu lub interwału – prowadząc do jego wykonania później, gdy być może komponentu już nie ma.
+
+- W scenariuszach SSR kod bezpośrednio używający globalnych obiektów przeglądarki (window, document, navigator) wyrzuci błędy. Zadbaj, aby albo sprawdzić `typeof window !== 'undefined'`, albo umieścić taki kod w `useEffect`, który z natury nie uruchomi się na serwerze. Ponadto niektóre wartości różnią się między serwerem a klientem (jak useId zapewnia stabilne id w obu środowiskach, lub dane specyficzne dla środowiska). Dodanie `useId` w React ma właśnie na celu uniknięcie pułapki niezgodności id – używaj go dla wszelkich dynamicznie generowanych id w komponentach, które mogą renderować się na serwerze, aby je dopasować.
+
+- Jeśli Twój custom hook zwraca literał obiektowy lub tablicę, pamiętaj, że przy każdym renderze ten obiekt/tablica jest nową referencją, nawet jeśli zawartość jest taka sama. Jeśli komponent nadrzędny porównuje poprzedni i następny stan lub jeśli dziecko jest opakowane w React.memo porównujące propsy płytko, może to być problem. Aby tego uniknąć, możesz zwracać prymitywy lub useMemo dla obiektów. Na przykład custom hook zwracający `[list, addItem]` zwróci nową tablicę za każdym razem (psując memoizację). W praktyce zwykle jest to w porządku (bo komponenty używające krotki po prostu ją zdestrukturyzują), ale pamiętaj o równości referencyjnej przy optymalizacji.
+
+- Jeśli hook robi zbyt wiele (wiele odpowiedzialności), może być trudno prześledzić błędy. Jeśli okaże się, że custom hook ma dużo wewnętrznego stanu i efektów, rozważ podzielenie go na prostsze hooki lub sprawdzenie, czy część logiki może żyć w komponentach. Hooki powinny być idealnie stosunkowo skupione. Można też posypać kod `console.log` lub użyć inspekcji „hooks" w React DevTools, aby zobaczyć stan hooka.
+
+Będąc świadomym tych pułapek i używając reguł lintera React (eslint-plugin-react-hooks), możesz uniknąć większości typowych błędów. Linter będzie krzyczał, jeśli masz brakujące zależności lub warunkowe hooki. To świetne wsparcie – słuchaj jego ostrzeżeń (a jeśli je wyciszasz, bądź bardzo pewien, co robisz).
+
+---
+
+# Next.js i Remix: kwestie hooków specyficzne dla frameworków
+
+Popularne frameworki React dodają kolejną warstwę kwestii do rozważenia z powodu renderowania po stronie serwera, routingu opartego na systemie plików oraz własnych mechanizmów pobierania danych. Tutaj podkreślamy, jak używanie i tworzenie hooków może się różnić lub wymagać dostosowania przy pracy w Next.js lub Remix (jako przykładach nowoczesnych frameworków).
+
+## Next.js: hooki z SSR i App Router
+
+Next.js wspiera zarówno tradycyjny SSR (dla stron), jak i nowy App Router z React Server Components. Przy używaniu hooków w Next.js:
+
+- `useEffect` a SSR: W stronach Next.js (lub jakimkolwiek SSR) pamiętaj, że kod `useEffect` uruchamia się tylko na kliencie. Jeśli masz efekt pobierający dane i używasz też `getServerSideProps` lub `getStaticProps` Nexta do pobrania danych na serwerze, możesz robić podwójne pobieranie. Najlepsza praktyka to pozwolić serwerowi pobrać początkowe dane i przekazać jako propsy; następnie wewnątrz komponentu użyć tych danych bezpośrednio. Używaj useEffect do pobierania danych tylko, jeśli dane są naprawdę tylko klienckie lub muszą się aktualizować po montowaniu. Hydratacja Next.js (katalog pages) dopasuje HTML z serwera, a następnie Twój efekt może się uruchomić. W App Router pobieranie danych powinno idealnie odbywać się w Server Components lub przez nowy hook use, redukując potrzebę klienckich ładowań danych przez useEffect.
+
+- W Next.js (nawigacja po stronie klienta między stronami z użyciem next/link lub routera) Twoje komponenty odmontowują/montują się podczas nawigacji. Jeśli masz globalny provider kontekstu opakowujący strony (jak w `_app.js`), pozostaje on zamontowany. Ale stan na poziomie strony zresetuje się przy nawigacji. Jeśli chcesz utrwalać stan między stronami, możesz musieć podnieść go wyżej (np. do custom App component lub użyć czegoś jak Zustand dla globalności). Dla custom hooks oznacza to, że będą się reinicjalizować przy każdej nawigacji, jeśli są używane w komponencie strony. To normalne, po prostu bądź świadom (na przykład useEffect na stronie uruchomi się za każdym razem, gdy nawigujesz do tej strony na nowo).
+
+- Next dostarcza hooki jak `useRouter` (w pages) lub `usePathname`/`useSearchParams` (w App Router). Jeśli piszesz custom hook zależny od trasy, rozważ ich użycie. Na przykład hook `useQueryParam(key)` mógłby użyć routera Nexta do pobrania wartości query string. Miej na uwadze:
+
+  - W pages, `useRouter().query` jest puste przy pierwszym renderze podczas SSR dla tras niedynamicznych (chyba że nawigujesz po stronie klienta). Często musisz zabezpieczyć lub poczekać, aż router będzie gotowy.
+  - W App Router, `useSearchParams()` dostarcza parametry query nawet przy pierwszym renderze (bo są pochodzenia serwerowego).
+
+- Jak omówiono, Next.js App Router domyślnie traktuje komponenty jako Server Components. Jeśli tworzysz custom hook z `'use client'`, używaj go tylko w komponentach klienckich. Wiele hooków UI (event listenery, lokalny stan) będzie tylko klienckich. Hooki pobierania danych mogą być zastąpione po prostu wywołaniem funkcji asynchronicznej w Server Component. Na przykład zamiast hooka `useLatestPosts`, który pobiera posty, w Server Component możesz po prostu zrobić `const posts = await getPosts()` bezpośrednio (lub użyć hooka use do odczytu zasobu asynchronicznego). Potrzeba niektórych hooków maleje więc po stronie serwera.
+
+- Ostrzeżenie o `useLayoutEffect`: React ostrzeże, jeśli `useLayoutEffect` jest używany podczas SSR. W Next 12 (pages) zobaczyłbyś ostrzeżenie, jeśli komponent z `useLayoutEffect` był renderowany na serwerze. React próbuje automatycznie uruchomić te efekty na kliencie po hydratacji, aby to złagodzić, ale wciąż wypisuje ostrzeżenie w dev. Zalecana naprawa to albo opakowanie kodu w sprawdzenie środowiska, albo przeniesienie go do `useEffect`, jeśli to możliwe. Na przykład, jeśli komponent używa `useLayoutEffect` do zmierzenia rozmiaru DOM, mógłbyś odroczyć to na klienta z `useEffect`, jeśli początkowy render serwerowy może być przybliżony. Albo wywołuj `useLayoutEffect` tylko, gdy `typeof window !== 'undefined'`. W Next App Router alternatywą jest renderowanie tego komponentu tylko na kliencie (np. przez opakowanie w komponent kliencki).
+
+- Jeśli piszesz custom hook używający funkcji Nexta (jak `useRouter` lub kontekst z next/router), jest on nieodłącznie związany z Nextem. To w porządku, ale to udokumentuj. Ponadto taki hook nie może być używany poza Nextem (nie żeby to miało znaczenie w Twojej aplikacji). Do testowania możesz musieć zamockować router Nexta lub opakować hook w atrapę kontekstu Next Router.
+
+**Przykład – hook świadomy trasy w Next.js:**
+
+```jsx
+import { usePathname } from 'next/navigation' // Next 13 App Router
+
+// Custom hook pokazujący monit przy opuszczaniu strony, jeśli formularz jest zmieniony
+;('use client')
+import { useEffect } from 'react'
+
+function useWarnIfUnsaved(isDirty) {
+  useEffect(() => {
+    if (!isDirty) return
+    const handleRouteChange = () => {
+      if (isDirty && !window.confirm('You have unsaved changes. Leave anyway?')) {
+        throw 'Route change aborted' // To zapobiegnie nawigacji (na potrzeby przykładu)
+      }
+    }
+    window.addEventListener('beforeunload', (e) => {
+      if (isDirty) {
+        e.preventDefault()
+        e.returnValue = ''
+      }
+    })
+    // W Next App Router możesz użyć zdarzeń routera lub usePathname do wykrycia nawigacji
+    const currentPath = usePathname()
+    return () => {
+      // sprzątanie listenera
+      // Uwaga: Next 13 nie daje bezpośredniego sposobu na anulowanie zmiany trasy z efektu
+      // To złożony scenariusz wykraczający poza prostą demonstrację hooków
+    }
+  }, [isDirty])
+}
+```
+
+Ten zgrubny przykład zarysowuje hook ostrzegający użytkowników o niezapisanych zmianach. Używa beforeunload dla twardych przeładowań i próbuje przechwycić zmiany trasy. Szczegóły dla Next App Router mogą się różnić (można użyć `useRouter` w pages lub obsłużyć to inaczej w App Router). Kluczowe jest to, że taki hook musi uruchamiać się na kliencie ('use client') i powinien sprzątać listenery przy odmontowaniu (co nastąpiłoby przy nawigacji lub opuszczaniu strony). Głęboka integracja z routingiem Nexta może też obejmować nasłuchiwanie zdarzeń routera (w Next pages, `router.events.on('routeChangeStart', ...)`). Hooki mogą to enkapsulować, ale muszą zapewnić prawidłowe usunięcie wszelkich obsług zdarzeń.
+
+## Remix: hooki z SSR i danymi trasy
+
+Remix jest zbudowany wokół idei pobierania danych na serwerze przez loadery i używania tych danych w komponentach. Kilka punktów dla hooków w Remix:
+
+- Remix dostarcza `useLoaderData()`, który daje dane zwrócone przez loader dla danej trasy. Oznacza to, że często nie potrzebujesz custom hooka pobierającego dane dla danych początkowych; są one dostarczone. Jeśli łapiesz się na pisaniu hooka do pobierania danych, które mogłyby być zrobione w loaderze, rozważ użycie loadera dla lepszej wydajności (serwer to robi, i strumieniuje).
+
+- Ponieważ dane są zwykle już obecne przy początkowym renderze, `useEffect` w Remix służy bardziej do późniejszych aktualizacji tylko klienckich lub rzeczy jak subskrybowanie zdarzeń. Na przykład, jeśli chcesz odświeżać dane po jakimś interwale, możesz użyć efektu z setInterval lub mechanizmu specyficznego dla Remix jak `useFetcher`, aby ponownie pobrać.
+
+- Remix ma hooki do wykonywania mutacji i pobierań po stronie klienta (dla danych spoza trasy). Jeśli tworzysz custom hooks wokół nich, pamiętaj, że to już są hooki. Na przykład możesz opakować `useFetcher` w custom hook zarządzający jakimś aspektem pobranych danych (jak łączenie ich z lokalnym stanem).
+
+- W Remix, gdy nawigujesz, domyślnie utrzymuje on tę samą aplikację single-page bez pełnego przeładowania. Wywoła loadery dla nowych segmentów trasy i zaktualizuje UI. Jeśli nadrzędna trasa układu pozostaje ta sama, jej komponent pozostaje zamontowany (i jego stan pozostaje). Tylko zmienione trasy odmontowują się. Oznacza to, że pewien stan może utrzymać się między nawigacjami (jeśli jest w komponentach układu). Jeśli masz custom hook w nadrzędnym komponencie układu, może on przeżyć wiele nawigacji. Zadbaj, aby jeśli ma się resetować lub aktualizować przy każdej nawigacji, obsłużyć to (może przez obserwowanie lokalizacji). Remix dostarcza `useNavigation()` do wskazania, że nawigacja jest w toku, oraz `useLocation()` w razie potrzeby.
+
+- Możesz używać kontekstu React w Remix normalnie. Jeśli używasz kontekstu dla globalnego stanu, rozważ, że SSR Remix oznacza, iż stan początkowy mógłby być wstrzyknięty przez provider kontekstu w `entry.server` (choć zwykle użyłbyś loaderów).
+
+- Wiele hooków Remix (`useLoaderData`, `useActionData`, `useNavigate` itd.) wymaga kontekstu Remix (podobnie jak w Next). Remix dostarcza narzędzia testowe dla loaderów/akcji, ale jeśli chcesz przetestować komponent z `useLoaderData`, możesz musieć zamockować kontekst lub użyć ich środowiska `<RemixBrowser>`. Alternatywnie zbuduj logikę tak, aby użycie hooka było minimalne w tym, co musisz przetestować (np. przekaż dane jako propsy do komponentu do testów jednostkowych, oddzielnie od hooka, który je pobiera).
+
+- Nie mylić z `useTransition` Reacta, Remix ma `useTransition()` (lub teraz useNavigation() w v2), który daje informacje o przejściach między stronami (stany ładowania dla nawigacji i wysyłania formularzy). Jeśli masz custom hook, który musi reagować na nawigację (np. pokazać spinner ładowania, ilekroć trwa nawigacja), możesz użyć tego wewnątrz hooka. Na przykład hook useGlobalLoadingSpinner mógłby wewnętrznie wywoływać useNavigation i pokazywać/ukrywać komponent spinnera przez kontekst lub portal na podstawie navigation.state.
+
+- Komponenty Remix są wszystkie renderowane na serwerze, a następnie hydratowane. Nie musisz więc martwić się o dyrektywy `'use client'`. Ale bądź świadom nieużywania API przeglądarki podczas SSR, tak jak w każdym SSR.
+
+**Przykład – użycie useLoaderData w Remix: zamiast custom hooka zwykle zrobiłbyś:**
+
+```jsx
+export const loader = async () => {
+  return json({ posts: await getPosts() })
+}
+
+function Posts() {
+  const { posts } = useLoaderData() // brak potrzeby useEffect do pobrania
+  // ...
+}
+```
+
+Jednak jeśli chcemy custom hook do, powiedzmy, nieskończonego przewijania lub pollingu nowych postów, moglibyśmy zrobić:
+
+```jsx
+function useLivePosts(initialPosts) {
+  const [posts, setPosts] = useState(initialPosts)
+  const fetcher = useFetcher()
+  useEffect(() => {
+    const interval = setInterval(() => {
+      fetcher.load('/posts?index') // ponownie wywołaj loader lub specjalny endpoint
+    }, 10000)
+    return () => clearInterval(interval)
+  }, [])
+  useEffect(() => {
+    if (fetcher.data) {
+      setPosts(fetcher.data.posts)
+    }
+  }, [fetcher.data])
+  return posts
+}
+
+// Użycie w komponencie:
+function Posts() {
+  const { posts: initialPosts } = useLoaderData()
+  const posts = useLivePosts(initialPosts)
+  // renderuj posty, które aktualizują się co 10s
+}
+```
+
+Ten custom hook `useLivePosts` używa `useFetcher` z Remix do okresowego odświeżania listy postów co 10 sekund. Zaczyna od początkowych postów załadowanych z serwera, a następnie aktualizuje się, gdy fetcher przyniesie nowe dane. Pokazuje to integrację hooków specyficznych dla Remix (`useFetcher`) wewnątrz custom hooka, aby dodać funkcjonalność (tu polling). Hook prawidłowo sprząta interwał przy odmontowaniu. Uwaga: to uproszczony polling; w rzeczywistej aplikacji obsłużyłbyś błędy, użył wykładniczego wycofywania (exponential backoff) itd.
+
+## Inne frameworki i podsumowanie
+
+Choć skupiliśmy się na Next.js i Remix, inne frameworki, jak Gatsby (nastawiony na SSG), React Native (nie SSR, ale inne środowisko) i inne, mają własne kwestie do rozważenia:
+
+- Gatsby używa SSR/SSG, więc obowiązują podobne kwestie SSR (choć bez server components).
+- React Native nie ma DOM, ale użycie hooków jest w dużej mierze takie samo; po prostu niektóre hooki specyficzne dla webu, jak `useLayoutEffect`, mogą zachowywać się nieco inaczej z natywnym potokiem renderowania.
+- Wschodzące frameworki lub architektury (jak układy micro-frontend) mogą wymagać starannej izolacji stanu hooków.
+
+Podsumowując, opanowanie hooków React obejmuje zrozumienie zarówno mechaniki każdego hooka, jak i wzorców użycia w większych aplikacjach. Wbudowane hooki pokrywają większość potrzeb, ale wiedza o tym, jak je łączyć, tworzyć custom abstractions i dostosowywać się do zaawansowanych funkcji Reacta, to coś, co wyróżnia starszych programistów. Wraz z ewolucją Reacta (renderowanie współbieżne, Suspense, server components) bycie na bieżąco z najlepszymi praktykami zapewnia, że Twoje hooki pozostaną solidne, a aplikacje będą działać wydajnie. Zawsze testuj swoje custom hooks, profiluj pod kątem wydajności i miej świadomość kontekstu wykonania (klient vs serwer). Stosując te najlepsze praktyki i kwestie, będziesz dobrze przygotowany do budowania łatwych w utrzymaniu i wydajnych komponentów React przy użyciu hooków w każdym nowoczesnym kodzie.
+
+---
+
+# Źródła
+
+- [A Deep Dive into `useEffect`: Best Practices for React Developers, Dev.to](https://dev.to/hkp22/a-deep-dive-into-useeffect-best-practices-for-react-developers-3b93#:~:text=,for%20calculations%20or%20rendering%20logic)
+- [Using Custom React hooks in NextJS?, Dev.to](https://dev.to/hiteshchawla/using-custom-react-hooks-in-nextjs-3gjo#:~:text=1.%20,13)
+- [React docs useMemo, React.dev](https://react.dev/reference/react/useMemo)
+- [React v18.0, React.dev](https://react.dev/blog/2022/03/29/react-v18)
+- [Reusing Logic with Custom Hooks, React.dev](https://react.dev/learn/reusing-logic-with-custom-hooks)
+- [Performance Optimization Techniques with React’s useContext, Medium.com](https://medium.com/zestgeek/performance-optimization-techniques-with-reacts-usecontext-5dc7e4ef6b25#:~:text=Whenever%20context%20values%20are%20updated%2C,or%20calculated%20on%20each%20render)
+- [useSyncExternalStore — The underrated React API, Medium.com](https://medium.com/@codenova/usesyncexternalstore-the-underrated-react-api-d4653900ce96#:~:text=useSyncExternalStore%20is%20a%20hook%20recommended,store%20and%20accepts%20three%20arguments)
+- [Nextjs Can use Hooks in Server Components​?, Medium.com](https://medium.com/@oliviarizona/nextjs-can-use-hooks-in-server-components-282237219092#:~:text=In%20Next,Specifically)
+- [How React 18 Improves Application Performance, Vercel](https://vercel.com/blog/how-react-18-improves-application-performance)
+
+~Seb 👊
