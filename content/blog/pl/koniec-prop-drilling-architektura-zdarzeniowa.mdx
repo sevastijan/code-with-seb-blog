@@ -1,0 +1,519 @@
+---
+title: 'Koniec prop drilling: architektura zdarzeniowa we frontendzie'
+date: '2026-03-28'
+category: 'Development'
+tags: ['react', 'architecture', 'state-management', 'typescript', 'patterns']
+draft: false
+featured: false
+author: 'Sebastian'
+enSlug: 'killing-prop-drilling-event-driven-frontend-architecture'
+excerpt: 'Prop drilling to objaw, nie choroba. Prawdziwym problemem jest coupling. Oto pięć wzorców architektonicznych, które go eliminują — od kompozycji po event bus.'
+---
+
+Kiedyś policzyłem łańcuch propsów w produkcyjnej aplikacji React, którą audytowałem. Prop `theme` był przekazywany przez **jedenaście** komponentów, zanim dotarł do tego jednego, który faktycznie go używał. Jedenaście komponentów, które nie obchodził `theme`, które nie renderowały się inaczej w zależności od niego, ale musiały go przyjąć, zdestrukturyzować i przekazać dalej — tylko dlatego, że komponent liścia 11 poziomów w głąb musiał wiedzieć, czy tło jest ciemne, czy jasne.
+
+To nie tylko brzydkie. To architektonicznie toksyczne. Każdy komponent w tym łańcuchu jest teraz sprzężony z `theme`. Zmienisz nazwę propsa? 11 plików. Dodasz nową właściwość motywu? 11 plików. Zrefaktoryzujesz jeden komponent w łańcuchu? Uważaj — możesz zepsuć przekazywanie propsów.
+
+Prop drilling to objaw. **Ścisłe sprzężenie między komponentami, które nie powinny o sobie wiedzieć**, to choroba. A lekarstwo nie zawsze jest tym, czego byś się spodziewał — czasem nie jest to nawet biblioteka do zarządzania stanem.
+
+## Dlaczego prop drilling się pojawia
+
+Prop drilling pojawia się, gdy umieszczasz stan w niewłaściwym miejscu. Konkretnie — gdy stan żyje w komponencie przodku, ale jest konsumowany tylko przez odległych potomków. Struktura drzewa React zmusza cię do przekazywania go przez każdy pośredni komponent.
+
+```
+App
+ └─ Dashboard
+     └─ Sidebar
+         └─ UserSection
+             └─ UserMenu
+                 └─ ThemeToggle   ← potrzebuje `theme` i `setTheme`
+```
+
+Naiwne rozwiązanie: umieść stan `theme` w `App`, przekaż go przez `Dashboard → Sidebar → UserSection → UserMenu → ThemeToggle`. Pięć komponentów działających jako bezużyteczni pośrednicy.
+
+Prawdziwe pytanie nie brzmi „jak przekazać propsy głębiej?". Brzmi **„dlaczego ten komponent musi wiedzieć o stanie, który żyje tak daleko?"**
+
+## Rozwiązanie 1: kompozycja komponentów (bez żadnej biblioteki)
+
+Zanim sięgniesz po jakąkolwiek bibliotekę, spróbuj przebudować strukturę komponentów. To najbardziej niedoceniane rozwiązanie — działa w 40% przypadków prop drilling i wymaga zero zależności.
+
+### Children jako props
+
+```typescript
+// PRZED: prop drilling przez Layout → Sidebar → Content
+function App() {
+  const [user, setUser] = useState<User | null>(null);
+
+  return (
+    <Layout user={user} setUser={setUser}>
+      <Sidebar user={user} />
+      <Content user={user} />
+    </Layout>
+  );
+}
+
+function Layout({ user, setUser, children }) {
+  return <div className="layout">{children}</div>;
+  // Layout nie UŻYWA user — tylko go przekazuje dalej!
+}
+```
+
+```typescript
+// PO: komponuj na górze, bez drillingu
+function App() {
+  const [user, setUser] = useState<User | null>(null);
+
+  return (
+    <Layout>
+      <Sidebar>
+        <UserMenu user={user} onLogout={() => setUser(null)} />
+      </Sidebar>
+      <Content>
+        <UserGreeting name={user?.name} />
+      </Content>
+    </Layout>
+  );
+}
+
+function Layout({ children }: { children: React.ReactNode }) {
+  return <div className="layout">{children}</div>;
+  // Layout w ogóle nie wie o user
+}
+```
+
+Komponując na najwyższym poziomie, przekazujesz komponenty konsumujące dane bezpośrednio — komponenty pośrednie po prostu renderują `children`, nie wiedząc, co jest w środku.
+
+### Render props i wzorzec slotów
+
+W bardziej złożonych przypadkach użyj nazwanych slotów:
+
+```typescript
+function DashboardLayout({
+  header,
+  sidebar,
+  content,
+}: {
+  header: React.ReactNode;
+  sidebar: React.ReactNode;
+  content: React.ReactNode;
+}) {
+  return (
+    <div className="grid grid-cols-[250px_1fr]">
+      <div className="col-span-2">{header}</div>
+      <aside>{sidebar}</aside>
+      <main>{content}</main>
+    </div>
+  );
+}
+
+// Użycie — wszystkie komponenty zależne od danych są komponowane na górze
+function App() {
+  const user = useUser();
+  const metrics = useMetrics();
+
+  return (
+    <DashboardLayout
+      header={<Header user={user} />}
+      sidebar={<Sidebar user={user} metrics={metrics} />}
+      content={<MetricsDashboard metrics={metrics} />}
+    />
+  );
+}
+```
+
+`DashboardLayout` ma zero wiedzy o `user` czy `metrics`. To czysto layoutowy komponent. Dane płyną bezpośrednio z `App` do komponentów, które ich potrzebują.
+
+## Rozwiązanie 2: React Context (dla stanu o niskiej częstotliwości)
+
+Context jest zaprojektowany dla stanu, który zmienia się rzadko i jest potrzebny wielu komponentom: motywy, locale, status autoryzacji, feature flagi.
+
+```typescript
+// contexts/ThemeContext.tsx
+'use client';
+
+import { createContext, useContext, useState, type ReactNode } from 'react';
+
+type Theme = 'light' | 'dark' | 'system';
+
+interface ThemeContextType {
+  theme: Theme;
+  setTheme: (theme: Theme) => void;
+  resolvedTheme: 'light' | 'dark';
+}
+
+const ThemeContext = createContext<ThemeContextType | null>(null);
+
+export function ThemeProvider({ children }: { children: ReactNode }) {
+  const [theme, setTheme] = useState<Theme>('system');
+
+  const resolvedTheme = theme === 'system'
+    ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+    : theme;
+
+  return (
+    <ThemeContext.Provider value={{ theme, setTheme, resolvedTheme }}>
+      {children}
+    </ThemeContext.Provider>
+  );
+}
+
+export function useTheme(): ThemeContextType {
+  const context = useContext(ThemeContext);
+  if (!context) {
+    throw new Error('useTheme must be used within a ThemeProvider');
+  }
+  return context;
+}
+```
+
+```typescript
+// Dowolny głęboko zagnieżdżony komponent — zero prop drilling
+function ThemeToggle() {
+  const { theme, setTheme } = useTheme();
+
+  return (
+    <select value={theme} onChange={(e) => setTheme(e.target.value as Theme)}>
+      <option value="light">Light</option>
+      <option value="dark">Dark</option>
+      <option value="system">System</option>
+    </select>
+  );
+}
+```
+
+### Kiedy Context przestaje wystarczać
+
+Context re-renderuje każdego konsumenta, gdy jakakolwiek wartość w kontekście się zmieni. Dla stanu o wysokiej częstotliwości (pozycja kursora, input formularza, dane w czasie rzeczywistym) powoduje to problemy wydajnościowe:
+
+```typescript
+// ŹLE: każdy komponent używający tego kontekstu re-renderuje się, gdy DOWOLNA wartość się zmieni
+const AppContext = createContext({
+  user: null,     // Zmienia się rzadko
+  theme: 'dark',  // Zmienia się rzadko
+  cart: [],       // Zmienia się często!
+  cursor: { x: 0, y: 0 }, // Zmienia się bez przerwy!
+});
+```
+
+**Zasada praktyczna:** jeśli stan aktualizuje się częściej niż raz na sekundę, nie używaj Context. Rozdziel go przynajmniej na osobne konteksty albo użyj Zustand/Jotai.
+
+## Rozwiązanie 3: Zustand (pragmatyczny domyślny wybór)
+
+Zustand to najpopularniejsza biblioteka do zarządzania stanem w 2026 — ~20 mln pobrań tygodniowo, ~3 KB bundle. To właściwy wybór dla 80% aplikacji.
+
+```typescript
+// stores/dashboard.ts
+import { create } from 'zustand';
+import { devtools, persist } from 'zustand/middleware';
+
+interface DashboardState {
+  // Stan
+  selectedMetric: string;
+  dateRange: { start: Date; end: Date };
+  filters: Record<string, string[]>;
+  sidebarOpen: boolean;
+
+  // Akcje
+  setSelectedMetric: (metric: string) => void;
+  setDateRange: (range: { start: Date; end: Date }) => void;
+  toggleFilter: (key: string, value: string) => void;
+  toggleSidebar: () => void;
+  resetFilters: () => void;
+}
+
+export const useDashboardStore = create<DashboardState>()(
+  devtools(
+    persist(
+      (set) => ({
+        selectedMetric: 'revenue',
+        dateRange: {
+          start: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000),
+          end: new Date(),
+        },
+        filters: {},
+        sidebarOpen: true,
+
+        setSelectedMetric: (metric) => set({ selectedMetric: metric }),
+        setDateRange: (dateRange) => set({ dateRange }),
+        toggleFilter: (key, value) =>
+          set((state) => {
+            const current = state.filters[key] || [];
+            const updated = current.includes(value)
+              ? current.filter((v) => v !== value)
+              : [...current, value];
+            return { filters: { ...state.filters, [key]: updated } };
+          }),
+        toggleSidebar: () => set((state) => ({ sidebarOpen: !state.sidebarOpen })),
+        resetFilters: () => set({ filters: {} }),
+      }),
+      { name: 'dashboard-store' } // Zapis do localStorage
+    )
+  )
+);
+```
+
+```typescript
+// Dowolny komponent — bez propsów, bez kontekstu, bez drillingu
+function MetricSelector() {
+  const selectedMetric = useDashboardStore((s) => s.selectedMetric);
+  const setSelectedMetric = useDashboardStore((s) => s.setSelectedMetric);
+
+  return (
+    <select value={selectedMetric} onChange={(e) => setSelectedMetric(e.target.value)}>
+      <option value="revenue">Revenue</option>
+      <option value="orders">Orders</option>
+      <option value="users">Users</option>
+    </select>
+  );
+}
+
+function Sidebar() {
+  const sidebarOpen = useDashboardStore((s) => s.sidebarOpen);
+  // Re-renderuje się tylko, gdy zmieni się sidebarOpen — nie przy innych zmianach stanu
+  if (!sidebarOpen) return null;
+  return <aside>{/* zawartość sidebara */}</aside>;
+}
+```
+
+**Zabójcza funkcja Zustand:** subskrypcje oparte na selektorach. Każdy komponent re-renderuje się tylko wtedy, gdy zmieni się konkretny wycinek stanu, który subskrybuje. To coś, czego Context nie potrafi zrobić „out of the box".
+
+## Rozwiązanie 4: Event bus (dla zagadnień przekrojowych)
+
+Event bus to właściwe narzędzie do ulotnych, jednorazowych komunikatów między niepowiązanymi komponentami. Pomyśl: powiadomienia toast, zdarzenia analityczne, skróty klawiszowe, globalne triggery UI.
+
+```typescript
+// lib/event-bus.ts
+type EventMap = {
+  'toast:show': { message: string; type: 'success' | 'error' | 'info' };
+  'toast:dismiss': { id: string };
+  'analytics:track': { event: string; properties?: Record<string, unknown> };
+  'shortcut:save': undefined;
+  'shortcut:search': undefined;
+  'modal:open': { id: string; data?: unknown };
+  'modal:close': { id: string };
+  'order:created': { orderId: string };
+  'user:logout': undefined;
+};
+
+type EventHandler<T> = (data: T) => void;
+
+class TypedEventBus {
+  private listeners = new Map<string, Set<EventHandler<any>>>();
+
+  on<K extends keyof EventMap>(event: K, handler: EventHandler<EventMap[K]>): () => void {
+    if (!this.listeners.has(event)) {
+      this.listeners.set(event, new Set());
+    }
+    this.listeners.get(event)!.add(handler);
+
+    // Zwróć funkcję odsubskrybowania
+    return () => {
+      this.listeners.get(event)?.delete(handler);
+    };
+  }
+
+  emit<K extends keyof EventMap>(event: K, data: EventMap[K]): void {
+    this.listeners.get(event)?.forEach((handler) => handler(data));
+  }
+
+  off<K extends keyof EventMap>(event: K, handler: EventHandler<EventMap[K]>): void {
+    this.listeners.get(event)?.delete(handler);
+  }
+}
+
+export const eventBus = new TypedEventBus();
+```
+
+```typescript
+// hooks/useEventBus.ts
+import { useEffect } from 'react';
+import { eventBus } from '@/lib/event-bus';
+
+export function useEvent<K extends keyof EventMap>(
+  event: K,
+  handler: (data: EventMap[K]) => void
+) {
+  useEffect(() => {
+    const unsubscribe = eventBus.on(event, handler);
+    return unsubscribe;
+  }, [event, handler]);
+}
+```
+
+```typescript
+// OrderForm.tsx — publisher (nie wie nic o ToastContainer)
+function OrderForm() {
+  const handleSubmit = async (data: OrderData) => {
+    const order = await createOrder(data);
+
+    // Ogłoś, co się stało — nie obchodzi go, kto słucha
+    eventBus.emit('order:created', { orderId: order.id });
+    eventBus.emit('toast:show', {
+      message: `Order ${order.id} created!`,
+      type: 'success',
+    });
+    eventBus.emit('analytics:track', {
+      event: 'order_created',
+      properties: { total: data.total },
+    });
+  };
+
+  return <form onSubmit={handleSubmit}>{/* ... */}</form>;
+}
+
+// ToastContainer.tsx — subscriber (nie wie nic o OrderForm)
+function ToastContainer() {
+  const [toasts, setToasts] = useState<Toast[]>([]);
+
+  useEvent('toast:show', (data) => {
+    setToasts((prev) => [...prev, { id: crypto.randomUUID(), ...data }]);
+  });
+
+  useEvent('toast:dismiss', (data) => {
+    setToasts((prev) => prev.filter((t) => t.id !== data.id));
+  });
+
+  return (
+    <div className="fixed top-4 right-4 space-y-2">
+      {toasts.map((toast) => (
+        <ToastItem key={toast.id} {...toast} />
+      ))}
+    </div>
+  );
+}
+```
+
+**Siła zdarzeń:** `OrderForm` i `ToastContainer` mają zero wiedzy o sobie nawzajem. Komunikują się przez zdarzenia. Możesz dodać nowego subskrybenta (np. komponent analityczny śledzący zamówienia) bez dotykania `OrderForm` w ogóle.
+
+### Kiedy używać zdarzeń, a kiedy stanu
+
+| Użyj zdarzeń do | Użyj stanu do |
+|---------------|--------------|
+| Powiadomień / toastów | Stanu UI (otwarte/zamknięte, zaznaczone) |
+| Śledzenia analityki | Danych formularza |
+| Skrótów klawiszowych | Preferencji użytkownika |
+| Triggerów między komponentami | Danych z API |
+| Efektów ubocznych (logowanie) | Wartości obliczanych / pochodnych |
+| „Coś się wydarzyło" | „Jaka jest aktualna wartość?" |
+
+**Kluczowe rozróżnienie:** zdarzenia są typu fire-and-forget. Stan jest trwały. Jeśli komponent zamontuje się po wyemitowaniu zdarzenia, tego zdarzenia nie zobaczy. Jeśli subskrybuje stan, natychmiast dostaje bieżącą wartość.
+
+## Rozwiązanie 5: Jotai / signals (stan atomowy)
+
+Dla aplikacji z dużą ilością niezależnego, komponowalnego stanu — gdzie wartości pochodne są centralnym elementem twojego modelu danych:
+
+```typescript
+// atoms/dashboard.ts
+import { atom } from 'jotai';
+
+// Atomy prymitywne
+export const selectedMetricAtom = atom<string>('revenue');
+export const dateRangeAtom = atom<{ start: Date; end: Date }>({
+  start: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000),
+  end: new Date(),
+});
+export const filtersAtom = atom<Record<string, string[]>>({});
+
+// Atom pochodny — automatycznie przelicza się, gdy zmienią się zależności
+export const activeFilterCountAtom = atom((get) => {
+  const filters = get(filtersAtom);
+  return Object.values(filters).reduce((sum, arr) => sum + arr.length, 0);
+});
+
+// Asynchroniczny atom pochodny — pobiera dane na podstawie innych atomów
+export const metricsDataAtom = atom(async (get) => {
+  const metric = get(selectedMetricAtom);
+  const range = get(dateRangeAtom);
+  const filters = get(filtersAtom);
+
+  const response = await fetch(
+    `/api/metrics?metric=${metric}&start=${range.start.toISOString()}&end=${range.end.toISOString()}&filters=${JSON.stringify(filters)}`
+  );
+  return response.json();
+});
+```
+
+```typescript
+// Komponenty subskrybują dokładnie te atomy, których potrzebują
+function FilterBadge() {
+  const [count] = useAtom(activeFilterCountAtom);
+  if (count === 0) return null;
+  return <Badge>{count} filters active</Badge>;
+}
+
+function MetricsChart() {
+  const [data] = useAtom(metricsDataAtom);
+  // Automatycznie pobiera ponownie, gdy zmienią się selectedMetric, dateRange lub filters
+  return <Chart data={data} />;
+}
+```
+
+**Przewaga Jotai:** fine-grained reactivity. Każdy atom jest niezależnie subskrybowalny. Atomy pochodne automatycznie się przeliczają — jak arkusz kalkulacyjny. Komponenty re-renderują się tylko wtedy, gdy zmienią się ich konkretne atomy. To ten sam model, który [signals wniosły do Svelte, Solid i Angulara](/blog/signals-fine-grained-reactivity-2026-guide) — Jotai to sposób, by dostać go dziś wewnątrz Reacta.
+
+## Framework decyzyjny na 2026
+
+```
+Czy w ogóle potrzebujesz stanu?
+├── Nie → Kompozycja komponentów (children, sloty)
+│
+├── Tak → Czy to stan serwerowy (z API)?
+│   ├── Tak → TanStack Query / SWR
+│   │         (cache, dedup, rewalidacja obsłużone)
+│   │
+│   └── Nie → Czy jest niskiej częstotliwości? (theme, locale, auth)
+│       ├── Tak → React Context
+│       │
+│       └── Nie → Jak złożony jest twój stan?
+│           ├── Prosty (< 5 wartości) → Zustand
+│           ├── Złożony z wartościami pochodnymi → Jotai
+│           └── Enterprise (10+ devów, time-travel) → Redux Toolkit
+│
+│ Zagadnienia przekrojowe? (toasty, analityka, skróty)
+└── Event Bus
+```
+
+### Krajobraz zarządzania stanem w 2026
+
+| Biblioteka | Bundle | Zastosowanie | Strategia re-renderu |
+|---------|--------|----------|-------------------|
+| **Context** | 0 KB | Theme, locale, auth | Wszyscy konsumenci |
+| **Zustand** | 3 KB | Uniwersalne | Oparta na selektorach |
+| **Jotai** | 4 KB | Stan atomowy, pochodny | Per atom |
+| **Redux Toolkit** | 15 KB | Enterprise, time-travel | Oparta na selektorach |
+| **Signals** | 4 KB | Fine-grained reactivity | Automatyczna |
+| **TanStack Query** | 13 KB | Stan serwerowy | Oparta na zapytaniach |
+| **Event Bus** | < 1 KB | Zagadnienia przekrojowe | N/A |
+
+## Praktyczne wnioski
+
+1. **Najpierw spróbuj kompozycji** — przebuduj komponenty, zanim dodasz biblioteki. Wzorce `children` i slotów eliminują 40% prop drilling.
+2. **Oddziel stan serwerowy od klienckiego** — użyj TanStack Query do danych z API, Zustand/Jotai do stanu UI.
+3. **Context jest tylko dla stanu o niskiej częstotliwości** — theme, locale, status autoryzacji. Nigdy nie umieszczaj w Context danych o wysokiej częstotliwości.
+4. **Zustand to domyślny wybór na 2026** — 3 KB, subskrypcje oparte na selektorach, zero boilerplate. Używaj go, chyba że masz konkretny powód, by tego nie robić.
+5. **Event bus do zagadnień przekrojowych** — powiadomienia, analityka, skróty. Nie próbuj modelować ich jako stanu.
+6. **Otypuj swój event bus** — generyki TypeScript zapobiegają błędom w runtime i włączają autouzupełnianie.
+7. **Nie mieszaj wzorców losowo** — wybierz jedno podstawowe podejście do stanu na aplikację. Dodanie wszystkich pięciu wzorców tworzy chaos.
+8. **Prop drilling przez 2-3 poziomy jest OK** — nie wszystkie propsy muszą być w globalnym stanie. Bezpośrednie przekazywanie to najprostsze i najłatwiejsze do debugowania podejście dla płytkich drzew.
+
+Jeśli łączysz te wzorce ze [skalowalną architekturą frontendu w oparciu o Atomic Design i Feature Slices](/blog/from-components-to-systems-scalable-frontend-with-atomiec-design), granice komponentów naturalnie redukują prop drilling — każdy feature slice posiada własny stan. A dla type-safe walidacji danych przepływających przez twoje zarządzanie stanem, [Zod](/blog/zod-typescript-validation-complete-guide) idealnie łączy się ze store'ami Zustand na granicy API.
+
+Celem nie jest wyeliminowanie wszystkich propsów — jest nim wyeliminowanie **niepotrzebnego couplingu**. Gdy komponent przekazuje prop, którego nie używa, to jest coupling. Gdy komponent otrzymuje prop, którego potrzebuje, to jest po prostu przepływ danych. Poznaj różnicę.
+
+## Bibliografia
+
+### Źródła
+- [Kent C. Dodds: Prop Drilling](https://kentcdodds.com/blog/prop-drilling) — definitywne wyjaśnienie problemu
+- [DeveloperWay: React State Management in 2025](https://www.developerway.com/posts/react-state-management-2025) — kompleksowy przewodnik po zarządzaniu stanem
+- [Jotai: Comparison](https://jotai.org/docs/basics/comparison) — oficjalne porównanie z innymi bibliotekami stanu
+- [DEV.to: Event-Driven Architecture for Clean React Communication](https://dev.to/nicolalc/event-driven-architecture-for-clean-react-component-communication-fph) — wzorce event bus
+- [DEV.to: State Management in 2026](https://dev.to/jsgurujobs/state-management-in-2026-zustand-vs-jotai-vs-redux-toolkit-vs-signals-2gge) — najnowsze porównanie
+
+### Dalsza lektura
+- [PkgPulse: Choosing State Management for React in 2026](https://www.pkgpulse.com/blog/react-state-management-2026) — porównanie oparte na danych
+- [FreeCodeCamp: Event-Based Architectures in JavaScript](https://www.freecodecamp.org/news/event-based-architectures-in-javascript-a-handbook-for-devs/) — pogłębione ujęcie wzorców zdarzeniowych
+- [Medium: EventBus Pattern in React](https://medium.com/@ilham.abdillah.alhamdi/eventbus-pattern-in-react-a-lightweight-alternative-to-context-and-redux-cc6e8a1dc9ca) — przewodnik implementacyjny
+- [LogRocket: Solving Prop Drilling](https://blog.logrocket.com/solving-prop-drilling-react-apps/) — porównanie rozwiązań z benchmarkami
+
+---
+
+~Seb 👊

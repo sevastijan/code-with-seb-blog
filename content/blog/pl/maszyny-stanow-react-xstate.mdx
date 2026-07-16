@@ -1,0 +1,639 @@
+---
+title: 'Maszyny stanów w React: praktyczne wzorce XState + Context'
+date: '2026-03-28'
+category: 'Development'
+tags: ['react', 'xstate', 'state-management', 'typescript', 'patterns']
+draft: false
+featured: false
+author: 'Sebastian'
+enSlug: 'state-machines-react-xstate-patterns-guide'
+excerpt: 'Flagi boolean się mnożą. isLoading && !isError && isSubmitted && !isRetrying — brzmi znajomo? Maszyny stanów sprawiają, że niemożliwe stany stają się niemożliwe.'
+---
+
+Każda baza kodu React, którą audytuję, ma tę samą chorobę: boolean soup.
+
+```typescript
+const [isLoading, setIsLoading] = useState(false);
+const [isError, setIsError] = useState(false);
+const [isSuccess, setIsSuccess] = useState(false);
+const [isRetrying, setIsRetrying] = useState(false);
+const [isSubmitted, setIsSubmitted] = useState(false);
+const [data, setData] = useState(null);
+```
+
+Sześć booleanów = 64 możliwe kombinacje. Większość jest niemożliwa (`isLoading && isSuccess`). Niektóre są niebezpieczne (`isError && isRetrying && isSubmitted`). Nikt nie testuje ich wszystkich. Nikt nawet nie wie, że istnieją. A kiedy zgłoszenie błędu mówi „przycisk jest wyłączony, ale nic się nie ładuje", spędzasz godzinę na śledzeniu, która kombinacja booleanów stworzyła ten stan.
+
+Maszyny stanów rozwiązują to, sprawiając, że **niemożliwe stany stają się niemożliwe**. Zamiast sześciu niezależnych booleanów masz jedną zmienną stanu z jawnymi przejściami:
+
+```
+idle → loading → success
+                → error → retrying → success
+                                    → error
+```
+
+Nie możesz być jednocześnie w stanie `loading` i `success`. Nie możesz dotrzeć do `retrying` bez przejścia najpierw przez `error`. Maszyna wymusza reguły, których booleany wymusić nie potrafią.
+
+## Kiedy maszyny stanów są tego warte (a kiedy nie)
+
+Maszyny stanów dodają złożoności. Ta złożoność zwraca się z nawiązką w konkretnych scenariuszach:
+
+### Używaj maszyn stanów do:
+- **Wieloetapowych workflow** — checkout, onboarding, kreatory
+- **Przepływów uwierzytelniania** — logowanie, OAuth, MFA, zarządzanie sesją
+- **Odtwarzaczy mediów** — play, pause, buforowanie, przewijanie, koniec
+- **Złożonych formularzy** — stany walidacji, wysyłka, ponowienie, zapis wersji roboczej
+- **Orkiestracji async** — równoległe żądania z zależnymi przejściami
+- **Wszystkiego, gdzie „jeśli jesteśmy w stanie X, to zdarzenie powinno zrobić Y"**
+
+### Nie używaj maszyn stanów do:
+- **Prostych przełączników** — tryb ciemny, otwarcie/zamknięcie sidebara. Użyj `useState`.
+- **Stanu serwera** — dane z API. Użyj [TanStack Query](/blog/tanstack-query-advanced-caching-rsc-guide).
+- **Globalnego stanu UI** — zaznaczony element, filtry. Użyj [Zustand](/blog/killing-prop-drilling-event-driven-frontend-architecture).
+- **Wartości pól formularza** — użyj React Hook Form lub kontrolowanych inputów.
+
+**Zasada kciuka:** jeśli twój komponent ma 3+ booleany, które oddziałują ze sobą, albo łapiesz się na pisaniu `if (isX && !isY && isZ)`, to czas na maszynę stanów.
+
+## XState v5: model aktorów
+
+XState v5 to kompletny przepis od nowa oparty na **modelu aktorów**. Każda maszyna jest aktorem, który:
+- Ma własny wewnętrzny stan (context)
+- Odbiera zdarzenia
+- Może tworzyć aktory potomne
+- Może wysyłać zdarzenia do innych aktorów
+
+### Twoja pierwsza maszyna
+
+```typescript
+import { setup, assign } from 'xstate';
+
+const toggleMachine = setup({
+  types: {
+    context: {} as { count: number },
+    events: {} as { type: 'TOGGLE' } | { type: 'RESET' },
+  },
+}).createMachine({
+  id: 'toggle',
+  initial: 'inactive',
+  context: { count: 0 },
+  states: {
+    inactive: {
+      on: {
+        TOGGLE: {
+          target: 'active',
+          actions: assign({ count: ({ context }) => context.count + 1 }),
+        },
+      },
+    },
+    active: {
+      on: {
+        TOGGLE: { target: 'inactive' },
+        RESET: {
+          target: 'inactive',
+          actions: assign({ count: 0 }),
+        },
+      },
+    },
+  },
+});
+```
+
+### Użycie w React
+
+```typescript
+import { useMachine } from '@xstate/react';
+
+function Toggle() {
+  const [state, send] = useMachine(toggleMachine);
+
+  return (
+    <div>
+      <p>Status: {state.value}</p>
+      <p>Toggled {state.context.count} times</p>
+      <button onClick={() => send({ type: 'TOGGLE' })}>
+        {state.matches('active') ? 'Deactivate' : 'Activate'}
+      </button>
+      {state.matches('active') && (
+        <button onClick={() => send({ type: 'RESET' })}>Reset</button>
+      )}
+    </div>
+  );
+}
+```
+
+## Wzorzec 1: przepływ uwierzytelniania
+
+Uwierzytelnianie to idealny przypadek użycia maszyny stanów — ma jasne stany, złożone przejścia i niemożliwe do wyśledzenia kombinacje booleanów, gdy robisz to przez `useState`:
+
+```typescript
+import { setup, assign, fromPromise } from 'xstate';
+
+// Aktory async do wywołań API
+const loginActor = fromPromise(async ({ input }: { input: { email: string; password: string } }) => {
+  const res = await fetch('/api/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    const error = await res.json();
+    throw new Error(error.message || 'Login failed');
+  }
+  return res.json() as Promise<{ user: User; token: string }>;
+});
+
+const authMachine = setup({
+  types: {
+    context: {} as {
+      user: User | null;
+      token: string | null;
+      error: string | null;
+      attempts: number;
+    },
+    events: {} as
+      | { type: 'LOGIN'; email: string; password: string }
+      | { type: 'LOGOUT' }
+      | { type: 'RETRY' }
+      | { type: 'SESSION_EXPIRED' }
+      | { type: 'TOKEN_REFRESHED'; token: string },
+  },
+  actors: { loginActor },
+}).createMachine({
+  id: 'auth',
+  initial: 'unauthenticated',
+  context: { user: null, token: null, error: null, attempts: 0 },
+
+  states: {
+    unauthenticated: {
+      on: {
+        LOGIN: { target: 'authenticating' },
+      },
+    },
+
+    authenticating: {
+      invoke: {
+        src: 'loginActor',
+        input: ({ event }) => {
+          if (event.type !== 'LOGIN') throw new Error('Unexpected event');
+          return { email: event.email, password: event.password };
+        },
+        onDone: {
+          target: 'authenticated',
+          actions: assign({
+            user: ({ event }) => event.output.user,
+            token: ({ event }) => event.output.token,
+            error: null,
+            attempts: 0,
+          }),
+        },
+        onError: {
+          target: 'error',
+          actions: assign({
+            error: ({ event }) => (event.error as Error).message,
+            attempts: ({ context }) => context.attempts + 1,
+          }),
+        },
+      },
+    },
+
+    authenticated: {
+      on: {
+        LOGOUT: {
+          target: 'unauthenticated',
+          actions: assign({ user: null, token: null }),
+        },
+        SESSION_EXPIRED: { target: 'sessionExpired' },
+      },
+    },
+
+    error: {
+      on: {
+        RETRY: {
+          target: 'unauthenticated',
+          guard: ({ context }) => context.attempts < 3,
+        },
+        LOGIN: { target: 'authenticating' },
+      },
+      after: {
+        // Automatyczne wyczyszczenie błędu po 5 sekundach
+        5000: { target: 'unauthenticated', actions: assign({ error: null }) },
+      },
+    },
+
+    sessionExpired: {
+      on: {
+        LOGIN: { target: 'authenticating' },
+        TOKEN_REFRESHED: {
+          target: 'authenticated',
+          actions: assign({ token: ({ event }) => event.token }),
+        },
+      },
+    },
+  },
+});
+```
+
+### Użycie maszyny auth z Context
+
+```typescript
+// providers/AuthProvider.tsx
+'use client';
+
+import { createActorContext } from '@xstate/react';
+import { authMachine } from '@/machines/auth';
+
+export const AuthContext = createActorContext(authMachine);
+
+export function AuthProvider({ children }: { children: React.ReactNode }) {
+  return <AuthContext.Provider>{children}</AuthContext.Provider>;
+}
+
+// Dowolny komponent — bez prop drillingu
+export function useAuth() {
+  const actorRef = AuthContext.useActorRef();
+  const state = AuthContext.useSelector((s) => s);
+
+  return {
+    user: state.context.user,
+    isAuthenticated: state.matches('authenticated'),
+    isLoading: state.matches('authenticating'),
+    error: state.context.error,
+    login: (email: string, password: string) =>
+      actorRef.send({ type: 'LOGIN', email, password }),
+    logout: () => actorRef.send({ type: 'LOGOUT' }),
+  };
+}
+```
+
+```typescript
+// components/LoginForm.tsx
+function LoginForm() {
+  const { isLoading, error, login } = useAuth();
+
+  const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const form = new FormData(e.currentTarget);
+    login(form.get('email') as string, form.get('password') as string);
+  };
+
+  return (
+    <form onSubmit={handleSubmit}>
+      <input name="email" type="email" required />
+      <input name="password" type="password" required />
+      {error && <p className="text-red-500">{error}</p>}
+      <button type="submit" disabled={isLoading}>
+        {isLoading ? 'Signing in...' : 'Sign In'}
+      </button>
+    </form>
+  );
+}
+```
+
+**Co gwarantuje maszyna:**
+- Nie da się wysłać LOGIN, gdy trwa już authenticating (brak podwójnych wysyłek)
+- Nie da się wykonać RETRY więcej niż 3 razy (zapobiega temu guard)
+- Błąd czyści się automatycznie po 5 sekundach (przejście czasowe)
+- SESSION_EXPIRED działa tylko ze stanu authenticated
+- Każde przejście stanu jest jawne i testowalne
+
+## Wzorzec 2: wieloetapowy checkout
+
+```typescript
+const checkoutMachine = setup({
+  types: {
+    context: {} as {
+      cart: CartItem[];
+      shippingAddress: Address | null;
+      paymentMethod: PaymentMethod | null;
+      orderId: string | null;
+      error: string | null;
+    },
+    events: {} as
+      | { type: 'SET_SHIPPING'; address: Address }
+      | { type: 'SET_PAYMENT'; method: PaymentMethod }
+      | { type: 'SUBMIT_ORDER' }
+      | { type: 'BACK' }
+      | { type: 'EDIT_SHIPPING' }
+      | { type: 'RETRY' },
+  },
+}).createMachine({
+  id: 'checkout',
+  initial: 'shipping',
+  context: {
+    cart: [],
+    shippingAddress: null,
+    paymentMethod: null,
+    orderId: null,
+    error: null,
+  },
+
+  states: {
+    shipping: {
+      on: {
+        SET_SHIPPING: {
+          target: 'payment',
+          actions: assign({ shippingAddress: ({ event }) => event.address }),
+        },
+      },
+    },
+
+    payment: {
+      on: {
+        SET_PAYMENT: {
+          target: 'review',
+          actions: assign({ paymentMethod: ({ event }) => event.method }),
+        },
+        BACK: { target: 'shipping' },
+      },
+    },
+
+    review: {
+      on: {
+        SUBMIT_ORDER: { target: 'processing' },
+        EDIT_SHIPPING: { target: 'shipping' },
+        BACK: { target: 'payment' },
+      },
+    },
+
+    processing: {
+      invoke: {
+        src: fromPromise(async ({ input }) => {
+          return api.orders.create(input);
+        }),
+        input: ({ context }) => ({
+          cart: context.cart,
+          shipping: context.shippingAddress,
+          payment: context.paymentMethod,
+        }),
+        onDone: {
+          target: 'confirmation',
+          actions: assign({ orderId: ({ event }) => event.output.id }),
+        },
+        onError: {
+          target: 'error',
+          actions: assign({ error: ({ event }) => (event.error as Error).message }),
+        },
+      },
+    },
+
+    error: {
+      on: {
+        RETRY: { target: 'processing' },
+        BACK: { target: 'review' },
+      },
+    },
+
+    confirmation: {
+      type: 'final',
+    },
+  },
+});
+```
+
+### UI checkoutu
+
+```typescript
+function CheckoutWizard() {
+  const [state, send] = useMachine(checkoutMachine);
+
+  // Maszyna decyduje, który krok pokazać — bez ręcznego śledzenia kroków
+  return (
+    <div>
+      <StepIndicator
+        steps={['Shipping', 'Payment', 'Review', 'Confirmation']}
+        current={state.value as string}
+      />
+
+      {state.matches('shipping') && (
+        <ShippingForm
+          onSubmit={(address) => send({ type: 'SET_SHIPPING', address })}
+        />
+      )}
+
+      {state.matches('payment') && (
+        <PaymentForm
+          onSubmit={(method) => send({ type: 'SET_PAYMENT', method })}
+          onBack={() => send({ type: 'BACK' })}
+        />
+      )}
+
+      {state.matches('review') && (
+        <OrderReview
+          context={state.context}
+          onSubmit={() => send({ type: 'SUBMIT_ORDER' })}
+          onBack={() => send({ type: 'BACK' })}
+          onEditShipping={() => send({ type: 'EDIT_SHIPPING' })}
+        />
+      )}
+
+      {state.matches('processing') && <LoadingSpinner text="Processing order..." />}
+
+      {state.matches('error') && (
+        <ErrorState
+          message={state.context.error!}
+          onRetry={() => send({ type: 'RETRY' })}
+          onBack={() => send({ type: 'BACK' })}
+        />
+      )}
+
+      {state.matches('confirmation') && (
+        <OrderConfirmation orderId={state.context.orderId!} />
+      )}
+    </div>
+  );
+}
+```
+
+## Wzorzec 3: maszyna do asynchronicznego pobierania danych
+
+Do złożonych przepływów async, z którymi TanStack Query sobie nie radzi (równoległe, zależne żądania z fallbackami):
+
+```typescript
+const dataFetchMachine = setup({
+  types: {
+    context: {} as {
+      user: User | null;
+      orders: Order[];
+      recommendations: Product[];
+      error: string | null;
+    },
+    events: {} as
+      | { type: 'FETCH'; userId: string }
+      | { type: 'RETRY' }
+      | { type: 'REFRESH' },
+  },
+  actors: {
+    fetchUser: fromPromise(async ({ input }: { input: string }) => {
+      return api.users.getById(input);
+    }),
+    fetchOrders: fromPromise(async ({ input }: { input: string }) => {
+      return api.orders.getByUser(input);
+    }),
+    fetchRecommendations: fromPromise(async ({ input }: { input: string }) => {
+      return api.products.getRecommendations(input);
+    }),
+  },
+}).createMachine({
+  id: 'dashboard-data',
+  initial: 'idle',
+
+  states: {
+    idle: {
+      on: { FETCH: { target: 'loading', actions: assign({ error: null }) } },
+    },
+
+    loading: {
+      type: 'parallel',
+      states: {
+        user: {
+          initial: 'fetching',
+          states: {
+            fetching: {
+              invoke: {
+                src: 'fetchUser',
+                input: ({ event }) => (event as any).userId,
+                onDone: {
+                  target: 'done',
+                  actions: assign({ user: ({ event }) => event.output }),
+                },
+                onError: { target: 'failed' },
+              },
+            },
+            done: { type: 'final' },
+            failed: { type: 'final' },
+          },
+        },
+        orders: {
+          initial: 'fetching',
+          states: {
+            fetching: {
+              invoke: {
+                src: 'fetchOrders',
+                input: ({ event }) => (event as any).userId,
+                onDone: {
+                  target: 'done',
+                  actions: assign({ orders: ({ event }) => event.output }),
+                },
+                onError: { target: 'failed' },
+              },
+            },
+            done: { type: 'final' },
+            failed: { type: 'final' },
+          },
+        },
+      },
+      onDone: { target: 'loaded' },
+    },
+
+    loaded: {
+      on: {
+        REFRESH: { target: 'loading' },
+      },
+    },
+  },
+});
+```
+
+Ta maszyna pobiera user i orders **równolegle** — jeśli jedno się nie powiedzie, drugie i tak się dokończy. `onDone` na stanie równoległym odpala się, gdy wszystkie stany potomne osiągną swój stan finalny.
+
+## Wizualizacja maszyn
+
+Zabójcza funkcja developer experience w XState: **każdą maszynę można zwizualizować**. Wklej swoją maszynę do [stately.ai/viz](https://stately.ai/viz) i otrzymaj interaktywny diagram stanów.
+
+To oznacza, że:
+- Product managerowie mogą wizualnie zrewidować przepływ
+- QA widzi każdy możliwy stan i przejście
+- Nowi członkowie zespołu rozumieją złożoną logikę w kilka minut
+- Przypadki brzegowe są widoczne — jeśli nie ma przejścia ze stanu X na zdarzenie Y, to od razu widać
+
+## Testowanie maszyn stanów
+
+Maszyny stanów to czysta logika — są banalnie testowalne:
+
+```typescript
+import { createActor } from 'xstate';
+import { authMachine } from './auth';
+
+describe('authMachine', () => {
+  it('transitions from unauthenticated to authenticating on LOGIN', () => {
+    const actor = createActor(authMachine);
+    actor.start();
+
+    expect(actor.getSnapshot().value).toBe('unauthenticated');
+
+    actor.send({ type: 'LOGIN', email: 'test@test.com', password: 'pass' });
+    expect(actor.getSnapshot().value).toBe('authenticating');
+  });
+
+  it('prevents retry after 3 attempts', () => {
+    const actor = createActor(authMachine, {
+      snapshot: {
+        ...authMachine.resolveState({ value: 'error' }),
+        context: { ...authMachine.context, attempts: 3, error: 'Failed' },
+      },
+    });
+    actor.start();
+
+    actor.send({ type: 'RETRY' });
+    // Guard blokuje przejście — nadal w stanie error
+    expect(actor.getSnapshot().value).toBe('error');
+  });
+
+  it('cannot logout from unauthenticated state', () => {
+    const actor = createActor(authMachine);
+    actor.start();
+
+    actor.send({ type: 'LOGOUT' });
+    // LOGOUT nie jest obsługiwane w unauthenticated — stan bez zmian
+    expect(actor.getSnapshot().value).toBe('unauthenticated');
+  });
+});
+```
+
+## Maszyny stanów vs useReducer vs Zustand
+
+| Cecha | useState/booleany | useReducer | XState | Zustand |
+|---------|-------------------|------------|--------|---------|
+| **Niemożliwe stany** | Możliwe | Możliwe | Niemożliwe | Możliwe |
+| **Jawne przejścia** | Nie | Częściowo | Tak | Nie |
+| **Wizualne debugowanie** | Nie | Nie | Tak (Stately) | Nie |
+| **Efekty uboczne** | Ręcznie | Ręcznie | Wbudowane (invoke) | Ręcznie |
+| **Guardy/warunki** | Ręcznie | Ręcznie | Wbudowane | Ręcznie |
+| **Stany równoległe** | Ręcznie | Ręcznie | Wbudowane | Ręcznie |
+| **Testowalność** | Trudna | Średnia | Doskonała | Średnia |
+| **Krzywa uczenia** | Brak | Niska | Średnio-wysoka | Niska |
+| **Rozmiar bundla** | 0 | 0 | ~33KB | ~3KB |
+| **Najlepsze do** | Proste UI | Logika formularzy | Złożone przepływy | Stan globalny |
+
+## Praktyczne wnioski
+
+1. **Jeśli masz 3+ oddziałujące na siebie booleany, użyj maszyny stanów.** Kombinacje booleanów prędzej czy później cię dopadną.
+2. **XState v5 używa aktorów** — każda maszyna to aktor z własnym stanem i cyklem życia.
+3. **Używaj `createActorContext`**, by współdzielić maszyny przez React Context bez prop drillingu.
+4. **Invoke do operacji async** — `fromPromise` automatycznie obsługuje loading/success/error.
+5. **Guardy zapobiegają nieprawidłowym przejściom** — maksymalna liczba ponowień, sprawdzenia walidacji, bramki uprawnień.
+6. **Wizualizuj swoje maszyny** — stately.ai/viz zamienia kod w diagramy, które każdy może zrewidować.
+7. **Testuj przejścia, nie UI** — maszyny stanów to czysta logika, którą banalnie się testuje.
+8. **Nie nadużywaj maszyn stanów** — proste przełączniki, stan serwera i globalny stan UI mają lepsze narzędzia.
+9. **Stany równoległe dla współbieżnych przepływów** — pobieraj wiele zasobów jednocześnie z niezależną obsługą błędów.
+10. **Zacznij od diagramu** — narysuj stany i przejścia, zanim napiszesz kod. Jeśli nie potrafisz tego narysować, nie rozumiesz przepływu.
+
+Maszyny stanów nie zastępują twoich innych narzędzi — uzupełniają je. Używaj [Zustand do globalnego stanu UI](/blog/killing-prop-drilling-event-driven-frontend-architecture), [TanStack Query do stanu serwera](/blog/tanstack-query-advanced-caching-rsc-guide) i XState do złożonych, stanowych workflow, w których niemożliwe stany muszą pozostać niemożliwe.
+
+## References
+
+### Źródła
+- [Stately.ai: XState v5 Quick Start](https://stately.ai/docs/quick-start) — oficjalny przewodnik na start
+- [Stately.ai: Actors](https://stately.ai/docs/actors) — model aktorów w XState v5
+- [Stately.ai: XState v5 Announcement](https://stately.ai/blog/2023-12-01-xstate-v5) — co się zmieniło i dlaczego
+- [DEV.to: Reducer vs Finite State Machines](https://dev.to/ibrocodes/reducer-vs-finite-state-machines-understanding-the-paradigm-shift-177a) — porównanie paradygmatów
+- [Upstatement: Multi-Step Checkout with State Machines](https://upstatement.com/blog/building-a-multi-step-checkout-form-from-scratch) — implementacja produkcyjna
+
+### Dalsza lektura
+- [Sandro Maglione: State Machines and Actors in XState v5](https://www.sandromaglione.com/articles/state-machines-and-actors-in-xstate-v5) — głębokie zanurzenie w model aktorów
+- [First AML: Improving Multi-Step Forms with State Machines](https://firstaml.dev/blog/2ldc7qgkjwbg7h2bm3xryc3so6eqb1) — studium przypadku z produkcji
+- [Makers Den: State Management Trends in React 2025](https://makersden.io/blog/react-state-management-in-2025) — gdzie XState wpisuje się w krajobraz
+- [Smashing Magazine: The Rise of State Machines](https://www.smashingmagazine.com/2018/01/rise-state-machines/) — fundamentalny artykuł o tym, dlaczego maszyny stanów mają znaczenie
+
+---
+
+~Seb 👊
