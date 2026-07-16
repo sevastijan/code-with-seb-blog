@@ -1,0 +1,286 @@
+---
+title: 'INP: The Core Web Vital That Replaced FID (And Why Your App Fails It)'
+date: '2026-07-16'
+category: 'Development'
+tags: ['performance', 'core-web-vitals', 'inp', 'react', 'frontend']
+featured: false
+author: 'Sebastian'
+draft: true
+excerpt: 'Interaction to Next Paint (INP) replaced FID as a Core Web Vital and most React apps quietly fail it. Here is what INP measures and how to fix it.'
+---
+
+A client shipped a dashboard that scored a perfect 100 on First Input Delay. Green across the board in Search Console. Then, in March 2024, Google swapped FID for **Interaction to Next Paint (INP)**, and overnight the same dashboard went from "good" to "needs improvement." Nothing about the code had changed. The metric had.
+
+That story is not unusual. When INP replaced FID, mobile Core Web Vitals pass rates dropped roughly five percentage points across the web. Millions of sites that looked fast suddenly did not. The reason is simple and slightly uncomfortable: FID was measuring the easy part, and INP measures the part your React app is actually bad at.
+
+If you build with React, this matters more than you think. The framework's re-render model is almost perfectly designed to inflate the exact number Google now ranks on. Let me show you what INP really measures, why your app fails it, and how to fix it for real.
+
+## What INP actually measures
+
+INP measures the latency of **interactions** across the entire lifetime of a page visit. An interaction is a click, a tap, or a key press — not scrolling, not hovering. For each one, the browser tracks how long it takes from the moment the user acts until the next frame is painted showing a visual response.
+
+At the end of the visit, INP reports (roughly) the **worst interaction latency** on the page. Technically, for pages with many interactions it drops the very worst outliers and reports the near-worst, but the mental model is right: **INP is as slow as your slowest meaningful interaction.** One janky modal open can tank your score even if everything else is instant.
+
+Every interaction breaks down into **three phases**, and understanding them is the whole game:
+
+1. **Input delay** — the time from the user's action until your event handler can start running. If the main thread is busy executing other JavaScript, the browser cannot even begin to respond. This is the phase FID used to measure, and on average it accounts for only about 18% of total INP.
+2. **Processing time** — how long your event handler callbacks take to run. State updates, DOM manipulation, synchronous work, and — critically for us — React re-renders all happen here. Around 40% of INP on average.
+3. **Presentation delay** — the time from when your handlers finish until the browser paints the next frame. Layout, style recalculation, and paint live here, and it accounts for roughly 42% of INP on average.
+
+That last statistic surprises people. **Presentation delay is usually the biggest chunk**, not input delay. Which means the metric FID replaced was measuring the smallest slice of the pie the whole time.
+
+## INP vs FID: why Google made the switch
+
+First Input Delay had two fatal flaws.
+
+First, it only measured the **first** interaction on the page. If a user's first click landed on a cheap button while the app was still warming up, FID reported a great number — even if every subsequent interaction stuttered. Users do not stop interacting after the first click. FID stopped measuring after it.
+
+Second, FID only captured **input delay** — phase one. It measured how long the browser took to *start* handling the event, and then declared victory. It never looked at how long your handler actually took to run, or how long the resulting paint took. A page could have a 5ms FID and a 900ms actual interaction latency, and FID would happily call it good.
+
+INP fixes both. It watches **every** interaction, and it measures **all three phases** end to end. Here is the honest comparison:
+
+| | FID | INP |
+| --- | --- | --- |
+| Interactions measured | First only | All of them |
+| Phases captured | Input delay only | Input delay + processing + presentation |
+| What it rewards | Fast startup | Sustained responsiveness |
+| "Good" threshold | < 100ms | < 200ms |
+
+FID rewarded a fast first impression. INP demands you stay responsive the whole time the user is on the page. For a single-page app where people click around for ten minutes, that is a completely different bar.
+
+## The thresholds you have to hit
+
+Google evaluates INP at the **75th percentile** of real-user page loads, measured on both mobile and desktop:
+
+- **Good:** 200ms or less
+- **Needs improvement:** 201ms to 500ms
+- **Poor:** over 500ms
+
+The 75th-percentile detail matters. It is not your median user — it is your unlucky quartile. If one in four interactions crosses 200ms, you fail. That is why lab testing on your fast MacBook lies to you: your users are on mid-range Android phones with a fraction of your CPU, and INP scores from the field reflect that reality.
+
+## Why React apps fail INP specifically
+
+Here is the contrarian part. Most performance advice tells you to shrink your bundle and lazy-load images. Useful, but largely irrelevant to INP. INP is about **what happens on the main thread when a user clicks**, and React's architecture makes that thread busy in ways that are easy to miss.
+
+### Re-renders land in the processing phase
+
+When you call `setState`, React re-renders the component and its children, reconciles the tree, and commits DOM changes — **synchronously, on the main thread, inside your interaction's processing phase.** A single click that flips one state value can trigger a re-render cascade through dozens of components. If that work takes 180ms, your INP for that interaction is at least 180ms before the browser even gets to paint.
+
+The classic offender is a controlled input filtering a large list. Every keystroke sets state, re-renders the list, reconciles thousands of nodes, and repaints. Type "react" and you have fired five expensive interactions in a row. This is exactly the failure mode that CPU-heavy re-renders create — the same category of problem I dig into when [debugging memory leaks in React and Next.js apps](/blog/debugging-memory-leaks-react-nextjs-guide), where uncontrolled work quietly compounds on every update.
+
+### Hydration blocks input delay
+
+Server-rendered React ships HTML, then **hydrates** it by walking the tree and attaching event listeners — a big, often non-interruptible chunk of main-thread work during load. If a user taps a button mid-hydration, that tap sits in the **input delay** phase, waiting. Hydration is one of the most common causes of terrible INP on the first few interactions of a Next.js page.
+
+### Third-party scripts eat the thread you don't own
+
+Analytics, tag managers, A/B testing, chat widgets — they all run JavaScript on your main thread. Long tasks from a third-party script block *your* interactions just as effectively as your own code. You did not write it, but INP blames you for it.
+
+## How to measure INP (do this before you optimize)
+
+You cannot fix what you cannot see, and INP is deceptive because **lab tools cannot fully reproduce it.** There is no single synthetic interaction to test — INP depends on what real users actually do. So you need both lab and field data.
+
+### Field data (the source of truth)
+
+**CrUX** (Chrome User Experience Report) is what Google actually ranks on. It is real Chrome users, aggregated over 28 days. The catch: it only covers origins with enough traffic, and it is a trailing indicator — you see the damage weeks later.
+
+For real-time, attributed field data, use the official **`web-vitals`** library. This is the single most useful thing you can add today:
+
+```javascript
+// Report INP with attribution so you know WHICH element and WHICH
+// phase is slow. Requires the /attribution build of web-vitals v3+.
+import { onINP } from 'web-vitals/attribution';
+
+onINP((metric) => {
+  const attr = metric.attribution;
+
+  // Send this to your analytics/RUM backend.
+  console.log('INP:', metric.value, 'ms');
+  console.log('Slowest element:', attr.interactionTarget); // CSS selector
+  console.log('Interaction type:', attr.interactionType);  // 'pointer' | 'keyboard'
+
+  // The three-phase breakdown — this tells you WHAT to fix.
+  console.log('Input delay:', attr.inputDelay);
+  console.log('Processing:', attr.processingDuration);
+  console.log('Presentation:', attr.presentationDelay);
+
+  navigator.sendBeacon('/rum', JSON.stringify({
+    metric: 'INP',
+    value: metric.value,
+    target: attr.interactionTarget,
+  }));
+});
+```
+
+The **attribution build** is the whole point. Plain `onINP` gives you a number; the attribution build tells you the exact DOM element the user hit and which of the three phases was slow. Without it you are guessing.
+
+### Lab data (for reproducing and debugging)
+
+- **Chrome DevTools → Performance panel** is your microscope. Record a trace, interact, and look for **long tasks** (marked with red triangles) and the interaction track that shows input delay, processing, and presentation for each interaction.
+- **Lighthouse** flags long tasks and Total Blocking Time (TBT), which correlates strongly with INP. A high TBT is a near-guarantee of a bad INP.
+- Test with **4x CPU throttling** enabled. Your users are not on your hardware.
+
+Getting this instrumentation into CI and RUM is a discipline in itself. If you want a framework for turning these numbers into enforced limits, I wrote a whole [performance budgets guide for frontend engineers](/blog/performance-budgets-frontend-engineers-guide) that pairs directly with this.
+
+## The fixes that actually move INP
+
+Now the good part. Here is what works, roughly in order of impact.
+
+### 1. Yield to the main thread
+
+The single biggest lever for processing-heavy interactions is **breaking up long tasks** so the browser can paint and respond in between. The modern tool for this is **`scheduler.yield()`**, which shipped in Chrome 129 and returns a promise that hands control back to the browser, then resumes your work where it left off.
+
+```javascript
+// Break a long task into chunks, yielding between each so the browser
+// can respond to input and paint. scheduler.yield() resumes at the FRONT
+// of the queue, unlike setTimeout which goes to the back.
+async function processLargeDataset(items) {
+  for (const item of items) {
+    doExpensiveWork(item);
+
+    // Yield to the main thread if it has been busy for a while.
+    if (navigator.scheduling?.isInputPending?.() ?? true) {
+      // Feature-detect: fall back to a task-yielding shim if needed.
+      if ('scheduler' in window && 'yield' in scheduler) {
+        await scheduler.yield();
+      } else {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+    }
+  }
+}
+```
+
+A note on `isInputPending()`: Google **no longer recommends gating your yields on it**. It can incorrectly return `false` even when a user has interacted, so the current guidance is to just yield periodically regardless. The example above shows it for completeness, but in production, yield on a time budget (say, every 50ms of work) rather than trusting `isInputPending()`.
+
+Why `scheduler.yield()` over the old `setTimeout(fn, 0)` trick? `setTimeout` pushes your continuation to the **back** of the task queue, where it competes with everything else. `scheduler.yield()` resumes at the **front**, right after pending high-priority work clears — so you stay responsive without losing your place in line. The deep story of how the engine schedules and executes this work is its own rabbit hole, which I cover in the [V8 engine internals guide](/blog/v8-engine-javascript-internals-guide).
+
+### 2. Let React deprioritize the heavy render
+
+This is where React's concurrent features earn their keep. Instead of fighting the re-render, you tell React which updates are urgent and which can wait.
+
+**`useTransition`** marks a state update as non-urgent. React keeps the input responsive and renders the heavy update in the background, interruptibly:
+
+```javascript
+import { useState, useTransition } from 'react';
+
+function SearchableList({ items }) {
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState(items);
+  const [isPending, startTransition] = useTransition();
+
+  function handleChange(e) {
+    // Urgent: update the input immediately so typing feels instant.
+    setQuery(e.target.value);
+
+    // Non-urgent: the expensive filter/render can be interrupted
+    // if the user keeps typing. This keeps the interaction responsive.
+    startTransition(() => {
+      setResults(items.filter((i) => i.name.includes(e.target.value)));
+    });
+  }
+
+  return (
+    <>
+      <input value={query} onChange={handleChange} />
+      {isPending && <Spinner />}
+      <List items={results} />
+    </>
+  );
+}
+```
+
+**`useDeferredValue`** does the same thing when you *don't* own the state update — you defer a value passed down to an expensive child:
+
+```javascript
+import { useDeferredValue } from 'react';
+
+function Results({ query }) {
+  // The list renders against a lagging value; the input stays snappy.
+  const deferredQuery = useDeferredValue(query);
+  return <ExpensiveList query={deferredQuery} />;
+}
+```
+
+Neither hook makes your code faster — they make it **interruptible**, so an expensive render can no longer hold the main thread hostage during an interaction. That is a direct win for the processing phase. I go much deeper on the scheduling model behind these in the [React concurrent mode practical guide](/blog/react-concurrent-mode-practical-guide), and on how they compose with streaming in the [Suspense and lazy-loading tutorial](/blog/react-suspense-tutorial-lazy-loading-async-rendering-data-fetching-react-18-19).
+
+### 3. Kill unnecessary re-renders
+
+Concurrency helps you survive expensive renders; **memoization stops them from happening.** Wrap expensive components in `memo`, stabilize callbacks and derived values, and cut the re-render cascade at the source.
+
+The problem is that hand-written `useMemo`/`useCallback`/`memo` is tedious and easy to get wrong. This is exactly what the **React Compiler** automates — it memoizes at build time so you get the wins without littering your code with hooks. It is the highest-leverage change you can make to a re-render-heavy app, and I break down exactly how it works in the [React Compiler automatic memoization deep dive](/blog/react-compiler-deep-dive-automatic-memoization-guide).
+
+### 4. Debounce and throttle input handlers
+
+If a handler fires on every keystroke or every pointer move, **debounce** the expensive part. Update the visible input synchronously, but defer the costly search/filter/network call:
+
+```javascript
+// Update the controlled input immediately; run the expensive
+// side effect only after the user pauses typing.
+function handleInput(e) {
+  setValue(e.target.value);       // urgent, cheap
+  debouncedSearch(e.target.value); // heavy work, delayed
+}
+```
+
+Debouncing shrinks the *number* of expensive interactions; yielding and transitions shrink the *cost* of each one. Use both.
+
+### 5. Let the browser skip offscreen paint work
+
+Presentation delay is the biggest phase, and a lot of it is the browser laying out and painting DOM that the user cannot even see. The CSS **`content-visibility`** property tells the browser to skip rendering work for offscreen content until it scrolls near:
+
+```css
+/* Skip layout & paint for offscreen cards until they approach the viewport.
+   contain-intrinsic-size reserves space so the scrollbar stays stable. */
+.card {
+  content-visibility: auto;
+  contain-intrinsic-size: 0 300px;
+}
+```
+
+On long lists and dashboards this can slash presentation-phase cost dramatically, because the browser stops painting a thousand rows just to show you ten.
+
+### 6. Trim and defer the JavaScript itself
+
+Less JavaScript on the main thread means less input delay and shorter tasks. Code-split aggressively, defer non-critical third-party scripts, and stay inside a bundle budget — the tactics in my [sub-200kB bundle optimization guide](/blog/dynamic-bundle-optimization-under-200kb-guide) reduce the raw volume of work the main thread has to chew through before it can respond to a click.
+
+## A debugging workflow that works
+
+When an INP alert fires, do not start randomly memoizing things. Follow the trail:
+
+1. **Find the culprit from field data.** Check your `web-vitals` attribution reports. `interactionTarget` tells you the exact element; the phase breakdown (`inputDelay` / `processingDuration` / `presentationDelay`) tells you *which* phase is slow.
+2. **Reproduce in DevTools.** Open the Performance panel, enable 4x CPU throttling, record, and perform that specific interaction.
+3. **Read the phase.** If **input delay** dominates, look for long tasks blocking *before* your handler — hydration, third-party scripts, or a busy startup. If **processing** dominates, it is your handler and its re-render cascade. If **presentation** dominates, it is layout and paint — reach for `content-visibility` and DOM size reduction.
+4. **Apply the matching fix.** Input delay → break up long tasks with `scheduler.yield()` and defer third parties. Processing → `useTransition` / `useDeferredValue` / React Compiler / debouncing. Presentation → `content-visibility`, smaller DOM, less layout thrash.
+5. **Verify in the field.** Lab confirms the fix locally; only CrUX and your RUM confirm it for real users at the 75th percentile. Watch the numbers for a couple of weeks.
+
+## The takeaway
+
+INP is not a harder version of FID — it is a *different* metric that finally measures what users feel: whether the app responds when they touch it, every time, not just once. React apps fail it not because they are slow to load, but because the synchronous re-render model piles work onto the main thread at exactly the wrong moment.
+
+The fixes are not exotic. **Yield to the main thread. Make heavy renders interruptible. Stop the re-renders you don't need. Let the browser skip work it doesn't need to do.** Instrument with the `web-vitals` attribution build so you are fixing real interactions instead of guessing, and let the three-phase breakdown point you at the right lever every time.
+
+Stop optimizing the number Google retired. Optimize the one it actually ranks on.
+
+## References
+
+### Sources
+
+- [Interaction to Next Paint becomes a Core Web Vital on March 12 — web.dev](https://web.dev/blog/inp-cwv-march-12)
+- [Introducing INP to Core Web Vitals — Google Search Central](https://developers.google.com/search/blog/2023/05/introducing-inp)
+- [Optimize long tasks — web.dev](https://web.dev/articles/optimize-long-tasks)
+- [Use scheduler.yield() to break up long tasks — Chrome for Developers](https://developer.chrome.com/blog/use-scheduler-yield)
+- [Scheduler: yield() method — MDN](https://developer.mozilla.org/en-US/docs/Web/API/Scheduler/yield)
+- [useTransition — React docs](https://react.dev/reference/react/useTransition)
+- [GoogleChrome/web-vitals — GitHub](https://github.com/GoogleChrome/web-vitals)
+
+### Further Reading
+
+- [Understanding Interaction to Next Paint (INP) — Google Codelabs](https://codelabs.developers.google.com/understanding-inp)
+- [Interaction to Next Paint — corewebvitals.io](https://www.corewebvitals.io/core-web-vitals/interaction-to-next-paint)
+- [Measure and Optimize Interaction to Next Paint — DebugBear](https://www.debugbear.com/docs/metrics/interaction-to-next-paint)
+- [content-visibility: the new CSS property that boosts rendering performance — web.dev](https://web.dev/articles/content-visibility)
+
+---
+
+~Seb 👊

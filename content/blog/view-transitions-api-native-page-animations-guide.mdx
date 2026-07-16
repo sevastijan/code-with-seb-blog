@@ -1,0 +1,339 @@
+---
+title: 'View Transitions API: Native Page Animations Without a Framework'
+date: '2026-07-16'
+category: 'Development'
+tags: ['css', 'view-transitions', 'frontend', 'performance', 'animation']
+featured: false
+author: 'Sebastian'
+draft: true
+excerpt: 'The View Transitions API now ships cross-document in Chrome and Safari. Here is why teams are deleting Framer Motion, how it works, and the gotchas nobody warns you about.'
+---
+
+Last month I deleted 14 kB of gzipped animation code from a client project and the page transitions got *better*. No `AnimatePresence`, no layout-shift hacks, no `motion.div` wrapping every route. Just two CSS rules and a couple of `view-transition-name` declarations.
+
+That is the pitch for the **View Transitions API**, and in 2026 it finally earns it. The single-page flavor has been shippable in Chromium for a while, but the thing that changed everything is **cross-document view transitions**: smooth, morphing animations across full page navigations in a plain multi-page app, no client-side router required. Chrome shipped it in 126, Safari followed in 18.2, and teams are quietly ripping heavy animation libraries out of their bundles.
+
+I have spent enough time with this API — including the parts that made me swear at my monitor — to write the guide I wish I had. Let me walk through what it actually is, both API surfaces, how to customize the animations, the framework story, and the gotchas that will bite you if nobody warns you.
+
+## What the View Transitions API actually does
+
+Here is the mental model that made it click for me. When you trigger a transition, the browser does four things:
+
+1. **Captures** the current visual state of the page (or specific elements) as snapshots — essentially screenshots.
+2. **Lets you mutate the DOM** to the new state.
+3. **Captures** the new state as a second set of snapshots.
+4. **Animates** between the old and new snapshots, then hands control back to the live DOM.
+
+The genius is step 4. During the animation, you are not animating live DOM nodes — you are cross-fading and transforming static images the browser generated. That is why it is cheap, why it does not thrash your layout, and why the default already looks decent. The whole choreography runs on the compositor.
+
+There are two ways to trigger this: the **same-document API** (you call a JavaScript function after mutating the DOM) and the **cross-document API** (the browser triggers it automatically on same-origin navigation). Same idea, two entry points.
+
+## Same-document transitions: the JavaScript API
+
+For SPAs, client-rendered updates, or any "the DOM just changed" moment, you call `document.startViewTransition()`:
+
+```js
+// The classic form: pass a callback that mutates the DOM.
+// The browser snapshots "before", runs your callback, snapshots "after",
+// then animates between them.
+function updateView(newContent) {
+  // Feature detection — always. Older browsers just get the instant update.
+  if (!document.startViewTransition) {
+    applyDOMUpdate(newContent);
+    return;
+  }
+
+  document.startViewTransition(() => {
+    applyDOMUpdate(newContent); // synchronous DOM mutation goes here
+  });
+}
+```
+
+That is the entire happy path. With zero extra CSS you already get a **default cross-fade** of the whole page, because the browser implicitly assigns `view-transition-name: root` to the document element.
+
+`startViewTransition()` returns a **`ViewTransition` object** with three promises and an escape hatch. These matter more than the docs make them sound:
+
+```js
+const transition = document.startViewTransition(() => applyDOMUpdate(newContent));
+
+// Resolves once the DOM callback finished AND snapshots are ready —
+// the moment to hook in custom animations via the Web Animations API.
+transition.ready.then(() => {
+  // e.g. animate a pseudo-element manually
+});
+
+// Resolves when your update callback has run (DOM is in the new state)
+// but the animation may still be playing.
+transition.updateCallbackDone.then(() => {});
+
+// Resolves when the animation is fully done and the live DOM is showing.
+await transition.finished;
+
+// Bail out of the animation but keep the DOM update. Great for
+// prefers-reduced-motion or when the user navigates again mid-transition.
+transition.skipTransition();
+```
+
+If your update is async — say you fetch data before rendering — pass an async callback. The browser holds the "before" snapshot frozen while you await, which is powerful and also a trap I will come back to.
+
+### The options form and transition types
+
+Modern Chromium also accepts an **options object** instead of a bare callback, which unlocks `types`:
+
+```js
+document.startViewTransition({
+  update: () => applyDOMUpdate(newContent),
+  // Tag this specific transition so CSS can style it differently.
+  types: ['slide-forward'],
+});
+```
+
+Types let one page have several distinct animations — forward vs. back navigation, expanding vs. collapsing — without juggling classes on the root element. You target them with the `:active-view-transition-type()` pseudo-class, which I will use below.
+
+## view-transition-name and morphing shared elements
+
+The cross-fade is fine. The magic is **shared element transitions** — a thumbnail that smoothly grows into a hero image, a card that morphs into a detail panel. You get this by giving the "same" element in both states an identical `view-transition-name`:
+
+```css
+/* On the list page */
+.product-card__image {
+  view-transition-name: product-hero;
+}
+
+/* On the detail page — same name, different element */
+.product-detail__image {
+  view-transition-name: product-hero;
+}
+```
+
+When a name exists in both the old and new snapshots, the browser stops cross-fading it and instead **animates its position, size, and shape** from old to new. It interpolates `width`, `height`, `transform`, and even `border-radius`. That morph is the effect people used to pull in an entire physics library for.
+
+**The one rule that will bite you:** every `view-transition-name` must be *unique per document at the moment of capture*. Two elements with `view-transition-name: product-hero` visible at the same time throws and skips the whole transition. So on a list of 20 products you cannot statically name them all `product-hero` — you generate unique names (`product-hero-42`) and only assign the shared name to the *one* card the user actually clicked, usually via a JS event handler right before you start the transition.
+
+### The pseudo-element tree
+
+Once a transition runs, the browser builds a tree of `::view-transition` pseudo-elements overlaid on top of everything. Understanding it is what separates "I copy-pasted a snippet" from "I can build any animation I want":
+
+```
+::view-transition                          (root overlay, covers viewport)
+└─ ::view-transition-group(name)           (positioned + sized container per name)
+   └─ ::view-transition-image-pair(name)   (isolation context for the blend)
+      ├─ ::view-transition-old(name)       (snapshot of the old state)
+      └─ ::view-transition-new(name)       (snapshot of the new state)
+```
+
+The `-group` handles the size/position morph. The `-old` and `-new` are the actual snapshots being cross-faded inside `-image-pair`. To customize an animation, you target these pseudo-elements with plain CSS `@keyframes`:
+
+```css
+/* Slide the whole page content in from the right instead of cross-fading */
+@keyframes slide-from-right {
+  from { transform: translateX(30px); opacity: 0; }
+}
+@keyframes slide-to-left {
+  to { transform: translateX(-30px); opacity: 0; }
+}
+
+::view-transition-old(root) {
+  animation: 250ms ease both slide-to-left;
+}
+::view-transition-new(root) {
+  animation: 250ms ease both slide-from-right;
+}
+```
+
+Because it is just CSS animation on pseudo-elements, everything you already know applies — `animation-delay`, `cubic-bezier`, `steps()`, the lot. Want the slide only on forward navigation? Scope it with a type:
+
+```css
+/* Only when the transition was tagged types: ['slide-forward'] */
+html:active-view-transition-type(slide-forward)::view-transition-old(root) {
+  animation: 250ms ease both slide-to-left;
+}
+```
+
+## Cross-document transitions: zero JavaScript for MPAs
+
+This is the headline feature of 2026 and the reason I am writing this now. For a **multi-page app** — server-rendered pages, static sites, an Astro or Rails or plain-HTML app — you can get the exact same transitions across real navigations with *no JavaScript at all*. Both the page you leave and the page you land on opt in with one CSS at-rule:
+
+```css
+/* Put this in a global stylesheet loaded on every page */
+@view-transition {
+  navigation: auto;
+}
+```
+
+That is it. Two same-origin pages, both carrying that rule, and every link click or Back-button press cross-fades between them. There is **no function to call** — the browser owns the trigger. It captures the old document, loads the new one, waits for it to be renderable, and animates. Shared elements morph across the navigation using the same `view-transition-name` mechanism, so a nav bar or hero image that exists on both pages stays put and glides into place.
+
+This is genuinely a big deal. Multi-page architectures — which are back in fashion for good [rendering-strategy reasons](/blog/ssr-vs-ssg-vs-isr-vs-rsc-nextjs-strategies) — no longer have to choose between "SPA smoothness" and "no client-side router." You keep the simplicity of an MPA and get the polish of an SPA.
+
+### Customizing per-navigation with pageswap and pagereveal
+
+The bare `@view-transition` rule cross-fades. To do directional or context-aware animations across documents, you hook two events. **`pageswap`** fires on the *outgoing* page just before it is snapshotted; **`pagereveal`** fires on the *incoming* page before its first render. Both expose a `viewTransition` object (when a transition is actually happening) and a navigation `activation` with the from/to URLs:
+
+```js
+// Outgoing page — decide direction and tag the transition
+window.addEventListener('pageswap', (event) => {
+  if (!event.viewTransition) return;
+
+  const fromPath = event.activation.from?.url;
+  const toPath = event.activation.entry.url;
+
+  // Example: assign a shared name to only the clicked element, or set a type
+  if (isForward(fromPath, toPath)) {
+    event.viewTransition.types.add('forward');
+  } else {
+    event.viewTransition.types.add('back');
+  }
+});
+
+// Incoming page — mirror the decision so old/new snapshots agree
+window.addEventListener('pagereveal', (event) => {
+  if (!event.viewTransition) return;
+  // Set view-transition-name on the target element here so the morph lands
+});
+```
+
+A common pattern: on a blog index, in `pageswap` you set `view-transition-name: article-hero` on the specific card that links to the destination, and in `pagereveal` on the article page you set the same name on its header image. The browser matches them and morphs. Clean up the names afterward (in `finished`) so they do not collide on the next navigation.
+
+## The framework story: React, Next.js, and Astro
+
+You do not need a framework for any of this — that is the whole point. But the ergonomics of manually naming elements and juggling `pageswap` in an SPA are rough, so the frameworks are wrapping it.
+
+### React and Next.js
+
+React ships an experimental **`<ViewTransition>`** component (React Canary / 19.x experimental at the time of writing — not yet stable, so treat it as such). It declaratively marks a subtree that should animate when it enters, exits, or updates inside a `startTransition`:
+
+```jsx
+import { unstable_ViewTransition as ViewTransition } from 'react';
+
+function Page({ children }) {
+  return (
+    <ViewTransition>
+      {children}
+    </ViewTransition>
+  );
+}
+```
+
+Because React drives DOM updates through its own scheduler, it wires the component into `document.startViewTransition()` for you and only animates when the update originates from a transition — which dovetails with the concurrent rendering model I covered in [the React concurrent mode guide](/blog/react-concurrent-mode-practical-guide). You pick the animation cause with **`addTransitionType`**:
+
+```jsx
+import { startTransition, addTransitionType } from 'react';
+
+function navigate(url) {
+  startTransition(() => {
+    addTransitionType('nav-forward'); // maps to a CSS-targetable type
+    router.push(url);
+  });
+}
+```
+
+**Next.js** exposes this behind a flag. Enable it in config, wrap your content, and route navigations become transitions automatically:
+
+```js
+// next.config.js
+module.exports = {
+  experimental: {
+    viewTransition: true,
+  },
+};
+```
+
+As of Next.js 16.2 the `<Link>` component takes a `transitionTypes` prop — an array forwarded straight to `addTransitionType` — so you can drive directional animations from the link itself. If you are on the upgrade path already, it slots in alongside the other changes in the [Next.js 16 migration guide](/blog/nextjs-16-migration-guide-breaking-changes).
+
+### Astro
+
+Astro was early here and now offers both approaches. Its `<ClientRouter />` component intercepts navigations, turns your MPA into a soft-SPA, and adds features the native API still lacks (persisting state across navigations, finer directives). You name shared elements with the `transition:name` directive and pick animations with `transition:animate`:
+
+```astro
+---
+import { ClientRouter } from 'astro:transitions';
+---
+<head>
+  <ClientRouter />
+</head>
+<body>
+  <img src={hero} transition:name="cover" transition:animate="fade" />
+</body>
+```
+
+The interesting 2026 move is that many Astro sites are **dropping `ClientRouter` for the native `@view-transition` at-rule**. You lose a couple of framework niceties but you delete the router JavaScript entirely and rely on a web standard. For content sites where the transition is pure decoration, that is often the right trade.
+
+## Accessibility: respect prefers-reduced-motion
+
+This is not optional. Motion-triggered vestibular disorders are real, and a page-wide slide can make someone physically ill. The good news is you kill *every* view transition animation with a single media query — the [accessibility baseline every frontend owes users in 2026](/blog/web-accessibility-2026-eaa-ada-wcag-guide):
+
+```css
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation: none !important;
+  }
+}
+```
+
+Setting `animation: none` does *not* break the transition — the DOM still updates, the new state still shows. You are just skipping the movement, which is exactly what the user asked for. For same-document transitions you can also branch in JS and call `skipTransition()`, but the CSS approach covers cross-document for free, so I lead with it.
+
+One more thing: the pseudo-elements are `aria-hidden` and inert during the animation, and the live DOM is what screen readers see. That is correct behavior, but it means overly long transitions delay when assistive tech reaches the real content. Keep durations short (200–300 ms) for this reason too.
+
+## Performance and the gotchas nobody mentions
+
+The API is fast by design — you are animating compositor-friendly snapshots — but it is not free, and there are sharp edges.
+
+**Snapshot cost scales with painted area.** Each named element becomes a texture. Naming dozens of elements, or naming something enormous, means the browser allocates big snapshots and the capture step can jank on a busy frame. Name only what needs to morph. This is the kind of thing worth watching against your [performance budgets](/blog/performance-budgets-frontend-engineers-guide) — a transition that looks buttery on your M-series laptop can drop frames on a mid-tier Android.
+
+**Named elements are lifted out of flow during capture.** A `view-transition-name` promotes the element into its own snapshot layer. If it lives inside a container with `overflow: hidden`, `clip-path`, or a stacking context you relied on, the visual can escape its clip mid-animation. Test the actual transition, not just the end states.
+
+**The cross-document 4-second timeout.** For MPA transitions, if the incoming page does not reach a renderable state within **4 seconds** of navigation starting, the browser abandons the transition and just shows the page. Slow server response or a render-blocking resource silently kills your animation. Cross-document transitions are only as smooth as your TTFB and critical render path — another reason to keep pages lean.
+
+**Async callbacks freeze the old page.** In same-document transitions, if you `await` a slow fetch inside the update callback, the user stares at a frozen "before" snapshot the whole time. Fetch *first*, then start the transition with the data already in hand. Do not wrap the network request inside `startViewTransition`.
+
+**Scroll position and `position: fixed`.** Fixed and sticky elements get captured relative to the snapshot, not the viewport, so a fixed header can appear to drift during a transition unless you give it its own `view-transition-name` and let it be treated as a stable shared element. This one surprises everyone the first time.
+
+**Interrupting transitions.** Users click fast. If a new transition starts while one is running, the browser skips the in-flight one. Guard your JS state so a half-applied DOM update from a skipped transition does not leave the UI inconsistent — resolve on `finished`, not on `updateCallbackDone`.
+
+## Browser support and fallbacks in 2026
+
+Here is the honest matrix as I write this:
+
+- **Same-document** view transitions are **Baseline Newly available** (Chrome, Edge, Safari, and Firefox as of the 2025 rollout). Safe to use broadly.
+- **Cross-document** (MPA) transitions ship in **Chromium 126+ and Safari 18.2+**. **Firefox still gates the `@view-transition` at-rule** — it parses but does not animate, so those users get an instant, un-animated navigation.
+
+That last point is the beautiful part: **the fallback is doing nothing**. A browser that does not support `@view-transition` ignores the rule and navigates normally. A browser that lacks `document.startViewTransition` hits your feature-detection branch and applies the DOM update instantly. Nobody sees a broken page; they just see a plain cut instead of a fade. This is progressive enhancement in its purest form — you are adding polish, not a dependency, so you never need a polyfill.
+
+## When NOT to use it
+
+I am bullish, but it is not a hammer for every nail:
+
+- **Complex, physics-based, gesture-driven animation** — drag-to-dismiss sheets, spring interpolation, coordinated multi-element choreography with mid-flight interruption. This is still Framer Motion / GSAP territory. View Transitions animate *between two states*; they are not a general animation engine.
+- **Continuous or looping animation.** Loaders, ambient motion, anything not tied to a state change. Wrong tool.
+- **Micro-interactions inside a component** — a button press, a toggle. A plain CSS transition is simpler and does not incur snapshot overhead.
+- **When you need to animate live, interactive DOM** during the transition. Snapshots are static images; you cannot type into them.
+
+The sweet spot is exactly what killed the libraries: **route and view changes** — page-to-page, list-to-detail, tab switches, expand/collapse of major regions. For that, the native API is smaller, faster, and more robust than anything you would ship yourself.
+
+I have now shipped this on three production projects. The bundle got lighter, the animations got smoother, and the code got shorter. In 2026, reaching for a heavy animation dependency just to fade between pages is a habit worth breaking.
+
+## References
+
+### Sources
+
+- [Same-document view transitions are now Baseline — web.dev](https://web.dev/blog/same-document-view-transitions-are-now-baseline-newly-available)
+- [View Transition API — MDN](https://developer.mozilla.org/en-US/docs/Web/API/View_Transition_API)
+- [Smooth transitions with the View Transition API — Chrome for Developers](https://developer.chrome.com/docs/web-platform/view-transitions)
+- [Cross-document view transitions for MPAs — Chrome for Developers](https://developer.chrome.com/docs/web-platform/view-transitions/cross-document)
+- [`<ViewTransition>` — React docs](https://react.dev/reference/react/ViewTransition)
+- [`addTransitionType` — React docs](https://react.dev/reference/react/addTransitionType)
+- [View transitions guide — Next.js docs](https://nextjs.org/docs/app/guides/view-transitions)
+- [View transitions — Astro docs](https://docs.astro.build/en/guides/view-transitions/)
+
+### Further Reading
+
+- [Using the View Transition API — MDN](https://developer.mozilla.org/en-US/docs/Web/API/View_Transition_API/Using)
+- [`@view-transition` at-rule — MDN](https://developer.mozilla.org/en-US/docs/Web/CSS/Reference/At-rules/@view-transition)
+- [Cross-Document View Transitions: The Gotchas Nobody Mentions — CSS-Tricks](https://css-tricks.com/cross-document-view-transitions-part-1/)
+- [React Labs: View Transitions, Activity, and more — React blog](https://react.dev/blog/2025/04/23/react-labs-view-transitions-activity-and-more)
+
+---
+
+~Seb 👊
