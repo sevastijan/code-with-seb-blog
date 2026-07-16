@@ -1,0 +1,242 @@
+---
+title: 'Context7 MCP: jak dać Claude Code zawsze świeżą dokumentację'
+date: '2026-04-20'
+category: 'AI'
+tags: ['claude-code', 'mcp', 'documentation', 'context7', 'developer-tools']
+draft: false
+featured: false
+author: 'Sebastian'
+enSlug: 'context7-mcp-fresh-documentation-guide'
+excerpt: "Dane treningowe Claude mają kilka miesięcy. Context7 od Upstash dostarcza dokumentację bibliotek dla konkretnej wersji prosto do sesji — dokładnie to API, którego używasz."
+---
+
+W zeszłym miesiącu poprosiłem Claude Code o pomoc w skonfigurowaniu middleware w Next.js 15. Wygenerował schludny plik `middleware.ts`, używając `NextResponse.redirect()` z obiektem konfiguracyjnym, który wyglądał zupełnie poprawnie — z tą różnicą, że API zmieniło się dwie wersje minor wcześniej. Klucz konfiguracyjny, którego użył, już nie istniał. Kod się kompilował, typy się zgadzały, a przy uruchomieniu wybuchł błędem, którego diagnozowanie zajęło mi 45 minut.
+
+Claude nie był leniwy. Pracował na danych treningowych sprzed kilku miesięcy. A dla szybko rozwijających się bibliotek — Next.js, React, Prisma, Tailwind — kilka miesięcy to praktycznie kilka lat.
+
+To właśnie problem nieaktualnej dokumentacji. I Context7 go rozwiązuje.
+
+## Problem: dokumentacja Claude ma datę ważności
+
+Każdy LLM ma punkt odcięcia danych treningowych. Claude dobrze zna React 18, ale hook `useActionState` z React 19? Może zmyślić jego sygnaturę. Zna Prisma 5, ale nową funkcję `typedSql` z Prisma 6? Zgadnie, a to zgadywanie będzie wyglądać przekonująco.
+
+W swoich projektach śledziłem trzy kategorie błędów wynikających z nieaktualnej dokumentacji:
+
+**Przestarzałe API.** Claude sugeruje `getServerSideProps` w projekcie Next.js 15 z App Routerem, bo tak pokazują tysiące przykładów treningowych. Działa to w Pages Routerze. W App Routerze nie istnieje.
+
+**Zmyślone metody.** Claude wymyśla wiarygodnie brzmiącą metodę, która łączy dwa prawdziwe API w jedno, które nigdy nie istniało. Dostajesz coś w rodzaju `prisma.user.createManyAndReturn()` — brzmi dobrze, czyta się dobrze, ale Prisma nigdy nie wypuściła tego pod tą dokładną nazwą.
+
+**Błędne domyślne zachowanie.** Biblioteka zmienia swoje wartości domyślne między wersjami. Claude mówi ci, że cachowanie jest opt-in, podczas gdy twoja wersja ustawiła je jako opt-out. Twój kod „działa", ale zachowuje się nieoczekiwanie na produkcji.
+
+Typowy sposób obejścia to wklejanie dokumentacji do czatu. Kopiujesz odpowiedni fragment z oficjalnej dokumentacji, wklejasz go i prosisz Claude, by go użył. To działa — ale jest ręczne, zżera okno kontekstu i musisz wiedzieć, *którą* część dokumentacji wkleić, zanim jeszcze wiesz, na czym polega problem.
+
+Context7 automatyzuje cały ten proces.
+
+## Co robi Context7
+
+[Context7](https://context7.com) to serwer MCP zbudowany przez Upstash, który w czasie rzeczywistym pobiera dokumentację bibliotek dla konkretnej wersji i wstrzykuje ją do twojej sesji AI. Kiedy Claude musi napisać kod wykorzystujący konkretną bibliotekę, Context7 pobiera dokładną dokumentację dla wersji, której używasz — a nie tej, na której Claude był trenowany.
+
+Architektura jest prosta. Context7 utrzymuje nieustannie aktualizowany indeks dokumentacji setek popularnych bibliotek. Kiedy ty (lub Claude) wywołasz narzędzie `resolve-library-id`, znajdzie ono właściwą bibliotekę. Kiedy wywołasz `get-library-docs`, pobierze odpowiednie strony dokumentacji, przefiltrowane po temacie, jeśli go podasz, i zwróci je jako kontekst, którego Claude może natychmiast użyć.
+
+To nie jest RAG po zbuforowanej dokumentacji. To nie statyczna migawka. Context7 regularnie reindeksuje dokumentację bibliotek, więc gdy Next.js wypuści wydanie patch, które zmienia domyślne API, Context7 to wychwyci.
+
+Wpasowuje się to zgrabnie w [architekturę context engineeringu](/blog/context-engineering-claude-code-guide), o której pisałem wcześniej. Context7 działa jako dostawca kontekstu w MCP — warstwa czasu rzeczywistego, która ładuje dokumentację tylko wtedy, gdy jest potrzebna, utrzymując twój bazowy kontekst (CLAUDE.md, pamięć) szczupłym, a jednocześnie dając Claude dostęp do dokładnych informacji w momencie realizacji zadania.
+
+## Konfiguracja: instalacja serwera MCP Context7
+
+Uruchomienie Context7 z Claude Code zajmuje około dwóch minut.
+
+### Opcja 1: CLI Claude Code (najszybsza)
+
+```bash
+claude mcp add context7 -- npx -y @upstash/context7-mcp@latest
+```
+
+To wszystko. Claude Code rejestruje serwer, a od tej pory jest on dostępny w każdej sesji z tego projektu.
+
+### Opcja 2: konfiguracja ręczna
+
+Dodaj go do swojego `.claude/settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "context7": {
+      "command": "npx",
+      "args": ["-y", "@upstash/context7-mcp@latest"]
+    }
+  }
+}
+```
+
+### Opcja 3: konfiguracja globalna
+
+Jeśli chcesz mieć Context7 dostępny we wszystkich projektach, dodaj go zamiast tego do `~/.claude/settings.json`. Polecam to rozwiązanie — świeża dokumentacja przydaje się wszędzie, nie tylko w jednym projekcie.
+
+Sprawdź, czy działa, uruchamiając sesję Claude Code i wpisując:
+
+```
+/mcp
+```
+
+Powinieneś zobaczyć `context7` na liście z dwoma narzędziami: `resolve-library-id` i `get-library-docs`.
+
+## Jak to działa: potok dokumentacji
+
+Context7 udostępnia dwa narzędzia, które współpracują ze sobą:
+
+### Krok 1: rozpoznanie biblioteki
+
+Narzędzie `resolve-library-id` przyjmuje nazwę biblioteki i zwraca identyfikator zgodny z Context7. Radzi sobie z bałaganiarską rzeczywistością, w której biblioteki mają wiele nazw — czy to `next`, `nextjs`, `next.js`, czy `vercel/next.js`? Context7 rozwiewa tę niejednoznaczność.
+
+```
+resolve-library-id("next.js")
+→ /vercel/next.js (231,000 tokens indexed)
+```
+
+### Krok 2: pobranie dokumentacji
+
+Narzędzie `get-library-docs` przyjmuje rozpoznany identyfikator oraz opcjonalny filtr tematu, a następnie zwraca odpowiednie strony dokumentacji. Możesz kontrolować budżet tokenów, aby nie zalać swojego okna kontekstu.
+
+```
+get-library-docs("/vercel/next.js", topic: "middleware", tokens: 5000)
+→ [Middleware documentation, routing middleware examples, middleware config API...]
+```
+
+### Co dzieje się w praktyce
+
+Zazwyczaj nie wywołujesz tych narzędzi ręcznie. Naturalny przebieg pracy polega na tym, że mówisz Claude, czego potrzebujesz, a gdy Context7 jest dostępny, Claude sam wywołuje narzędzia, gdy rozpozna, że potrzebuje dokumentacji. Poproś „skonfiguruj Prismę z PostgreSQL", a Claude pobierze aktualną dokumentację konfiguracji Prismy, zanim napisze choć jedną linijkę.
+
+Możesz też być dosłowny: „Użyj Context7, aby pobrać najnowszą dokumentację middleware dla Next.js 15, a potem przerób mój middleware". To zapewnia, że Claude korzysta z żywej dokumentacji, a nie polega na danych treningowych.
+
+## Wspierane biblioteki
+
+Context7 indeksuje dokumentację dla dużego i wciąż rosnącego zbioru bibliotek. Na kwiecień 2026 katalog obejmuje większość głównego ekosystemu JavaScript/TypeScript i rozszerza się na inne języki:
+
+**Frontend:** React, Next.js, Vue, Nuxt, Svelte, SvelteKit, Angular, Astro, Remix
+**CSS:** Tailwind CSS, Shadcn UI, Radix UI, Chakra UI
+**Backend:** Express, Fastify, Hono, Deno, Bun
+**Bazy danych:** Prisma, Drizzle ORM, Mongoose, TypeORM, Supabase
+**AI/ML:** LangChain, LlamaIndex, Vercel AI SDK, Anthropic SDK, OpenAI SDK
+**Infrastruktura:** Docker, Terraform, AWS CDK, Kubernetes
+**Języki:** Python (Django, Flask, FastAPI), Rust, Go
+
+Pełna lista jest dostępna na [context7.com](https://context7.com) i rośnie z tygodnia na tydzień. Jeśli jakaś biblioteka nie jest zindeksowana, możesz zgłosić prośbę o jej dodanie — Upstash reaguje na bieżąco na dodawanie popularnych bibliotek.
+
+## Przed i po: projekt w Next.js 15
+
+Oto konkretne porównanie z mojego własnego workflow. Zadałem Claude to samo pytanie — „dodaj ISR z rewalidacją on-demand do mojej strony produktu" — z Context7 i bez niego.
+
+### Bez Context7
+
+Claude wygenerował kod, używając `revalidatePath()` z `next/cache` oraz eksportu `revalidate` w komponencie strony. Kod był strukturalnie poprawny dla podejścia z Next.js 14, ale pomijał zaktualizowane wzorce rewalidacji, które Next.js 15 dopracował. Otrzymałem zachowanie w czasie działania, które nie odpowiadało temu, co dokumentacja teraz zaleca, i straciłem czas na debugowanie problemu z cachowaniem, który sprowadzał się do niezrozumienia zmiany domyślnego zachowania cachowania.
+
+### Z Context7
+
+Claude pobrał dokumentację Next.js 15 dotyczącą ISR i cachowania, zanim wygenerował kod. Poprawnie użył aktualnej powierzchni API, uwzględnił konfiguracje segmentów `dynamicParams` i `revalidate` zgodnie z dokumentacją oraz obsłużył przypadki brzegowe wokół rewalidacji on-demand za pomocą `revalidateTag`. Kod zadziałał za pierwszym razem.
+
+Różnica nie polegała na tym, że Claude stał się „mądrzejszy". Miał właściwy materiał referencyjny. Ten sam programista z otwartą właściwą dokumentacją napisze lepszy kod niż genialny programista zgadujący z pamięci. Ta sama zasada.
+
+## Łączenie Context7 z CLAUDE.md
+
+Context7 obsługuje dokumentację bibliotek. [CLAUDE.md obsługuje konwencje projektu](/blog/claude-md-memory-persistent-context-guide). Doskonale się uzupełniają.
+
+Twój CLAUDE.md powinien określać, *których* bibliotek i *których wersji* używa twój projekt:
+
+```markdown
+## Stack
+- Next.js 15.3 App Router, TypeScript strict, Tailwind 4
+- DB: PostgreSQL via Prisma 6
+- Auth: Better Auth
+```
+
+Gdy Claude to widzi i ma dostępny Context7, może pobrać dokumentację dla dokładnie wymienionych wersji. Bez CLAUDE.md Claude mógłby pobrać dokumentację dla najnowszej wersji — która mogłaby wyprzedzać to, co faktycznie masz uruchomione. Bez Context7 CLAUDE.md mówi Claude o wersji, ale Claude nadal polega na danych treningowych w kwestii szczegółów API.
+
+Razem: CLAUDE.md deklaruje wersję, Context7 pobiera dokumentację dla tej wersji, a Claude pisze kod, który odpowiada twojemu faktycznemu projektowi. Trzy warstwy działające jak jedna.
+
+Nie powielaj dokumentacji bibliotek w swoim CLAUDE.md. Widziałem konfiguracje, w których ludzie wklejają odwołania do API do CLAUDE.md „na wszelki wypadek". To dokładnie ten antywzorzec, który opisałem w moim [przewodniku po optymalizacji CLAUDE.md](/blog/claude-md-memory-persistent-context-guide) — statyczna dokumentacja w CLAUDE.md kosztuje tokeny w każdej sesji i natychmiast się dezaktualizuje. Niech Context7 zajmie się tym na żądanie.
+
+## Wydajność: kontekst i koszt w tokenach
+
+Pytanie, które zadaje każdy: ile kontekstu dodaje Context7 i ile to kosztuje?
+
+Narzędzie `get-library-docs` w Context7 przyjmuje parametr `tokens` (domyślnie około 5000). To ty kontrolujesz budżet. Typowe pobranie dokumentacji dodaje od 3000 do 8000 tokenów do twojego kontekstu. Dla porównania to mniej więcej koszt 50–100 linii CLAUDE.md, które ładowałbyś w *każdej* sesji — z tą różnicą, że tokeny Context7 ładują się tylko wtedy, gdy są potrzebne.
+
+W moim użyciu przez ostatni miesiąc:
+
+| Metryka | Bez Context7 | Z Context7 |
+|--------|-----------------|---------------|
+| Średnia liczba tokenów dokumentacji na sesję | 0 (lub 2 tys.+ z ręcznego wklejenia) | 4200 |
+| Poprawki z powodu nieaktualnego API | 2–3 na tydzień | ~0 |
+| Czas debugowania niezgodności wersji | 30–60 min/tydz. | <5 min/tydz. |
+
+Rachunek wychodzi jasno. Każdy cykl poprawek kosztuje znacznie więcej w tokenach (i czasie) niż wstępne pobranie dokumentacji. Pojedyncze błędne wywołanie API, które uruchamia pętlę korekt, może spalić 20 000–30 000 tokenów w tam i z powrotem. Pobranie dokumentacji za 5000 tokenów, które zapobiega tej pętli, to netto oszczędność.
+
+Jeśli już śledzisz swoje [koszty tokenów i optymalizujesz rachunek](/blog/claude-code-token-optimization-bill-cut-guide), Context7 jest jednym z rzadkich dodatków, który *zmniejsza* całkowite wydatki mimo dodawania tokenów — ponieważ zapobiega kosztownym cyklom ponawiania, które powoduje nieaktualna dokumentacja.
+
+## Alternatywy: jak wypada Context7 na tle innych
+
+Context7 nie jest jedynym podejściem do problemu nieaktualnej dokumentacji. Oto jak wypadają alternatywy:
+
+**Ręczne wklejanie dokumentacji.** Kopiujesz z dokumentacji, wklejasz do czatu. Działa, ale się nie skaluje. Musisz wiedzieć, co wkleić, zanim wiesz, co jest nie tak. A ty jesteś wąskim gardłem.
+
+**RAG po lokalnej dokumentacji.** Budujesz własny potok wyszukiwania po pobranej dokumentacji. Maksymalna kontrola, maksymalny ciężar utrzymania. Musisz ponownie pobierać dokumentację, gdy biblioteki się aktualizują, zarządzać embeddingami, obsługiwać dzielenie na fragmenty. Dobre dla wewnętrznych API, przesada dla publicznych bibliotek.
+
+**@docs w Cursorze.** Cursor pozwala odwoływać się do dokumentacji inline. Podobna koncepcja do Context7, ale przywiązana do edytora Cursor. Jeśli jesteś w Claude Code, to nie jest dla ciebie dostępne.
+
+**Awaryjne web_search.** Claude Code potrafi przeszukiwać sieć, ale ogólne wyszukiwanie w internecie zwraca wpisy blogowe, odpowiedzi ze Stack Overflow i tutoriale obok (lub zamiast) oficjalnej dokumentacji. Context7 zwraca *wyłącznie* oficjalną dokumentację, wstępnie zindeksowaną i ustrukturyzowaną pod konsumpcję przez LLM.
+
+**Przewaga Context7** polega na tym, że jest stworzony specjalnie pod ekosystem MCP, działa z każdym klientem zgodnym z MCP i utrzymuje indeks dokumentacji, więc ty nie musisz. Wpasowuje się naturalnie w [paradygmat narzędzi MCP](/blog/mcp-vs-a2a-ai-agent-protocols-guide-2026) — to serwer, który udostępnia dokumentację jako zasób, dokładnie to, do czego MCP zostało zaprojektowane.
+
+## Kiedy Context7 nie wystarcza
+
+Context7 jest świetny dla popularnych bibliotek open-source. Nie jest uniwersalnym rozwiązaniem.
+
+**Niszowe biblioteki.** Jeśli używasz biblioteki z 200 gwiazdkami na GitHubie, Context7 prawdopodobnie jej nie zindeksował. Wrócisz do ręcznego wklejania dokumentacji albo zbudowania własnego serwera MCP, który serwuje twoją konkretną dokumentację.
+
+**Wewnętrzne API.** Wewnętrzne usługi twojej firmy nie są w indeksie Context7 i nigdy nie będą. Dla nich zbuduj lekki serwer MCP, który serwuje dokumentację twojego wewnętrznego API, albo umieść kluczowe szczegóły API w plikach CLAUDE.md na poziomie projektu lub katalogu.
+
+**Najnowsze funkcje z wersji przedpremierowych.** Kiedy biblioteka wypuszcza kandydata do wydania z nowymi API, może wystąpić opóźnienie, zanim Context7 zindeksuje dokumentację RC. Przy pracy na bleeding edge nadal możesz potrzebować wkleić changelog RC lub RFC do czatu.
+
+**Złożone interakcje wielu bibliotek.** Context7 pobiera dokumentację per biblioteka. Jeśli twój błąd tkwi na styku Prismy, Server Actions z Next.js i przejść z React 19, będziesz musiał pobrać dokumentację ze wszystkich trzech i pomóc Claude połączyć kropki. Context7 obsługuje każde pobranie; synteza wciąż spoczywa na tobie (i Claude).
+
+W tych przypadkach rozwiązaniem jest warstwowy kontekst — Context7 dla popularnych bibliotek, własne serwery MCP dla wewnętrznych API oraz CLAUDE.md jako spoiwo specyficzne dla projektu. To pełny [stos context engineeringu](/blog/context-engineering-claude-code-guide) w praktyce.
+
+## Jak wycisnąć z Context7 jak najwięcej
+
+Kilka wzorców, przy których osiadłem po miesiącu codziennego używania:
+
+**Bądź dosłowny co do wersji.** Kiedy prosisz Claude o pobranie dokumentacji, podaj wersję: „Pobierz dokumentację Prisma 6 dla rozszerzeń klienta". To zapewnia, że Context7 zwróci treść odpowiednią dla wersji.
+
+**Używaj filtrów tematów.** Nie pobieraj całej dokumentacji biblioteki. „Pobierz dokumentację middleware Next.js" jest lepsze niż „pobierz dokumentację Next.js". Węższe zapytania oznaczają mniej tokenów i bardziej trafny kontekst.
+
+**Sparuj z .claudeignore.** Jeśli masz lokalną dokumentację w `node_modules` lub wygenerowaną dokumentację API, dodaj je do `.claudeignore`, aby Claude korzystał ze świeżej wersji z Context7 zamiast z nieaktualnych lokalnych kopii.
+
+**Sprawdzaj budżet tokenów.** Domyślny limit tokenów sprawdza się dobrze przy większości zapytań. Jeśli dostajesz obcięte wyniki przy złożonych tematach, podbij go do 8000–10 000. Jeśli robisz szybki lookup, zejdź do 2000.
+
+## Szersza perspektywa
+
+Context7 rozwiązuje jeden konkretny problem — nieaktualną dokumentację bibliotek — i rozwiązuje go dobrze. Ale jest też przykładem tego, dlaczego [MCP jako protokół](/blog/mcp-vs-a2a-ai-agent-protocols-guide-2026) ma znaczenie. Przed MCP rozwiązanie tego problemu oznaczało budowanie osobnej integracji dla każdego edytora, każdego narzędzia AI, każdego workflow. Z MCP Upstash zbudował jeden serwer, a ten działa w Claude Code, Cursorze, Windsurfie i każdym innym kliencie zgodnym z MCP.
+
+To właśnie obietnica warstwy protokołu: zbuduj raz, podłącz wszędzie. Context7 akurat podłącza dokumentację. Inne serwery MCP podłączają bazy danych, API, narzędzia monitorujące i potoki wdrożeniowe. Wzorzec jest ten sam.
+
+Jeśli budujesz własny stos context engineeringu, Context7 jest jednym z pierwszych serwerów MCP, które bym zainstalował. Świeża dokumentacja kosztuje mniej niż debugowanie nieaktualnej — w tokenach, w czasie i w zaufaniu.
+
+## Bibliografia
+
+### Źródła
+- [Context7 — oficjalna strona](https://context7.com) - Indeks dokumentacji bibliotek i przegląd serwera MCP
+- [Context7 MCP Server — GitHub](https://github.com/upstash/context7) - Kod źródłowy, instrukcje konfiguracji i wspierane biblioteki
+- [Upstash Context7 — npm](https://www.npmjs.com/package/@upstash/context7-mcp) - Instalacja pakietu i wersjonowanie
+- [Model Context Protocol — oficjalna specyfikacja](https://modelcontextprotocol.io) - Dokumentacja protokołu MCP i przewodnik po tworzeniu serwerów
+- [Konfiguracja MCP w Claude Code — dokumentacja Anthropic](https://docs.anthropic.com/en/docs/claude-code/mcp) - Jak dodawać serwery MCP do Claude Code
+
+### Dalsza lektura
+- [Context Engineering dla Claude Code](/blog/context-engineering-claude-code-guide) - Pełna architektura kontekstu: CLAUDE.md, skille, MCP i historia rozmowy
+- [CLAUDE.md i pamięć: trwały kontekst AI](/blog/claude-md-memory-persistent-context-guide) - Jak ustrukturyzować CLAUDE.md i uniknąć rozdęcia tokenów przez wklejanie dokumentacji
+- [Optymalizacja tokenów w Claude Code: jak ściąłem rachunek o 70%](/blog/claude-code-token-optimization-bill-cut-guide) - Strategie kosztowe, w tym dlaczego kontekst na żądanie bije statyczny kontekst
+- [MCP vs A2A: protokoły agentów AI w 2026](/blog/mcp-vs-a2a-ai-agent-protocols-guide-2026) - Dlaczego MCP wygrało warstwę łączenia narzędzi i jak Context7 się w to wpasowuje
+
+---
+
+~Seb 👊
