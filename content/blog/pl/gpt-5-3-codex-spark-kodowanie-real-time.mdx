@@ -1,0 +1,184 @@
+---
+title: 'GPT-5.3-Codex-Spark: kodowanie w czasie rzeczywistym przy 1000 tokenów/s — co się naprawdę zmienia'
+date: '2026-05-11'
+category: 'AI'
+tags: ['codex', 'openai', 'ai-coding', 'cerebras', 'developer-tools']
+draft: false
+featured: false
+author: 'Sebastian'
+enSlug: 'gpt-5-3-codex-spark-1000-tokens-real-time-coding-guide'
+excerpt: 'GPT-5.3-Codex-Spark działa 15× szybciej niż flagowy Codex — ale zdobywa 19 punktów mniej na SWE-Bench Pro. Oto kiedy 1000 tokenów/s naprawdę wygrywa i jak to wykorzystać.'
+---
+
+Za pierwszym razem, gdy zobaczyłem, jak Codex-Spark streamuje kod z prędkością 1000 tokenów na sekundę, roześmiałem się na głos. Za drugim razem patrzyłem, jak z pełnym przekonaniem wymyśla endpoint API, który nie istnieje. Obie reakcje są właściwymi reakcjami.
+
+GPT-5.3-Codex-Spark istnieje naprawdę, jest szybki i zmienia to, jak działa pętla człowiek-AI. Kosztuje cię też ~19 punktów na SWE-Bench Pro względem flagowego GPT-5.3-Codex, a ta różnica pojawia się dokładnie tam, gdzie można się jej spodziewać. Jeśli zamierzasz wpiąć Sparka w swój codzienny przepływ pracy, oto co naprawdę się zmienia, co się nie zmienia, i przepływ pracy, który daje ci prędkość bez płacenia podatku od dokładności.
+
+## Czym Codex-Spark właściwie jest (a czym nie jest)
+
+OpenAI wypuściło Codex-Spark 12 lutego 2026 jako research preview dla użytkowników ChatGPT Pro w aplikacji Codex, CLI oraz rozszerzeniu do VS Code. Jest to **mniejszy wariant GPT-5.3-Codex**, a nie destylowany klon. Najważniejsze liczby:
+
+- **~1000+ tokenów/s** prędkości generowania (flagowy Codex działa z ~65-70 tok/s)
+- **okno kontekstu 128k** (wobec 400k we flagowym modelu)
+- **tylko tekst** — brak modalności obrazu i dźwięku
+- serwowany na **Cerebras Wafer-Scale Engine 3**, a nie na standardowych klastrach GPU
+
+Ten ostatni punkt jest tym ciekawym. To pierwszy model OpenAI, który działa produkcyjnie na sprzęcie inferencyjnym innym niż Nvidia, a profil opóźnień jest fundamentalnie inny niż to, co dostajesz na H100 czy B200.
+
+Hasło reklamowe brzmi „kodowanie w czasie rzeczywistym". Rzeczywistość jest taka, że Spark na nowo definiuje, co „czas rzeczywisty" oznacza dla LLM-a: model kończy plik liczący 500 linii, zanim ty skończysz czytać pierwszą funkcję.
+
+## Dlaczego Cerebras ma znaczenie (to nie jest po prostu szybszy GPU)
+
+Cerebras WSE-3 to jeden układ scalony z **4 bilionami tranzystorów i 900 000 rdzeni wytrawionymi na pojedynczym waflu krzemowym**. Niesie **44 GB pamięci SRAM na układzie** i przepycha **21 PB/s przepustowości pamięci**. Ta ostatnia liczba jest kluczowa.
+
+Na GPU opóźnienie inferencji jest zdominowane przez przenoszenie wag między HBM a jednostkami obliczeniowymi. WSE-3 całkowicie to omija, bo wagi znajdują się w SRAM milimetry od rdzeni, a wykonanie przebiega warstwa po warstwie przez cały wafel. Rezultatem jest **10-70× szybsza inferencja** niż w równoważnych konfiguracjach GPU, a dla modelu wielkości Codex-Spark uzyskujesz utrzymaną przepustowość powyżej 1000 tok/s bez sztuczek z batchowaniem.
+
+To nie jest historia „zoptymalizowaliśmy model". To historia „zmieniliśmy podłoże". A to rozróżnienie ma znaczenie, bo oznacza, że przewagi prędkościowej Sparka nie da się zniwelować przez konkurentów wypuszczających nieco chudszy model na H100. Sprzętowa fosa jest prawdziwa.
+
+## Rzeczywistość benchmarków, której nikt nie umieszcza na slajdzie premierowym
+
+Post premierowy OpenAI opiera się na liczbie oznaczającej prędkość. Benchmarki opowiadają pełną historię:
+
+| Benchmark | GPT-5.3-Codex | Codex-Spark | Delta |
+|---|---|---|---|
+| SWE-Bench Pro | ~72% | ~56% | -16 pkt |
+| Terminal-Bench 2.0 | ~77,3% | ~58,4% | -19 pkt |
+| Prędkość generowania | ~65-70 tok/s | 1000+ tok/s | 15× |
+| Okno kontekstu | 400k | 128k | -3,1× |
+
+Spadek o 19 punktów to nie „odrobinę mniej dokładny". To **różnica między modelem, który naprawia buga, a modelem, który z pełnym przekonaniem wprowadza nowy, subtelniejszy**. W moich własnych testach Spark halucynuje rutynowe rzeczy, które flagowy Codex robi poprawnie: zmyślone endpointy API, widmowe nazwy pakietów npm i wymyślone parametry funkcji w bibliotekach, które powinien znać.
+
+Wątek na Hacker News o premierze Sparka miał najczystsze ujęcie, jakie widziałem: OpenAI „wymieniło mózg na prędkość". Nie zbudowali szybszego, mądrego modelu. Zbudowali mniej zdolny, szybki. Udawanie, że jest inaczej, to sposób na wypuszczanie zepsutych PR-ów.
+
+To nie zarzut wobec modelu — Spark jest świadomym wyborem inżynieryjnym na granicy, której nikt inny nie eksploruje. Oznacza to tylko, że ujęcie w większości relacji premierowych jest błędne. Spark to **poziom**, a nie zamiennik.
+
+## Gdzie Spark naprawdę wygrywa
+
+Miejsca, w których 1000 tok/s zmienia reguły gry, to dokładnie te miejsca, gdzie kara za dokładność jest najtańsza do wchłonięcia:
+
+- **Ukierunkowane edycje w pliku, który już rozumiesz.** Zmiana nazwy zmiennej w 200 liniach. Konwersja instrukcji switch na tablicę wyszukiwania. Wstawienie helpera inline. Przeczytasz diff szybciej, niż Spark go wygenerował, i wychwyciłbyś każde subtelne zepsucie przed zapisaniem.
+- **Generowanie testów jednostkowych względem istniejącego kodu.** Spark szkicuje test, ty go uruchamiasz, test albo przechodzi, albo nie. Tania weryfikacja, ryzyko halucynacji bliskie zeru, bo plik wejściowy go ogranicza.
+- **Mechaniczna praca z regexami i składnią.** Budowanie regexa z przykładów. Generowanie boilerplate'owych matcherów. Konwersja JSON na typy TypeScript. Rodzaj zadania, gdzie prędkość dominuje, bo poprawna odpowiedź jest funkcją dostarczonego przez ciebie wejścia.
+- **Pętle prototypowania frontendu.** Spark generuje wariant komponentu, ty widzisz go w przeglądarce, przekierowujesz. Wzorzec interakcji „przerwij i przekieruj", który Cerebras dokumentuje w swoim przewodniku po najlepszych praktykach, działa tylko wtedy, gdy pętla jest na tyle krótka, że da się ją przerwać.
+- **Iteracyjne dopracowywanie kodu, który aktywnie czytasz.** Przekształcanie logiki w funkcji, którą masz otwartą. Wyjście Sparka przychodzi tak szybko, że możesz traktować je jak inteligentne autouzupełnianie na sterydach — akceptuj, odrzucaj, przekierowuj w trakcie streamu.
+
+Przewodnią myślą jest to, że Spark wygrywa, gdy **koszt błędnej odpowiedzi jest niski, a weryfikacja szybka**. Te same warunki, w których wygrywa szybki junior. Inne warunki niż te, w których nigdy nie postawiłbyś juniora.
+
+## Gdzie Spark cię ugryzie
+
+Równie ważne jest zmapowanie trybów awarii, bo Spark milczy na temat swoich ograniczeń:
+
+- **Refaktory wieloplikowe z niezmiennikami międzymodułowymi.** Spark ma kontekst 128k wobec 400k flagowca. Mniejsze okno plus niższa jakość rozumowania oznacza, że przeoczy jakieś miejsce wywołania, subtelnie pomyli kontrakt typu albo wygeneruje poprawną zmianę w 9 z 10 plików, a w dziesiątym coś z pełnym przekonaniem zepsutego.
+- **API bibliotek, na których nie był głęboko trenowany.** Tu problem halucynacji jest najgorszy. Spark wygeneruje kod względem SDK, który się kompiluje, uruchamia i po cichu robi coś złego, bo sygnatura funkcji jest wymyślona.
+- **Cokolwiek, co wymaga przeczytania bazy kodu przed pisaniem.** Spark jest dostrojony do rozpoczynania emitowania tokenów. Nie zatrzymuje się, żeby grepować, listować czy eksplorować w sposób, w jaki robi to flagowy Codex w trybie agentowym. Jeśli twoje zadanie potrzebuje zebrania kontekstu, musisz zrobić to za niego.
+- **Debugowanie nietrywialnych błędów.** Spadek o 19 punktów rozumowania na Terminal-Bench to uprzejmy sposób powiedzenia „daj mu stack trace i patrz, jak proponuje błędną poprawkę szybciej, niż zdążysz ją przeczytać".
+- **Domyślny styl pracy jest lekki.** Spark robi minimalne, ukierunkowane edycje i **nie uruchamia testów, chyba że o to poprosisz**. Agentowa pętla flagowca zweryfikuje; Spark nie, chyba że sam to wepniesz. Jest to zaprojektowane celowo — to właśnie sprawia, że Spark działa w czasie rzeczywistym — ale przenosi koszt weryfikacji z powrotem na ciebie.
+
+Wzorzec: wszędzie tam, gdzie wartość pojedynczego tokena jest wysoka, Spark jest złym modelem.
+
+## Hybrydowy przepływ pracy, który faktycznie działa
+
+Cerebras i OpenAI oba w swoich dokumentach popychają w stronę tej samej odpowiedzi, i po kilku tygodniach jej stosowania zgadzam się: **planuj z flagowym Codeksem, implementuj ze Sparkiem**. Podział wygląda tak:
+
+1. **Codex 5.3 tworzy plan.** Rozbicie na wiele kroków, mapa plików, sygnatury typów, przypadki testowe, przypadki brzegowe do obsłużenia. To tutaj chcesz budżet na rozumowanie.
+2. **Spark wykonuje po jednym kroku naraz.** Każdy krok jest na tyle mały, że Spark nie może wokół niego sensownie zahalucynować.
+3. **Testy napisane najpierw**, uruchamiane po każdym kroku Sparka. Spark nie weryfikuje automatycznie, więc zestaw testów jest twoją warstwą weryfikacji.
+4. **Wróć do flagowego Codeksa** w momencie, gdy krok wymaga czytania kodu poza bieżącym plikiem, albo w momencie, gdy wyjście Sparka nie przechodzi testu, którego nie potrafi wyjaśnić.
+
+Konkretnie, w Codex CLI wygląda to tak:
+
+```bash
+# Planuj z flagowcem (model rozumujący)
+codex plan --model gpt-5.3-codex \
+  "Migrate auth middleware from session cookies to JWT. Output: file map, type signatures, test cases."
+
+# Implementuj każdy krok ze Sparkiem
+codex implement --model gpt-5.3-codex-spark \
+  --plan plan.md \
+  --tests-first \
+  --auto-run-tests
+```
+
+Ten sam wzorzec działa w rozszerzeniu do VS Code przez przełączanie modeli w trakcie rozmowy. Aplikacja Codex udostępnia oba w wyborze modelu.
+
+To, co ten schemat wychwytuje, to wzorzec interakcji **przerwij i przekieruj**, do którego Spark został zaprojektowany. Nie czekasz, aż model pomyśli. Patrzysz, jak pracuje, i sterujesz, gdy zbacza z kursu. To najbliżej, jak jakikolwiek LLM zbliżył się do wrażenia programowania w parze, a nie generowania wsadowego.
+
+## Jak Spark pasuje obok Claude Code, Cursora i Gemini CLI
+
+Naturalne pytanie, jeśli już używasz [Claude Code jako głównego agenta](/blog/claude-code-vs-cursor-vs-codex-honest-developer-comparison-2026): czy Spark zmienia tę kalkulację?
+
+Krótka odpowiedź: **nie, ale dodaje nowy poziom**. Obecny krajobraz poziomów prędkości wygląda tak:
+
+- **Ciężkie rozumowanie** — Claude Opus 4.7 (kontekst 1M), GPT-5.3-Codex (400k), Gemini 3 Pro (1M). Gdzie ich chcesz: złożone refaktory, debugowanie, architektura, wszystko agentowe.
+- **Środkowy poziom** — Claude Sonnet 4.6, GPT-5.3 base, Gemini 3 Flash. Codzienny koń roboczy do większości zadań kodowania.
+- **Poziom prędkości** — Claude Haiku 4.5, **Codex-Spark**. Pętle w czasie rzeczywistym, ukierunkowane edycje, prototypowanie.
+
+Codex-Spark to pierwszy model, w którym poziom prędkości jest **na tyle szybki, że model interakcji fundamentalnie się zmienia**. Haiku 4.5 jest szybki i świetny do tanich zadań, ale wciąż czekasz. Na Sparka nie czekasz. To jedyna kategoria, którą Spark obecnie zawłaszcza.
+
+Jeśli twój stack jest już scentralizowany wokół Claude Code, praktycznym ruchem jest dodanie Codeksa przez Pro i używanie go konkretnie do pętli przerwij-i-przekieruj przy zadaniach, które pasują do profilu Sparka. Nie próbuj zastępować Claude Code Codeksem — to inna rozmowa o ergonomii agentów, a nie o surowej prędkości modelu.
+
+## Konfiguracja (Codex CLI, VS Code, aplikacja)
+
+Spark jest ograniczony do użytkowników **ChatGPT Pro**. Darmowy dostęp do Codex CLI przez OAuth lub API nie obejmuje Sparka na maj 2026 — potrzebujesz konta Pro.
+
+```bash
+# Zaktualizuj Codex CLI do najnowszej wersji
+npm install -g @openai/codex-cli@latest
+
+# Potwierdź, że Spark jest na liście modeli
+codex models list
+
+# Ustaw Sparka jako domyślny do krótkich zadań
+codex config set default-model gpt-5.3-codex-spark
+
+# Albo wywołuj per-komenda
+codex --model gpt-5.3-codex-spark "rename helper to formatter across this file"
+```
+
+VS Code: zainstaluj najnowsze **rozszerzenie Codex**, zaloguj się kontem Pro, a następnie przełącz model w nagłówku panelu czatu.
+
+Aplikacja Codex: ten sam przełącznik modeli w nagłówku rozmowy. Aplikacja desktopowa na Windowsie używa teraz natywnego sandboxa PowerShell, bez potrzeby WSL.
+
+Jedna pułapka, na którą wpadłem wcześnie: **Spark w aplikacji domyślnie nie używa żadnych narzędzi**. Jeśli chcesz, żeby uruchamiał testy albo czytał pliki, musisz jawnie włączyć zestaw narzędzi. To jest kompromis za „niemal natychmiastowość" — w momencie, gdy włączasz korzystanie z narzędzi systemu plików, zjadasz opóźnienie rundy w obie strony i Spark przestaje sprawiać wrażenie magicznego. Decyduj per zadanie.
+
+## Do czego nie użyłbym Sparka
+
+Żeby oszczędzić ci eksperymentowania: nie użyłbym Codex-Spark do żadnej z tych rzeczy, kropka.
+
+- Kod migracji produkcyjnej, który dotyka więcej niż trzech plików.
+- Cokolwiek, gdzie zahalucynowana nazwa zależności wylądowałaby w `package.json`.
+- Generowanie testów jako źródła prawdy przed napisaniem kodu (testy potrzebują poprawności; Spark daje prędkość).
+- Debugowanie stack trace'a z frameworka, którego Spark nie widział intensywnie (wnętrzności Buna, nowsze canary Next.js).
+- Jakiekolwiek zadanie agentowe, które wymaga, żeby model wybierał narzędzia i weryfikował własne wyjście. Użyj flagowca.
+
+Jeśli pozostaniesz w obrębie kompetencji Sparka, prędkość jest transformacyjna. Jeśli wypchniesz się poza nią, spędzisz więcej czasu na naprawianiu pewnych siebie błędów Sparka, niż zaoszczędziłeś na ich generowaniu.
+
+## Szerszy obraz
+
+Codex-Spark jest interesujący poza samym Sparkiem. To OpenAI publicznie deklarujące się przy idei, że **mniejsze, szybsze, współprojektowane ze sprzętem modele to prawdziwa granica**, a nie krok w dół od flagowca. Partnerstwo z Cerebras to sygnał drugiego rzędu — OpenAI jest gotowe wypuścić model, którego fosa zależy od sprzętu, którego nie posiada.
+
+Jeśli ten wzorzec się utrzyma, spodziewaj się **przetasowania w 2026**, w którym istotną osią nie jest „największe okno kontekstu" ani „najwyższy wynik SWE-Bench". Będzie to **prędkość-na-dolara na poziom zadania**, gdzie każde laboratorium wypuszcza model poziomu prędkości na wyspecjalizowanym sprzęcie inferencyjnym. Spark to pierwszy ruch. Claude Haiku na Trainium2 albo Gemini Flash na TPU v6 to prawdopodobne kolejne.
+
+Do tego czasu Spark jest jedynym modelem, który sprawia, że przerwij-i-przekieruj sprawia wrażenie faktycznego wzorca interakcji zamiast fantazji. To warte konta Pro i czasu na wpięcie tego w hybrydową pętlę. Tylko trzymaj flagowego Codeksa o jedno naciśnięcie klawisza dalej.
+
+## References
+
+### Źródła
+
+- [Introducing GPT-5.3-Codex-Spark | OpenAI](https://openai.com/index/introducing-gpt-5-3-codex-spark/) — oficjalny post premierowy z ujęciem możliwości
+- [How Codex Spark Changes The Way You Code | Cerebras](https://www.cerebras.ai/blog/codex-spark-best-practices) — wzorzec interakcji przerwij-i-przekieruj oraz wskazówki dotyczące hybrydowego przepływu pracy
+- [Codex 5.3 vs. Codex Spark: Speed vs. Intelligence | Turing College](https://www.turingcollege.com/blog/codex-5-3-vs-codex-spark-speed-vs-intelligence) — delty benchmarków i rozbicie kiedy-czego-używać
+- [GPT-5.3-Codex-Spark Benchmark | Remio](https://www.remio.ai/post/gpt-5-3-codex-spark-benchmark-1000-tokens-sec-speed-vs-accuracy-trade-offs) — liczby dokładności SWE-Bench Pro i Terminal-Bench
+- [Cerebras WSE-3 Third-Generation Superchip | IEEE Spectrum](https://spectrum.ieee.org/cerebras-chip-cs3) — architektura wafer-scale i przewagi inferencyjne
+- [Cerebras Wafer-Scale AI Real-Time Inference | Intelligent Living](https://www.intelligentliving.co/cerebras-wafer-scale-ai-2100-tokens/) — szczegóły przepustowości pamięci i SRAM na układzie
+- [Codex Changelog | OpenAI Developers](https://developers.openai.com/codex/changelog) — informacje o wydaniach Codex CLI, aplikacji i rozszerzenia
+
+### Dalsza lektura
+
+- [Claude Code vs Cursor vs Codex — Honest Developer Comparison 2026](/blog/claude-code-vs-cursor-vs-codex-honest-developer-comparison-2026) — szerszy kontekst tego, gdzie Codex pasuje w ekosystemie agentów
+- [Claude Opus 4.7 Developer Review — What's Changed](/blog/claude-opus-4-7-developer-review-whats-changed) — punkt porównawczy po stronie ciężkiego rozumowania
+- [AI Coding Tools 2026 — Developer Guide](/blog/ai-coding-tools-2026-developer-guide) — szerszy krajobraz narzędzi
+
+---
+
+~Seb 👊
