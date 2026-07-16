@@ -1,0 +1,308 @@
+---
+title: 'SSR vs SSG vs ISR vs RSC: praktyczne strategie wydajności w Next.js'
+date: '2026-03-28'
+category: 'Development'
+tags: ['nextjs', 'performance', 'ssr', 'react', 'architecture']
+draft: false
+featured: false
+author: 'Sebastian'
+enSlug: 'ssr-vs-ssg-vs-isr-vs-rsc-nextjs-strategies'
+excerpt: 'Cztery strategie renderowania. Jeden framework. Zły wybór kosztuje 2 sekundy TTFB albo 500 dol./mies. na obliczeniach. Oto framework decyzyjny, którego używam.'
+---
+
+Każdy projekt Next.js, który przeglądam, ma problemy ze strategią renderowania. Albo wszystko jest renderowane po stronie serwera (wolny TTFB, wysokie koszty obliczeń), albo wszystko jest generowane statycznie (nieaktualne dane, ogromne czasy budowania), albo — najczęściej — zespół wybrał jedną strategię i zastosował ją wszędzie, nie zastanawiając się, która strona czego potrzebuje.
+
+Właściwe podejście jest hybrydowe: różne strony używają różnych strategii w zależności od wymagań co do danych, częstotliwości aktualizacji i potrzeb wydajnościowych. Strona marketingowa powinna być generowana statycznie. Panel użytkownika powinien być renderowany po stronie serwera. Wpis na blogu powinien używać ISR. Strona produktu powinna używać streamingowego RSC.
+
+Oto framework decyzyjny wraz z benchmarkami.
+
+## Cztery strategie w pigułce
+
+| Strategia | Kiedy generowany jest HTML | Świeżość danych | TTFB | Koszt obliczeń | Najlepsza do |
+|----------|----------------------|----------------|------|-------------|----------|
+| **SSG** | Czas budowania | Nieaktualne (do przebudowy) | ~50 ms | Najniższy | Marketing, dokumentacja, blog |
+| **ISR** | Budowanie + rewalidacja w tle | Świeże w oknie revalidate | ~80 ms (z cache) | Niski | Blog, strony produktów, katalogi |
+| **SSR** | Każde żądanie | Zawsze świeże | ~200–800 ms | Najwyższy | Panele, strony spersonalizowane |
+| **RSC + streaming** | Każde żądanie (streamowane) | Zawsze świeże | ~100 ms (szkielet) | Średni | Złożone strony z mieszanymi danymi |
+
+## SSG: Static Site Generation
+
+HTML jest generowany w czasie budowania. Każdy użytkownik dostaje tę samą, wcześniej zbudowaną stronę serwowaną z CDN.
+
+```typescript
+// app/about/page.tsx — w pełni statyczna, generowana przy budowaniu
+export default function AboutPage() {
+  return (
+    <div>
+      <h1>About Us</h1>
+      <p>We build things.</p>
+    </div>
+  );
+}
+// Brak pobierania danych = automatycznie SSG w Next.js App Router
+```
+
+```typescript
+// app/blog/[slug]/page.tsx — SSG z dynamicznymi parametrami
+export async function generateStaticParams() {
+  const posts = await getAllPosts();
+  return posts.map(post => ({ slug: post.slug }));
+}
+
+export default async function BlogPost({ params }: { params: { slug: string } }) {
+  const post = await getPost(params.slug);
+  return <Article post={post} />;
+}
+// Generowane przy budowaniu dla każdego sluga z generateStaticParams
+```
+
+**Wydajność:** ~50 ms TTFB z brzegu CDN. Zero obliczeń serwera na żądanie.
+
+**Haczyk:** Dane są zamrożone w czasie budowania. Każda zmiana wymaga pełnej przebudowy i ponownego wdrożenia. Przy 10 000 wpisów na blogu czasy budowania mogą przekraczać 30 minut.
+
+**Używaj SSG, gdy:** Treść nigdy nie zmienia się między wdrożeniami — strony marketingowe, dokumentacja, strony prawne, landing page.
+
+## ISR: Incremental Static Regeneration
+
+Najlepsze z obu światów — statyczna szybkość ze świeżymi danymi. Strony są serwowane z cache i rewalidowane w tle.
+
+```typescript
+// app/products/[id]/page.tsx — ISR z rewalidacją co 60 sekund
+export const revalidate = 60; // Rewalidacja co 60 sekund
+
+export default async function ProductPage({ params }: { params: { id: string } }) {
+  const product = await fetch(`${API_URL}/products/${params.id}`, {
+    next: { tags: ['products', `product-${params.id}`] },
+  }).then(res => res.json());
+
+  return <ProductDetail product={product} />;
+}
+```
+
+**Przebieg rewalidacji:**
+
+```
+Żądanie 1 (cache pusty):
+  → Cache MISS → renderuj na serwerze → serwuj → zapisz wynik do cache
+  TTFB: ~300 ms
+
+Żądanie 2 (w ciągu 60 s):
+  → Cache HIT → serwuj z cache
+  TTFB: ~80 ms
+
+Żądanie 3 (po 60 s):
+  → Cache STALE → serwuj nieaktualną treść natychmiast → rewaliduj w tle
+  TTFB: ~80 ms (użytkownik dostaje nieaktualne dane, ale szybko)
+
+Żądanie 4 (po rewalidacji):
+  → Cache HIT → serwuj świeżą treść
+  TTFB: ~80 ms
+```
+
+**Używaj ISR, gdy:** Dane zmieniają się okresowo, ale nie muszą być w czasie rzeczywistym — katalogi produktów, wpisy na blogu, strony z cennikiem, artykuły z wiadomościami.
+
+Szczegółowo omówiłem ISR w moim [poradniku o ultraszybkich panelach](/blog/incremental-revalidation-nextjs-ultra-fast-dashboards) — łącznie z rewalidacją na żądanie za pomocą `revalidateTag`.
+
+## SSR: Server-Side Rendering
+
+Każde żądanie renderuje świeży HTML na serwerze. Najbardziej elastyczna, ale i najdroższa strategia.
+
+```typescript
+// app/dashboard/page.tsx — SSR (dynamiczne domyślnie przy użyciu cookies/headers)
+import { cookies } from 'next/headers';
+
+export default async function DashboardPage() {
+  const cookieStore = await cookies();
+  const session = cookieStore.get('session');
+
+  const data = await fetch(`${API_URL}/dashboard`, {
+    headers: { Authorization: `Bearer ${session?.value}` },
+    cache: 'no-store', // Wymuś SSR — brak cachowania
+  }).then(res => res.json());
+
+  return <Dashboard data={data} />;
+}
+```
+
+**Wydajność:** TTFB zależy od szybkości Twojego serwera i API. Zwykle 200–800 ms. Brak cachowania oznacza, że każde żądanie trafia do Twojego serwera i Twoich API.
+
+**Koszt:** Przy 100 tys. żądań dziennie SSR kosztuje 10–50 razy więcej w obliczeniach niż ISR serwujący strony z cache.
+
+**Używaj SSR, gdy:** Dane muszą być świeże przy każdym żądaniu ORAZ są spersonalizowane — panele użytkowników, strony konta, panele administracyjne, platformy tradingowe w czasie rzeczywistym.
+
+**Nie używaj SSR, gdy:** Strona nie jest spersonalizowana — użyj wtedy ISR.
+
+## RSC + streaming: nowoczesne podejście
+
+React Server Components ze streamingiem Suspense dają najlepszy TTFB, jednocześnie renderując świeże dane. Szkielet streamuje się natychmiast, a sekcje zależne od danych dopływają w miarę ich rozwiązywania.
+
+```typescript
+// app/dashboard/page.tsx — streamingowe RSC
+import { Suspense } from 'react';
+
+export default function DashboardPage() {
+  return (
+    <div>
+      {/* Statyczny szkielet — streamuje się natychmiast */}
+      <DashboardHeader />
+      <DashboardNav />
+
+      {/* Każda sekcja streamuje się niezależnie */}
+      <div className="grid grid-cols-2 gap-6">
+        <Suspense fallback={<MetricsSkeleton />}>
+          <MetricsSection />  {/* Pobiera i streamuje, gdy gotowe */}
+        </Suspense>
+
+        <Suspense fallback={<ChartSkeleton />}>
+          <RevenueChart />    {/* Pobiera równolegle, streamuje, gdy gotowe */}
+        </Suspense>
+      </div>
+
+      <Suspense fallback={<TableSkeleton />}>
+        <RecentOrders />      {/* Streamuje się, gdy odpowie API */}
+      </Suspense>
+    </div>
+  );
+}
+
+// Każdy komponent to asynchroniczny Server Component pobierający własne dane
+async function MetricsSection() {
+  const metrics = await fetchMetrics(); // 100 ms
+  return <MetricsGrid data={metrics} />;
+}
+
+async function RevenueChart() {
+  const revenue = await fetchRevenue(); // 500 ms
+  return <Chart data={revenue} />;
+}
+
+async function RecentOrders() {
+  const orders = await fetchOrders(); // 300 ms
+  return <OrderTable orders={orders} />;
+}
+```
+
+**Wydajność:**
+```
+Czas:     0ms    100ms    300ms    500ms
+          │       │        │        │
+Szkielet: ████    │        │        │   ← Natychmiast (statyczny HTML)
+Metryki:  ─────── ████     │        │   ← Streamuje się przy 100 ms
+Zamówienia:──────────────── ████     │   ← Streamuje się przy 300 ms
+Wykres:   ─────────────────────── ████  ← Streamuje się przy 500 ms
+```
+
+TTFB dla szkieletu: ~50 ms. Użytkownik widzi układ natychmiast, a treść wypełnia się stopniowo. **Najwolniejsze API nie blokuje strony.**
+
+**Używaj streamingowego RSC, gdy:** Strony mają wiele źródeł danych o różnych czasach odpowiedzi — panele, strony agregujące, złożone strony produktów.
+
+## Framework decyzyjny
+
+```
+Czy strona jest spersonalizowana (inna dla każdego użytkownika)?
+├── Nie → Czy treść się zmienia?
+│        ├── Nie → SSG (zbuduj raz, serwuj zawsze)
+│        ├── Rzadko (codziennie/tygodniowo) → ISR (revalidate: 3600+)
+│        └── Często (co minuty) → ISR (revalidate: 30-60)
+│
+└── Tak → Czy ma wiele źródeł danych?
+          ├── Nie → SSR (proste, zawsze świeże)
+          └── Tak → streamingowe RSC + Suspense
+                    (szkielet natychmiast, dane dopływają)
+```
+
+### Strategia per strona dla typowego SaaS
+
+| Strona | Strategia | Dlaczego |
+|------|----------|-----|
+| **Strona główna** | SSG | Statyczna treść, brak danych |
+| **Cennik** | ISR (3600 s) | Rzadko się zmienia, powinien ładować się szybko |
+| **Wpis na blogu** | ISR (60 s) | W miarę świeża treść, natychmiastowy TTFB |
+| **Katalog produktów** | ISR (300 s) | Aktualizuje się okresowo |
+| **Szczegóły produktu** | ISR (60 s) + na żądanie | Świeże przy zakupie, w cache poza tym |
+| **Wyniki wyszukiwania** | SSR | Dynamiczne na podstawie zapytania |
+| **Panel użytkownika** | Streamingowe RSC | Spersonalizowane, wiele źródeł danych |
+| **Ustawienia konta** | SSR | Spersonalizowane, proste dane |
+| **Panel administracyjny** | Streamingowe RSC | Wiele źródeł danych, czas rzeczywisty |
+| **Kasa (checkout)** | SSR | Spersonalizowane, wrażliwe na bezpieczeństwo |
+
+## Łączenie strategii na jednej stronie
+
+Najpotężniejszy wzorzec: mieszanie strategii w obrębie jednej trasy.
+
+```typescript
+// app/product/[id]/page.tsx — ISR dla danych produktu, dynamiczne dla danych użytkownika
+export const revalidate = 60; // ISR dla strony
+
+export default async function ProductPage({ params }: { params: { id: string } }) {
+  // To pobranie jest cachowane (ISR)
+  const product = await fetch(`${API_URL}/products/${params.id}`, {
+    next: { revalidate: 60 },
+  }).then(res => res.json());
+
+  return (
+    <div>
+      {/* Treść statyczna/ISR */}
+      <ProductHero product={product} />
+      <ProductDescription description={product.description} />
+
+      {/* Dynamiczna treść dla konkretnego użytkownika (streaming) */}
+      <Suspense fallback={<Skeleton />}>
+        <PersonalizedRecommendations productId={product.id} />
+      </Suspense>
+
+      <Suspense fallback={<Skeleton />}>
+        <UserReviews productId={product.id} />
+      </Suspense>
+    </div>
+  );
+}
+```
+
+Dane produktu ładują się z cache ISR (natychmiast). Rekomendacje i recenzje dopływają jako osobne granice Suspense. Strona sprawia wrażenie natychmiastowej, jednocześnie pokazując spersonalizowaną treść.
+
+## Benchmarki wydajności
+
+Pomiary z rzeczywistej aplikacji SaaS w Next.js (wdrożenie na Vercel):
+
+| Strona | Strategia | TTFB (p50) | TTFB (p99) | Koszt miesięczny |
+|------|----------|-----------|-----------|-------------|
+| Strona główna | SSG | 42 ms | 87 ms | ~0 dol. |
+| Wpis na blogu | ISR (60 s) | 78 ms | 142 ms | ~5 dol. |
+| Strona produktu | ISR (60 s) | 83 ms | 156 ms | ~8 dol. |
+| Panel | SSR | 412 ms | 1247 ms | ~120 dol. |
+| Panel | Streamingowe RSC | 89 ms (szkielet) | 203 ms (szkielet) | ~85 dol. |
+
+Panel na streamingowym RSC ma **78% niższy TTFB** niż panel na SSR — bo szkielet streamuje się natychmiast. Całkowity czas do pełnej treści jest podobny, ale odczuwalna wydajność jest dramatycznie lepsza.
+
+## Praktyczne wnioski
+
+1. **Domyślnie ISR** — większość stron zyskuje na cachowanej statycznej treści z rewalidacją w tle.
+2. **Używaj SSG dla naprawdę statycznych stron** — marketing, dokumentacja, strony prawne. Zero kosztów, maksymalna szybkość.
+3. **Używaj streamingowego RSC dla paneli** — szkielet renderuje się natychmiast, dane dopływają stopniowo.
+4. **Unikaj SSR, chyba że to konieczne** — to najdroższa strategia. Zamiast tego użyj ISR z rewalidacją na żądanie.
+5. **Mieszaj strategie per strona** — ISR dla treści publicznej, streaming Suspense dla sekcji spersonalizowanych.
+6. **Owijaj każde źródło danych we własny Suspense** — najwolniejsze API nie powinno blokować reszty strony.
+7. **Monitoruj TTFB per trasa** — różne strategie dają skrajnie różne liczby.
+8. **Rewalidacja na żądanie przy mutacjach** — `revalidateTag` po akcjach użytkownika utrzymuje ISR świeżym.
+9. **Nie cachuj nadmiernie** — staleTime: 0 na serwerze oznacza, że każde unikalne żądanie pobiera świeże dane. Ustaw okna rewalidacji na podstawie tego, jak często dane faktycznie się zmieniają.
+10. **Celem jest odczuwalna wydajność** — użytkowników obchodzi to, kiedy mogą zacząć interakcję, a nie kiedy dotrze ostatni bajt.
+
+Framework daje Ci cztery strategie. Umiejętność polega na tym, by wiedzieć, której użyć i gdzie. Zacznij od ISR wszędzie, dodaj streaming dla paneli, zostaw SSG dla stron statycznych, a SSR zarezerwuj dla rzadkich przypadków, w których cachowanie naprawdę nie wchodzi w grę.
+
+## Bibliografia
+
+### Źródła
+- [Next.js: ISR Guide](https://nextjs.org/docs/app/guides/incremental-static-regeneration) — oficjalna dokumentacja ISR
+- [Next.js: Streaming and Suspense](https://nextjs.org/learn/dashboard-app/streaming) — oficjalny przewodnik po streamingu
+- [Next.js: Caching and Revalidating](https://nextjs.org/docs/app/getting-started/caching-and-revalidating) — dokumentacja zachowania cache
+- [web.dev: Optimize TTFB](https://web.dev/articles/optimize-ttfb) — wpływ TTFB na Core Web Vitals
+
+### Dalsza lektura
+- [Vercel: How to Reduce Build Time with Next.js](https://vercel.com/kb/guide/how-do-i-reduce-my-build-time-with-next-js-on-vercel) — optymalizacja SSG
+- [FreeCodeCamp: Next.js 15 Streaming Handbook](https://www.freecodecamp.org/news/the-nextjs-15-streaming-handbook/) — kompleksowy przewodnik po streamingu
+- [Vercel: ISR Documentation](https://vercel.com/docs/incremental-static-regeneration) — funkcje ISR specyficzne dla Vercel
+
+---
+
+~Seb 👊
