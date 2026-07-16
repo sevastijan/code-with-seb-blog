@@ -1,0 +1,299 @@
+---
+title: 'Astro Islands kontra React Server Components: dwa zakłady na mniej JavaScriptu'
+date: '2026-07-03'
+category: 'Development'
+tags: ['astro', 'react', 'rsc', 'architecture', 'performance']
+featured: false
+author: 'Sebastian'
+draft: false
+enSlug: 'astro-islands-vs-react-server-components-guide'
+excerpt: 'Astro islands kontra React Server Components: dwa architektoniczne zakłady na wysyłanie mniej JavaScriptu. Uczciwe porównanie i framework decyzyjny do realnych projektów.'
+---
+
+Kilka miesięcy temu przejąłem stronę marketingową zbudowaną w Next.js. Strona główna to był głównie tekst, obrazek hero i tabela cenowa. Do wyrenderowania czegoś, co funkcjonalnie było broszurą, wysyłała **463 KB JavaScriptu**. A interaktywne elementy? Przełącznik menu mobilnego i formularz newslettera. Tyle.
+
+Przebudowałem tę samą stronę w Astro. Wysyłała **9 KB**. Ten sam projekt, ta sama treść, te same dwa interaktywne widżety. Ta różnica — dwa rzędy wielkości — nie jest błędem zaokrąglenia. To różnica w filozofii co do tego, gdzie JavaScript ma swoje miejsce.
+
+Ale jest jeden haczyk: naszego wewnętrznego dashboardu nie przebudowałbym w Astro. Za żadne skarby. Ta aplikacja to *sama* interaktywność — filtry, drag-and-drop, optymistyczne aktualizacje, dane na żywo. Tam React Server Components zarabiają na siebie w sposób, w jaki islands nigdy by nie potrafiły.
+
+To nie jest więc artykuł w stylu „który framework wygrywa". **Astro islands i React Server Components to dwa naprawdę różne zakłady na ten sam problem: jak przestać wysyłać tyle JavaScriptu?** Optymalizują pod różne kształty aplikacji, a zrozumienie *dlaczego* jest bardziej przydatne niż jakikolwiek benchmark. Rozłożę oba modele uczciwie na czynniki pierwsze, a potem dam ci framework decyzyjny, którego naprawdę użyjesz w poniedziałek.
+
+## Wspólny cel: dlaczego mniej JavaScriptu ma znaczenie
+
+Obie architektury wychodzą od tej samej niewygodnej obserwacji: **tradycyjna aplikacja single-page wysyła za dużo kodu.**
+
+W klasycznej aplikacji React renderowanej po stronie klienta serwer wysyła niemal pustą powłokę HTML, a potem przeglądarka pobiera bundle, parsuje go, wykonuje i odbudowuje cały interfejs w JavaScripcie. Każdy komponent — nawet statyczna stopka, która nigdy się nie zmieni — staje się częścią tego bundle. Użytkownik gapi się na pusty ekran albo spinner, podczas gdy to wszystko się dzieje. To koszt **hydracji**: przeglądarka ponownie uruchamia kod komponentów, żeby podpiąć nasłuchiwacze zdarzeń i odtworzyć stan, który serwer już raz policzył.
+
+Problem narasta na urządzeniach, które najmniej mogą sobie na to pozwolić. Telefon z Androidem ze średniej półki parsuje i wykonuje JavaScript znacznie wolniej niż MacBook, na którym to czytasz. Każdy kilobajt JS to podatek od **Time to Interactive**, a JavaScript jest wyjątkowo kosztowny, bo nie tylko się go pobiera — jest parsowany, kompilowany i wykonywany na głównym wątku, blokując wszystko inne.
+
+Dlatego cała branża przestawiła się na wysyłanie go mniej. Jeśli chcesz głębszej ekonomii tego zagadnienia — jak strategie ładowania mapują się na koszt i odczuwaną szybkość — rozwinąłem to w [SSR vs SSG vs ISR vs RSC: strategie renderowania w Next.js](/blog/ssr-vs-ssg-vs-isr-vs-rsc-nextjs-strategies), i warto traktować „ile JS dociera do klienta" jako pełnoprawną pozycję budżetową, dokładnie tak, jak ujmuję to w moim [przewodniku po budżetach wydajnościowych](/blog/performance-budgets-frontend-engineers-guide).
+
+Astro i RSC oba odpowiadają na „wysyłaj mniej JS" — ale robią to z przeciwnych krańców spektrum. Astro zakłada, że twoja strona jest **domyślnie statyczna**, a interaktywność to wyjątek. RSC zakłada, że budujesz **aplikację React** i chce trzymać jak najwięcej z niej z dala od klienta. Ten sam cel, lustrzane odbicia założeń wyjściowych.
+
+## Jak działają Astro Islands
+
+Model Astro jest **static-first**. Kiedy budujesz stronę, Astro renderuje wszystko do zwykłego HTML na serwerze (albo na etapie builda) i wysyła **domyślnie zero JavaScriptu**. Nie ma runtime'u frameworka, nie ma hydracji, nie ma nic — tylko HTML i CSS, dokładnie jak w 2005 roku, tyle że doświadczenie programisty jest nowoczesne.
+
+Interaktywność jest opcjonalna, komponent po komponencie. Każdy interaktywny komponent to **wyspa** (island): samodzielny region strony, który dostaje własny JavaScript, hydrowany niezależnie od wszystkiego wokół. Statyczny ocean HTML pozostaje statyczny; ożywają tylko wyspy. To technika znana formalnie jako **partial hydration** (albo selective hydration).
+
+Mechanizmem jest zestaw **client directives**. Podpinasz jedną do komponentu, żeby zadeklarować, *kiedy* ma się zhydrować:
+
+```astro
+---
+// index.astro — komponent Astro (frontmatter uruchamia się na serwerze)
+import Header from '../components/Header.astro';        // statyczny, zero JS
+import MobileMenu from '../components/MobileMenu.jsx';   // wymaga interaktywności
+import NewsletterForm from '../components/NewsletterForm.jsx';
+import PriceChart from '../components/PriceChart.jsx';
+import ThirdPartyEmbed from '../components/ThirdPartyEmbed.jsx';
+---
+
+<Header />
+
+<!-- Hydruj natychmiast — krytyczny UI ponad linią zgięcia -->
+<MobileMenu client:load />
+
+<!-- Hydruj, gdy główny wątek jest bezczynny — niekrytyczny widżet -->
+<NewsletterForm client:idle />
+
+<!-- Hydruj dopiero, gdy wejdzie w pole widzenia — poniżej linii zgięcia -->
+<PriceChart client:visible />
+
+<!-- Wyślij JS, ale pomiń renderowanie po stronie serwera — dla rzeczy, które psują się przy SSR -->
+<ThirdPartyEmbed client:only="react" />
+```
+
+Każda dyrektywa jest w istocie **kontraktem wydajnościowym**. Astro najpierw renderuje komponent do statycznego HTML, a potem decyduje, kiedy — albo *czy w ogóle* — go zhydrować:
+
+- **`client:load`** — hydruj, gdy tylko dotrze bundle. Dla krytycznego UI jak menu nawigacyjne albo karuzela ponad linią zgięcia.
+- **`client:idle`** — poczekaj, aż główny wątek przeglądarki będzie wolny. Dla drugorzędnych widżetów jak zapis do newslettera.
+- **`client:visible`** — hydruj dopiero, gdy komponent wejdzie w viewport (przez `IntersectionObserver`). Idealne dla wykresów poniżej linii zgięcia albo triggerów infinite scroll.
+- **`client:media={"..."}`** — hydruj na podstawie media query, żeby wysłać menu tylko dla mobile bez karania użytkowników desktopu.
+- **`client:only={"react"}`** — pomiń renderowanie po stronie serwera całkowicie i uruchom komponent tylko na kliencie. Dla embedów albo komponentów, które zakładają środowisko przeglądarki.
+
+Ponieważ każda wyspa jest izolowana, ciężki interaktywny komponent poniżej linii zgięcia nie kosztuje cię *nic*, dopóki użytkownik faktycznie do niego nie doscrolluje. Porównaj to z SPA, gdzie wszystko jest w jednym bundle, niezależnie od tego, czy to widzisz, czy nie.
+
+### Server Islands
+
+Astro 5 (wydane w grudniu 2024) rozszerzyło ideę na serwer za pomocą **server islands**. Rozwiązują one taki problem: chcesz stronę, która jest w większości statyczna i cache'owalna, ale *jeden* region jest dynamiczny i spersonalizowany — banner „Witaj ponownie, Sebastian", licznik koszyka na żywo, rekomendacja dla konkretnego użytkownika. Tradycyjnie ten jeden dynamiczny fragment wymusza renderowanie *całej* strony po stronie serwera przy każdym żądaniu.
+
+Server island je rozdziela. Statyczna powłoka jest cache'owana i serwowana natychmiast, podczas gdy dynamiczny komponent jest renderowany osobno na serwerze i wstawiany przez placeholder:
+
+```astro
+---
+import Avatar from '../components/Avatar.astro';
+---
+
+<!-- Reszta strony jest statyczna i cache'owana na edge -->
+<h1>Welcome to the store</h1>
+
+<!-- To renderuje się na serwerze przy każdym żądaniu, z fallbackiem pokazanym najpierw -->
+<Avatar server:defer>
+  <div slot="fallback">Loading your profile...</div>
+</Avatar>
+```
+
+Dostajesz wydajność strony statycznej *i* dynamikę per-żądanie na tej samej stronie, bez rezygnowania z cache'owania dla tych 95%, które się nie zmienia. To ten sam instynkt, który stoi za streamingiem w świecie RSC — wyślij szybką, cache'owalną powłokę teraz, a wolne, spersonalizowane fragmenty dopełnij później.
+
+### Wyspy niezależne od frameworka
+
+Oto najbardziej wyróżniająca cecha Astro: **wyspa może być napisana w React, Vue, Svelte, Solid albo Preact — i możesz je mieszać na jednej stronie.** Format komponentu `.astro` obsługuje statyczne szablonowanie; wyspy to dowolny framework UI, który przyniesiesz. To czyni Astro naturalnym gospodarzem dla stopniowych migracji oraz, w większych organizacjach, dla tego rodzaju rozdzielenia granic między zespołami, które omawiałem w [micro-frontends z Next.js i Module Federation](/blog/micro-frontends-nextjs-module-federation-guide) — tyle że tutaj rozdzielenie jest per-komponent, a nie per-aplikacja.
+
+W połączeniu z **content collections** (typowany, walidowany schematem Markdown/MDX z Content Layer API) to właśnie dlatego Astro dominuje na stronach contentowych: blogach, dokumentacjach, marketingu, sklepach e-commerce. Treść jest danymi; interaktywność to garść wysp.
+
+## Jak działają React Server Components
+
+RSC dochodzi do tego samego celu z przeciwnej strony. Nie zaczynasz od statycznego HTML i nie dosypujesz interaktywności — zaczynasz od **aplikacji React** i próbujesz zatrzymać jak najwięcej z niej przed dotarciem do przeglądarki.
+
+W App Routerze Next.js **każdy komponent jest domyślnie Server Component.** Server Component uruchamia się na serwerze (w czasie żądania albo builda), może bezpośrednio `await`ować dane i — co kluczowe — **jego kod nigdy nie jest wysyłany do klienta.** Nie hydruje się. Nie ma kosztu bundle. Renderuje się raz, na serwerze, a przeglądarka dostaje wynik.
+
+```tsx
+// app/products/page.tsx — domyślnie Server Component
+// To uruchamia się na serwerze. Jego kod i import `db` nigdy nie docierają do przeglądarki.
+import { db } from '@/lib/db';
+import AddToCartButton from './AddToCartButton'; // Client Component
+
+export default async function ProductsPage() {
+  // Pobieranie danych dzieje się właśnie tutaj, podczas renderowania, na serwerze.
+  const products = await db.product.findMany();
+
+  return (
+    <ul>
+      {products.map((product) => (
+        <li key={product.id}>
+          <h2>{product.name}</h2>
+          {/* Tylko TEN fragment wysyła JS do klienta */}
+          <AddToCartButton productId={product.id} />
+        </li>
+      ))}
+    </ul>
+  );
+}
+```
+
+Zwróć uwagę na to, czego tu *nie ma*: żadnego `useEffect` do pobierania danych, żadnego stanu ładowania, żadnego wywołania API po stronie klienta. Komponent odpytuje bazę danych podczas renderowania. Ciężka zależność `db`, logika zapytania, ORM — nic z tego nie ma w bundle klienta. Pełną argumentację, dlaczego to ma znaczenie, przedstawiłem w [React po stronie klienta jest martwy: dlaczego Server Components to przyszłość](/blog/client-side-react-is-dead-why-server-components-are-the-future-you-cant-ignore).
+
+### Granica `"use client"`
+
+Server Components nie mogą używać stanu, efektów ani API przeglądarki — renderują się raz i nigdy nie ożywają. Kiedy potrzebujesz interaktywności, przekraczasz granicę do **Client Component** za pomocą dyrektywy `"use client"`:
+
+```tsx
+'use client';
+
+import { useState } from 'react';
+
+// Ten komponent hydruje się w przeglądarce. MOŻE używać stanu i handlerów zdarzeń.
+export default function AddToCartButton({ productId }: { productId: string }) {
+  const [added, setAdded] = useState(false);
+
+  return (
+    <button onClick={() => setAdded(true)}>
+      {added ? 'Added ✓' : 'Add to cart'}
+    </button>
+  );
+}
+```
+
+Kluczowy szczegół, który większość ludzi rozumie źle: **`"use client"` oznacza granicę, a nie pojedynczy komponent.** Gdy plik ma na górze `"use client"`, wszystko, co importuje, i każdy komponent, który renderuje, również trafia do bundle klienta. Dyrektywa nie znaczy więc „uczyń ten komponent interaktywnym" — znaczy „**od tego miejsca w dół jesteśmy na kliencie.**" Dobrze zaprojektowana aplikacja RSC trzyma te granice tak nisko w drzewie i tak małe, jak to możliwe, żeby interaktywne liście były maleńkie, a statyczny pień pozostał na serwerze.
+
+### Streaming i granica serializacji
+
+Drugą supermocą RSC jest **streaming**. Next.js serializuje drzewo Server Components do zwartego formatu (payload **Flight** / payload RSC) i streamuje je do przeglądarki wzdłuż granic `<Suspense>`. Treść, która jest gotowa, renderuje się natychmiast; wolne dane nie blokują reszty strony.
+
+```tsx
+import { Suspense } from 'react';
+
+export default function Dashboard() {
+  return (
+    <>
+      {/* Renderuje się i streamuje natychmiast */}
+      <Header />
+
+      {/* Ta wolna sekcja streamuje się, gdy jej dane się rozwiążą — */}
+      {/* nie blokuje pojawienia się nagłówka */}
+      <Suspense fallback={<RevenueSkeleton />}>
+        <RevenueChart />
+      </Suspense>
+    </>
+  );
+}
+```
+
+Ale oto uczciwy koszt, i to jest rzecz, którą ludzie niedoceniają: **granica serwer/klient jest granicą sieciową.** Każdy prop, który przekazujesz z Server Component do Client Component, musi zostać **zserializowany** do payloadu Flight i wysłany przez sieć. To oznacza:
+
+- **Propsy muszą być serializowalne.** Funkcje, instancje klas i (do niedawna) obiekty `Date` nie mogą przekroczyć granicy. Przekazujesz dane w dół, nie zachowanie.
+- **Duże albo głęboko zagnieżdżone propsy powiększają payload** i opóźniają hydrację. Przekazanie ogromnego obiektu do liścia klienta nie jest darmowe.
+- **Możesz odtworzyć waterfalle na serwerze.** Jeśli rodzicielski Server Component awaituje dane przed wyrenderowaniem dziecka, które awaituje *własne* dane, te pobrania nadal wykonują się sekwencyjnie — po prostu przeniosłeś waterfall z przeglądarki na serwer. Naprawą jest zrównoleglenie przez `Promise.all` albo niezależne granice `<Suspense>`, ale nic cię do tego nie zmusza; musisz wiedzieć, że trzeba to zrobić.
+
+RSC daje ci fenomenalny model, ale wymaga trzymania w głowie realnego modelu tego, *gdzie uruchamia się każda linia kodu* i *co przekracza granicę*. To jest ten podatek. Jeśli chcesz głębokiej wersji strony Next.js — edge runtime, cache'owanie, model komponentów `"use cache"` i `cache` — opisałem to w [przewodniku po Server Components i edge runtime w Next.js 2026](/blog/nextjs-2026-server-components-edge-runtime-guide) oraz w [przewodniku po React `cache` i Cache Components](/blog/react-cache-components-nextjs-16-caching-guide).
+
+## Twarzą w twarz
+
+Teraz zestawię je obok siebie na wymiarach, które naprawdę decydują o projektach.
+
+### Postawa domyślna
+
+To jest źródło każdej innej różnicy. **Astro jest domyślnie statyczne; ty opcjonalnie *włączasz* JavaScript per wyspa. RSC jest domyślnie React; ty *rezygnujesz* z serwera przez `"use client"`.**
+
+Jeśli twoja strona jest w 90% statyczną treścią, domyślne zachowanie Astro jest już poprawne i dodajesz kilka wysp. Jeśli twoja strona jest w 90% interaktywną aplikacją, domyślne zachowanie RSC (trzymaj po stronie serwera, chyba że potrzebujesz klienta) odwala za ciebie ciężką robotę, a Astro zmuszałoby cię do przyklejania dyrektywy do niemal każdego komponentu.
+
+### Pobieranie danych
+
+Oba pozwalają pobierać dane na serwerze, ale ergonomia się różni. W RSC każdy Server Component jest funkcją `async` — awaitujesz zapytanie do bazy albo API inline, kolokowane z UI, które go używa. To pięknie bezpośrednie. W Astro pobieranie danych żyje w frontmatterze komponentu (blok `---`), który uruchamia się na serwerze w czasie builda lub żądania; same wyspy zwykle otrzymują dane jako propsy albo pobierają po stronie klienta, jeśli są dynamiczne.
+
+Kolokowane pobieranie danych `async` w RSC jest naprawdę przyjemniejsze dla danych o kształcie aplikacji. Frontmatter Astro jest zupełnie dobry dla treści na poziomie strony, ale nigdy nie był projektowany jako warstwa danych per-komponent w czasie żądania, tak jak RSC.
+
+### Interaktywność
+
+To jest strukturalna słabość Astro i teren domowy RSC. Wyspy Astro są **z założenia izolowane** — nie dzielą łatwo stanu między sobą. Dwie wyspy na tej samej stronie to dwie osobne mini-aplikacje; koordynowanie ich (współdzielony stan koszyka, interakcja między widżetami) oznacza sięgnięcie po store taki jak Nanostores albo wyniesienie stanu do URL. Ta izolacja to *dokładnie* to, co czyni Astro szybkim, ale walczy z tobą w chwili, gdy twoja interaktywność rozciąga się na wiele regionów.
+
+RSC (a właściwie Client Components w jego obrębie) to po prostu React. Spójna interaktywna aplikacja ze współdzielonym kontekstem, złożonym stanem i komponentami, które się ze sobą komunikują, to rzecz, w której React zawsze był najlepszy. Nie ma granicy wyspy, z którą trzeba walczyć.
+
+### Model mentalny
+
+Model Astro łatwiej *utrzymać w głowie*: statyczny HTML plus te konkretne interaktywne wyspy, tu i tu. Możesz wskazać palcem JavaScript na stronie. RSC wymaga od ciebie więcej — nieustannie rozumujesz, po której stronie granicy jest każdy komponent, czy prop jest serializowalny, czy przypadkiem nie ściągnąłeś ogromnej zależności do klienta, importując ją powyżej linii `"use client"`. RSC jest potężniejsze i subtelniejsze. Astro jest prostsze i bardziej ograniczone. Żadne nie jest „lepsze" — mają po prostu różną cenę.
+
+### SEO i początkowe ładowanie
+
+Oba są tu doskonałe, i to z tego samego powodu: prawdziwy HTML przychodzi z serwera, więc crawlery i użytkownicy dostają treść natychmiast, bez czekania na JS. Astro zwykle wyprzedza pod względem surowego payloadu na stronach contentowych (często jednocyfrowe KB JS wobec aplikacji RSC, które nadal wysyłają runtime Reacta plus każdy Client Component). Dla strony contentowej Core Web Vitals Astro są trudne do pobicia. Dla aplikacji wyniki RSC są doskonałe *w porównaniu do SPA renderowanego po stronie klienta*, co jest właściwym porównaniem.
+
+### Ekosystem i dopasowanie do zespołu
+
+RSC to React, a ekosystem Reacta jest największy we frontendzie. Jeśli twój zespół żyje w React, twoje biblioteki komponentów, twoje hooki, twoja pamięć mięśniowa — wszystko przenosi się bezpośrednio. Astro jest niezależne od frameworka dla wysp, ale ma własny format `.astro`, własne konwencje i mniejszy (choć zdrowy i szybko rosnący) ekosystem. Dla zespołu mocno reactowego budującego aplikację RSC ma niemal zerowy koszt przesiadki. Dla strony contentowej krzywa uczenia Astro to weekend.
+
+### Wydajność
+
+Uczciwe podsumowanie: **Astro wygrywa zdecydowanie na stronach mocno contentowych** (2–10x mniej JS to rutyna, czasem znacznie więcej), bo nie wysyła *nic* dla statycznej większości. **RSC wygrywa na stronach o kształcie aplikacji**, gdzie inaczej wysłałbyś opasły bundle klienta — trzyma pobieranie danych i ciężkie zależności po stronie serwera, dostarczając jednocześnie w pełni interaktywną aplikację React. W chwili, gdy strona staje się głównie interaktywna, domyślne zero-JS Astro przestaje być przewagą (każdy komponent i tak potrzebuje dyrektywy), a zintegrowany model RSC wysuwa się na prowadzenie. Cokolwiek wybierzesz, utrzymywanie szczupłego interaktywnego bundle nadal ma znaczenie — techniki z mojego [przewodnika po wysyłaniu bundli poniżej 200 KB](/blog/dynamic-bundle-optimization-under-200kb-guide) stosują się do obu światów.
+
+## Gdzie każde z nich wygrywa
+
+Powiem to bez ogródek.
+
+**Sięgnij po Astro, gdy:**
+
+- Strona jest **content-first**: blog, dokumentacja, marketing, portfolio, sklep e-commerce, landing page'e.
+- Interaktywność jest **zlokalizowana i niezależna** — kilka widżetów, które nie muszą się koordynować.
+- Chcesz **absolutnie najmniejszy** payload JS i najlepsze Core Web Vitals.
+- Chcesz **mieszać frameworki** albo migrować stopniowo.
+- Tworzenie treści (Markdown, MDX, content collections) jest kluczowe.
+
+**Sięgnij po React Server Components, gdy:**
+
+- Budujesz **aplikację**: dashboardy, produkty SaaS, panele admina, feedy społecznościowe, cokolwiek z bogatym, wzajemnie powiązanym stanem.
+- Interaktywność jest **wszechobecna i skoordynowana** w obrębie strony.
+- Chcesz **kolokowanego pobierania danych w czasie żądania** z wbudowanym bezpieczeństwem po stronie serwera (sekrety, dostęp do bazy).
+- Twój zespół jest **React-native** i chcesz wykorzystać pełny ekosystem.
+- Potrzebujesz **streamingu** spersonalizowanej, dynamicznej treści na dużą skalę.
+
+Trybem porażki jest użycie niewłaściwego narzędzia wbrew jego naturze: budowanie mocno interaktywnej aplikacji do współpracy w Astro (walcząc z izolacją wysp na każdym kroku) albo budowanie w większości statycznej strony z dokumentacją w Next.js (wysyłając 400 KB do wyrenderowania Markdowna). Oba zadziałają. Oba to niewłaściwe narzędzie.
+
+## Możesz je faktycznie łączyć
+
+Oto część, którą ludzie przeoczają: **te podejścia nie wykluczają się wzajemnie.** Wyspy Astro są niezależne od frameworka, a jednym z frameworków, które wspiera, jest React. Możesz uruchamiać komponenty React *jako wyspy wewnątrz Astro*, a własna integracja Astro `@astrojs/react` wspiera wzorce w stylu React Server Components dla tych wysp. Bardzo rozsądną architekturą jest więc:
+
+- **Astro dla warstwy contentowej** — blog, dokumentacja, strony marketingowe, wszystkie wysyłające niemal zero JS.
+- **Aplikacja Next.js dla właściwej aplikacji** — dashboard, uwierzytelniony produkt, działający na pełnym RSC.
+- Oba pod jedną domeną, routowane na edge albo przez reverse proxy.
+
+To podejście „właściwe narzędzie per powierzchnia" i jest coraz częstsze w większych organizacjach: `/blog` i `/docs` to Astro, `/app` to Next.js. Użytkownicy nigdy się nie dowiedzą. Każda powierzchnia dostaje architekturę, która do niej pasuje.
+
+Możesz pójść jeszcze drobniej i użyć wysp React *wewnątrz* Astro dla interaktywnych fragmentów skądinąd statycznej strony, trzymając wszystko w jednym repozytorium. Chodzi o to, że „Astro vs RSC" to fałszywa dychotomia na poziomie *systemu*, mimo że jest realnym wyborem na poziomie *strony*.
+
+## Framework decyzyjny
+
+Kiedy wybieram, zadaję cztery pytania po kolei.
+
+**1. Jaki jest stosunek statycznej treści do interaktywności na typowej stronie?**
+Głównie statyczna (>70% treści) → Astro. Głównie interaktywna → RSC. To jedno pytanie rozstrzyga większość przypadków.
+
+**2. Czy interaktywność musi być skoordynowana?**
+Niezależne widżety → wyspy są w porządku, Astro błyszczy. Współdzielony stan między regionami, złożone przepływy, optymistyczne aktualizacje → RSC / React, bo izolacja wysp staje się podatkiem.
+
+**3. Skąd biorą się dane i jak dynamiczne są?**
+Treść-jako-dane tworzona w Markdownie → content collections Astro. Dane w czasie żądania, per-użytkownik, oparte o bazę, kolokowane z UI → Server Components `async` w RSC.
+
+**4. Co zespół już zna i jaki jest koszt migracji?**
+Głęboko reactowy zespół budujący produkt → RSC ma niemal zerowy koszt przesiadki. Strona contentowa albo zespół chętny nauczyć się skupionego narzędzia → Astro zwróci się w weekend.
+
+A jeśli uczciwa odpowiedź brzmi „mamy i stronę contentową, *i* aplikację" — to odpowiedzią jest **oba**, na osobnych powierzchniach. Nie zmuszaj jednej architektury do wykonywania pracy drugiej.
+
+Meta-wniosek: te dwa projekty nie są tyle konkurentami, co **dwiema poprawnymi odpowiedziami na dwa różne pytania.** Astro pyta „jak dodać ledwie tyle interaktywności do szybkiego dokumentu?" RSC pyta „jak zatrzymać jak najwięcej mojej aplikacji z dala od klienta?" Gdy usłyszysz różnicę w tych pytaniach, wybór właściwego przestaje być debatą, a staje się oczywisty.
+
+## Źródła i dalsza lektura
+
+### Źródła
+- [Islands architecture — Astro Docs](https://docs.astro.build/en/concepts/islands/) — oficjalne wyjaśnienie partial hydration i client directives
+- [Front-end frameworks — Astro Docs](https://docs.astro.build/en/guides/framework-components/) — wyspy wielo-frameworkowe (React, Vue, Svelte, Solid, Preact)
+- [Astro Server Islands: A Practical Tutorial — BCMS](https://thebcms.com/blog/astro-server-islands-tutorial) — server islands i `server:defer`
+- [Server and Client Components — Next.js Docs](https://nextjs.org/docs/app/getting-started/server-and-client-components) — granica `"use client"` i postawa domyślna
+- [React Server Components in 2026: Patterns and Pitfalls — jsmanifest](https://jsmanifest.com/react-server-components-patterns-pitfalls-2026) — koszt serializacji i waterfalle po stronie serwera
+- [An Introduction to React Server Components — DebugBear](https://www.debugbear.com/blog/react-server-components) — payload Flight i model streamingu
+
+### Dalsza lektura
+- [Astro vs Next.js 2026: 9KB vs 463KB JS (Tested) — Tech Insider](https://tech-insider.org/astro-vs-nextjs-2026/) — pomiary payloadu twarzą w twarz
+- [Understanding Astro islands architecture — LogRocket](https://blog.logrocket.com/understanding-astro-islands-architecture/) — głębsze omówienie dyrektyw hydracji
+- [The State of Server Components in 2026 — PkgPulse](https://www.pkgpulse.com/guides/state-of-server-components-2026) — gdzie stoi RSC w całym ekosystemie
+
+---
+
+~Seb 👊
