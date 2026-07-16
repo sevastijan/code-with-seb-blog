@@ -1,0 +1,554 @@
+---
+title: 'Modularny monorepo dla React + Next.js: Turborepo kontra Nx w 2026'
+date: '2026-03-28'
+category: 'Architecture'
+tags: ['monorepo', 'turborepo', 'nx', 'architecture', 'react']
+draft: false
+featured: false
+author: 'Sebastian'
+enSlug: 'monorepo-turborepo-nx-react-nextjs-guide'
+excerpt: 'Turborepo daje ci szybki samochód. Nx daje cały system autostrad. Kompletny przewodnik po modularnych monorepo dla React + Next.js: architektura, biblioteki, CI i wybór narzędzia.'
+---
+
+W zeszłym roku odziedziczyłem monorepo, którego build w CI trwał 26 minut. Miało 14 pakietów, 3 aplikacje Next.js, współdzieloną bibliotekę komponentów, pakiet utils oraz pakiet z design tokens. Wszystko zależało od wszystkiego. Zmiana jednej funkcji pomocniczej wyzwalała pełny rebuild wszystkich 14 pakietów. Rachunek za CI wynosił 4200 dolarów miesięcznie.
+
+Po przebudowaniu grafu zależności i dodaniu Turborepo z porządnym cachingiem ten sam pipeline CI wykonywał się w 90 sekund. Nie dlatego, że Turborepo to magia — po prostu 13 z 14 pakietów nie wymagało rebuildu. Narzędzie musiało jedynie o tym wiedzieć.
+
+Monorepo to nie tylko "wrzuć wszystko do jednego repo". Zrobione źle, jest wspólną katastrofą, w której zła zależność jednego zespołu psuje build wszystkim pozostałym. Zrobione dobrze, jest mnożnikiem siły — współdzielony kod, spójny tooling, atomowe zmiany obejmujące wiele pakietów i [jeden pipeline CI, który jest mądrzejszy](/blog/optimizing-cicd-pipelines-dx-deploy-times-guide) niż 14 osobnych.
+
+Ten przewodnik pokazuje pełen obraz: kiedy monorepo ma sens, jak strukturyzować pakiety, dogłębne porównanie Turborepo kontra Nx, zarządzanie zależnościami, integracja design systemu, optymalizacja CI oraz problemy z prawdziwego świata, przed którymi nikt cię nie ostrzega.
+
+## Kiedy monorepo ma sens (a kiedy nie)
+
+### Użyj monorepo, gdy:
+
+- **Wiele aplikacji współdzieli kod** — aplikacja webowa Next.js, mobilna React Native i panel administracyjny współdzielą logikę autoryzacji, klienty API i typy
+- **Masz design system** — komponenty, tokeny i narzędzia konsumowane przez wiele aplikacji
+- **Chcesz atomowych zmian** — aktualizacja współdzielonego typu i wszystkich jego konsumentów w jednym PR
+- **Twój zespół liczy < 50 inżynierów** — koszt koordynacji jest do opanowania
+- **Chcesz spójnego toolingu** — jedna konfiguracja ESLint, jedna TypeScript, jeden pipeline CI
+
+### Nie używaj monorepo, gdy:
+
+- **Zespoły są w pełni niezależne** — osobne produkty z osobnymi cyklami wydawniczymi
+- **Masz > 100 inżynierów** — operacje Git zwalniają, CI staje się wąskim gardłem, a odpowiedzialność się rozmywa
+- **Różne stacki technologiczne** — backend w Pythonie i frontend w React nie zyskują na wspólnym repo
+- **Wymogi regulacyjne** — niektóre ramy compliance wymagają osobnych repozytoriów dla każdej usługi
+
+## Architektura pakietów
+
+Dobrze ustrukturyzowany monorepo ma wyraźne warstwy z jednokierunkowym przepływem zależności:
+
+```
+monorepo/
+├── apps/                    # Aplikacje możliwe do wdrożenia
+│   ├── web/                 # Główna aplikacja Next.js
+│   ├── admin/               # Panel administracyjny Next.js
+│   └── mobile/              # Aplikacja React Native
+├── packages/                # Współdzielone biblioteki
+│   ├── ui/                  # Komponenty design systemu
+│   ├── config-eslint/       # Współdzielona konfiguracja ESLint
+│   ├── config-typescript/   # Współdzielony tsconfig
+│   ├── api-client/          # Typowany klient API
+│   ├── auth/                # Narzędzia uwierzytelniania
+│   ├── analytics/           # Wrapper analityki
+│   └── utils/               # Czyste funkcje pomocnicze
+├── turbo.json               # Konfiguracja pipeline Turborepo
+├── pnpm-workspace.yaml      # Definicja workspace
+├── package.json             # Skrypty root
+└── tsconfig.json            # Root konfiguracji TS (opcjonalnie)
+```
+
+### Reguła zależności
+
+Zależności płyną w JEDNYM kierunku: **apps → packages**. Nigdy odwrotnie. Pakiety mogą zależeć od innych pakietów, ale graf musi być acykliczny.
+
+```
+apps/web ─────→ packages/ui
+                packages/api-client
+                packages/auth
+                packages/analytics
+
+apps/admin ───→ packages/ui
+                packages/api-client
+                packages/auth
+
+packages/ui ──→ packages/utils (OK)
+packages/utils → packages/ui  (ZABRONIONE — cykl!)
+```
+
+### Konfiguracja z pnpm Workspaces
+
+pnpm to standardowy menedżer pakietów dla monorepo w 2026. Jest szybszy niż npm, ma natywne wsparcie dla workspace i używa content-addressable store, który unika duplikowania pakietów:
+
+```yaml
+# pnpm-workspace.yaml
+packages:
+  - 'apps/*'
+  - 'packages/*'
+```
+
+```json
+// Root package.json
+{
+  "name": "monorepo",
+  "private": true,
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "lint": "turbo run lint",
+    "test": "turbo run test",
+    "typecheck": "turbo run typecheck"
+  },
+  "devDependencies": {
+    "turbo": "^2.4.0"
+  }
+}
+```
+
+### Tworzenie pakietu wewnętrznego
+
+Pakiety wewnętrzne są konsumowane w obrębie monorepo, ale nigdy nie są publikowane do npm:
+
+```json
+// packages/utils/package.json
+{
+  "name": "@repo/utils",
+  "version": "0.0.0",
+  "private": true,
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@repo/config-typescript": "workspace:*",
+    "typescript": "^5.7.0"
+  }
+}
+```
+
+```typescript
+// packages/utils/src/index.ts
+export { cn } from './cn';
+export { formatDate } from './format-date';
+export { debounce, throttle } from './timing';
+export { isEmail, isURL } from './validators';
+
+export type { DeepPartial, Prettify, StrictOmit } from './types';
+```
+
+**Kluczowe szczegóły:**
+- `"private": true` — nigdy nie publikowany do npm
+- `workspace:*` — rozwiązuje się do lokalnej wersji, a nie wersji z rejestru
+- pole `"exports"` z `"types"` — zapewnia, że TypeScript znajdzie typy bez kroku budowania
+- Źródłowy TypeScript jest konsumowany bezpośrednio — pakiety wewnętrzne nie wymagają kroku budowania (kompilację obsługuje bundler konsumującej aplikacji)
+
+### Konsumowanie pakietów wewnętrznych
+
+```json
+// apps/web/package.json
+{
+  "dependencies": {
+    "@repo/ui": "workspace:*",
+    "@repo/utils": "workspace:*",
+    "@repo/api-client": "workspace:*"
+  }
+}
+```
+
+```typescript
+// apps/web/src/components/UserCard.tsx
+import { Card, Avatar, Badge } from '@repo/ui';
+import { formatDate } from '@repo/utils';
+import { useUser } from '@repo/api-client';
+
+export function UserCard({ userId }: { userId: string }) {
+  const { data: user } = useUser(userId);
+  if (!user) return null;
+
+  return (
+    <Card>
+      <Avatar src={user.avatar} alt={user.name} />
+      <h3>{user.name}</h3>
+      <Badge variant={user.role}>{user.role}</Badge>
+      <p>Joined {formatDate(user.createdAt)}</p>
+    </Card>
+  );
+}
+```
+
+## Turborepo: szybki pas
+
+Turborepo to system budowania, a nie framework do monorepo. Robi jedną rzecz: **uruchamia zadania szybko**, rozumiejąc twój graf zależności i cachując wyniki.
+
+### Konfiguracja turbo.json
+
+```json
+// turbo.json
+{
+  "$schema": "https://turborepo.dev/schema.json",
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "inputs": ["src/**", "package.json", "tsconfig.json"],
+      "outputs": [".next/**", "dist/**"],
+      "cache": true
+    },
+    "dev": {
+      "dependsOn": ["^build"],
+      "persistent": true,
+      "cache": false
+    },
+    "lint": {
+      "inputs": ["src/**", "*.config.*"],
+      "cache": true
+    },
+    "typecheck": {
+      "dependsOn": ["^build"],
+      "inputs": ["src/**", "tsconfig.json"],
+      "cache": true
+    },
+    "test": {
+      "inputs": ["src/**", "tests/**"],
+      "cache": true
+    }
+  }
+}
+```
+
+**Kluczowe pojęcia:**
+- `"^build"` — daszek oznacza "najpierw uruchom build w moich zależnościach" (porządek topologiczny)
+- `"inputs"` — tylko te pliki wpływają na klucz cache. Zmieniłeś README? Trafienie w cache.
+- `"outputs"` — katalogi do cachowania i przywracania
+- `"persistent": true` — dla serwerów deweloperskich, które się nie kończą
+
+### Jak działa caching
+
+Gdy uruchamiasz `turbo run build`:
+
+1. Turbo oblicza hash z: inputów zadania + wersji zależności + zmiennych środowiskowych
+2. Jeśli hash pasuje do poprzedniego uruchomienia → **trafienie w cache** → natychmiastowe przywrócenie outputów (< 100 ms)
+3. Jeśli brak dopasowania → uruchom zadanie → zapisz outputy do cache
+
+```bash
+$ turbo run build
+
+• Packages in scope: @repo/utils, @repo/ui, @repo/api-client, web, admin
+• Running build in 5 packages
+
+@repo/utils:build  cache hit, replaying logs ██████████████ 0.1s
+@repo/ui:build     cache hit, replaying logs ██████████████ 0.1s
+@repo/api-client:  cache hit, replaying logs ██████████████ 0.1s
+web:build          cache miss, running       ██████████████ 28.3s
+admin:build        cache miss, running       ██████████████ 15.7s
+
+Tasks:    5 successful, 5 total
+Cached:   3 cached, 5 total
+Time:     29.1s
+```
+
+Zmieniłeś kod tylko w `apps/web` — 3 pakiety, które się nie zmieniły, są przywracane z cache po 100 ms każdy.
+
+### Wykonywanie filtrowane
+
+Uruchamiaj zadania tylko dla zmienionych pakietów:
+
+```bash
+# Tylko pakiety zmienione od main
+turbo run build --filter=...[origin/main]
+
+# Tylko aplikacja web i jej zależności
+turbo run build --filter=web...
+
+# Tylko pakiet ui (bez zależności)
+turbo run build --filter=@repo/ui
+```
+
+### Remote caching
+
+Współdziel cache w całym zespole i w CI:
+
+```bash
+# Z Vercel (wbudowane)
+turbo login
+turbo link
+
+# Lub z cache GitHub Actions (za darmo)
+# Zobacz sekcję o optymalizacji CI
+```
+
+Gdy inżynier A zbuduje `@repo/ui` i wypushuje, inżynier B dostaje trafienie w cache bez rebuildu. CI dostaje trafienia od obu inżynierów. To się kumuluje — w zespole 10 osób większość buildów jest niemal natychmiastowa.
+
+## Nx: pełna platforma
+
+Nx jest bardziej opiniodawczy i potężniejszy. Tam gdzie Turborepo daje ci caching i orkiestrację zadań, Nx dokłada:
+
+- **Wizualizację grafu projektu** — zobacz każdą zależność w swoim monorepo
+- **Polecenia affected** — uruchamiaj zadania tylko dla projektów dotkniętych twoimi zmianami
+- **Generatory** — tworzenie nowych pakietów, komponentów i funkcjonalności z szablonów
+- **Egzekwowanie granic modułów** — reguły lintera, które zapobiegają nielegalnym importom między pakietami
+- **Rozproszone wykonywanie zadań** — rozdzielenie pracy na wiele maszyn CI
+
+### Podstawowa konfiguracja Nx
+
+```bash
+npx create-nx-workspace@latest my-monorepo \
+  --preset=react-monorepo \
+  --bundler=webpack \
+  --style=tailwind
+
+# Lub dodaj Nx do istniejącego repo
+npx nx@latest init
+```
+
+### Konfiguracja nx.json
+
+```json
+// nx.json
+{
+  "targetDefaults": {
+    "build": {
+      "dependsOn": ["^build"],
+      "inputs": ["production", "^production"],
+      "cache": true
+    },
+    "test": {
+      "inputs": ["default", "^production"],
+      "cache": true
+    },
+    "lint": {
+      "inputs": ["default", "{workspaceRoot}/.eslintrc.json"],
+      "cache": true
+    }
+  },
+  "namedInputs": {
+    "default": ["{projectRoot}/**/*", "sharedGlobals"],
+    "production": [
+      "default",
+      "!{projectRoot}/**/*.spec.*",
+      "!{projectRoot}/tsconfig.spec.json"
+    ],
+    "sharedGlobals": ["{workspaceRoot}/tsconfig.base.json"]
+  }
+}
+```
+
+### Egzekwowanie granic modułów
+
+To zabójcza funkcja Nx dla dużych zespołów. Definiujesz tagi dla każdego projektu oraz reguły, które tagi mogą zależeć od których:
+
+```json
+// project.json (dla każdego projektu)
+{
+  "tags": ["scope:web", "type:app"]
+}
+// Lub dla współdzielonego pakietu:
+{
+  "tags": ["scope:shared", "type:ui"]
+}
+```
+
+```json
+// .eslintrc.json (root)
+{
+  "rules": {
+    "@nx/enforce-module-boundaries": [
+      "error",
+      {
+        "depConstraints": [
+          { "sourceTag": "type:app", "onlyDependOnLibsWithTags": ["type:ui", "type:util", "type:data"] },
+          { "sourceTag": "type:ui", "onlyDependOnLibsWithTags": ["type:util"] },
+          { "sourceTag": "type:util", "onlyDependOnLibsWithTags": [] },
+          { "sourceTag": "scope:web", "onlyDependOnLibsWithTags": ["scope:web", "scope:shared"] },
+          { "sourceTag": "scope:admin", "onlyDependOnLibsWithTags": ["scope:admin", "scope:shared"] }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Teraz, jeśli inżynier w aplikacji `admin` spróbuje zaimportować coś z aplikacji `web` — błąd ESLint. Jeśli pakiet `ui` spróbuje zaimportować z `app` — błąd ESLint. Architektura jest egzekwowana przez tooling, a nie przez recenzje PR i dobre intencje.
+
+### Generatory
+
+Tworzenie nowych pakietów o spójnej strukturze:
+
+```bash
+# Wygeneruj nową bibliotekę React
+nx generate @nx/react:library my-feature --directory=packages/my-feature
+
+# Wygeneruj nową aplikację Next.js
+nx generate @nx/next:application dashboard --directory=apps/dashboard
+
+# Własne generatory dla konwencji twojego zespołu
+nx generate @my-org/workspace:react-package my-package
+```
+
+## Turborepo kontra Nx: framework decyzyjny
+
+| Czynnik | Turborepo | Nx |
+|--------|-----------|-----|
+| **Krzywa uczenia** | Niska (1 godzina) | Średnia (1-2 dni) |
+| **Czas konfiguracji** | 10 minut | 30-60 minut |
+| **Caching** | Doskonały | Doskonały |
+| **Orkiestracja zadań** | Doskonała | Doskonała |
+| **Wykrywanie affected** | `--filter=...[base]` | `nx affected` (precyzyjniej) |
+| **Granice modułów** | Brak (użyj ESLint ręcznie) | Wbudowane egzekwowanie |
+| **Generowanie kodu** | Brak | Generatory + własne generatory |
+| **Wizualizacja** | Brak | UI grafu projektu |
+| **Rozproszone wykonywanie** | Nie | Nx Agents (płatne) |
+| **Ekosystem** | Tylko JS/TS | Wsparcie wielu języków |
+| **Złożoność konfiguracji** | Minimalna (`turbo.json`) | Więcej plików (`nx.json`, `project.json`) |
+| **Vendor lock-in** | Niski | Średni |
+| **Najlepszy dla** | < 20 pakietów, nastawiony na szybkość | > 20 pakietów, nastawiony na governance |
+
+### Moja rekomendacja
+
+- **Startupy i małe zespoły (< 15 inżynierów, < 10 pakietów):** Turborepo. Będziesz produktywny w 10 minut. Nie przeinżynieruj.
+- **Rosnące zespoły (15-50 inżynierów, 10-50 pakietów):** Nx lub Turborepo z dyscypliną. Jeśli potrzebujesz egzekwowania granic, użyj Nx. Jeśli ufasz zespołowi i chcesz prostoty, Turborepo z dobrymi praktykami PR wystarczy.
+- **Duże organizacje (50+ inżynierów, 50+ pakietów):** Nx. Egzekwowanie granic modułów, generatory i rozproszone wykonywanie zwracają się z nawiązką za krzywą uczenia.
+
+## Pakiet design systemu
+
+Design system to najczęstszy współdzielony pakiet w monorepo. Oto jego architektura:
+
+```
+packages/ui/
+├── src/
+│   ├── components/
+│   │   ├── Button/
+│   │   │   ├── Button.tsx
+│   │   │   ├── Button.test.tsx
+│   │   │   └── index.ts
+│   │   ├── Card/
+│   │   ├── Dialog/
+│   │   ├── Input/
+│   │   └── index.ts           # Publiczne API
+│   ├── tokens/
+│   │   ├── colors.ts
+│   │   ├── spacing.ts
+│   │   ├── typography.ts
+│   │   └── index.ts
+│   ├── hooks/
+│   │   ├── useMediaQuery.ts
+│   │   └── index.ts
+│   └── index.ts               # Punkt wejścia pakietu
+├── package.json
+└── tsconfig.json
+```
+
+```typescript
+// packages/ui/src/index.ts — publiczne API
+// Komponenty
+export { Button, type ButtonProps } from './components/Button';
+export { Card, type CardProps } from './components/Card';
+export { Dialog, type DialogProps } from './components/Dialog';
+export { Input, type InputProps } from './components/Input';
+
+// Tokeny
+export { colors, spacing, typography } from './tokens';
+
+// Hooki
+export { useMediaQuery } from './hooks/useMediaQuery';
+```
+
+**Reguła publicznego API:** Konsumenci importują tylko z roota pakietu (`@repo/ui`), nigdy z głębokich ścieżek (`@repo/ui/src/components/Button/Button`). To pozwala refaktoryzować wnętrze bez psucia konsumentów.
+
+## Typowe problemy monorepo i ich rozwiązania
+
+### Problem 1: Phantom dependencies
+
+Pakiet używa zależności, której nie deklaruje we własnym `package.json` — działa "przypadkiem", bo inny pakiet zainstalował ją w roocie.
+
+**Rozwiązanie:** Ścisła struktura node_modules w pnpm domyślnie temu zapobiega. Każdy pakiet ma dostęp tylko do własnych zadeklarowanych zależności.
+
+### Problem 2: Konflikty wersji
+
+Aplikacja A potrzebuje React 18, aplikacja B potrzebuje React 19.
+
+**Rozwiązanie:** Zastosuj politykę pojedynczej wersji. Przypnij główne zależności w roocie:
+
+```json
+// Root package.json
+{
+  "pnpm": {
+    "overrides": {
+      "react": "^19.0.0",
+      "react-dom": "^19.0.0"
+    }
+  }
+}
+```
+
+### Problem 3: Cykliczne zależności
+
+Pakiet A importuje z B, B importuje z A.
+
+**Rozwiązanie:** Wyodrębnij współdzielony kod do trzeciego pakietu C, od którego oba zależą. Egzekwowanie granic w Nx wykrywa to automatycznie.
+
+### Problem 4: Wolne operacje Git
+
+Duże monorepo spowalniają `git clone`, `git status` i `git log`.
+
+**Rozwiązanie:** Używaj płytkich klonów w CI (`--depth=1`), sparse checkout Gita dla dużych repo i rozważ `git maintenance` do lokalnego rozwoju.
+
+### Problem 5: Niejasna własność
+
+Kto jest właścicielem `@repo/utils`? Gdy kontrybuuje 8 zespołów, nikt nie czuje się odpowiedzialny.
+
+**Rozwiązanie:** Plik CODEOWNERS:
+
+```
+# .github/CODEOWNERS
+packages/ui/           @frontend-platform-team
+packages/api-client/   @backend-team
+packages/auth/         @security-team
+packages/utils/        @frontend-platform-team
+apps/web/              @web-team
+apps/admin/            @admin-team
+```
+
+## Praktyczne wnioski
+
+1. **Zacznij od Turborepo**, jeśli masz poniżej 10 pakietów. Przejdź na Nx, gdy potrzebujesz egzekwowania granic lub generatorów.
+2. **Używaj pnpm workspaces** — ścisłe node_modules zapobiegają phantom dependencies.
+3. **Jednokierunkowy przepływ zależności** — aplikacje zależą od pakietów, nigdy odwrotnie.
+4. **Polityka pojedynczej wersji** — przypnij główne zależności w roocie przez `pnpm.overrides`.
+5. **Pakiety wewnętrzne nie potrzebują kroku budowania** — kompiluje je bundler konsumującej aplikacji.
+6. **Nadaj pakietom namespace** — `@repo/ui`, `@repo/utils`. Zapobiega konfliktom z pakietami npm.
+7. **Tylko publiczne API** — konsumenci importują z roota pakietu, nigdy z głębokich ścieżek.
+8. **CODEOWNERS** — każdy pakiet ma wyznaczonego właściciela.
+9. **Cachuj wszystko w CI** — cache zależności, cache Turbo/Nx, cache buildów. 26-minutowy build staje się 90-sekundowy.
+10. **Uruchamiaj tylko polecenia affected** — `turbo run build --filter=...[origin/main]` lub `nx affected --target=build`.
+
+Dobrze ustrukturyzowany monorepo to nie tylko strategia organizacji kodu — to strategia koordynacji zespołu. Tooling egzekwuje architekturę, caching eliminuje marnotrawstwo, a współdzielone pakiety mnożą każde usprawnienie na wszystkie aplikacje. Jeśli łączysz to ze [skalowalną architekturą frontendu opartą na Atomic Design i Feature Slices](/blog/from-components-to-systems-scalable-frontend-with-atomiec-design), monorepo staje się jeszcze potężniejszy — każdy feature slice mapuje się czysto na granicę pakietu. A dla współdzielonej konfiguracji ESLint użyj [ścisłego setupu, który opisałem w przewodniku o lintingu](/blog/advanced-linting-type-safety-eslint-typescript-guide).
+
+Ustaw dobrze strukturę, a tooling zajmie się resztą.
+
+## Źródła
+
+### Źródła
+- [Nx vs Turborepo Official Comparison](https://nx.dev/docs/guides/adopting-nx/nx-vs-turborepo) — szczegółowe porównanie zespołu Nx
+- [PkgPulse: Turborepo vs Nx 2026](https://www.pkgpulse.com/blog/turborepo-vs-nx-monorepo-2026) — niezależne porównanie z 2026
+- [Turborepo: Structuring a Repository](https://turborepo.dev/docs/crafting-your-repository/structuring-a-repository) — oficjalny przewodnik po architekturze
+- [Turborepo: Creating an Internal Package](https://turborepo.dev/docs/crafting-your-repository/creating-an-internal-package) — konfiguracja pakietu wewnętrznego
+- [Feature-Sliced Design: Frontend Monorepo Explained](https://feature-sliced.design/blog/frontend-monorepo-explained) — wzorce architektoniczne
+- [Nhost: How We Configured pnpm and Turborepo](https://nhost.io/blog/how-we-configured-pnpm-and-turborepo-for-our-monorepo) — setup z prawdziwego świata
+
+### Dalsza lektura
+- [Vercel: Design System with Turborepo Template](https://vercel.com/templates/react/turborepo-design-system) — szablon startowy
+- [Nx: Module Federation and Nx](https://nx.dev/concepts/module-federation/module-federation-and-nx) — mikrofrontendy w Nx
+- [Graphite: Managing Dependencies in a Monorepo](https://graphite.com/guides/managing-dependencies-monorepo) — strategie zarządzania zależnościami
+- [Digma: 10 Common Monorepo Problems](https://digma.ai/10-common-problems-of-working-with-a-monorepo/) — wyzwania i rozwiązania
+
+---
+
+~Seb 👊

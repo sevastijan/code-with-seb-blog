@@ -1,0 +1,575 @@
+---
+title: 'Next.js w 2026: Server Components, Edge Runtime i śmierć SPA'
+date: '2026-03-23'
+category: 'Development'
+tags: ['nextjs', 'react', 'performance', 'architecture', 'development']
+draft: false
+featured: false
+author: 'Sebastian'
+enSlug: 'nextjs-2026-server-components-edge-runtime-guide'
+excerpt: 'Era SPA się skończyła. Oto architektoniczny playbook Next.js na 2026 — Server Components, Edge Runtime i strategie renderowania, które realnie dają wydajność.'
+---
+
+SPA nie umierają — one już są martwe. Branża po prostu nie skończyła jeszcze pogrzebu.
+
+Wiem, że brzmi to dramatycznie. Ale po zbudowaniu ponad 20 produkcyjnych aplikacji Next.js i migracji jednostronicowej aplikacji liczącej 200 tys. linii kodu na Server Components, nie prowokuję dla samej prowokacji. Liczby nie kłamią: aplikacje Next.js z poprawną architekturą RSC ładują się 3-5x szybciej niż odpowiadające im SPA. Time to First Byte spada o 60-80%. Bundle JavaScriptu kurczą się o 40-70%. A doświadczenie dewelopera? To nawet nie jest bliska walka.
+
+Jeśli w 2026 wciąż renderujesz wszystko po stronie klienta, oddajesz za darmo wydajność, SEO i komfort pracy. Oto architektoniczny playbook, który chciałbym mieć dwa lata temu.
+
+## Stan Next.js w 2026
+
+Next.js po cichu stał się domyślnym punktem wejścia do profesjonalnego developmentu w React. To już nie jest po prostu framework — to _ten_ framework. Gdy rekruterzy publikują oferty na "React Developera", mają na myśli "Next.js Developera". Gdy zespoły zaczynają nowe projekty, pytanie nie brzmi "czy powinniśmy użyć Next.js?", tylko "które wzorce Next.js przyjąć?".
+
+Oto co naprawdę się liczy w obecnym krajobrazie:
+
+- **React Server Components są stabilne i sprawdzone w boju.** Czasy eksperymentu się skończyły. RSC to domyślny model renderowania, a ekosystem nadgonił.
+- **Edge Runtime jest gotowy na produkcję.** Nie tylko do prostych tras API — dziś uruchamiamy na edge złożoną logikę aplikacji.
+- **App Router jest standardem.** Pages Router wciąż działa, ale nowe projekty nie mają powodu, by go używać.
+- **Partial Prerendering (PPR)** wypełnia lukę między statyką a dynamiką, dając Ci to, co najlepsze z obu światów w pojedynczym żądaniu.
+- **TypeScript nie podlega negocjacji.** Każdy wzorzec w tym artykule zakłada TypeScript. Jeśli nie używasz go w 2026, musimy odbyć inną rozmowę.
+- **Development wspierany przez AI to mnożnik.** Szkieletuję całe projekty Next.js za pomocą Claude Code w kilka minut — Server Components, pobieranie danych, strategie cache'owania, wszystko wygenerowane, a następnie dopracowane. AI nie zastępuje decyzji architektonicznych, ale eliminuje 80% boilerplate'u, który kiedyś mnie spowalniał.
+
+Ta zmiana nie jest przyrostowa. Jest architektoniczna. A w połączeniu z narzędziami AI zmienia nie tylko to, jak budujesz aplikacje webowe — ale też jak szybko.
+
+## Server Components: nie tylko wydajność — nowy model mentalny
+
+Największy błąd, jaki widzę u deweloperów przy Server Components, to traktowanie ich jako "szybszego sposobu renderowania Reacta". To całkowicie mija się z sednem.
+
+Server Components fundamentalnie zmieniają to, gdzie działa Twój kod i jak dane przepływają przez aplikację. Nie są optymalizacją — są nowym modelem mentalnym.
+
+Oto kluczowy wniosek: **Server Components to nie komponenty, które renderują się na serwerze. To komponenty, które istnieją wyłącznie na serwerze.**
+
+Nigdy się nie hydratują. Nigdy nie renderują ponownie na kliencie. Wysyłają HTML i zserializowany payload — nie JavaScript. Oznacza to:
+
+```tsx
+// app/dashboard/page.tsx — Server Component (domyślnie)
+import { db } from '@/lib/database';
+import { DashboardChart } from './DashboardChart';
+import { UserGreeting } from './UserGreeting';
+
+export default async function DashboardPage() {
+  // Bezpośredni dostęp do bazy danych. Warstwa API nie jest potrzebna.
+  const metrics = await db.query(`
+    SELECT date, revenue, users
+    FROM daily_metrics
+    WHERE date > NOW() - INTERVAL '30 days'
+    ORDER BY date ASC
+  `);
+
+  const user = await db.users.findUnique({
+    where: { id: getCurrentUserId() },
+  });
+
+  return (
+    <div className="grid grid-cols-12 gap-6">
+      <UserGreeting name={user.name} />
+      {/* Tylko DashboardChart wysyła JavaScript do klienta */}
+      <DashboardChart data={metrics} />
+    </div>
+  );
+}
+```
+
+Zauważ, co się dzieje: bezpośredni dostęp do bazy danych wewnątrz komponentu. Żadnego endpointu REST. Żadnego resolvera GraphQL. Żadnego tańca `useEffect` + `useState` + spinner ładowania. Pobieranie danych _jest_ komponentem.
+
+A `UserGreeting`? Jeśli to również Server Component, dokłada **zero bajtów** do Twojego bundle'a klienta. Zero. HTML dociera w pełni wyrenderowany.
+
+```tsx
+// app/dashboard/UserGreeting.tsx — Server Component
+// Ten komponent dokłada 0 bajtów do bundle'a JavaScriptu klienta
+export function UserGreeting({ name }: { name: string }) {
+  const hour = new Date().getHours();
+  const greeting = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
+
+  return (
+    <div className="col-span-12">
+      <h1 className="text-2xl font-bold">{greeting}, {name}</h1>
+      <p className="text-gray-500">Here is your dashboard overview.</p>
+    </div>
+  );
+}
+```
+
+```tsx
+// app/dashboard/DashboardChart.tsx — Client Component
+'use client';
+
+import { useRef, useEffect } from 'react';
+
+interface MetricPoint {
+  date: string;
+  revenue: number;
+  users: number;
+}
+
+export function DashboardChart({ data }: { data: MetricPoint[] }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  useEffect(() => {
+    // D3, Chart.js lub własne renderowanie na canvasie
+    // To JEDYNA część, która wymaga JavaScriptu po stronie klienta
+    renderChart(canvasRef.current, data);
+  }, [data]);
+
+  return <canvas ref={canvasRef} className="col-span-12 h-64" />;
+}
+```
+
+Zmiana mentalna: **zacznij na serwerze, wchodź w klienta świadomie.** Nie na odwrót.
+
+## Kiedy używać Server, a kiedy Client Components
+
+Po dziesiątkach projektów sprowadziłem to do prostego drzewa decyzyjnego:
+
+```
+Czy komponent potrzebuje...
+
+  API przeglądarki (window, document, localStorage)?  --> Client Component
+  Handlerów zdarzeń (onClick, onChange, onSubmit)?     --> Client Component
+  Hooków React (useState, useEffect, useRef)?          --> Client Component
+  Zewnętrznej biblioteki używającej powyższych?         --> Client Component
+
+  Nic z powyższego?                                    --> Server Component (domyślnie)
+```
+
+W praktyce dla większości aplikacji podział wygląda tak:
+
+```
+┌─────────────────────────────────────────────────┐
+│                   Server Components              │
+│  ┌─────────────────────────────────────────────┐ │
+│  │ Layouty, strony, wrappery pobierające dane, │ │
+│  │ struktura nawigacji, renderowanie treści,   │ │
+│  │ bramki auth, feature flagi, logika A/B      │ │
+│  │                                             │ │
+│  │         ~70-80% Twoich komponentów          │ │
+│  └─────────────────────────────────────────────┘ │
+│                                                   │
+│  ┌─────────────────────────────────────────────┐ │
+│  │           Client Components                 │ │
+│  │  Formularze, modale, dropdowny, wykresy,    │ │
+│  │  paski wyszukiwania, interaktywne tabele,   │ │
+│  │  animacje, aktualizacje w czasie rzecz.     │ │
+│  │                                             │ │
+│  │         ~20-30% Twoich komponentów          │ │
+│  └─────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────┘
+```
+
+Częsty błąd: doklejanie `'use client'` do komponentu-rodzica, bo jedno dziecko potrzebuje interaktywności. Zamiast tego przesuwaj granice klienta jak najgłębiej w drzewie.
+
+```tsx
+// ŹLE: Cała strona jest Client Componentem z powodu jednego przycisku
+'use client';
+
+export default function ProductPage({ product }) {
+  return (
+    <div>
+      <h1>{product.name}</h1>
+      <p>{product.description}</p>  {/* Nie potrzebuje klienta */}
+      <img src={product.image} />   {/* Nie potrzebuje klienta */}
+      <Reviews />                    {/* Nie potrzebuje klienta */}
+      <AddToCartButton />            {/* Tylko to potrzebuje klienta */}
+    </div>
+  );
+}
+
+// DOBRZE: Tylko interaktywna część jest Client Componentem
+// app/products/[id]/page.tsx — Server Component
+export default async function ProductPage({ params }: { params: { id: string } }) {
+  const product = await getProduct(params.id);
+  const reviews = await getReviews(params.id);
+
+  return (
+    <div>
+      <h1>{product.name}</h1>
+      <p>{product.description}</p>
+      <img src={product.image} alt={product.name} />
+      <ReviewsList reviews={reviews} />
+      <AddToCartButton productId={product.id} />  {/* Granica klienta */}
+    </div>
+  );
+}
+```
+
+## Edge Runtime: wdrażanie logiki bliżej użytkowników
+
+Edge Runtime w Next.js oznacza, że Twój kod po stronie serwera działa na węzłach CDN rozproszonych globalnie — a nie w pojedynczym centrum danych w `us-east-1`. Dla użytkowników w Tokio żądanie trafia na serwer w Tokio. Dla użytkowników w Berlinie — do Frankfurtu.
+
+Efekt: TTFB spada z 200-400 ms do 20-50 ms dla globalnej publiczności.
+
+```tsx
+// app/api/recommendations/route.ts
+export const runtime = 'edge'; // Ta jedna linijka zmienia wszystko
+
+import { geolocation } from '@vercel/functions';
+
+export async function GET(request: Request) {
+  const geo = geolocation(request);
+  const { country, city } = geo;
+
+  // Spersonalizowana odpowiedź wyliczona na edge
+  const recommendations = await getLocalizedRecommendations({
+    country: country ?? 'US',
+    city: city ?? 'New York',
+    language: request.headers.get('accept-language') ?? 'en',
+  });
+
+  return Response.json(recommendations, {
+    headers: {
+      'Cache-Control': 's-maxage=300, stale-while-revalidate=600',
+    },
+  });
+}
+```
+
+Edge Runtime ma ograniczenia — brak API specyficznych dla Node.js, jak `fs`, ograniczony czas wykonania, mniejsze limity pamięci. Ale w 2026 ekosystem kompatybilny z edge jest ogromny. Sterowniki baz danych (PlanetScale, Neon, Turso), biblioteki auth (Auth.js) i większość paczek narzędziowych działają na edge od ręki.
+
+Kiedy używać Edge Runtime:
+
+- **Personalizacja** — treści oparte na geolokalizacji, testy A/B, feature flagi
+- **Weryfikacja auth** — middleware sprawdzające sesje przed dotarciem do origin
+- **Trasy API** — lekkie transformacje danych, agregacja
+- **Przekierowania i rewrites** — złożona logika routingu
+
+Kiedy zostać przy Node.js Runtime:
+
+- **Ciężkie obliczenia** — przetwarzanie obrazów, generowanie PDF
+- **Zadania długotrwałe** — operacje wsadowe, duże migracje baz danych
+- **Zależności tylko dla Node.js** — cokolwiek importuje `fs`, `child_process` itp.
+
+## Spektrum renderowania
+
+W 2026 pytanie nie brzmi "SSR czy SSG?". Chodzi o dobór właściwej strategii renderowania dla każdej trasy, każdego komponentu, a nawet każdej sekcji strony.
+
+```
+Static ──── ISR ──── SSR ──── Streaming ──── Edge
+  │          │        │          │              │
+  │          │        │          │              │
+ Czas       Build +   Czas      Żądanie +      Żądanie na
+ builda     okresowa  żądania   progresywne    węźle CDN
+            rewalid.            fragmenty HTML  edge
+  │          │        │          │              │
+ Najszybszy Szybki +  Treść     Dynamiczna +   Dynamiczna +
+ TTFB       świeże    dynam.    odczuwalna     niskie opóźn.
+            dane                szybkość        globalnie
+```
+
+Prawdziwy przełom to **Partial Prerendering (PPR)**. Pozwala łączyć treść statyczną i dynamiczną w pojedynczej trasie:
+
+```tsx
+// app/products/[id]/page.tsx
+import { Suspense } from 'react';
+
+export default async function ProductPage({ params }: { params: { id: string } }) {
+  const product = await getProduct(params.id); // Statycznie w czasie builda (cache)
+
+  return (
+    <div>
+      {/* Ta część jest prerenderowana jako statyczny HTML */}
+      <ProductHeader product={product} />
+      <ProductDescription product={product} />
+
+      {/* Ta część streamuje się dynamicznie */}
+      <Suspense fallback={<PriceSkeleton />}>
+        <DynamicPricing productId={product.id} />
+      </Suspense>
+
+      <Suspense fallback={<ReviewsSkeleton />}>
+        <LiveReviews productId={product.id} />
+      </Suspense>
+    </div>
+  );
+}
+```
+
+Statyczna powłoka dociera natychmiast. Sekcje dynamiczne streamują się w miarę rozwiązywania. Użytkownicy widzą treść od razu, a strona stopniowo się wzbogaca. To wzorzec architektoniczny, którego używam w każdym projekcie e-commerce i mocno nasyconym treścią.
+
+## Wzorce pobierania danych, które naprawdę działają
+
+Zapomnij o `useEffect` do pobierania danych. Zapomnij o `getServerSideProps`. Oto co działa w 2026:
+
+### Wzorzec 1: Równoległe pobieranie danych
+
+```tsx
+// app/dashboard/page.tsx
+export default async function Dashboard() {
+  // Odpal wszystkie żądania jednocześnie — nie awaituj sekwencyjnie!
+  const [user, metrics, notifications, recentActivity] = await Promise.all([
+    getUser(),
+    getMetrics(),
+    getNotifications(),
+    getRecentActivity(),
+  ]);
+
+  return (
+    <div>
+      <UserHeader user={user} />
+      <MetricsGrid metrics={metrics} />
+      <NotificationBar notifications={notifications} />
+      <ActivityFeed activity={recentActivity} />
+    </div>
+  );
+}
+```
+
+### Wzorzec 2: Streaming z granicami Suspense
+
+```tsx
+// Gdy część danych jest wolna, nie blokuj całej strony
+export default async function Dashboard() {
+  const user = await getUser(); // Szybkie — potrzebne do layoutu
+
+  return (
+    <div>
+      <UserHeader user={user} />
+
+      <Suspense fallback={<MetricsSkeleton />}>
+        <MetricsSection />  {/* Pobiera własne dane, streamuje gdy gotowe */}
+      </Suspense>
+
+      <Suspense fallback={<ActivitySkeleton />}>
+        <ActivitySection />  {/* Niezależny strumień */}
+      </Suspense>
+    </div>
+  );
+}
+
+// Każda sekcja to własny asynchroniczny Server Component
+async function MetricsSection() {
+  const metrics = await getMetrics(); // Wolne API — 800 ms
+  return <MetricsGrid metrics={metrics} />;
+}
+```
+
+### Wzorzec 3: Server Actions do mutacji
+
+```tsx
+// app/actions/cart.ts
+'use server';
+
+import { revalidatePath } from 'next/cache';
+import { db } from '@/lib/database';
+
+export async function addToCart(productId: string, quantity: number) {
+  const userId = await getCurrentUserId();
+
+  await db.cartItems.upsert({
+    where: { userId_productId: { userId, productId } },
+    update: { quantity: { increment: quantity } },
+    create: { userId, productId, quantity },
+  });
+
+  revalidatePath('/cart');
+}
+```
+
+```tsx
+// components/AddToCartButton.tsx
+'use client';
+
+import { addToCart } from '@/app/actions/cart';
+import { useTransition } from 'react';
+
+export function AddToCartButton({ productId }: { productId: string }) {
+  const [isPending, startTransition] = useTransition();
+
+  return (
+    <button
+      disabled={isPending}
+      onClick={() => startTransition(() => addToCart(productId, 1))}
+      className="bg-blue-600 text-white px-4 py-2 rounded disabled:opacity-50"
+    >
+      {isPending ? 'Adding...' : 'Add to Cart'}
+    </button>
+  );
+}
+```
+
+Żadnej trasy API. Żadnego wywołania fetch. Type-safe od kliknięcia przycisku po bazę danych. To wzorzec, który sprawił, że zakochałem się w modelu Server Components.
+
+## Strategie cache'owania i pułapki
+
+Cache'owanie w Next.js jest potężne, ale potrafi Cię ugryźć, jeśli nie działasz świadomie. Oto mój model mentalny:
+
+```tsx
+// 1. Dane statyczne — cache na zawsze, rewalidacja przy deployu
+const posts = await fetch('https://api.cms.com/posts', {
+  cache: 'force-cache',  // Zachowanie domyślne
+});
+
+// 2. Rewalidacja czasowa — wystarczająco świeże dla większości treści
+const products = await fetch('https://api.store.com/products', {
+  next: { revalidate: 3600 },  // Rewalidacja co godzinę
+});
+
+// 3. Bez cache — zawsze świeże, zawsze wolne
+const stockPrice = await fetch('https://api.finance.com/price/AAPL', {
+  cache: 'no-store',  // Każde żądanie trafia do origin
+});
+
+// 4. Rewalidacja na żądanie — złoty środek
+// W handlerze webhooka lub Server Action:
+import { revalidateTag } from 'next/cache';
+
+export async function handleCMSWebhook(payload: WebhookPayload) {
+  revalidateTag('blog-posts');  // Rewaliduj tylko to, co się zmieniło
+}
+
+// Otaguj swoje fetche:
+const posts = await fetch('https://api.cms.com/posts', {
+  next: { tags: ['blog-posts'] },
+});
+```
+
+**Największa pułapka:** przypadkowe cache'owanie danych specyficznych dla użytkownika. Jeśli Twój Server Component pobiera dane użytkownika bez właściwej segmentacji cache, użytkownik A może zobaczyć dashboard użytkownika B. Zawsze używaj `cookies()` lub `headers()`, aby wyłączyć trasy dynamiczne ze statycznego cache'owania, albo `cache: 'no-store'` dla danych spersonalizowanych.
+
+## Ścieżka migracji: od SPA do server-first (przyspieszona przez AI)
+
+Robiłem tę migrację wielokrotnie. Z parowaniem programistycznym z AI to, co kiedyś było projektem na 3 miesiące, dziś zajmuje 2-3 tygodnie. Oto playbook:
+
+**Faza 1: Koegzystencja (dzień 1-2)**
+- AI szkieletuje strukturę App Routera obok istniejącego Pages Routera
+- Przenieś współdzielone narzędzia i typy — Claude Code obsługuje mechaniczny refactoring
+- Zachowaj działające trasy SPA — nic nie psuj
+
+**Faza 2: Najpierw liście (dzień 3-7)**
+- Zacznij od stron-liści — proste strony treściowe, marketingowe, blog
+- Używam AI do masowej konwersji pobierania danych przez `useEffect` na asynchroniczne Server Components — obsługuje dopasowywanie wzorców, ja przeglądam przypadki brzegowe
+- Przenieś współdzielone komponenty do katalogu `components/`, AI wskazuje, które potrzebują `'use client'` na podstawie analizy użycia
+
+**Faza 3: Strony kluczowe (tydzień 2-3)**
+- Zajmij się głównymi stronami aplikacji — dashboard, ustawienia, strony produktów
+- Analiza wspierana przez AI wskazuje, które trasy API są używane wyłącznie po stronie serwera i można je zastąpić bezpośrednim dostępem do DB w Server Components
+- Zaimplementuj streaming dla złożonych stron
+
+**Faza 4: Sprzątanie (dzień 1-2)**
+- Usuń pliki Pages Routera
+- Skasuj zbędne trasy API
+- AI wskazuje nieużywane zarządzanie stanem po stronie klienta — zdziwisz się, ile Reduxa/Zustanda znika
+
+Kluczowy wniosek z mojej migracji 200 tys. linii kodu: **warstwa zarządzania stanem po stronie klienta drastycznie się kurczy.** Przeszliśmy z 40+ slice'ów Reduxa do 6. Większość "stanu" to w rzeczywistości "cache'owane dane serwerowe" — a Server Components obsługują to natywnie.
+
+Drugi wniosek: **AI sprawia, że migracja staje się wykonalna dla zespołów, które nigdy nie podjęłyby jej ręcznie.** Dopasowywanie wzorców wymagane do konwersji setek komponentów z renderowania klienckiego na serwerowe to dokładnie to, w czym AI się wyróżnia. Używam Claude Code do analizy każdego komponentu, ustalenia, czy potrzebuje interaktywności po stronie klienta, i wygenerowania odpowiednika w postaci Server Componentu. Następnie przeglądam, testuję i wdrażam. To, co zajęłoby zespołowi 4 inżynierów trzy miesiące, robię w tygodnie z pomocą AI.
+
+## Zyski wydajnościowe: prawdziwe liczby
+
+Oto rzeczywiste metryki z trzech produkcyjnych migracji, którymi kierowałem:
+
+```
+┌────────────────────────┬────────────┬────────────┬───────────┐
+│ Metryka                │ SPA przed  │ RSC po     │ Zmiana    │
+├────────────────────────┼────────────┼────────────┼───────────┤
+│ Time to First Byte     │ 380ms      │ 45ms       │ -88%      │
+│ First Contentful Paint │ 2.1s       │ 0.6s       │ -71%      │
+│ Largest Contentful P.  │ 3.8s       │ 1.2s       │ -68%      │
+│ Całkowity bundle JS    │ 487KB      │ 142KB      │ -71%      │
+│ Time to Interactive    │ 4.2s       │ 1.4s       │ -67%      │
+│ Wynik Lighthouse       │ 62         │ 94         │ +52%      │
+│ Core Web Vitals Pass   │ Nie        │ Tak        │ --        │
+└────────────────────────┴────────────┴────────────┴───────────┘
+```
+
+Redukcja bundle'a JavaScriptu to liczba nagłówkowa, ale to przy TTFB użytkownicy naprawdę czują różnicę. Przejście z 380 ms do 45 ms dzięki Edge Runtime oznacza, że strona zaczyna się renderować, zanim stare SPA otrzymałoby swój pierwszy bajt.
+
+## Kiedy SPA nadal ma sens
+
+Nie jestem w tym dogmatyczny. SPA nadal wygrywają w konkretnych scenariuszach:
+
+- **Aplikacje offline-first** — PWA, które muszą działać bez sieci. Pomyśl o narzędziach serwisowych w terenie, aplikacjach do notatek.
+- **Narzędzia do współpracy w czasie rzeczywistym** — aplikacje w stylu Figmy, gdzie całe UI jest żywym canvasem. Renderowanie serwerowe dodaje złożoności bez korzyści.
+- **Osadzone widgety** — komponenty żyjące wewnątrz innych aplikacji (czat w stylu Intercomu, osadzone dashboardy).
+- **Aplikacje klasy desktopowej** — złożone IDE, edytory wideo, narzędzia do produkcji muzyki działające w przeglądarce.
+
+Wzorzec: jeśli Twoja aplikacja zachowuje się bardziej jak aplikacja desktopowa niż strona internetowa, SPA może wciąż być właściwym wyborem. Dla wszystkiego innego — stron treściowych, e-commerce, dashboardów, produktów SaaS, stron marketingowych — podejście server-first z Next.js to lepsza architektura w 2026.
+
+## Architektura startowa Next.js na 2026, której używam
+
+Każdy nowy projekt, który zaczynam, ma taką strukturę:
+
+```
+src/
+├── app/
+│   ├── (marketing)/          # Strony publiczne — statyczne, cache'owane na edge
+│   │   ├── page.tsx
+│   │   ├── pricing/
+│   │   └── blog/
+│   ├── (app)/                # Uwierzytelniona aplikacja — dynamiczna, streaming
+│   │   ├── layout.tsx        # Weryfikacja auth, nawigacja
+│   │   ├── dashboard/
+│   │   └── settings/
+│   ├── api/
+│   │   └── webhooks/         # Tylko handlery zewnętrznych webhooków
+│   ├── actions/              # Server Actions — nowa warstwa API
+│   │   ├── auth.ts
+│   │   ├── cart.ts
+│   │   └── user.ts
+│   └── layout.tsx            # Layout główny — providery, fonty
+├── components/
+│   ├── ui/                   # Design system — głównie Client Components
+│   ├── forms/                # Komponenty formularzy — Client Components
+│   └── layouts/              # Prymitywy layoutu — Server Components
+├── lib/
+│   ├── database.ts           # Klient DB
+│   ├── auth.ts               # Narzędzia auth
+│   └── cache.ts              # Helpery i tagi cache
+└── types/
+    └── index.ts
+```
+
+Kluczowe decyzje architektoniczne:
+
+1. **Route Groups** `(marketing)` i `(app)` oddzielają sekcje publiczne i uwierzytelnione, z różnymi layoutami i strategiami cache'owania.
+2. **Server Actions zastępują większość tras API.** Trasy API istnieją tylko dla zewnętrznych webhooków i integracji z podmiotami trzecimi.
+3. **Komponenty są domyślnie Server Components.** Dyrektywa `'use client'` jest przesuwana jak najgłębiej.
+4. **Brak biblioteki do pobierania danych po stronie klienta.** Żadnego React Query, żadnego SWR dla danych serwerowych. Server Components to obsługują. Stan po stronie klienta (stan UI, formularze) korzysta z `useReducer` lub Zustanda — minimalnie.
+
+```tsx
+// app/(app)/layout.tsx — Uwierzytelniony layout ze streamingiem
+import { redirect } from 'next/navigation';
+import { getSession } from '@/lib/auth';
+import { Sidebar } from '@/components/layouts/Sidebar';
+
+export default async function AppLayout({ children }: { children: React.ReactNode }) {
+  const session = await getSession();
+
+  if (!session) {
+    redirect('/login');
+  }
+
+  return (
+    <div className="flex h-screen">
+      <Sidebar user={session.user} />
+      <main className="flex-1 overflow-auto p-6">
+        {children}
+      </main>
+    </div>
+  );
+}
+```
+
+Ta architektura obsługuje 90% projektów, z którymi się spotykam. Jest prosta, szybka i skaluje się od weekendowego projektu po produkcyjną aplikację obsługującą miliony żądań.
+
+Najlepsza część? Z developmentem wspieranym przez AI szkieletuję całą tę architekturę w mniej niż 30 minut. Claude Code generuje route groups, layouty, Server Actions, konfigurację bazy danych i przepływ auth. Swój czas poświęcam na decyzje, które mają znaczenie — strategię cache'owania, modelowanie danych, granice komponentów — a nie na łączenie boilerplate'u.
+
+Pogrzeb SPA dobiegł końca. Nadeszła era server-first. A z AI w procesie pracy budowanie aplikacji webowych nigdy nie było tak szybkie ani tak dobre.
+
+## Źródła i dalsza lektura
+
+### Źródła
+
+- [Next.js Documentation — App Router](https://nextjs.org/docs/app) — Oficjalna dokumentacja architektury App Router
+- [React Server Components RFC](https://github.com/reactjs/rfcs/blob/main/text/0188-server-components.md) — Oryginalny RFC wyjaśniający model RSC
+- [Vercel Edge Runtime](https://vercel.com/docs/functions/runtimes/edge-runtime) — Dokumentacja Edge Runtime i jego ograniczeń
+- [Next.js Caching](https://nextjs.org/docs/app/building-your-application/caching) — Kompleksowy przewodnik po cache'owaniu
+- [Partial Prerendering in Next.js](https://nextjs.org/docs/app/building-your-application/rendering/partial-prerendering) — Przegląd architektury PPR
+
+### Dalsza lektura
+
+- [Patterns for Server Components](https://nextjs.org/docs/app/building-your-application/rendering/composition-patterns) — Wzorce kompozycji dla Server i Client Components
+- [Server Actions and Mutations](https://nextjs.org/docs/app/building-your-application/data-fetching/server-actions-and-mutations) — Wzorce mutacji danych z Server Actions
+- [Web Almanac 2025 — Performance](https://almanac.httparchive.org/) — Ogólnobranżowe benchmarki wydajności
+
+---
+
+~Seb 👊
