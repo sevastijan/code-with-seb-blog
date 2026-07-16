@@ -1,0 +1,369 @@
+---
+title: 'Dynamiczna optymalizacja bundle: jak utrzymać aplikację poniżej 200KB JS'
+date: '2026-03-28'
+category: 'Development'
+tags: ['performance', 'javascript', 'nextjs', 'webpack', 'optimization']
+draft: false
+featured: false
+author: 'Sebastian'
+enSlug: 'dynamic-bundle-optimization-under-200kb-guide'
+excerpt: 'Każdy KB JavaScriptu to 1ms parsowania na mobile. Przy 500KB aplikacja parsuje się pół sekundy, zanim cokolwiek się uruchomi. Oto jak zejść poniżej 200KB.'
+---
+
+W zeszłym miesiącu uruchomiłem `@next/bundle-analyzer` na aplikacji Next.js jednego z klientów. First load JS ważył 847KB po gzipie. Na średniej klasy telefonie z Androidem aplikacja potrzebowała 4,2 sekundy, żeby stać się interaktywna — nie dlatego, że serwer był wolny, ale dlatego, że przeglądarka potrzebowała 4 sekund na pobranie, sparsowanie i wykonanie prawie megabajta JavaScriptu.
+
+Winowajcą nie był kod aplikacji. Były to zależności: pełna biblioteka lodash (72KB po gzipie) zaimportowana dla jednej funkcji `debounce`. Moment.js (66KB) do sformatowania jednej daty. Biblioteka ikon ładująca wszystkie 3000 ikon, gdy używanych było tylko 12. Biblioteka do wykresów importowana na stronie głównej, mimo że wykresy istniały wyłącznie na stronie dashboardu.
+
+Po dniu optymalizacji — wymianie zależności, dodaniu dynamic imports, naprawieniu importów z barrel files — bundle ważył 178KB. Te same funkcje, ta sama funkcjonalność, o 79% mniej JavaScriptu. Aplikacja stawała się interaktywna w 1,1 sekundy.
+
+To nie jest wyjątek. Każda aplikacja, którą audytuję, ma 200-400KB zmarnowanego JavaScriptu. Oto systematyczne podejście do znajdowania go i eliminowania.
+
+## Dlaczego 200KB ma znaczenie
+
+Każdy kilobajt JavaScriptu ma koszt wykraczający poza rozmiar pobierania:
+
+1. **Pobranie** — nawet z gzipem 500KB zajmuje 1-3 sekundy na 3G
+2. **Parsowanie** — V8 musi sparsować każdy bajt JavaScriptu, zanim go wykona. Na mobile parsowanie 1KB JS zajmuje mniej więcej 1ms
+3. **Wykonanie** — uruchamia się kod inicjalizacyjny: ewaluacja modułów, efekty uboczne, obliczenia na najwyższym poziomie
+4. **Pamięć** — sparsowane AST i skompilowany kod zajmują pamięć sterty
+
+```
+500KB JS po gzipie na średniej klasy mobile:
+  Pobranie (3G):  ~2.5s
+  Parsowanie:     ~0.5s
+  Wykonanie:      ~0.8s
+  Łączny TBI:     ~3.8s
+
+200KB JS po gzipie na średniej klasy mobile:
+  Pobranie (3G):  ~1.0s
+  Parsowanie:     ~0.2s
+  Wykonanie:      ~0.3s
+  Łączny TBI:     ~1.5s
+```
+
+Rekomendacja Google: utrzymuj łączny JS **poniżej 300KB** dla dobrych Core Web Vitals. Mój cel to **poniżej 200KB** dla first load, bo zostawia zapas na rozwój.
+
+## Krok 1: Zmierz to, co masz
+
+Nie zoptymalizujesz tego, czego nie widzisz. Zacznij od `@next/bundle-analyzer`:
+
+```bash
+npm install -D @next/bundle-analyzer
+```
+
+```javascript
+// next.config.mjs
+import withBundleAnalyzer from '@next/bundle-analyzer';
+
+const config = withBundleAnalyzer({
+  enabled: process.env.ANALYZE === 'true',
+})({
+  // twoja konfiguracja next
+});
+
+export default config;
+```
+
+```bash
+ANALYZE=true npm run build
+# Otwiera trzy interaktywne wizualizacje treemap
+```
+
+Treemapa pokazuje każdy moduł i jego rozmiar. Szukaj:
+- **Dużych prostokątów** — największych zależności
+- **Duplikatów** — tej samej biblioteki pojawiającej się w wielu chunkach
+- **Nieoczekiwanych elementów** — kodu wyłącznie serwerowego w bundlach klienckich
+
+### Integracja z CI za pomocą size-limit
+
+Wychwytuj regresje automatycznie:
+
+```bash
+npm install -D size-limit @size-limit/preset-app
+```
+
+```json
+// package.json
+{
+  "size-limit": [
+    {
+      "path": ".next/static/**/*.js",
+      "limit": "200 kB",
+      "gzip": true
+    }
+  ],
+  "scripts": {
+    "size": "size-limit",
+    "size:check": "size-limit --check"
+  }
+}
+```
+
+Uruchamiaj `npm run size:check` w CI. Jeśli bundle przekroczy 200KB, build się nie powiedzie.
+
+## Krok 2: Wyeliminuj ciężkie zależności
+
+Oto najgorsi winowajcy, których widzę w każdym audycie:
+
+### Moment.js → date-fns lub dayjs
+
+```typescript
+// PRZED: 66KB po gzipie dla jednej funkcji
+import moment from 'moment';
+const formatted = moment(date).format('MMM D, YYYY');
+
+// PO: 2KB po gzipie (tree-shakeable)
+import { format } from 'date-fns';
+const formatted = format(date, 'MMM d, yyyy');
+
+// Albo jeszcze mniej: dayjs, 2KB w całości
+import dayjs from 'dayjs';
+const formatted = dayjs(date).format('MMM D, YYYY');
+```
+
+**Oszczędność: ~64KB po gzipie**
+
+### Pełny lodash → indywidualne importy lub alternatywy
+
+```typescript
+// PRZED: 72KB po gzipie
+import _ from 'lodash';
+const result = _.debounce(fn, 300);
+
+// PO: 1KB po gzipie
+import debounce from 'lodash/debounce';
+const result = debounce(fn, 300);
+
+// NAJLEPIEJ: natywne lub malutkie alternatywy
+// debounce — napisz sam (10 linii)
+function debounce<T extends (...args: any[]) => any>(fn: T, ms: number) {
+  let timer: ReturnType<typeof setTimeout>;
+  return (...args: Parameters<T>) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn(...args), ms);
+  };
+}
+```
+
+**Oszczędność: ~70KB po gzipie**
+
+### Biblioteki ikon: importuj pojedynczo
+
+```typescript
+// PRZED: importuje WSZYSTKIE ikony (setki KB)
+import { FaHome, FaUser, FaCog } from 'react-icons/fa';
+
+// PO: importuj tylko to, czego potrzebujesz (Next.js optimizePackageImports)
+// next.config.mjs
+{
+  experimental: {
+    optimizePackageImports: ['react-icons', 'lucide-react', '@heroicons/react'],
+  }
+}
+// Teraz `import { Home } from 'lucide-react'` bundluje tylko ikonę Home
+```
+
+### Biblioteki wykresów: dynamic import
+
+Wykresy są ciężkie (recharts: ~50KB, chart.js: ~60KB) i zwykle potrzebne tylko na jednej stronie:
+
+```typescript
+// PRZED: ładowane na każdej stronie
+import { LineChart, Line, XAxis, YAxis } from 'recharts';
+
+// PO: ładowane tylko, gdy komponent wykresu jest montowany
+import dynamic from 'next/dynamic';
+
+const RevenueChart = dynamic(
+  () => import('@/components/RevenueChart'),
+  {
+    loading: () => <Skeleton className="h-80" />,
+    ssr: false, // Wykresy często nie potrzebują SSR
+  }
+);
+```
+
+## Krok 3: Code splitting z dynamic imports
+
+Podział oparty na trasach dzieje się automatycznie w Next.js. Ale wewnątrz trasy potrzebujesz ręcznego podziału:
+
+### Ciężkie komponenty
+
+```typescript
+// Modale, szuflady i dialogi — ładowane przy interakcji
+const SettingsDialog = dynamic(() => import('@/components/SettingsDialog'));
+const ExportModal = dynamic(() => import('@/components/ExportModal'));
+
+function Dashboard() {
+  const [showSettings, setShowSettings] = useState(false);
+
+  return (
+    <div>
+      <button onClick={() => setShowSettings(true)}>Settings</button>
+      {showSettings && <SettingsDialog onClose={() => setShowSettings(false)} />}
+    </div>
+  );
+}
+```
+
+### Podział oparty na funkcjonalnościach
+
+```typescript
+// Funkcje administracyjne tylko dla administratorów
+const AdminPanel = dynamic(() => import('@/components/AdminPanel'));
+
+function App({ user }: { user: User }) {
+  return (
+    <div>
+      <Dashboard />
+      {user.role === 'admin' && <AdminPanel />}
+    </div>
+  );
+}
+```
+
+### Biblioteki firm trzecich
+
+```typescript
+// Syntax highlighter — tylko gdy bloki kodu są na ekranie
+const SyntaxHighlighter = dynamic(
+  () => import('react-syntax-highlighter').then((mod) => mod.Prism),
+  { ssr: false }
+);
+
+// Podgląd PDF — tylko gdy użytkownik kliknie "View PDF"
+const PDFViewer = dynamic(() => import('@/components/PDFViewer'), {
+  loading: () => <p>Loading PDF viewer...</p>,
+  ssr: false,
+});
+```
+
+## Krok 4: Tree shaking — jak faktycznie sprawić, by działał
+
+Tree shaking usuwa nieużywane eksporty. Ale działa tylko wtedy, gdy:
+
+1. **Używasz modułów ES** (import/export, nie require)
+2. **Pakiet to wspiera** (ma `"sideEffects": false` w package.json)
+3. **Nie importujesz z barrel file** (głównego index.ts, który re-eksportuje wszystko)
+
+### Problem z barrel file
+
+```typescript
+// packages/utils/index.ts (barrel file)
+export { debounce } from './debounce';
+export { throttle } from './throttle';
+export { deepClone } from './deep-clone';
+export { formatCurrency } from './format-currency';
+// ... jeszcze 50 eksportów
+
+// Twój komponent
+import { debounce } from '@/utils'; // Importuje barrel file
+// Bundler może dołączyć WSZYSTKIE 50 eksportów, jeśli tree shaking nie udowodni, że są nieużywane
+```
+
+**Rozwiązanie:** importuj bezpośrednio z pliku źródłowego:
+
+```typescript
+import { debounce } from '@/utils/debounce';
+```
+
+Albo użyj `optimizePackageImports` w Next.js:
+
+```javascript
+// next.config.mjs
+{
+  experimental: {
+    optimizePackageImports: [
+      'lucide-react',
+      'date-fns',
+      '@radix-ui/react-icons',
+      'react-icons',
+    ],
+  }
+}
+```
+
+## Krok 5: Analizuj i zapobiegaj regresjom
+
+### Workflow budżetu bundle
+
+```yaml
+# .github/workflows/bundle.yml
+name: Bundle Size Check
+
+on: pull_request
+
+jobs:
+  bundle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: 'npm' }
+      - run: npm ci
+      - run: npm run build
+
+      - uses: andresz1/size-limit-action@v1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          # Publikuje komentarz na PR pokazujący różnicę rozmiaru
+```
+
+To publikuje komentarz na każdym PR pokazujący zmianę rozmiaru bundle:
+
+```
+📦 Size Limit Report
+
+Package         | Size     | Change  | Limit
+----------------|----------|---------|------
+First Load JS   | 182 kB   | +3.2 kB | 200 kB  ✅
+```
+
+## Ściąga typowych winowajców
+
+| Zależność | Typowy rozmiar | Alternatywa | Oszczędność |
+|-----------|-------------|-------------|---------|
+| moment.js | 66 KB | date-fns / dayjs | ~64 KB |
+| lodash (pełny) | 72 KB | indywidualne importy | ~70 KB |
+| chart.js | 60 KB | dynamic import | ~60 KB* |
+| recharts | 50 KB | dynamic import | ~50 KB* |
+| react-icons (wszystkie) | 40+ KB | optimizePackageImports | ~35 KB |
+| @mui/material | 80+ KB | bezpośrednie importy komponentów | ~60 KB |
+| highlight.js | 35 KB | dynamic import / Prism | ~30 KB |
+| framer-motion | 30 KB | animacje CSS / dynamic | ~25 KB |
+| axios | 13 KB | natywny fetch | 13 KB |
+
+*Dynamic imports nie redukują łącznego JS — odraczają go do momentu, gdy jest potrzebny, poprawiając first load.
+
+## Praktyczne wnioski
+
+1. **Ustaw budżet: 200KB po gzipie dla first load JS.** Egzekwuj go w CI za pomocą size-limit.
+2. **Uruchamiaj bundle analyzer kwartalnie.** Zależności wkradają się niepostrzeżenie. Nowe importy sumują się.
+3. **Zamień moment.js na date-fns lub dayjs.** Samo to oszczędza 64KB.
+4. **Importuj funkcje lodash pojedynczo.** Albo napisz te 5 funkcji, których faktycznie używasz.
+5. **Ładuj ciężkie komponenty przez dynamic import** — wykresy, edytory, modale, panele administracyjne.
+6. **Używaj `optimizePackageImports`** w Next.js dla bibliotek ikon i narzędziowych.
+7. **Unikaj importów z barrel files** — importuj z konkretnego modułu, nie z indeksu.
+8. **Preferuj natywne API** — `fetch` zamiast axios, `Intl.DateTimeFormat` zamiast bibliotek dat, `structuredClone` zamiast lodash.cloneDeep.
+9. **Sprawdzaj każdą nową zależność** na [bundlephobia.com](https://bundlephobia.com) przed instalacją.
+10. **Pamiętaj: każdy KB kosztuje 1ms na mobile.** 200KB = 200ms czasu parsowania. 800KB = prawie sekunda samego parsowania.
+
+Optymalizacja bundle nie jest zadaniem jednorazowym — to dyscyplina. Ustaw budżet, egzekwuj go w CI, audytuj kwartalnie i traktuj każdą nową zależność jako koszt, a nie tylko wygodę.
+
+## References
+
+### Źródła
+- [Next.js: Package Bundling Guide](https://nextjs.org/docs/app/guides/package-bundling) — oficjalny przewodnik po optymalizacji
+- [Smashing Magazine: Improving Bundle Performance with Code-Splitting](https://www.smashingmagazine.com/2022/02/javascript-bundle-performance-code-splitting/) — kompleksowe wzorce code splittingu
+- [Codecov: 8 Ways to Optimize JavaScript Bundle Size](https://about.codecov.io/blog/8-ways-to-optimize-your-javascript-bundle-size/) — praktyczne techniki optymalizacji
+- [FrontendTools: JS Bundle Size Guide + Webpack Optimization](https://www.frontendtools.tech/blog/reduce-javascript-bundle-size-2025) — wzorce integracji z CI
+- [NamasteDev: Tree-Shaking and Code-Splitting](https://namastedev.com/blog/tree-shaking-and-code-splitting-real-world-bundle-size-reductions/) — studia przypadków realnych redukcji
+
+### Dalsza lektura
+- [CatchMetrics: Optimizing Next.js Performance](https://www.catchmetrics.io/blog/optimizing-nextjs-performance-bundles-lazy-loading-and-images) — bundle, lazy loading i obrazy
+- [Steve Kinney: Bundle Analysis Deep Dive](https://stevekinney.com/courses/react-performance/bundle-analysis-deep-dive) — interaktywny przewodnik po analizie
+- [Better Stack: Moment.js Alternatives](https://betterstack.com/community/guides/scaling-nodejs/momentjs-alternatives/) — porównanie bibliotek dat
+
+---
+
+~Seb 👊

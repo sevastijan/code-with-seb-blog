@@ -1,0 +1,316 @@
+---
+title: 'Modularny design funkcji w React: jak budować systemy frontendowe typu plug-and-play'
+date: '2026-03-28'
+category: 'Architecture'
+tags: ['react', 'architecture', 'patterns', 'typescript', 'scalability']
+draft: false
+featured: false
+author: 'Sebastian'
+enSlug: 'modular-feature-design-react-plug-and-play'
+excerpt: 'Większość kodu React organizuje się według typu plików — components/, hooks/, utils/. To nie skaluje się. Moduły oparte na funkcjach rozwiązują ten problem.'
+---
+
+Otwórz dowolny duży projekt React, a znajdziesz tę samą organizacyjną katastrofę:
+
+```
+src/
+├── components/     ← 200 plików, płaska lista, bez grupowania
+├── hooks/          ← 80 hooków, część używana przez jeden komponent
+├── utils/          ← Szuflada na wszystko, czyli śmietnik projektu
+├── services/       ← Wywołania API porozrzucane wszędzie
+├── types/          ← Pliki typów, których nikt nie utrzymuje
+└── styles/         ← Moduły CSS bez żadnej konwencji nazewnictwa
+```
+
+Trzeba dodać nową funkcję "notifications"? Utwórz pliki w 6 różnych katalogach. Trzeba usunąć tę funkcję? Powodzenia w odnajdywaniu wszystkich kawałków.
+
+To jest **organizacja według typu** — grupowanie według typu pliku (components, hooks, utils) zamiast według domeny (notifications, checkout, analytics). Sprawdza się w małych aplikacjach. Rozpada się przy skali.
+
+Alternatywa: **moduły oparte na funkcjach.** Każda funkcja to samodzielny katalog, który jest właścicielem wszystkiego, czego potrzebuje — komponentów, hooków, wywołań API, typów, testów i zarządzania stanem. Dodanie funkcji to dodanie folderu. Usunięcie funkcji to usunięcie folderu.
+
+## Struktura modułu
+
+```
+src/
+├── features/
+│   ├── auth/
+│   │   ├── components/
+│   │   │   ├── LoginForm.tsx
+│   │   │   ├── SignupForm.tsx
+│   │   │   └── AuthGuard.tsx
+│   │   ├── hooks/
+│   │   │   ├── useAuth.ts
+│   │   │   └── useSession.ts
+│   │   ├── api/
+│   │   │   └── auth-api.ts
+│   │   ├── types/
+│   │   │   └── auth.types.ts
+│   │   ├── stores/
+│   │   │   └── auth-store.ts
+│   │   └── index.ts            ← Publiczne API
+│   │
+│   ├── notifications/
+│   │   ├── components/
+│   │   │   ├── NotificationBell.tsx
+│   │   │   ├── NotificationList.tsx
+│   │   │   └── NotificationToast.tsx
+│   │   ├── hooks/
+│   │   │   ├── useNotifications.ts
+│   │   │   └── useNotificationSettings.ts
+│   │   ├── api/
+│   │   │   └── notifications-api.ts
+│   │   ├── types/
+│   │   │   └── notification.types.ts
+│   │   └── index.ts
+│   │
+│   ├── checkout/
+│   │   ├── components/
+│   │   ├── hooks/
+│   │   ├── machines/           ← Maszyna XState dla przepływu checkout
+│   │   ├── api/
+│   │   ├── types/
+│   │   └── index.ts
+│   │
+│   └── analytics/
+│       ├── components/
+│       ├── hooks/
+│       ├── api/
+│       ├── types/
+│       └── index.ts
+│
+├── shared/                     ← Kod współdzielony między funkcjami
+│   ├── components/             ← Komponenty design systemu
+│   │   ├── Button.tsx
+│   │   ├── Card.tsx
+│   │   └── index.ts
+│   ├── hooks/                  ← Generyczne, wielokrotnego użytku hooki
+│   │   ├── useDebounce.ts
+│   │   └── useMediaQuery.ts
+│   ├── utils/                  ← Czyste funkcje pomocnicze
+│   │   ├── format-date.ts
+│   │   └── cn.ts
+│   └── types/                  ← Współdzielone definicje typów
+│       └── common.types.ts
+│
+└── app/                        ← Strony Next.js App Router
+    ├── page.tsx                ← Komponuje funkcje
+    ├── dashboard/
+    │   └── page.tsx
+    └── checkout/
+        └── page.tsx
+```
+
+## Wzorzec publicznego API
+
+Każda funkcja eksportuje **publiczne API** przez swój plik `index.ts`. Zewnętrzni konsumenci importują wyłącznie z tego pliku:
+
+```typescript
+// features/notifications/index.ts — PUBLICZNE API
+// Komponenty
+export { NotificationBell } from './components/NotificationBell';
+export { NotificationList } from './components/NotificationList';
+export { NotificationToast } from './components/NotificationToast';
+
+// Hooki
+export { useNotifications } from './hooks/useNotifications';
+
+// Typy
+export type { Notification, NotificationPreferences } from './types/notification.types';
+
+// NIE eksportuj:
+// - Wewnętrznych komponentów (NotificationItem, NotificationBadge)
+// - Wewnętrznych hooków (useNotificationPolling)
+// - Funkcji API (fetchNotifications) — dostępne przez hooki
+// - Wnętrza store'a (notificationStore)
+```
+
+```typescript
+// app/dashboard/page.tsx — konsumowanie funkcji
+import { NotificationBell, useNotifications } from '@/features/notifications';
+import { MetricsGrid } from '@/features/analytics';
+import { UserMenu } from '@/features/auth';
+
+export default function DashboardPage() {
+  return (
+    <div>
+      <header>
+        <NotificationBell />
+        <UserMenu />
+      </header>
+      <MetricsGrid />
+    </div>
+  );
+}
+```
+
+### Reguła zależności
+
+```
+app/ (strony) ──→ features/ ──→ shared/
+                     │
+                     ├── features/auth ──→ shared/
+                     ├── features/checkout ──→ shared/ + features/auth (jawna zależność)
+                     └── features/notifications ──→ shared/
+
+NIGDY: features/auth ──→ features/checkout (cykliczne lub ukryte sprzężenie)
+NIGDY: shared/ ──→ features/ (shared nie może wiedzieć o funkcjach)
+```
+
+Jeśli funkcja A potrzebuje czegoś z funkcji B, są dwie opcje:
+1. **Przenieś współdzielony kod do `shared/`** — jeśli jest naprawdę generyczny
+2. **Funkcja A jawnie importuje z publicznego API funkcji B** — jeśli jest specyficzny dla domeny
+
+## Szablon modułu funkcji
+
+Dla nowych funkcji używam takiego szkieletu:
+
+```typescript
+// features/[feature-name]/types/[feature].types.ts
+export interface Feature {
+  id: string;
+  // ... pola specyficzne dla domeny
+}
+
+export interface FeatureFilters {
+  // ... opcje filtrowania
+}
+```
+
+```typescript
+// features/[feature-name]/api/[feature]-api.ts
+import type { Feature, FeatureFilters } from '../types/[feature].types';
+
+const BASE_URL = '/api/[feature]';
+
+export const featureApi = {
+  list: async (filters?: FeatureFilters): Promise<Feature[]> => {
+    const params = new URLSearchParams(filters as Record<string, string>);
+    const res = await fetch(`${BASE_URL}?${params}`);
+    if (!res.ok) throw new Error('Failed to fetch');
+    return res.json();
+  },
+
+  getById: async (id: string): Promise<Feature> => {
+    const res = await fetch(`${BASE_URL}/${id}`);
+    if (!res.ok) throw new Error('Not found');
+    return res.json();
+  },
+
+  create: async (data: Omit<Feature, 'id'>): Promise<Feature> => {
+    const res = await fetch(BASE_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) throw new Error('Create failed');
+    return res.json();
+  },
+};
+```
+
+```typescript
+// features/[feature-name]/hooks/use[Feature].ts
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { featureApi } from '../api/[feature]-api';
+
+export function useFeatureList(filters?: FeatureFilters) {
+  return useQuery({
+    queryKey: ['[feature]', 'list', filters],
+    queryFn: () => featureApi.list(filters),
+  });
+}
+
+export function useCreateFeature() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: featureApi.create,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['[feature]'] });
+    },
+  });
+}
+```
+
+## Testowanie modułów funkcji
+
+Każda funkcja jest niezależnie testowalna, ponieważ jest właścicielem swoich zależności:
+
+```typescript
+// features/notifications/__tests__/NotificationBell.test.tsx
+import { render, screen } from '@testing-library/react';
+import { NotificationBell } from '../components/NotificationBell';
+
+describe('NotificationBell', () => {
+  it('shows badge with unread count', () => {
+    render(<NotificationBell unreadCount={5} />);
+    expect(screen.getByText('5')).toBeInTheDocument();
+  });
+
+  it('hides badge when no unread notifications', () => {
+    render(<NotificationBell unreadCount={0} />);
+    expect(screen.queryByTestId('badge')).not.toBeInTheDocument();
+  });
+});
+
+// features/notifications/__tests__/useNotifications.test.ts
+import { renderHook, waitFor } from '@testing-library/react';
+import { useNotifications } from '../hooks/useNotifications';
+import { createQueryWrapper } from '@/test-utils';
+
+describe('useNotifications', () => {
+  it('fetches and returns notifications', async () => {
+    const { result } = renderHook(() => useNotifications(), {
+      wrapper: createQueryWrapper(),
+    });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data).toHaveLength(3);
+  });
+});
+```
+
+## Łączenie z Feature-Sliced Design
+
+Aby uzyskać jeszcze więcej struktury, połącz modularne funkcje z [Feature-Sliced Design (FSD)](/blog/from-components-to-systems-scalable-frontend-with-atomiec-design), który dodaje warstwy abstrakcji:
+
+```
+src/
+├── app/        ← Strony, routing, providery
+├── widgets/    ← Złożone, komponowane bloki UI (nagłówek, sidebar)
+├── features/   ← Interakcje użytkownika (add-to-cart, login)
+├── entities/   ← Encje biznesowe (user, product, order)
+├── shared/     ← Wielokrotnego użytku infrastruktura (UI kit, klient API)
+```
+
+FSD dodaje jawne warstwy między funkcjami a encjami, co pomaga przy skali, ale wprowadza narzut dla mniejszych zespołów.
+
+## Praktyczne wnioski
+
+1. **Organizuj według funkcji, nie według typu pliku.** Każda funkcja jest właścicielem swoich komponentów, hooków, API, typów i testów.
+2. **Publiczne API przez index.ts.** Zewnętrzni konsumenci importują wyłącznie z korzenia funkcji — nigdy z głębokich ścieżek.
+3. **Kierunek zależności: app → features → shared.** Żadnych importów między funkcjami, chyba że jawne.
+4. **Dodanie funkcji = dodanie folderu.** Usunięcie funkcji = usunięcie folderu.
+5. **Stosuj wzorzec "hook jako kontener"** — hooki są właścicielami pobierania danych, komponenty renderowania.
+6. **Kod współdzielony trafia do `shared/`** — design system, funkcje pomocnicze, generyczne hooki.
+7. **Każda funkcja jest niezależnie testowalna** — testy leżą obok kodu, który testują.
+8. **Twórz nowe funkcje z szablonu** — spójna struktura zmniejsza obciążenie poznawcze.
+9. **Wymuszaj granice za pomocą ESLint** lub [reguł granic modułów Nx](/blog/monorepo-turborepo-nx-react-nextjs-guide), aby zapobiegać naruszeniom.
+10. **Zacznij od funkcji, przejdź do FSD**, jeśli wyrośniesz z prostszej struktury.
+
+Najlepsza architektura to taka, w której nowy programista potrafi znaleźć dowolny fragment kodu, wiedząc jedynie, do jakiej funkcji należy. Modularny design funkcji to umożliwia.
+
+## Źródła i dalsza lektura
+
+### Źródła
+- [Feature-Sliced Design: Frontend Monorepo Explained](https://feature-sliced.design/blog/frontend-monorepo-explained) — metodologia FSD
+- [Toptal: Guide to Monorepos for Front-end Code](https://www.toptal.com/front-end/guide-to-monorepos) — wzorce architektury opartej na funkcjach
+- [Kent C. Dodds: Colocation](https://kentcdodds.com/blog/colocation) — dlaczego pliki, które zmieniają się razem, powinny leżeć razem
+
+### Dalsza lektura
+- [Feature-Sliced Design Documentation](https://feature-sliced.design/) — pełna metodologia FSD
+- [React Docs: Thinking in React](https://react.dev/learn/thinking-in-react) — zasady dekompozycji komponentów
+
+---
+
+~Seb 👊
