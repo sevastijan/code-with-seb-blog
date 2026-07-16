@@ -1,0 +1,1170 @@
+---
+title: 'Zasady czystego kodu frontendowego: DRY, KISS i SOLID'
+date: '2025-03-20'
+category: 'Architecture'
+tags: ['Clean Code', 'Software Architecture', 'Code Maintainability', 'Web Development', 'Best Practices', 'Software Engineering', 'Scalable Code', 'Reusable Components', 'Custom Hooks', 'Vue Composables', 'Code Optimization']
+featured: false
+author: 'Sebastian'
+draft: false
+enSlug: 'principles-of-clean-frontend-code-dry-kiss-solid'
+excerpt: 'Szczegółowy przewodnik dla zaawansowanych programistów frontendu o stosowaniu zasad DRY, KISS i SOLID w JavaScripcie, TypeScripcie, Reakcie oraz Vue.'
+---
+
+## Wprowadzenie
+
+Pisanie **czystego, łatwego w utrzymaniu i skalowalnego kodu** to wyzwanie w rozwoju frontendu. Zasady takie jak **DRY, KISS i SOLID** pomagają programistom unikać typowych pułapek, redukować złożoność i zapewniać wysoką jakość kodu. Stosowanie tych zasad prowadzi do bardziej **czytelnych i elastycznych** aplikacji.
+
+### Dlaczego warto stosować te zasady?
+
+Każda zasada adresuje inne problemy związane z kodowaniem:
+
+- **DRY (Don't Repeat Yourself)** – Eliminuje duplikację kodu, aby zmniejszyć nakład pracy przy utrzymaniu i zapobiegać błędom.
+- **KISS (Keep It Simple, Stupid)** – Zachęca do prostoty w imię lepszej czytelności, łatwiejszego debugowania i utrzymywalności.
+- **SOLID** – Zestaw pięciu zasad projektowych (SRP, OCP, LSP, ISP, DIP), które pomagają budować **modularny, rozszerzalny i łatwo testowalny** kod.
+
+Ten przewodnik dogłębnie omawia te zasady i pokazuje, jak stosować je w **JavaScripcie, TypeScripcie, Reakcie oraz Vue** na praktycznych przykładach.
+
+## DRY – Don't Repeat Yourself
+
+### Definicja i znaczenie
+
+Zasada **DRY** mówi, że **każdy fragment wiedzy powinien istnieć w systemie tylko raz**. Duplikacja kodu prowadzi do **wyższych kosztów utrzymania** i zwiększa ryzyko **niespójności**. Na przykład, jeśli logika obliczania podatku powtarza się w różnych komponentach, zmiana stawki podatku wymaga modyfikacji wielu miejsc, co zwiększa ryzyko błędów.
+
+Stosując DRY, zapewniamy, że **każda funkcja, komponent lub moduł ma jedno źródło prawdy**.
+
+### Jak stosować DRY w JavaScripcie
+
+**Zły przykład (duplikacja kodu w JavaScripcie):**
+
+```javascript
+function validateUserForm(form) {
+  if (!form.email.includes('@')) {
+    showError('Invalid email')
+    return false
+  }
+}
+
+function validateContactForm(form) {
+  if (!form.email.includes('@')) {
+    showError('Invalid email')
+    return false
+  }
+}
+```
+
+**Dobry przykład (refaktoryzacja zgodna z DRY):**
+
+```javascript
+function isEmailValid(email) {
+  return email.includes('@')
+}
+
+function validateForm(form) {
+  if (!isEmailValid(form.email)) {
+    showError('Invalid email')
+    return false
+  }
+}
+```
+
+### Jak stosować DRY w TypeScripcie
+
+Jednym z najskuteczniejszych sposobów przestrzegania zasady DRY (Don't Repeat Yourself) w TypeScripcie jest wykorzystanie interfejsów. Bez interfejsów programiści często powielają definicje typów w wielu funkcjach i komponentach, co prowadzi do niespójności i zwiększonego nakładu pracy przy utrzymaniu. Definiując interfejs, tworzymy jedno źródło prawdy dla konkretnej struktury danych, dzięki czemu wszelkie zmiany jej kształtu automatycznie propagują się w całej aplikacji.
+
+**Zły przykład (duplikacja kodu):**
+
+```typescript
+class UserService {
+  private apiUrl = 'https://api.example.com/users'
+
+  fetchUser(id: string) {
+    return fetch(`${this.apiUrl}/${id}`).then((res) => res.json())
+  }
+
+  validateUser(user: { name: string; email: string }): boolean {
+    if (!user.name || user.name.length < 3) {
+      console.error('Invalid name')
+      return false
+    }
+    if (!user.email.includes('@')) {
+      console.error('Invalid email')
+      return false
+    }
+    return true
+  }
+
+  saveUser(user: { name: string; email: string }) {
+    if (!user.name || user.name.length < 3) {
+      console.error('Invalid name')
+      return
+    }
+    if (!user.email.includes('@')) {
+      console.error('Invalid email')
+      return
+    }
+
+    fetch(this.apiUrl, {
+      method: 'POST',
+      body: JSON.stringify(user),
+      headers: { 'Content-Type': 'application/json' },
+    })
+      .then((res) => res.json())
+      .then((data) => console.log('User saved', data))
+      .catch((err) => console.error('Save failed', err))
+  }
+}
+```
+
+### Problemy w tym przykładzie:
+
+**Narusza SRP (Single Responsibility Principle)**
+
+- UserService odpowiada za pobieranie użytkowników, walidację danych użytkownika oraz zapisywanie użytkowników. Ta klasa powinna odpowiadać wyłącznie za interakcje z API.
+- Walidacja powinna znajdować się w osobnym module lub serwisie.
+
+**Narusza DRY (Don't Repeat Yourself)**
+
+- Logika walidacji nazwy i adresu e-mail powtarza się zarówno w validateUser, jak i saveUser.
+- Jeśli kiedykolwiek będziemy musieli zmienić reguły walidacji, musimy zmodyfikować wiele miejsc.
+
+**Dobry przykład (refaktoryzacja zgodna z DRY):**
+
+```typescript
+class UserValidator {
+  static validate(user: { name: string; email: string }): boolean {
+    if (!user.name || user.name.length < 3) {
+      console.error('Invalid name')
+      return false
+    }
+    if (!user.email.includes('@')) {
+      console.error('Invalid email')
+      return false
+    }
+    return true
+  }
+}
+
+class UserService {
+  private apiUrl = 'https://api.example.com/users'
+
+  fetchUser(id: string) {
+    return fetch(`${this.apiUrl}/${id}`).then((res) => res.json())
+  }
+
+  saveUser(user: { name: string; email: string }) {
+    if (!UserValidator.validate(user)) return
+
+    fetch(this.apiUrl, {
+      method: 'POST',
+      body: JSON.stringify(user),
+      headers: { 'Content-Type': 'application/json' },
+    })
+      .then((res) => res.json())
+      .then((data) => console.log('User saved', data))
+      .catch((err) => console.error('Save failed', err))
+  }
+}
+```
+
+**Poprawki**
+
+- Zastosowano SRP – Logika walidacji znajduje się teraz w osobnej klasie UserValidator.
+- Zastosowano DRY – Logika walidacji jest scentralizowana w UserValidator.validate, co eliminuje powtórzenia.
+
+Taka struktura sprawia, że kod jest łatwiejszy do testowania, rozszerzania i utrzymania.
+
+### Jak stosować DRY w Reakcie
+
+W rozwoju aplikacji Reactowych utrzymanie czystego i łatwego w utrzymaniu kodu wymaga czegoś więcej niż tylko podziału JSX na mniejsze komponenty. Komponenty wielokrotnego użytku pomagają unikać duplikowania struktur UI, ale wiele aplikacji cierpi też z powodu zduplikowanej logiki, takiej jak pobieranie danych, zarządzanie stanem czy obsługa zdarzeń. Tu z pomocą przychodzą własne hooki (custom hooks), które pozwalają enkapsulować logikę wielokrotnego użytku i utrzymać komponenty skupione na ich głównym zadaniu.
+
+#### Wykorzystanie komponentów wielokrotnego użytku
+
+Jednym z najczęstszych błędów w Reakcie jest powielanie struktur JSX inline w wielu komponentach. Dzieje się tak, gdy programiści kopiują i wklejają te same elementy UI – takie jak przyciski, karty czy modale – w różnych częściach aplikacji. Zamiast duplikować JSX, najlepiej wyabstrahować go do komponentów wielokrotnego użytku.
+
+**Zły przykład: Zduplikowany JSX inline w wielu komponentach**
+
+```jsx
+function ProductList({ products }) {
+  return (
+    <div>
+      {products.map((product) => (
+        <div key={product.id} className="product-card">
+          <h2>{product.name}</h2>
+          <p>Price: {product.price} USD</p>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function FeaturedProducts({ products }) {
+  return (
+    <div>
+      {products.map((product) => (
+        <div key={product.id} className="product-card">
+          <h2>{product.name}</h2>
+          <p>Price: {product.price} USD</p>
+        </div>
+      ))}
+    </div>
+  )
+}
+```
+
+Ta sama struktura JSX pojawia się w wielu miejscach, co prowadzi do duplikacji kodu. Jeśli kiedykolwiek będziemy musieli zaktualizować stylowanie lub dodać nowe pole, np. opis, musielibyśmy zmodyfikować je w wielu miejscach, zwiększając ryzyko niespójności.
+
+**Dobry przykład: Wyodrębnienie komponentów wielokrotnego użytku**
+
+```jsx
+function ProductCard({ product }) {
+  return (
+    <div className="product-card">
+      <h2>{product.name}</h2>
+      <p>Price: {product.price} USD</p>
+    </div>
+  )
+}
+
+function ProductList({ products }) {
+  return (
+    <div>
+      {products.map((product) => (
+        <ProductCard key={product.id} product={product} />
+      ))}
+    </div>
+  )
+}
+
+function FeaturedProducts({ products }) {
+  return (
+    <div>
+      {products.map((product) => (
+        <ProductCard key={product.id} product={product} />
+      ))}
+    </div>
+  )
+}
+```
+
+#### Wykorzystanie własnych hooków, aby uniknąć duplikacji logiki
+
+Choć komponenty wielokrotnego użytku rozwiązują problem duplikacji UI, wewnątrz komponentów Reactowych często napotykamy zduplikowaną logikę. Na przykład podczas pobierania danych z API, obsługi stanu formularza czy zarządzania subskrypcjami wielu programistów kopiuje tę samą logikę do wielu komponentów, naruszając zasadę DRY.
+
+Zły przykład: Powtarzanie logiki przełączania
+
+```jsx
+function Sidebar() {
+  const [isOpen, setIsOpen] = useState(false)
+
+  return (
+    <div>
+      <button onClick={() => setIsOpen(!isOpen)}>Toggle Sidebar</button>
+      {isOpen && <p>Sidebar Content</p>}
+    </div>
+  )
+}
+
+function Modal() {
+  const [isOpen, setIsOpen] = useState(false)
+
+  return (
+    <div>
+      <button onClick={() => setIsOpen(!isOpen)}>Open Modal</button>
+      {isOpen && <p>Modal Content</p>}
+    </div>
+  )
+}
+```
+
+Zarówno Sidebar, jak i Modal mają zduplikowaną logikę przełączania (isOpen, setIsOpen), co utrudnia utrzymanie.
+
+**Dobry przykład: Wyodrębnienie logiki przełączania do własnego hooka**
+
+```jsx
+function useToggle(initialState = false) {
+  const [isOpen, setIsOpen] = useState(initialState)
+  const toggle = () => setIsOpen((prev) => !prev)
+
+  return { isOpen, toggle }
+}
+
+function Sidebar() {
+  const { isOpen, toggle } = useToggle()
+
+  return (
+    <div>
+      <button onClick={toggle}>Toggle Sidebar</button>
+      {isOpen && <p>Sidebar Content</p>}
+    </div>
+  )
+}
+
+function Modal() {
+  const { isOpen, toggle } = useToggle()
+
+  return (
+    <div>
+      <button onClick={toggle}>Open Modal</button>
+      {isOpen && <p>Modal Content</p>}
+    </div>
+  )
+}
+```
+
+Teraz `useToggle()` enkapsuluje logikę przełączania, dzięki czemu zarówno Sidebar, jak i Modal są czystsze, bardziej wielokrotnego użytku i łatwiejsze w utrzymaniu.
+
+Przestrzegając zasady DRY, programiści Reacta powinni wyodrębniać komponenty wielokrotnego użytku, gdy struktury JSX powtarzają się w różnych częściach aplikacji. Używaj własnych hooków, gdy wiele komponentów współdzieli podobną logikę, taką jak przełączanie stanu, obsługa danych wejściowych użytkownika czy reagowanie na zdarzenia.
+
+Utrzymuj komponenty skupione na ich roli UI, delegując złożoną logikę do dedykowanych hooków.
+Wykorzystanie zarówno komponentów wielokrotnego użytku, jak i własnych hooków sprawia, że aplikacje Reactowe są modularne, skalowalne i łatwe w utrzymaniu.
+
+### Jak stosować DRY w Vue
+
+W rozwoju aplikacji Vue 3 zasada DRY (Don't Repeat Yourself) dotyczy nie tylko dzielenia szablonów na komponenty wielokrotnego użytku, ale także unikania zduplikowanej logiki dzięki Composition API oraz Composables z Vue 3. Podczas gdy komponenty wielokrotnego użytku pomagają eliminować powtarzające się struktury UI, Composables pozwalają programistom enkapsulować zachowanie ze stanem w funkcjach, które można współdzielić między wieloma komponentami.
+
+#### Wykorzystanie komponentów wielokrotnego użytku, aby uniknąć duplikacji szablonu
+
+Częstym błędem w aplikacjach Vue jest powtarzanie tej samej struktury szablonu w wielu komponentach zamiast wyodrębnienia komponentu UI wielokrotnego użytku.
+
+**Zły przykład: Zduplikowany szablon w wielu komponentach**
+
+```vue
+<!-- UserProfile.vue -->
+<template>
+  <div class="profile-card">
+    <h2>{{ user.name }}</h2>
+    <p>Email: {{ user.email }}</p>
+    <p>Followers: {{ user.followers }}</p>
+  </div>
+</template>
+
+<script setup>
+defineProps({ user: Object })
+</script>
+```
+
+```vue
+<!-- UserCard.vue -->
+<template>
+  <div class="profile-card">
+    <h2>{{ user.name }}</h2>
+    <p>Email: {{ user.email }}</p>
+    <p>Followers: {{ user.followers }}</p>
+  </div>
+</template>
+
+<script setup>
+defineProps({ user: Object })
+</script>
+```
+
+Tutaj `UserProfile` i `UserCard` mają niemal identyczne szablony, co narusza zasadę DRY.
+
+**Dobry przykład: Wyodrębnienie komponentu wielokrotnego użytku w Vue 3**
+
+```vue
+<!-- UserCard.vue -->
+<template>
+  <div class="profile-card">
+    <h2>{{ user.name }}</h2>
+    <p>Email: {{ user.email }}</p>
+    <p>Followers: {{ user.followers }}</p>
+  </div>
+</template>
+
+<script setup>
+defineProps({ user: Object })
+</script>
+```
+
+Teraz zarówno `UserProfile`, jak i `UserCard` mogą ponownie wykorzystać `UserCard.vue`, utrzymując kod zgodny z DRY:
+
+```vue
+<!-- UserProfile.vue -->
+<template>
+  <UserCard :user="user" />
+</template>
+
+<script setup>
+import UserCard from './UserCard.vue'
+
+defineProps({ user: Object })
+</script>
+```
+
+Czyniąc `UserCard` komponentem wielokrotnego użytku, zapewniamy, że wszelkie przyszłe modyfikacje (np. dodanie awatara lub nowego stylu UI) trzeba wprowadzić tylko w jednym miejscu.
+
+#### Wykorzystanie Composables z Vue 3, aby uniknąć duplikacji logiki
+
+Podczas gdy komponenty wielokrotnego użytku zapobiegają duplikacji UI, aplikacje Vue często cierpią z powodu zduplikowanej logiki, takiej jak zarządzanie stanem, obsługa danych wejściowych, nasłuchiwanie zdarzeń czy przełączniki funkcji. Composition API z Vue 3 pozwala nam enkapsulować współdzieloną logikę w funkcjach wielokrotnego użytku zwanych Composables.
+
+**Zły przykład: Powtarzanie logiki przełączania w wielu komponentach**
+
+```vue
+<!-- Sidebar.vue -->
+<template>
+  <div>
+    <button @click="isOpen = !isOpen">Toggle Sidebar</button>
+    <p v-if="isOpen">Sidebar Content</p>
+  </div>
+</template>
+
+<script setup>
+import { ref } from 'vue'
+
+const isOpen = ref(false)
+</script>
+```
+
+```vue
+<!-- Modal.vue -->
+<template>
+  <div>
+    <button @click="isOpen = !isOpen">Open Modal</button>
+    <p v-if="isOpen">Modal Content</p>
+  </div>
+</template>
+
+<script setup>
+import { ref } from 'vue'
+
+const isOpen = ref(false)
+</script>
+```
+
+Zarówno komponent `Sidebar`, jak i `Modal` zawierają identyczną logikę stanu `isOpen = ref(false)` oraz zachowanie przełączania, co prowadzi do duplikacji logiki.
+
+**Dobry przykład: Wyodrębnienie logiki przełączania do Composable w Vue 3**
+
+Zamiast duplikować stan `isOpen` i funkcję przełączania, enkapsulujemy to zachowanie w Composable wielokrotnego użytku:
+
+```javascript
+// composables/useToggle.js
+import { ref } from 'vue'
+
+export function useToggle(initialState = false) {
+  const isOpen = ref(initialState)
+  const toggle = () => (isOpen.value = !isOpen.value)
+
+  return { isOpen, toggle }
+}
+```
+
+Teraz zarówno `Sidebar.vue`, jak i `Modal.vue` mogą ponownie wykorzystać tę logikę bez powtarzania implementacji:
+
+```vue
+<!-- Sidebar.vue -->
+<template>
+  <div>
+    <button @click="toggle">Toggle Sidebar</button>
+    <p v-if="isOpen">Sidebar Content</p>
+  </div>
+</template>
+
+<script setup>
+import { useToggle } from '@/composables/useToggle'
+
+const { isOpen, toggle } = useToggle()
+</script>
+```
+
+```vue
+<!-- Modal.vue -->
+<template>
+  <div>
+    <button @click="toggle">Open Modal</button>
+    <p v-if="isOpen">Modal Content</p>
+  </div>
+</template>
+
+<script setup>
+import { useToggle } from '@/composables/useToggle'
+
+const { isOpen, toggle } = useToggle()
+</script>
+```
+
+Dzięki `useToggle()` logika przełączania jest scentralizowana, co czyni komponenty czystszymi, wielokrotnego użytku i łatwiejszymi w utrzymaniu. Wszelkie zmiany zachowania przełączania (np. animacje, opóźnienie zmiany stanu, efekty uboczne) wymagają modyfikacji tylko jednego miejsca.
+
+#### Wykorzystanie Composables do obsługi formularzy w Vue 3
+
+Innym częstym scenariuszem, w którym logika ulega duplikacji, jest obsługa formularzy. Wielu programistów powtarza tę samą logikę zarządzania stanem formularza i walidacji w wielu komponentach.
+
+**Zły przykład: Zduplikowana logika stanu formularza**
+
+```vue
+<!-- Login.vue -->
+<template>
+  <form @submit.prevent="submitForm">
+    <input v-model="email" placeholder="Email" />
+    <input v-model="password" type="password" placeholder="Password" />
+    <button type="submit">Login</button>
+  </form>
+</template>
+
+<script setup>
+import { ref } from 'vue'
+
+const email = ref('')
+const password = ref('')
+
+const submitForm = () => {
+  console.log({ email: email.value, password: password.value })
+}
+</script>
+```
+
+```vue
+<!-- Signup.vue -->
+<template>
+  <form @submit.prevent="submitForm">
+    <input v-model="email" placeholder="Email" />
+    <input v-model="password" type="password" placeholder="Password" />
+    <input v-model="confirmPassword" type="password" placeholder="Confirm Password" />
+    <button type="submit">Sign Up</button>
+  </form>
+</template>
+
+<script setup>
+import { ref } from 'vue'
+
+const email = ref('')
+const password = ref('')
+const confirmPassword = ref('')
+
+const submitForm = () => {
+  console.log({
+    email: email.value,
+    password: password.value,
+    confirmPassword: confirmPassword.value,
+  })
+}
+</script>
+```
+
+Zarówno `Login.vue`, jak i `Signup.vue` duplikują logikę obsługi stanu formularza.
+
+**Dobry przykład: Wykorzystanie Composable do obsługi formularza**
+
+Zamiast powtarzać zarządzanie stanem formularza, enkapsulujemy je w Composable wielokrotnego użytku:
+
+```javascript
+// composables/useForm.js
+import { ref } from 'vue'
+
+export function useForm(initialValues) {
+  const formState = ref({ ...initialValues })
+
+  const resetForm = () => {
+    formState.value = { ...initialValues }
+  }
+
+  return { formState, resetForm }
+}
+```
+
+Teraz `Login.vue` i `Signup.vue` mogą ponownie wykorzystać `useForm()` do zarządzania stanem formularza:
+
+```vue
+<!-- Login.vue -->
+<template>
+  <form @submit.prevent="submitForm">
+    <input v-model="formState.email" placeholder="Email" />
+    <input v-model="formState.password" type="password" placeholder="Password" />
+    <button type="submit">Login</button>
+  </form>
+</template>
+
+<script setup>
+import { useForm } from '@/composables/useForm'
+
+const { formState } = useForm({ email: '', password: '' })
+
+const submitForm = () => {
+  console.log(formState.value)
+}
+</script>
+```
+
+Teraz tę samą logikę można wykorzystać w `Signup.vue` bez duplikowania zarządzania stanem formularza. Aby w pełni stosować zasady DRY w Vue 3, zawsze:
+
+- Wyodrębniaj komponenty wielokrotnego użytku, gdy ta sama struktura UI jest używana wielokrotnie.
+- Używaj Vue Composables, aby enkapsulować i ponownie wykorzystywać logikę między różnymi komponentami.
+- Utrzymuj komponenty skupione na renderowaniu UI, podczas gdy logika pozostaje modularna.
+- Łącząc komponenty wielokrotnego użytku i Composables, aplikacje Vue 3 stają się bardziej skalowalne, łatwiejsze w utrzymaniu i wydajniejsze.
+
+## KISS – Keep It Simple, Stupid
+
+### Definicja
+
+**Prostota jest kluczowa.** Unikaj **nadmiernej inżynierii, zbędnej abstrakcji i niepotrzebnej złożoności**. Kod powinien być łatwy do czytania, zrozumienia i modyfikacji.
+
+### Jak stosować KISS
+
+- **Przedkładaj czytelność nad sprytne sztuczki.**
+- **Unikaj zbędnych warstw abstrakcji.**
+- **Rozbijaj duże funkcje na mniejsze, skupione.**
+
+#### 1. Unikaj nadmiernej inżynierii i zbędnych abstrakcji
+
+Częstym błędem jest tworzenie zbędnych abstrakcji w próbie uczynienia kodu bardziej elastycznym lub wielokrotnego użytku. Nadmierna abstrakcja może jednak prowadzić do złożoności, która utrudnia debugowanie i przyszłe utrzymanie.
+
+```typescript
+function processItems<T extends { id: number }>(items: T[], callback: (item: T) => void): void {
+  items.forEach(callback)
+}
+
+const users = [
+  { id: 1, name: 'Alice' },
+  { id: 2, name: 'Bob' },
+]
+
+processItems(users, (user) => console.log(user.name))
+```
+
+Tutaj typy generyczne `(T extends { id: number })` dodają zbędną złożoność. W większości przypadków funkcja raczej nie będzie potrzebować takiej elastyczności.
+
+**Dobry przykład: Prostsze podejście bez nadmiernej abstrakcji**
+
+```typescript
+function processUsers(
+  users: { id: number; name: string }[],
+  callback: (user: { id: number; name: string }) => void
+): void {
+  users.forEach(callback)
+}
+
+const users = [
+  { id: 1, name: 'Alice' },
+  { id: 2, name: 'Bob' },
+]
+
+processUsers(users, (user) => console.log(user.name))
+```
+
+#### Pisz zwięzły i czytelny kod
+
+Podejście przyjazne KISS w TypeScripcie polega na unikaniu zbędnej rozwlekłości oraz pisaniu czystego, wyrazistego kodu.
+
+**Zły przykład: Rozwlekły kod z nadmiarową logiką**
+
+```typescript
+function isEven(num: number): boolean {
+  if (num % 2 === 0) {
+    return true
+  } else {
+    return false
+  }
+}
+```
+
+Ta funkcja dodaje zbędną logikę if-else, przez co jest dłuższa niż to konieczne.
+
+**Dobry przykład: Uproszczony i czytelny kod**
+
+```typescript
+function isEven(num: number): boolean {
+  return num % 2 === 0
+}
+```
+
+Ta wersja jest krótsza i bardziej czytelna, zachowując tę samą funkcjonalność.
+
+#### Utrzymuj funkcje i klasy skupione na jednej odpowiedzialności
+
+Kluczowym aspektem KISS jest zapewnienie, że funkcje i klasy robią tylko jedną rzecz i robią ją dobrze. Łączenie wielu odpowiedzialności sprawia, że kod jest trudniejszy do czytania, testowania i modyfikacji.
+
+**Zły przykład: Klasa ze zbyt wieloma odpowiedzialnościami**
+
+```typescript
+class UserService {
+  private users: { id: number; name: string }[] = []
+
+  addUser(user: { id: number; name: string }) {
+    this.users.push(user)
+  }
+
+  getUser(id: number) {
+    return this.users.find((user) => user.id === id)
+  }
+
+  logUsers() {
+    console.log(this.users)
+  }
+
+  exportUsersToCSV() {
+    return this.users.map((user) => `${user.id},${user.name}`).join('\n')
+  }
+}
+```
+
+Ta klasa narusza KISS i zasadę pojedynczej odpowiedzialności (SRP), obsługując zarządzanie użytkownikami, logowanie i eksport danych w jednym miejscu.
+
+**Dobry przykład: Rozbicie na prostsze, skupione klasy**
+
+```typescript
+class UserRepository {
+  private users: { id: number; name: string }[] = []
+
+  addUser(user: { id: number; name: string }) {
+    this.users.push(user)
+  }
+
+  getUser(id: number) {
+    return this.users.find((user) => user.id === id)
+  }
+
+  getAllUsers() {
+    return this.users
+  }
+}
+
+class UserExporter {
+  static toCSV(users: { id: number; name: string }[]): string {
+    return users.map((user) => `${user.id},${user.name}`).join('\n')
+  }
+}
+
+const userRepo = new UserRepository()
+
+userRepo.addUser({ id: 1, name: 'Alice' })
+console.log(UserExporter.toCSV(userRepo.getAllUsers()))
+```
+
+Ta wersja utrzymuje odseparowane odpowiedzialności, dzięki czemu kod jest prostszy i łatwiejszy w utrzymaniu.
+
+#### Rozsądnie korzystaj z funkcji TypeScriptu – unikaj nadużywania typów
+
+TypeScript udostępnia potężne typy, interfejsy i typy generyczne, ale ich nadużywanie może dodawać zbędną złożoność.
+
+**Zły przykład: Komplikowanie typów zagnieżdżonymi typami generycznymi**
+
+```typescript
+type Response<T> = {
+  data: T
+  meta: {
+    timestamp: number
+    source: string
+  }
+}
+
+function fetchData<T>(url: string): Promise<Response<T>> {
+  return fetch(url).then((res) => res.json())
+}
+```
+
+Choć typy generyczne mogą być przydatne, w tym przypadku dodają zbędną złożoność. Funkcja może nie potrzebować tak elastycznego typu zwracanego.
+
+**Dobry przykład: Bardziej praktyczne podejście**
+
+```typescript
+interface ApiResponse<T> {
+  data: T
+}
+
+function fetchData<T>(url: string): Promise<ApiResponse<T>> {
+  return fetch(url).then((res) => res.json())
+}
+```
+
+#### Unikaj zbyt głębokiego zagnieżdżania
+
+Zagnieżdżona logika obniża czytelność i zwiększa obciążenie poznawcze. Utrzymywanie płaskich i prostych struktur ułatwia ich zrozumienie.
+
+**Zły przykład: Nadmiernie zagnieżdżone instrukcje if**
+
+```typescript
+function getDiscount(price: number, isMember: boolean, hasCoupon: boolean): number {
+  if (isMember) {
+    if (hasCoupon) {
+      return price * 0.7
+    } else {
+      return price * 0.9
+    }
+  } else {
+    if (hasCoupon) {
+      return price * 0.8
+    } else {
+      return price
+    }
+  }
+}
+```
+
+Ta funkcja ma zbyt wiele zagnieżdżonych warunków, co utrudnia jej czytanie.
+
+**Dobry przykład: Uproszczona logika z wczesnymi zwrotami (early returns)**
+
+```typescript
+function getDiscount(price: number, isMember: boolean, hasCoupon: boolean): number {
+  if (isMember && hasCoupon) return price * 0.7
+  if (isMember) return price * 0.9
+  if (hasCoupon) return price * 0.8
+  return price
+}
+```
+
+Aby stosować **KISS**, zawsze:
+
+- Unikaj zbędnej złożoności – Sięgaj po proste rozwiązania, zanim przejdziesz do nadmiernej inżynierii.
+- Pisz zwięzły i czytelny kod – Usuwaj nadmiarową logikę i rozwlekłość.
+- Utrzymuj funkcje i klasy skupione – Każda funkcja lub klasa powinna mieć jedną jasną odpowiedzialność.
+- Rozsądnie korzystaj z funkcji TypeScriptu – Nie nadużywaj typów generycznych, złożonych typów ani nadmiernych abstrakcji.
+- Spłaszczaj logikę tam, gdzie to możliwe – Unikaj głębokiego zagnieżdżania i pisz prostą logikę warunkową.
+
+Utrzymując kod prostym i przejrzystym, programiści redukują błędy, poprawiają utrzymywalność i przyspieszają rozwój. Prostota nie polega tylko na pisaniu mniejszej ilości kodu – chodzi o to, aby kod był łatwiejszy do czytania, testowania i rozszerzania.
+
+## Zasady SOLID we frontendzie
+
+Zasady SOLID, pierwotnie wprowadzone przez Roberta C. Martina, oferują uporządkowane podejście do projektowania oprogramowania, które zapewnia utrzymywalność, skalowalność i elastyczność. Choć często omawia się je w kontekście rozwoju backendu, są równie ważne dla architektury frontendu, szczególnie podczas pracy z frameworkami takimi jak React, Vue i TypeScript.
+
+Każda zasada SOLID przyczynia się do czystszej, bardziej modularnej bazy kodu frontendu, redukując silne sprzężenie, duplikację kodu i zbędną złożoność.
+
+### Single Responsibility Principle (SRP)
+
+Klasa (lub funkcja) powinna mieć tylko jeden powód do zmiany.
+Każdy komponent, funkcja lub klasa powinny mieć pojedynczą, dobrze zdefiniowaną odpowiedzialność.
+
+**Zły przykład: Komponent Reactowy, który robi zbyt wiele**
+
+```tsx
+function UserProfile({ userId }) {
+  const [user, setUser] = useState(null)
+
+  useEffect(() => {
+    fetch(`/api/users/${userId}`)
+      .then((res) => res.json())
+      .then((data) => setUser(data))
+  }, [userId])
+
+  if (!user) return <p>Loading...</p>
+
+  return (
+    <div>
+      <h2>{user.name}</h2>
+      <p>Email: {user.email}</p>
+    </div>
+  )
+}
+```
+
+Dlaczego to źle?
+
+- Ten komponent pobiera dane, zarządza stanem i renderuje UI – wszystko w jednym miejscu.
+- Jeśli musimy zmienić logikę pobierania, musimy zmodyfikować komponent UI, co narusza SRP.
+
+**Dobry przykład: Rozdzielenie odpowiedzialności**
+
+```tsx
+// Własny hook do pobierania danych użytkownika
+function useUser(userId) {
+  const [user, setUser] = useState(null)
+
+  useEffect(() => {
+    fetch(`/api/users/${userId}`)
+      .then((res) => res.json())
+      .then((data) => setUser(data))
+  }, [userId])
+
+  return user
+}
+
+// Komponent UI skupiony wyłącznie na renderowaniu
+function UserProfile({ userId }) {
+  const user = useUser(userId)
+
+  if (!user) return <p>Loading...</p>
+
+  return (
+    <div>
+      <h2>{user.name}</h2>
+      <p>Email: {user.email}</p>
+    </div>
+  )
+}
+```
+
+Dlaczego to lepsze?
+
+- Hook `useUser` osobno obsługuje pobieranie danych.
+- Komponent `UserProfile` renderuje wyłącznie UI.
+- Łatwiejszy do testowania i utrzymania, ponieważ odpowiedzialności są jasno rozdzielone.
+
+### Open/Closed Principle (OCP)
+
+Byty oprogramowania (klasy, moduły, funkcje) powinny być otwarte na rozszerzanie, ale zamknięte na modyfikację.
+Powinniśmy rozszerzać funkcjonalność bez modyfikowania istniejącego kodu.
+
+**Zły przykład: Zaszyta na sztywno kalkulacja rabatu**
+
+```typescript
+function calculatePrice(price: number, customerType: string): number {
+  if (customerType === 'silver') return price * 0.9
+  if (customerType === 'gold') return price * 0.8
+  return price
+}
+```
+
+Dlaczego to źle?
+
+- Dodanie nowego typu rabatu wymaga modyfikacji funkcji.
+- Narusza OCP, ponieważ funkcji nie da się łatwo rozszerzyć.
+
+**Dobry przykład: Wykorzystanie wzorca strategii**
+
+```typescript
+const discountStrategies = {
+  standard: (price: number) => price,
+  silver: (price: number) => price * 0.9,
+  gold: (price: number) => price * 0.8,
+}
+
+function calculatePrice(price: number, customerType: keyof typeof discountStrategies): number {
+  return (discountStrategies[customerType] || discountStrategies.standard)(price)
+}
+```
+
+Dlaczego to lepsze?
+
+- Nowe typy rabatów można dodawać bez modyfikowania funkcji.
+- Utrzymuje logikę czystszą i bardziej modularną.
+
+### Liskov Substitution Principle (LSP)
+
+Podtypy muszą być zastępowalne swoimi typami bazowymi.
+Klasa potomna (lub pochodny komponent) powinna być użyteczna w miejsce swojego rodzica bez psucia funkcjonalności.
+
+**Zły przykład: Złamanie zasady podstawienia Liskov w TypeScripcie**
+
+```typescript
+class Rectangle {
+  constructor(
+    protected width: number,
+    protected height: number
+  ) {}
+
+  setWidth(width: number) {
+    this.width = width
+  }
+
+  setHeight(height: number) {
+    this.height = height
+  }
+
+  getArea() {
+    return this.width * this.height
+  }
+}
+
+class Square extends Rectangle {
+  setWidth(width: number) {
+    this.width = width
+    this.height = width // Narusza LSP
+  }
+
+  setHeight(height: number) {
+    this.width = height
+    this.height = height // Narusza LSP
+  }
+}
+```
+
+Dlaczego to źle?
+
+- `Square` nadpisuje zachowanie w nieoczekiwany sposób.
+- Kod, który polega na `Rectangle`, zepsuje się, jeśli użyty zostanie `Square`.
+
+**Dobry przykład: Refaktoryzacja pozwalająca uniknąć naruszenia LSP**
+
+```typescript
+interface Shape {
+  getArea(): number
+}
+
+class Rectangle implements Shape {
+  constructor(
+    private width: number,
+    private height: number
+  ) {}
+
+  getArea() {
+    return this.width * this.height
+  }
+}
+
+class Square implements Shape {
+  constructor(private side: number) {}
+
+  getArea() {
+    return this.side * this.side
+  }
+}
+```
+
+Dlaczego to lepsze?
+
+- `Square` i `Rectangle` przestrzegają teraz LSP, ponieważ implementują `Shape` bez psucia zachowania.
+- Kod korzystający z `Shape` nie musi wiedzieć, czy to `Square`, czy `Rectangle`.
+
+### Interface Segregation Principle (ISP)
+
+Klienci nie powinni być zmuszani do zależności od interfejsów, których nie używają.
+Duże interfejsy należy dzielić na mniejsze, bardziej wyspecjalizowane.
+
+**Zły przykład: Jeden wielki interfejs**
+
+```typescript
+interface Worker {
+  work(): void
+  eat(): void
+}
+
+class Developer implements Worker {
+  work() {
+    console.log('Writing code...')
+  }
+
+  eat() {
+    throw new Error("Developers don't need an eat method!")
+  }
+}
+```
+
+Dlaczego to źle?
+
+- `Developer` jest zmuszony implementować `eat()`, mimo że tego nie potrzebuje.
+
+**Dobry przykład: Wykorzystanie rozdzielonych interfejsów**
+
+```typescript
+interface Workable {
+  work(): void
+}
+
+interface Eatable {
+  eat(): void
+}
+
+class Developer implements Workable {
+  work() {
+    console.log('Writing code...')
+  }
+}
+
+class OfficeWorker implements Workable, Eatable {
+  work() {
+    console.log('Working in the office...')
+  }
+
+  eat() {
+    console.log('Eating lunch...')
+  }
+}
+```
+
+Dlaczego to lepsze?
+
+- `Developer` i `OfficeWorker` implementują tylko te metody, których potrzebują.
+- Brak zbędnych zależności.
+
+### Dependency Inversion Principle (DIP)
+
+Zależ od abstrakcji, a nie od konkretnych implementacji.
+Moduły wysokiego poziomu nie powinny zależeć od modułów niskiego poziomu – oba powinny zależeć od abstrakcji.
+
+**Zły przykład: Zaszyta na sztywno zależność od API**
+
+```typescript
+class UserService {
+  constructor(private apiClient: ApiClient) {}
+
+  fetchUser(id: number) {
+    return this.apiClient.get(`/users/${id}`)
+  }
+}
+```
+
+Dlaczego to źle?
+
+- Silnie sprzężony z `ApiClient`.
+- Jeśli przełączymy się na inny system API, musimy przepisać UserService.
+
+**Dobry przykład: Wykorzystanie wstrzykiwania zależności (dependency injection)**
+
+```typescript
+interface HttpClient {
+  get(url: string): Promise<any>
+}
+
+class FetchClient implements HttpClient {
+  async get(url: string) {
+    return fetch(url).then((res) => res.json())
+  }
+}
+
+class UserService {
+  constructor(private httpClient: HttpClient) {}
+
+  fetchUser(id: number) {
+    return this.httpClient.get(`/users/${id}`)
+  }
+}
+```
+
+Dlaczego to lepsze?
+
+- `UserService` zależy od abstrakcji (`HttpClient`), co czyni go elastycznym.
+- Możemy podmienić `FetchClient` na inną implementację bez zmiany `UserService`.
+
+#### Końcowe przemyślenia na temat zasad SOLID we frontendzie
+
+Stosowanie zasad SOLID w rozwoju frontendu prowadzi do czystszych, skalowalnych i łatwiejszych w utrzymaniu aplikacji. Choć zasady te zostały pierwotnie zaprojektowane dla programowania obiektowego, są równie wartościowe w nowoczesnych frameworkach frontendowych takich jak React, Vue i Angular, gdzie komponenty, zarządzanie stanem i API odgrywają kluczową rolę.
+
+Oto dlaczego każda zasada jest szczególnie istotna w rozwoju frontendu:
+
+- Single Responsibility Principle (SRP) – Zapobiega rozdętym komponentom, które mieszają logikę UI, wywołania API i zarządzanie stanem.
+- Open/Closed Principle (OCP) – Umożliwia rozszerzanie funkcji bez modyfikowania istniejącego kodu, co jest kluczowe dla komponentów UI oraz hooków/composables.
+- Liskov Substitution Principle (LSP) – Zapewnia, że komponenty wielokrotnego użytku i funkcje pomocnicze zachowują się zgodnie z oczekiwaniami, gdy są rozszerzane lub zastępowane.
+- Interface Segregation Principle (ISP) – Pomaga rozbijać duże interfejsy na mniejsze, znaczące kontrakty, poprawiając modularność kodu.
+- Dependency Inversion Principle (DIP) – Pozwala aplikacjom frontendowym korzystać z różnych źródeł danych (np. API, local storage, danych mockowych) bez modyfikowania podstawowej logiki biznesowej.
+
+## Podsumowanie
+
+Pisanie czystego, łatwego w utrzymaniu i skalowalnego kodu frontendowego wymaga uporządkowanego podejścia, a zasady takie jak DRY, KISS i SOLID dostarczają niezbędnych wytycznych, aby to osiągnąć.
+
+Przestrzegając zasady DRY (Don't Repeat Yourself), eliminujemy nadmiarowy kod, dzięki czemu nasze aplikacje są łatwiejsze w utrzymaniu i mniej podatne na błędy. Jest to szczególnie istotne w rozwoju frontendu, gdzie komponenty wielokrotnego użytku, hooki i composables pomagają tworzyć modularne i wydajne struktury UI.
+
+Zasada KISS (Keep It Simple, Stupid) przypomina nam, aby przedkładać przejrzystość i prostotę nad zbędną złożoność. Unikanie nadmiernie zinżynierowanych abstrakcji, utrzymywanie funkcji i komponentów skupionych oraz zapewnienie, że kod jest łatwy do zrozumienia, znacząco skraca czas rozwoju i poprawia debugowanie.
+
+Zasady SOLID pomagają tworzyć skalowalne i dobrze ustrukturyzowane architektury frontendu.
+
+- SRP (Single Responsibility Principle) zapewnia, że każdy komponent, funkcja lub klasa ma jedną dobrze zdefiniowaną odpowiedzialność, co ułatwia aktualizowanie i testowanie.
+- OCP (Open/Closed Principle) pozwala nam rozszerzać funkcjonalność bez modyfikowania istniejącego kodu, co jest kluczowe przy projektowaniu elastycznych komponentów UI.
+- LSP (Liskov Substitution Principle) zapewnia, że nasze komponenty i funkcje można bezpiecznie podstawiać bez psucia funkcjonalności.
+- ISP (Interface Segregation Principle) pomaga zapobiegać nadmiernie dużym interfejsom, utrzymując nasze typy i zależności modularnymi i skupionymi.
+- DIP (Dependency Inversion Principle) promuje luźno sprzężony kod, ułatwiając podmianę serwisów, API czy źródeł danych bez modyfikowania podstawowej logiki.
+
+Stosując te zasady pragmatycznie, programiści frontendu mogą budować aplikacje, które są skalowalne, łatwe w utrzymaniu i łatwiejsze do debugowania. Choć żadnej zasady nie należy stosować ślepo, trzymanie się tych wytycznych zapewnia lepszą jakość kodu, sprawniejszą współpracę zespołową i długoterminową utrzymywalność.
+
+Ostatecznie rozwój frontendu polega na równoważeniu struktury i elastyczności – na tym, aby wiedzieć, kiedy refaktoryzować, kiedy upraszczać, a kiedy abstrahować. Opanowanie tych zasad pomoże programistom pisać bardziej wydajny, wielokrotnego użytku i odporny na przyszłość kod.
+
+## Źródła
+
+W celu dalszej lektury i głębszego zrozumienia zasad DRY, KISS i SOLID w rozwoju frontendu poniższe materiały dostarczają wartościowych wskazówek, najlepszych praktyk i rzeczywistych przykładów:
+
+- [Principles of Software Development: SOLID, DRY, KISS, and more](https://scalastic.io/en/solid-dry-kiss/)
+- [Front End JavaScript Development Handbook – React, Angular, and Vue Compared
+  ](https://www.freecodecamp.org/news/front-end-javascript-development-react-angular-vue-compared)
+- [What are DRY, KISS, SOLID, etc. classified as?](https://softwareengineering.stackexchange.com/questions/73065/what-are-dry-kiss-solid-etc-classified-as)
+- [Master DRY, YAGNI & KISS: Frontend Code Principles Made Simple](https://www.linkedin.com/pulse/master-dry-yagni-kiss-frontend-code-principles-made-simple-sadhukhan-buokf)
+- Robert C. Martin – _Clean Code_
+- Erich Gamma – _Design Patterns: Elements of Reusable Object-Oriented Software_
+- Eric Evans – _Domain-Driven Design_
+- Kyle Simpson – _You Don't Know JS_
+- Michael Feathers – _Working Effectively with Legacy Code_
+- Dokumentacja JavaScriptu i TypeScriptu
+- Oficjalna dokumentacja Reacta i Vue
+
+Korzystając z tych materiałów, programiści mogą zdobyć głębsze zrozumienie tego, jak skutecznie stosować zasady DRY, KISS i SOLID w JavaScripcie, TypeScripcie, Reakcie oraz Vue, aby tworzyć lepiej ustrukturyzowane i łatwe w utrzymaniu bazy kodu.
+
+~Seb 👊
