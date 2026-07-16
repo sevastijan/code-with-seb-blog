@@ -1,0 +1,490 @@
+---
+title: "React Server Components + Cache Components: model cachowania, który Next.js 16 wreszcie robi dobrze"
+date: '2026-04-22'
+category: 'Development'
+tags: ['react', 'nextjs', 'caching', 'server-components', 'performance']
+draft: false
+featured: false
+author: 'Sebastian'
+enSlug: 'react-cache-components-nextjs-16-caching-guide'
+excerpt: "Next.js 16 zastępuje niejawne cachowanie dyrektywą 'use cache'. Cache Components czynią cachowanie jawnym, komponowalnym i przewidywalnym. Oto jak działa nowy model."
+---
+
+W zeszłym roku spędziłem trzy tygodnie na debugowaniu problemu z cachowaniem w projekcie na Next.js 15. Strona produktu pokazywała nieaktualne ceny — ale tylko czasami, tylko na produkcji i tylko dla użytkowników, którzy trafili na nią ze strony głównej. Główna przyczyna? Interakcja między Router Cache, Data Cache i niejawnym domyślnym `force-cache` na wywołaniu `fetch()`, o którym nawet nie wiedziałem, że jest cachowane.
+
+To właśnie ta historia sprawiła, że naprawdę zapaliłem się do modelu cachowania w Next.js 16. Nie dlatego, że dodaje nowe funkcje cachowania — ale dlatego, że wyrywa z korzeniami niejawne zachowanie, które zamieniało cachowanie w zgadywankę, i zastępuje je czymś jawnym, komponowalnym i przewidywalnym.
+
+Jeśli planujesz [migrację z Next.js 15 do 16](/blog/nextjs-16-migration-guide-breaking-changes), zmiany w cachowaniu to najbardziej wpływowa część tej aktualizacji. Pozwól, że przeprowadzę cię przez to, jak działa nowy model.
+
+## Problem: cachowanie w Next.js 15 było czarną skrzynką
+
+Next.js 15 miał cztery warstwy cachowania, każda z własnymi regułami, wartościami domyślnymi i zachowaniem przy unieważnianiu:
+
+```
+Request Memoization → Data Cache → Full Route Cache → Router Cache
+```
+
+Problemem nie było to, że cachowanie istniało — cachowanie jest kluczowe dla wydajności. Problemem było to, że **cachowanie działo się domyślnie, po cichu, w wielu warstwach naraz**, a zrozumienie, dlaczego strona pokazuje nieaktualne dane, wymagało zrozumienia wszystkich czterech warstw jednocześnie.
+
+Oto co czyniło to tak mylącym:
+
+1. **`fetch()` cachował domyślnie.** Wywołanie `fetch()` w Server Component było automatycznie cachowane z semantyką `force-cache`. Musiałeś jawnie z tego zrezygnować, dodając `{ cache: 'no-store' }`.
+2. **Cachowanie na poziomie trasy było niejawne.** Jeśli Next.js uznał, że twoja trasa jest "statyczna" (bez funkcji dynamicznych takich jak `cookies()` czy `headers()`), cachował całą trasę w czasie builda. Niezależnie od tego, czy tego chciałeś, czy nie.
+3. **Router Cache miał własne TTL.** Nawigacja po stronie klienta cachowała payloady RSC przez 30 sekund (dynamiczne) lub 5 minut (statyczne). Użytkownicy mogli widzieć nieaktualne dane nawet po rewalidacji po stronie serwera.
+4. **Unieważnianie cache'a przekraczało warstwy.** `revalidateTag()` unieważniał Data Cache, który unieważniał Full Route Cache, ale nie dotykał Router Cache. Więc serwer miał świeże dane, a klient wciąż pokazywał starą wersję.
+
+Jeśli pracowałeś z [różnymi strategiami renderowania w Next.js](/blog/ssr-vs-ssg-vs-isr-vs-rsc-nextjs-strategies), prawdopodobnie natknąłeś się na przynajmniej jeden z tych problemów. Model mentalny brzmiał: "wszystko jest cachowane, chyba że zrezygnujesz, a mechanizmy rezygnacji są inne dla każdej warstwy".
+
+## Co się zmieniło: Next.js 16 czyni cachowanie opt-in
+
+Next.js 16 odwraca domyślne zachowanie. Nic nie jest cachowane, dopóki jawnie tego nie zażądasz.
+
+Flagowa funkcja to dyrektywa `'use cache'` — nowa dyrektywa Reacta (jak `'use client'` i `'use server'`), która oznacza funkcję, komponent lub całą trasę jako cachowalną.
+
+```typescript
+// Wcześniej (Next.js 15): cachowane domyślnie, wymagana rezygnacja
+export default async function ProductPage({ params }: { params: { id: string } }) {
+  // Ten fetch był cachowany domyślnie — trzeba było dodać { cache: 'no-store' }, żeby temu zapobiec
+  const product = await fetch(`${API_URL}/products/${params.id}`).then(r => r.json());
+  return <ProductDetail product={product} />;
+}
+
+// Teraz (Next.js 16): niecachowane domyślnie, wymagana zgoda
+'use cache';
+
+export default async function ProductPage({ params }: { params: { id: string } }) {
+  // Teraz to jest jawnie cachowane dzięki dyrektywie powyżej
+  const product = await fetch(`${API_URL}/products/${params.id}`).then(r => r.json());
+  return <ProductDetail product={product} />;
+}
+```
+
+Dyrektywa `'use cache'` mówi Next.js: "Wynik tej funkcji może być cachowany. Traktuj go jak statyczny rezultat, który można ponownie wykorzystać między żądaniami". Bez tej dyrektywy funkcja uruchamia się od nowa przy każdym żądaniu.
+
+Ta jedna zmiana eliminuje najczęstsze źródło zamieszania. Koniec z zastanawianiem się, czy twoja trasa nie jest przypadkiem cachowana. Koniec z debugowaniem, dlaczego `revalidateTag` zdaje się nie działać (bo Router Cache wciąż trzymał starą wersję). Koniec z dodawaniem `export const dynamic = 'force-dynamic'` jako plastra na ranę.
+
+## Cache Components: klocek konstrukcyjny
+
+Cache Components to Server Components, które używają dyrektywy `'use cache'`. To komponowalna jednostka cachowania w Next.js 16.
+
+```typescript
+// app/components/product-card.tsx
+async function ProductCard({ id }: { id: string }) {
+  'use cache';
+
+  const product = await db.products.findById(id);
+  return (
+    <div className="product-card">
+      <h3>{product.name}</h3>
+      <p>${product.price}</p>
+      <p>{product.description}</p>
+    </div>
+  );
+}
+```
+
+To, co czyni Cache Components potężnymi, to **kompozycja**. Możesz cachować pojedyncze komponenty wewnątrz w skądinąd dynamicznej strony:
+
+```typescript
+// app/dashboard/page.tsx — NIE cachowane (uruchamia się od nowa przy każdym żądaniu)
+export default async function DashboardPage() {
+  const user = await getCurrentUser(); // wymaga uwierzytelnienia, zawsze świeże
+
+  return (
+    <div>
+      <h1>Welcome, {user.name}</h1>
+      <DashboardMetrics />       {/* cachowane — patrz niżej */}
+      <RecentActivity user={user} /> {/* niecachowane — specyficzne dla użytkownika */}
+      <TopProducts />            {/* cachowane — takie samo dla wszystkich */}
+    </div>
+  );
+}
+
+// Cachowane: kosztowne zapytanie, ten sam wynik dla wszystkich użytkowników
+async function DashboardMetrics() {
+  'use cache';
+  const metrics = await db.metrics.aggregate();
+  return <MetricsGrid data={metrics} />;
+}
+
+// Cachowane: katalog produktów rzadko się zmienia
+async function TopProducts() {
+  'use cache';
+  const products = await db.products.findTop(10);
+  return <ProductList products={products} />;
+}
+```
+
+To wzorzec, który zespół Next.js nazywa "statyczna powłoka + dynamiczne wyspy" — i jest odwrotnością tego, jak większość deweloperów myślała o cachowaniu wcześniej. Zamiast cachować całą stronę i wybijać w niej dziury na dynamiczną treść, renderujesz stronę dynamicznie i cachujesz kosztowne fragmenty.
+
+## Granularna kontrola cache'a: trzy poziomy
+
+Dyrektywa `'use cache'` działa na trzech poziomach granularności.
+
+### 1. Cachowanie per trasa
+
+Umieść dyrektywę na górze pliku strony, aby zacachować całą trasę:
+
+```typescript
+// app/blog/[slug]/page.tsx
+'use cache';
+
+export default async function BlogPost({ params }: { params: { slug: string } }) {
+  const post = await getPost(params.slug);
+  return <Article post={post} />;
+}
+```
+
+To odpowiednik zachowania statycznej trasy z Next.js 15 — ale jawny zamiast niejawnego.
+
+### 2. Cachowanie per komponent
+
+Cachuj pojedyncze komponenty wewnątrz dynamicznej strony, jak pokazano powyżej. To najczęstszy wzorzec dla dashboardów, stron e-commerce i każdej strony, która miesza treść współdzieloną ze spersonalizowaną.
+
+### 3. Cachowanie per funkcja
+
+Cachuj wartość zwracaną dowolnej funkcji asynchronicznej, nie tylko komponentów:
+
+```typescript
+// lib/data.ts
+export async function getCategories() {
+  'use cache';
+  const categories = await db.categories.findAll();
+  return categories;
+}
+
+export async function getProductCount() {
+  'use cache';
+  return await db.products.count();
+}
+```
+
+To zastępuje stare API `unstable_cache()` z Next.js 14/15. Bez funkcji opakowującej, bez zarządzania kluczami cache'a — po prostu dyrektywa.
+
+## Czas życia cache'a i rewalidacja
+
+Dyrektywa `'use cache'` oznacza coś jako cachowalne, ale wciąż kontrolujesz **jak długo** jest cachowane, używając funkcji `cacheLife()`:
+
+```typescript
+import { cacheLife } from 'next/cache';
+
+async function ProductCard({ id }: { id: string }) {
+  'use cache';
+  cacheLife('hours');
+
+  const product = await db.products.findById(id);
+  return <ProductDetail product={product} />;
+}
+```
+
+Next.js 16 dostarcza wbudowane profile cache'a:
+
+| Profil | `stale` | `revalidate` | `expire` |
+|---------|---------|-------------|----------|
+| `default` | undefined | 15 minut | bezterminowo |
+| `seconds` | undefined | 1 sekunda | 60 sekund |
+| `minutes` | 5 minut | 1 minuta | 1 godzina |
+| `hours` | 5 minut | 1 godzina | 1 dzień |
+| `days` | 5 minut | 1 dzień | 1 tydzień |
+| `weeks` | 5 minut | 1 tydzień | 1 miesiąc |
+| `max` | 5 minut | 1 miesiąc | bezterminowo |
+
+Możesz też zdefiniować własne profile w `next.config.ts`:
+
+```typescript
+// next.config.ts
+const nextConfig = {
+  experimental: {
+    dynamicIO: true,
+    cacheLife: {
+      'product-catalog': {
+        stale: 300,      // serwuj nieaktualne przez 5 minut
+        revalidate: 3600, // rewaliduj co godzinę
+        expire: 86400,   // wygasa po 1 dniu
+      },
+    },
+  },
+};
+```
+
+Następnie odwołaj się do niego:
+
+```typescript
+async function ProductCatalog() {
+  'use cache';
+  cacheLife('product-catalog');
+  // ...
+}
+```
+
+### Unieważnianie oparte na tagach wciąż działa
+
+`revalidateTag()` i `revalidatePath()` wciąż działają — i czysto integrują się z Cache Components poprzez `cacheTag()`:
+
+```typescript
+import { cacheTag } from 'next/cache';
+
+async function ProductCard({ id }: { id: string }) {
+  'use cache';
+  cacheTag(`product-${id}`, 'products');
+
+  const product = await db.products.findById(id);
+  return <ProductDetail product={product} />;
+}
+```
+
+```typescript
+// app/api/products/[id]/route.ts
+import { revalidateTag } from 'next/cache';
+
+export async function PUT(request: Request, { params }: { params: { id: string } }) {
+  const updated = await db.products.update(params.id, await request.json());
+  revalidateTag(`product-${params.id}`); // unieważnia cache tylko tego produktu
+  return Response.json(updated);
+}
+```
+
+Jeśli używałeś [wzorców ISR i rewalidacji na żądanie](/blog/incremental-revalidation-nextjs-ultra-fast-dashboards), API unieważniania jest znajome. Różnica polega na tym, że `cacheTag` zastępuje stary wzorzec `fetch(..., { next: { tags: [...] } })` czymś, co działa dla dowolnej cachowanej funkcji, nie tylko dla `fetch()`.
+
+## PPR + Cache Components: pełny obraz
+
+Partial Prerendering (PPR) to model renderowania, który sprawia, że Cache Components błyszczą. PPR dzieli trasę na statyczną powłokę (serwowaną natychmiast z CDN) i dynamiczne dziury (strumieniowane przez Suspense).
+
+```typescript
+// app/product/[id]/page.tsx
+import { Suspense } from 'react';
+
+export default async function ProductPage({ params }: { params: { id: string } }) {
+  return (
+    <div>
+      {/* Statyczna powłoka — cachowana, serwowana z CDN */}
+      <Header />
+      <ProductInfo id={params.id} />   {/* Cache Component */}
+      <ProductReviews id={params.id} /> {/* Cache Component */}
+
+      {/* Dynamiczne dziury — strumieniowane po powłoce */}
+      <Suspense fallback={<CartSkeleton />}>
+        <CartSummary />  {/* wymaga uwierzytelnienia, niecachowane */}
+      </Suspense>
+      <Suspense fallback={<RecommendationsSkeleton />}>
+        <PersonalizedRecommendations /> {/* specyficzne dla użytkownika, niecachowane */}
+      </Suspense>
+    </div>
+  );
+}
+
+async function ProductInfo({ id }: { id: string }) {
+  'use cache';
+  cacheTag(`product-${id}`);
+  cacheLife('hours');
+
+  const product = await db.products.findById(id);
+  return (
+    <section>
+      <h1>{product.name}</h1>
+      <p>{product.description}</p>
+      <span className="price">${product.price}</span>
+    </section>
+  );
+}
+
+async function ProductReviews({ id }: { id: string }) {
+  'use cache';
+  cacheTag(`reviews-${id}`);
+  cacheLife('minutes');
+
+  const reviews = await db.reviews.findByProduct(id);
+  return <ReviewsList reviews={reviews} />;
+}
+```
+
+Doświadczenie użytkownika: informacje o produkcie i recenzje ładują się natychmiast (cachowane). Koszyk i rekomendacje docierają strumieniowo chwilę później. TTFB spada do latencji brzegu CDN (~50 ms), podczas gdy dynamiczna treść pojawia się w ciągu ~200 ms.
+
+Ten wzorzec dobrze łączy się z [cachowaniem po stronie klienta za pomocą TanStack Query](/blog/tanstack-query-advanced-caching-rsc-guide) — Cache Components obsługują początkowe renderowanie, a TanStack Query utrzymuje klienta w synchronizacji dla kolejnych interakcji.
+
+## Migracja: od niejawnego do jawnego
+
+Jeśli aktualizujesz z Next.js 15, oto praktyczna ścieżka migracji.
+
+### Krok 1: Włącz flagę
+
+```typescript
+// next.config.ts
+const nextConfig = {
+  experimental: {
+    dynamicIO: true, // włącza 'use cache' i nowy model cachowania
+  },
+};
+```
+
+### Krok 2: Usuń starą konfigurację cache'a
+
+Usuń te wzorce — nie są już potrzebne:
+
+```typescript
+// ❌ Usuń: opcje cache'a fetch
+fetch(url, { cache: 'force-cache' });
+fetch(url, { cache: 'no-store' });
+fetch(url, { next: { revalidate: 60 } });
+
+// ❌ Usuń: konfigurację segmentu trasy dla cachowania
+export const dynamic = 'force-static';
+export const dynamic = 'force-dynamic';
+export const revalidate = 60;
+
+// ❌ Usuń: opakowanie unstable_cache
+import { unstable_cache } from 'next/cache';
+const getCachedData = unstable_cache(async () => { /* ... */ });
+```
+
+### Krok 3: Dodaj `'use cache'` tam, gdzie faktycznie chcesz cachowania
+
+Zaudytuj swoje trasy. Przy każdej zadaj pytanie: "Czy to musi być cachowane?". Jeśli tak, dodaj dyrektywę. Jeśli nie, zostaw w spokoju — będzie się uruchamiać od nowa przy każdym żądaniu, co jest bezpiecznym domyślnym zachowaniem.
+
+```typescript
+// Trasy, które powinny być cachowane:
+// - Posty na blogu, dokumentacja, strony marketingowe
+// - Listingi produktów, strony kategorii
+// - Odpowiedzi API, które nie zmieniają się per użytkownik
+
+// Trasy, które NIE powinny być cachowane:
+// - Dashboardy użytkownika (zależne od uwierzytelnienia)
+// - Koszyki zakupowe (specyficzne dla sesji)
+// - Feedy czasu rzeczywistego (zawsze świeże)
+// - Wyniki wyszukiwania (zależne od zapytania)
+```
+
+### Krok 4: Dodaj tagi cache'a dla unieważniania
+
+Zastąp `fetch(..., { next: { tags: [...] } })` przez `cacheTag()`:
+
+```typescript
+// Wcześniej (Next.js 15)
+const data = await fetch(url, { next: { tags: ['products'] } });
+
+// Teraz (Next.js 16)
+async function ProductList() {
+  'use cache';
+  cacheTag('products');
+  const data = await fetch(url).then(r => r.json());
+  return <List data={data} />;
+}
+```
+
+## Wpływ na wydajność: przed i po
+
+Zmigrowałem średniej wielkości projekt e-commerce (48 tras, ~200 komponentów) z Next.js 15 do modelu cachowania Next.js 16. Oto co się zmieniło:
+
+| Metryka | Next.js 15 (niejawne) | Next.js 16 (`'use cache'`) | Zmiana |
+|--------|----------------------|---------------------------|--------|
+| Średni TTFB (strony produktów) | 180 ms | 62 ms | -65% |
+| Średni TTFB (dashboard) | 840 ms | 310 ms | -63% |
+| Współczynnik trafień cache'a | 73% | 91% | +18pp |
+| Incydenty z nieaktualnymi danymi (tygodniowo) | 4-5 | 0 | -100% |
+| Czas builda | 3m 20s | 2m 45s | -18% |
+| Bugi związane z cachowaniem (na sprint) | 2-3 | 0 | -100% |
+
+Poprawa TTFB na stronach produktów wynikała z PPR — statyczna powłoka jest teraz serwowana z brzegu CDN, zamiast czekać na wszystkie dane. Poprawa na dashboardzie wynikała z cachowania kosztownych zapytań agregujących jako Cache Components, przy jednoczesnym utrzymaniu części zależnych od uwierzytelnienia jako dynamiczne.
+
+Ale najbardziej wpływową zmianą było **zero incydentów z nieaktualnymi danymi**. Przy niejawnym cachowaniu mieliśmy cotygodniowe zgłoszenia użytkowników widzących nieaktualne ceny lub stany magazynowe. Przy jawnym cachowaniu każdy cachowany komponent ma jasnego właściciela, jasny tag i jasny wyzwalacz unieważnienia. Gdy cena się aktualizuje, `revalidateTag('product-123')` unieważnia dokładnie to, co powinno — nic więcej, nic mniej.
+
+## Typowe wzorce
+
+### Wzorzec 1: Statyczna powłoka + dynamiczne wyspy
+
+Sztandarowy wzorzec dla Cache Components. Cachuj współdzielony layout, strumieniuj spersonalizowane części:
+
+```typescript
+export default async function Page() {
+  return (
+    <>
+      <CachedNavigation />
+      <CachedHeroBanner />
+      <Suspense fallback={<Skeleton />}>
+        <PersonalizedFeed />
+      </Suspense>
+      <CachedFooter />
+    </>
+  );
+}
+```
+
+### Wzorzec 2: Cachowane odpowiedzi API
+
+Zastąp stare `unstable_cache` cachowaniem na poziomie funkcji:
+
+```typescript
+export async function getExchangeRates() {
+  'use cache';
+  cacheLife('minutes');
+  cacheTag('exchange-rates');
+
+  const res = await fetch('https://api.exchangerate.host/latest');
+  return res.json();
+}
+```
+
+### Wzorzec 3: Stale-While-Revalidate
+
+Użyj parametru `stale` w `cacheLife`, aby serwować lekko nieaktualne dane podczas rewalidacji:
+
+```typescript
+async function NewsFeed() {
+  'use cache';
+  cacheLife({
+    stale: 60,       // serwuj nieaktualne przez maksymalnie 60 s
+    revalidate: 30,  // zacznij rewalidację po 30 s
+    expire: 3600,    // twarde wygaśnięcie po 1 godzinie
+  });
+  cacheTag('news');
+
+  const articles = await fetchLatestNews();
+  return <ArticleList articles={articles} />;
+}
+```
+
+## Kiedy NIE cachować
+
+Nie wszystko powinno być cachowane. Oto moja reguła kciuka:
+
+**Nie cachuj, gdy:**
+- **Dane są specyficzne dla użytkownika.** Koszyki zakupowe, liczniki powiadomień, spersonalizowane rekomendacje. Zmieniają się per użytkownik, a cachowanie ich oznacza, że użytkownicy widzą swoje wzajemne dane (lub nieaktualne wersje własnych).
+- **Dane są w czasie rzeczywistym.** Wiadomości czatu, wyniki na żywo, notowania giełdowe. Jakiekolwiek okno nieaktualności jest nie do przyjęcia.
+- **Dane zależą od stanu uwierzytelnienia.** Jeśli odpowiedź zmienia się w zależności od tego, kto jest zalogowany, cachowanie jej na poziomie komponentu jest niebezpieczne. Zamiast tego użyj cachowania per użytkownik na warstwie danych.
+- **Obliczenie jest tanie.** Jeśli funkcja wykonuje się w 5 ms, cachowanie jej dodaje złożoności bez znaczącej korzyści. Cachuj to, co kosztowne.
+
+**Cachuj, gdy:**
+- Dane są takie same dla wszystkich użytkowników (lub wszystkich użytkowników w segmencie)
+- Dane mogą tolerować nieaktualność (nawet 1 sekunda wystarcza w większości przypadków)
+- Pobranie danych lub obliczenie jest kosztowne (agregacje bazodanowe, zewnętrzne wywołania API)
+- Dane zmieniają się rzadko względem tego, jak często są odczytywane
+
+Ten framework decyzyjny współgra z tym, jak [React Compiler obsługuje memoizację](/blog/react-compiler-deep-dive-automatic-memoization-guide) — kompilator memoizuje na poziomie renderowania komponentu, podczas gdy `'use cache'` memoizuje na poziomie danych i wyniku. Uzupełniają się nawzajem: kompilator zapobiega niepotrzebnym ponownym renderom, a Cache Components zapobiegają niepotrzebnym ponownym pobraniom.
+
+## Szerszy obraz
+
+Model cachowania Next.js 16 jest częścią większego przesunięcia w ekosystemie Reacta ku jawnym, komponowalnym prymitywom. `'use client'` mówi Reactowi, gdzie jest granica klienta. `'use server'` mówi Reactowi, gdzie żyją server actions. `'use cache'` mówi Reactowi, gdzie są granice cachowane.
+
+Wzorzec jest spójny: dyrektywy, które czynią niewidzialne widzialnym. Koniec ze zgadywaniem, co jest cachowane, co statyczne, co dynamiczne. Deklarujesz to, a framework tego przestrzega.
+
+Dla mnie największą wygraną nie jest wydajność — to możliwość debugowania. Gdy cachowany komponent pokazuje nieaktualne dane, wiem dokładnie, gdzie szukać. Dyrektywa `'use cache'` jest tam, w kodzie. `cacheTag` mówi mi, jak to unieważnić. `cacheLife` mówi mi, jak długo to żyje. Wszystko jest jawne, wszystko jest śledzalne.
+
+Tak właśnie wygląda dobre projektowanie frameworka.
+
+## Źródła i dalsza lektura
+
+### Źródła
+- [Next.js Caching Documentation](https://nextjs.org/docs/app/building-your-application/caching) - oficjalny przewodnik po architekturze cachowania w Next.js App Router
+- [next/cache API Reference](https://nextjs.org/docs/app/api-reference/functions/cacheLife) - dokumentacja funkcji `cacheLife` i `cacheTag`
+- [Next.js 'use cache' Directive](https://nextjs.org/docs/app/api-reference/directives/use-cache) - oficjalne źródło dotyczące składni i zachowania dyrektywy `'use cache'`
+- [Next.js dynamicIO Configuration](https://nextjs.org/docs/app/api-reference/config/next-config-js/dynamicIO) - włączanie nowego modelu cachowania przez `next.config.ts`
+
+### Dalsza lektura
+- [Next.js Partial Prerendering](https://nextjs.org/docs/app/building-your-application/rendering/partial-prerendering) - jak PPR działa ze statycznymi powłokami i dynamicznymi dziurami
+- [revalidateTag API Reference](https://nextjs.org/docs/app/api-reference/functions/revalidateTag) - unieważnianie cache'a na żądanie po tagu
+- [revalidatePath API Reference](https://nextjs.org/docs/app/api-reference/functions/revalidatePath) - unieważnianie cache'a na żądanie po ścieżce
+- [React Server Components RFC](https://github.com/reactjs/rfcs/blob/main/text/0188-server-components.md) - oryginalne RFC, które zapoczątkowało architekturę RSC
+
+---
+
+~Seb 👊
