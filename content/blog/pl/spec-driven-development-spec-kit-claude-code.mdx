@@ -1,0 +1,181 @@
+---
+title: "Spec-Driven Development ze Spec Kit i Claude Code: zastępujemy PRD-y wykonywalnymi specyfikacjami"
+date: '2026-05-05'
+category: 'AI'
+tags: ['spec-driven-development', 'spec-kit', 'claude-code', 'ai-workflow', 'productivity']
+draft: false
+featured: false
+author: 'Sebastian'
+enSlug: 'spec-driven-development-spec-kit-claude-code-guide'
+excerpt: 'PRD-y pisano dla ludzi. Specyfikacje pisze się dla agentów. Spec-Driven Development ze Spec Kit, Kiro i OpenSpec staje się w 2026 standardem poważnych workflow z Claude Code — oto jak to działa.'
+---
+
+Kiedy po raz pierwszy naprawdę potrzebowałem Spec-Driven Development, spędziłem dwa dni na kłótni z Claude Code o to, czy funkcja powinna walidować dane wejściowe po stronie klienta, czy serwera. PRD mówił „waliduj dane wejściowe". CLAUDE.md mówił „użyj Zoda". Żaden nie mówił gdzie. Claude wyciągnął rozsądny wniosek. Był to błędny wniosek. Musiałem to wszystko cofnąć.
+
+To był ostatni raz, gdy wdrożyłem nietrywialną funkcję z Claude Code bez specyfikacji przed oczami. Okazuje się, że wzorzec, który rozwiązuje ten problem, ma swoją nazwę — Spec-Driven Development — i od połowy 2026 ma realny zestaw narzędzi. GitHub Spec Kit. Kiro. OpenSpec. Tessl. BMAD-METHOD. Thoughtworks nazwał SDD jedną z definiujących praktyk inżynierskich 2025 roku. Preprint arXiv dla Constitutional SDD ukazał się w lutym 2026. Wtyczka Claude Code dla Spec Kit pojawiła się w zeszłym kwartale.
+
+Poniżej znajdziesz działający wzorzec, porównanie narzędzi oraz pytanie ważniejsze niż to, które narzędzie wybierzesz: kiedy w ogóle warto pisać specyfikację.
+
+## Przejście od PRD do specyfikacji
+
+PRD to dokument dla ludzkich czytelników. Zakłada, że czytelnik potrafi uzupełnić luki na podstawie kontekstu organizacyjnego, zapytać product managera albo spojrzeć na istniejący system, żeby wywnioskować to, co jest domyślne. PRD, który mówi „użytkownicy powinni móc zresetować hasło", działa, bo każdy czytelnik zna te wzorce. Wie, że jest krok z e-mailem. Wie, że link wygasa. Wie, że nieudane próby są ograniczane rate limitem.
+
+Specyfikacja to dokument dla agenta, który nie ma żadnego z tych kontekstów organizacyjnych. Ta sama funkcja w formie specyfikacji musi zdefiniować krok z e-mailem, okno wygaśnięcia, progi rate limitu, zachowanie blokady po powtarzających się niepowodzeniach, komunikaty błędów, wpisy w logu audytowym, zmiany w schemacie bazy danych, kontrakty API oraz granicę między walidacją po stronie klienta a serwera. Wszystko, co ludzki czytelnik uzupełnił domyślnie, musi zostać wyrażone wprost.
+
+Artykuł Constitutional SDD z arXiv formalizuje to rozróżnienie. Specyfikacje opisują **zachowanie zewnętrzne**: mapowania wejście/wyjście, warunki wstępne i końcowe, niezmienniki, ograniczenia, typy interfejsów, kontrakty integracyjne oraz logikę sekwencyjną, którą można wyrazić jako maszyny stanów. Wszystko, co zależy od wnioskowania czytelnika, z definicji nie jest częścią specyfikacji.
+
+To nie jest to samo co twój `CLAUDE.md`. [Warstwa kontekstu CLAUDE.md](/blog/claude-md-memory-persistent-context-guide) opisuje, jak działa twoja baza kodu — konwencje, wzorce, rzeczy, którym musi odpowiadać każda zmiana. Specyfikacja opisuje, co konkretna zmiana ma robić. CLAUDE.md to konstytucja. Specyfikacje to ustawy.
+
+## Działający workflow ze Spec Kit
+
+GitHub Spec Kit to obecnie najczęściej wdrażany zestaw narzędzi i ten z pełnoprawną integracją z Claude Code. Wtyczka z kwietnia 2026 wprowadziła dziewięć slash commands: `constitution`, `specify`, `clarify`, `plan`, `tasks`, `implement`, `analyze`, `checklist` i `taskstoissues`. Zamierzony przepływ używa ich podzbioru.
+
+Model myślowy to trzy fazy: **Specify**, **Plan**, **Tasks**. Każda faza tworzy artefakt w markdownie, który konsumuje kolejna faza.
+
+**Specify** generuje dokument wymagań. Zaczynasz od jednoakapitowego briefu — „pozwól użytkownikom eksportować dane z dashboardu jako CSV" — a Spec Kit przeprowadza cię przez wymagania w formie user stories z kryteriami akceptacji. Każda historia ma po stronie użytkownika formę „Jako / Chcę / Aby", a po stronie akceptacji formę „Zakładając / Gdy / Wtedy". Wynik ląduje w `specs/<feature>/requirements.md`.
+
+Własne wskazówki Spec Kit są w tej kwestii bezpośrednie: nie traktuj pierwszej próby jako ostatecznej. Wykorzystaj rozmowę, żeby doprecyzować, zakwestionować, zadać pytania. Komenda `/clarify` istnieje dokładnie po to — wymusza jawne rozstrzygnięcie niejednoznaczności, które specyfikacja pominęła. To część, którą większość zespołów pomija i za którą płaci później.
+
+**Plan** generuje projekt techniczny na podstawie wymagań. Decyzje architektoniczne, wybory bibliotek, zmiany schematu, kontrakty API, punkty integracji. Wynik trafia do `specs/<feature>/design.md`. Plan to miejsce, w którym zaszywasz swoją realną specyfikę stacku — konwencje Postgresa, wzorce TanStack Query, [granice sterowane zdarzeniami](/blog/killing-prop-drilling-event-driven-frontend-architecture), do których już się zobowiązałeś. Claude Code czyta `CLAUDE.md` podczas planowania, dlatego dobrze dopracowany `CLAUDE.md` daje spójny plan.
+
+**Tasks** generuje uporządkowaną, świadomą zależności listę zadań na podstawie projektu. Wynik to `specs/<feature>/tasks.md`. Każde zadanie jest konkretne, ma zdefiniowany zakres i odsyła do sekcji wymagań i projektu, które implementuje. Zadania, które mogą działać równolegle, dostają znacznik równoległości; zadania, które muszą być zserializowane, są jawnie uporządkowane. Tutaj workflow przestaje być teoretyczny — zadania stają się promptami, które napędzają `/implement`.
+
+`/implement` przechodzi następnie przez listę zadań. Dla każdego zadania Claude czyta sekcję wymagań, sekcję projektu i otaczający kod, a następnie tworzy diff. Ty przeglądasz, zatwierdzasz, idziesz dalej. Dyscyplina polega na tym, że każda linia kodu prowadzi z powrotem do zadania, każde zadanie prowadzi do decyzji projektowej, a każda decyzja projektowa prowadzi do wymagania.
+
+## Prawdziwy przykład
+
+Weźmy funkcję, którą wdrożyłem w zeszłym miesiącu: ograniczony rate limitem eksport CSV z dashboardu. Bez SDD zapromptowałbym Claude Code czymś w stylu „dodaj przycisk eksportu CSV do dashboardu". Trzy iteracje później miałbym działający kod, któremu brakowałoby rate limitingu, który nie obsługiwałby wdzięcznie dużych zbiorów danych i który wystawiałby endpoint technicznie wykrywalny bez autoryzacji.
+
+Ze Spec Kit:
+
+```bash
+# W Claude Code z zainstalowaną wtyczką spec-kit
+/specify Export dashboard data as CSV with rate limiting
+```
+
+Spec Kit tworzy `specs/csv-export/requirements.md` z historiami takimi jak:
+
+```markdown
+US-1: Authenticated user exports current dashboard view as CSV
+
+Given a user is authenticated and viewing a dashboard
+When they click the "Export CSV" button
+Then a CSV file is generated containing the currently visible rows
+And the file downloads with the dashboard name and date in the filename
+And the user is rate-limited to 10 exports per hour per account
+
+US-2: Large dataset export streams progressively
+...
+```
+
+Następnie `/plan` tworzy `design.md`:
+
+```markdown
+## Architecture
+
+- Endpoint: POST /api/dashboards/:id/export (server-only)
+- Auth: required, scoped to dashboard owner
+- Rate limit: Redis-backed, 10/hour/account, returns 429 with Retry-After
+- CSV generation: streamed via Node.js readable stream
+- File size cap: 100MB hard limit, returns 413 if exceeded
+- Audit log: every export is logged with user_id, dashboard_id, timestamp, row_count
+```
+
+Następnie `/tasks`:
+
+```markdown
+- [ ] T1: Add Redis rate-limit middleware [parallel-safe]
+- [ ] T2: Add audit log table migration [parallel-safe]
+- [ ] T3: Create /api/dashboards/:id/export endpoint [depends: T1, T2]
+- [ ] T4: Implement streaming CSV generator [parallel-safe]
+- [ ] T5: Wire endpoint to CSV generator [depends: T3, T4]
+- [ ] T6: Add Export CSV button to dashboard UI [depends: T5]
+- [ ] T7: Add 429 / 413 error handling in UI [depends: T6]
+```
+
+A `/implement` tworzy faktyczny kod, jedno zadanie na raz, każde powiązane ze swoim wymaganiem.
+
+Całkowity czas od „chcę dodać eksport CSV" do zmergowanej funkcji wyniósł około 90 minut. Ta sama funkcja bez SDD zajęłaby 90 minut generowania plus kolejne 45 minut rozplątywania części, które nie odpowiadały mojej rzeczywistej intencji. Specyfikacja nie jest szybsza przy pierwszym przejściu; jest szybsza przy przejściu poprawkowym.
+
+## Spec Kit kontra Kiro kontra OpenSpec kontra Tessl
+
+Cztery narzędzia dominują obecnie w dyskusji o SDD. Nie są wymienne.
+
+**GitHub Spec Kit** jest najbardziej uniwersalny. Jest sterowany z CLI, agnostyczny wobec agentów (działa z Claude Code, Cursorem, Copilotem, Gemini CLI), markdown-first i integruje się czysto z dowolnym workflow gitowym, którego już używasz. Model trójfazowy jest prosty, wtyczka Claude Code jest solidna, a komenda `taskstoissues` może automatycznie wypychać wygenerowane zadania do GitHub Issues. To ten, od którego większość zespołów powinna zacząć.
+
+**Kiro** to podejście AWS dystrybuowane jako IDE. Używa tej samej struktury `requirements.md` / `design.md` / `tasks.md` co Spec Kit, ale dostarczane jest jako IDE oparte na VS Code, a nie narzędzie CLI. Silna integracja z AWS, opiniotwórcze podejście do workflow, mniej elastyczne, jeśli nie jesteś już w ekosystemie AWS. Warte wyboru, jeśli twój zespół działa już w mocno nasyconym AWS terenie.
+
+**OpenSpec** to najlżejsze z całej czwórki. Workflow to `propose / apply / archive`. Faza propose generuje `openspec/changes/<feature>/{proposal.md, design.md, tasks.md}`. Faza apply implementuje. Faza archive przenosi ukończone specyfikacje do `openspec/changes/archive/`. Zabójcza funkcja to fakt, że historia specyfikacji żyje w twoim repozytorium jako czysty markdown — bez zależności od IDE, bez komponentu chmurowego, tylko git. Jeśli chcesz jak najlżejszej ingerencji w istniejący workflow, to jest to.
+
+**Tessl** to podejście AI-native. Specyfikacje to nie tylko markdown — to typowane struktury, nad którymi narzędzie bezpośrednio rozumuje. Kompromis polega na tym, że format specyfikacji Tessl jest jego własny; nie przeniesiesz łatwo specyfikacji z Tessl do innego narzędzia. Jeśli chcesz maksymalnej korzyści ze spec-as-data i akceptujesz vendor lock-in, Tessl posuwa tę metodologię najdalej.
+
+Wzorzec, na którym się ustaliłem w pracy z klientami: Spec Kit do prac nad nowymi funkcjami, gdzie specyfikacja wymaga przeglądu przez ludzi, OpenSpec do pracy solo lub w małym zespole, gdzie specyfikacja jest głównie pomocą dla Claude Code, oraz `CLAUDE.md` plus jednolinijkowy prompt do czegokolwiek naprawdę trywialnego. Tessl wybrałbym tylko do produktów mocno opartych na narzędziach AI, gdzie sam format specyfikacji jest częścią wartości.
+
+## Constitutional SDD i aspekt bezpieczeństwa
+
+Artykuł Constitutional SDD, który ukazał się na arXiv w lutym 2026, dodał coś, co pierwotne ujęcie SDD pomijało: jawne ograniczenia bezpieczeństwa wbudowane w format specyfikacji. Każde wymaganie zostaje sparowane z wpisami CWE, które mogłoby naruszyć, a faza implementacji sprawdza wygenerowany kod względem tych mapowań.
+
+Brzmi to akademicko. W praktyce to brakująca warstwa między [narzędziami SAST wychwytującymi podatności podczas builda](/blog/vibe-coding-security-audit-checklist) a [obronami przed prompt injection opartymi na LLM](/blog/prompt-injection-llm-security-guide), które łapią ataki w czasie działania. Constitutional SDD wychwytuje klasę błędów, w których wymaganie było naiwne pod względem bezpieczeństwa — specyfikacja mówiła „pozwól użytkownikom przesyłać pliki", nie mówiąc „waliduj typy plików i odrzucaj cokolwiek pasującego do CWE-434", a implementacja wiernie wykonała niedookreśloną intencję.
+
+To, czy formalny framework Constitutional SDD trafi do któregoś z popularnych narzędzi — Spec Kit, Kiro, OpenSpec — to część, którą warto obserwować przez resztę 2026 roku. Sama zasada jest jednak wartościowa niezależnie: każde wymaganie w twojej specyfikacji powinno być sparowane z trybami awarii, których jawnie nie dopuszcza. SDD bez tego ograniczenia jest szybsze, ale błędy, które wypuszcza, są bardziej pewne siebie.
+
+## Kiedy SDD to zbędny narzut
+
+Uczciwa część. SDD nie jest darmowe. Napisanie specyfikacji zajmuje od 20 do 60 minut dla nietrywialnej funkcji. Przegląd specyfikacji z ludźmi trwa dłużej. Ten narzut jest uzasadniony dla niektórych zmian i oczywiście nieuzasadniony dla innych.
+
+Gdzie się opłaca:
+
+- Funkcje obejmujące więcej niż jedną usługę, więcej niż jednego dewelopera lub więcej niż jeden sprint
+- Wszystko, co dotyka uwierzytelniania, autoryzacji, płatności lub migracji danych
+- Zmiany, w których koszt pominiętego wymagania to realne pieniądze lub realny wpływ na klienta
+- Prace greenfield, gdzie przestrzeń projektowa jest szeroka, a koszt iteracji w złym kierunku wysoki
+
+Gdzie to zbędny narzut:
+
+- Poprawki błędów, gdzie błędem jest sama specyfikacja
+- Narzędzia wewnętrzne, których jesteś jedynym użytkownikiem
+- Poprawki wizualne, zmiany treści, aktualizacje zależności
+- Wszystko, gdzie wymaganie mieści się w jednym zdaniu, a implementacja w jednym pliku
+
+Pragmatyczna zasada: jeśli napisałbyś opis PR-a dłuższy niż trzy akapity, to już piszesz na wpół uformowaną specyfikację. Użyj SDD. Jeśli opis twojego PR-a mieści się w dwóch zdaniach, narzut specyfikacji przeważy nad korzyścią.
+
+## Jak to się wpisuje w resztę twojego stacku Claude Code
+
+SDD to jeden element większego workflow Claude Code, który zbiega się w 2026 roku. Wzorzec, który konsekwentnie działa:
+
+1. **Spec Kit Specify + Plan + Tasks** na początku funkcji. Specyfikacja jest źródłem prawdy.
+2. **Plan Mode** do chirurgicznego rozpoznania, gdy projekt jest niejasny. [Plan Mode to opis PR-a, zanim PR w ogóle powstanie](/blog/claude-code-plan-mode-ultraplan-production-guide); specyfikacja to opis PR-a, zanim PR w ogóle zostanie rozpoczęty.
+3. **Implement** zadanie po zadaniu z regularnym `/review` pomiędzy zadaniami.
+4. **`/ultrareview`** jako bramka przed mergem na złożonym diffie. [Chmurowa flota polowania na błędy](/blog/claude-code-ultrareview-cloud-bug-hunting-guide) wychwytuje klasę błędów obejmujących wiele zadań — współbieżność, sprawdzanie granic, założenia integracyjne — których krok `/implement` per-zadanie jest zbyt wąski, by je dostrzec.
+
+Ta sekwencja — spec, plan, implement, ultrareview — to workflow, który najkonsekwentniej obserwowałem wypuszczający czyste diffy w bazach kodu klientów przez cały 2026 rok. Każdy krok jest opcjonalny. Żaden z nich nie jest nowatorski. Dyscyplina polega na faktycznym wykonywaniu ich w kolejności, a nie na pomijaniu specyfikacji dlatego, że funkcja wydaje się mała.
+
+## Co zrobić w tym tygodniu
+
+Jeśli nie próbowałeś jeszcze SDD na prawdziwej funkcji, najszybszym sposobem poczucia różnicy jest zainstalowanie wtyczki Claude Code do Spec Kit i przejście pełnej pętli Specify → Plan → Tasks → Implement na następnej funkcji, którą inaczej zapromptowałbyś jednym strzałem. Pierwsza będzie wydawać się wolna. Druga będzie wydawać się oczywista.
+
+Jeśli próbowałeś i cię odbiło, najczęstszym trybem porażki jest traktowanie specyfikacji jako jednorazowego artefaktu zamiast rozmowy. Komenda `/clarify` istnieje nie bez powodu. Specyfikacja staje się użyteczna, gdy kwestionujesz pierwszą wersję, a nie gdy ją akceptujesz.
+
+Kategoria błędów, którą SDD wychwytuje wcześnie, to kategoria, której złapanie kosztuje najwięcej, gdy zrobi się to późno. To cała argumentacja w jednym zdaniu.
+
+## Źródła
+
+### Źródła
+
+- [GitHub Spec Kit](https://github.com/github/spec-kit) — oficjalny zestaw narzędzi i wtyczka Claude Code
+- [Understanding Spec-Driven Development: Kiro, spec-kit, and Tessl — Martin Fowler](https://martinfowler.com/articles/exploring-gen-ai/sdd-3-tools.html) — porównanie trzech podejść
+- [Spec-driven development — Thoughtworks](https://www.thoughtworks.com/en-us/insights/blog/agile-engineering-practices/spec-driven-development-unpacking-2025-new-engineering-practices) — ujęcie praktyki i sygnały adopcji
+- [Spec-driven development with AI — GitHub Blog](https://github.blog/ai-and-ml/generative-ai/spec-driven-development-with-ai-get-started-with-a-new-open-source-toolkit/) — kontekst premiery Spec Kit
+- [How to write a good spec for AI agents — Addy Osmani](https://addyosmani.com/blog/good-spec/) — praktyczne wskazówki dotyczące jakości specyfikacji
+- [Kiro Specs Documentation](https://kiro.dev/docs/specs/) — dokumentacja trójfazowego workflow Kiro
+- [OpenSpec on GitHub](https://github.com/Fission-AI/OpenSpec) — przepływ propose / apply / archive
+
+### Dalsza lektura
+
+- [Best Practices for Using PRDs with Claude Code in 2026](https://www.chatprd.ai/learn/PRD-for-Claude-Code) — mostkowanie PRD-ów do artefaktów w kształcie specyfikacji
+- [Przewodnik po CLAUDE.md i trwałym kontekście](/blog/claude-md-memory-persistent-context-guide) — warstwa kontekstu, która uzupełnia specyfikacje per-funkcja
+- [Produkcyjny workflow Claude Code Plan Mode](/blog/claude-code-plan-mode-ultraplan-production-guide) — kiedy sięgać po plany, a kiedy po specyfikacje
+
+---
+
+~Seb 👊
