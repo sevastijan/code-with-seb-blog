@@ -1,0 +1,145 @@
+---
+title: 'Twoje prompty z Opusa szkodzą Fable 5: przewodnik po de-preskrypcji'
+date: '2026-07-03'
+category: 'AI'
+tags: ['claude', 'prompt-engineering', 'ai-models', 'claude-api', 'agentic-coding']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: "Usunąłem jedną trzecią system promptu i Fable 5 zaczął działać lepiej. Dlaczego preskryptywne prompty szkodzą silniejszym modelom — z gotowymi przeróbkami."
+enSlug: 'fable-5-prompting-de-prescribing-guide'
+---
+
+Zmianą o największym wpływie, jaką wprowadziłem w moim ustawieniu Claude Fable 5, było usuwanie rzeczy. Nie dodanie sprytnej nowej instrukcji, nie lepszy przykład — usuwanie. Jedna trzecia mojego starannie dostrojonego system promptu, czterdzieści kilka linii krok-po-kroku obudowy nagromadzonej przez dwa lata generacji modeli — a wynik stał się wymiernie lepszy w dniu, w którym to zniknęło.
+
+To nie jest kontrowersyjna teza; jest to w samym migration guide Anthropic, w jednym suchym zdaniu, które większość ludzi przewija: *prompty napisane pod wcześniejsze modele są często zbyt preskryptywne i obniżają jakość wyjścia*. Każdy to czyta, kiwa głową i dalej wysyła swoje prompty z ery Opusa do `claude-fable-5` bez zmian. To jest praktyczna wersja tego zdania — zmiany w **prompting dla Fable 5**, które faktycznie poprawiły moje wyniki, z gotowymi do skradzenia przeróbkami przed/po.
+
+## Dlaczego twoje prompty w ogóle są preskryptywne
+
+Każda preskryptywna linia w twoim system prompcie to blizna po słabszym modelu. Dodałeś „Najpierw wypisz wszystkie dotknięte pliki. Po drugie, zrób plan. Po trzecie, ...", bo jakiś model sprzed dwóch lat pomijał planowanie. Dodałeś „CRITICAL: You MUST use the search tool", bo model za rzadko go uruchamiał. Dodałeś „Po każdych 3 wywołaniach narzędzi podsumuj postęp", bo model milkł na dziesięć minut.
+
+Żadna z tych linii nie opisuje twoich rzeczywistych wymagań. Opisują *obejścia* — proceduralne kule dla modeli, którym nie można było zaufać, że wyprowadzą proces z celu. To rozróżnienie to sedno całego przewodnika: **wymagania przeżywają aktualizacje modeli; obejścia się przeterminowują**. Problem w tym, że nie przeterminowują się łagodnie. Silny wykonawca instrukcji nie ignoruje twoich przestarzałych kul — on je wykonuje.
+
+## Mechanizm: posłuszeństwo jest bugiem
+
+Fable 5 wykonuje instrukcje wierniej niż jakikolwiek model, którego używałem. To w większości wspaniałe i czasem dokładnie to jest problemem. Kiedy wyliczasz kroki dla modelu, który planuje lepiej niż twoje wyliczenie, pojawiają się trzy tryby awarii:
+
+1. **Twoje kroki stają się sufitem.** Model wykonuje twoje siedem kroków i zatrzymuje się — nawet jeśli krok czwarty ujawnił coś, co powinno było zmienić plan. Podałeś procedurę, więc ją wykonał
+2. **Wymuszone zachowania nadmiernie się wyzwalają.** „ALWAYS search before answering" produkuje wyszukiwania przy pytaniach, które model zna na wyrywki. „If in doubt, use X" produkuje X nieustannie, bo dosłowny czytelnik zawsze potrafi skonstruować wątpliwość
+3. **Filtry obronne działają zbyt dobrze.** Powiedz mu „raportuj tylko problemy o wysokim priorytecie" w prompcie do code review, a on przeprowadzi dokładne dochodzenie, znajdzie wszystko, a potem *po cichu przemilczy* znaleziska, które ocenia jako poniżej twojej poprzeczki. Twój mierzony recall spada, podczas gdy faktyczna zdolność modelu do znajdowania bugów wzrosła
+
+Ten trzeci jest najbardziej podstępny — patrzyłem, jak review harness „psuje się" na Fable 5, aż zdałem sobie sprawę, że precyzja wzrosła, a instrukcja o zachowawczym raportowaniu zjadała recall.
+
+## Przed / po: przeróbki
+
+### Wyliczanie kroków → cel plus ograniczenia
+
+```markdown
+# BEFORE (Opus-era)
+When refactoring:
+1. First list every file that imports the module
+2. Then create a migration plan and show it to me
+3. Then update files one at a time, running tests after each
+4. Then update the documentation
+
+# AFTER (Fable 5)
+Refactor with the test suite green at every commit. Don't batch
+unrelated changes. Documentation counts as part of the change,
+not a follow-up.
+```
+
+Wersja „przed" koduje *procedurę*; wersja „po" koduje to, na czym naprawdę mi zależy (bezpieczeństwo, atomowość, kompletność) i pozwala modelowi ułożyć kolejność pracy — w tym robić rzeczy, których moje wyliczenie nigdy nie przewidziało, jak odkrycie, że dokumentacja odwoływała się do ścieżki kodu, która już nie istniała.
+
+### Agresywne popychanie do narzędzi → warunki wyzwalania
+
+```markdown
+# BEFORE
+CRITICAL: You MUST use the search tool. Default to searching.
+If in doubt, search.
+
+# AFTER
+Search when the answer depends on information that may have
+changed since your training - versions, prices, current events.
+Answer directly when it doesn't.
+```
+
+Warunki, nie przykazania. Model dostaje *kiedy*, czyli jedyną część, której kiedykolwiek mu brakowało.
+
+### Wymuszona narracja → domyślne milczenie
+
+```markdown
+# BEFORE
+After every 3 tool calls, post a progress summary.
+
+# AFTER
+(delete it entirely — then, if the default narration is too chatty:)
+Default to silence between tool calls. Write one sentence when you
+find something, change direction, or hit a blocker. Full summary at
+the end only.
+```
+
+Fable 5 sam z siebie dobrze narratuje; linia z wymuszoną kadencją tylko dokłada szum na wierzch.
+
+### Pułapka recallu w code review
+
+```markdown
+# BEFORE
+Be conservative. Only report high-severity issues. Don't nitpick.
+
+# AFTER
+Report every issue you find, including ones you're uncertain about,
+each with a confidence level and severity estimate. A downstream
+filter handles ranking - your job here is coverage.
+```
+
+Przenieś filtrowanie poza krok znajdowania. Nawet jeśli „filtr w dół strumienia" to tylko ty przelatujący wzrokiem po liście, znajdź-a-potem-filtruj bije proszenie dosłownie myślącego modelu, by cenzurował się sam.
+
+## Co zachować — i co dodać
+
+De-preskrypcja to nie prompt-minimalizm. Dwie kategorie instrukcji zyskują na Fable 5 *więcej* wartości, właśnie dlatego, że tak dobrze je wykonuje:
+
+**Kontrakty behawioralne.** Styl komunikacji, ton, kształt wyjścia — model jest bardzo czuły na wyraźną sekcję stylu, więc inwestuj tam, zamiast walczyć z formatem wyjścia w dół strumienia. Tak samo z granicami autonomii: „przy drobnych wyborach wybierz rozsądną opcję i odnotuj ją; przy działaniach destrukcyjnych najpierw zapytaj" robi więcej pożytecznej pracy niż jakakolwiek proceduralna obudowa kiedykolwiek robiła.
+
+**Wymagania co do ugruntowania (grounding).** Jedna linia, którą raczej dodałem niż usunąłem: *„Zanim zaraportujesz postęp, sprawdź każde twierdzenie względem wyniku narzędzia z tej sesji; jeśli coś nie jest jeszcze zweryfikowane, powiedz to."* To nie jest preskrypcja procesu — to standard dowodowy, i obowiązuje bez względu na to, jak model zdecyduje się pracować.
+
+Test, którego używam dla każdej ocalałej linii: **czy to opisuje wynik, którego wymagam, czy metodę, którą założyłem?** Wyniki zostają. Metody wylatują — a ten sam test dotyczy kontekstu, którym *karmisz* model, dlatego moje [pliki CLAUDE.md też się skróciły](/blog/claude-md-memory-persistent-context-guide): ograniczenia projektowe zostały, przepisy krok-po-kroku „jak pracować w tym repo" wyleciały.
+
+## Metoda A/B
+
+Nie de-preskrybuj na wiarę — sednem jest to, że intuicje o promptach zbudowane na starych modelach są przeterminowane. Mój proces, jeden workload naraz:
+
+1. Zrób snapshot bieżącego promptu jako kontrolę
+2. Zbuduj wariant: usuń każde wyliczenie kroków, wymuszone wyzwalanie i instrukcję kadencji; zachowaj ograniczenia i styl
+3. Uruchom oba na tych samych 10-15 reprezentatywnych zadaniach (prawdziwych z twojej historii, nie syntetycznych)
+4. Porównaj pod kątem jakości wyniku *oraz* zużycia tokenów — de-preskrybowane prompty często kosztują mniej, bo model przestaje odprawiać rytuały
+
+Na moim głównym workloadzie do kodowania wariant de-preskrybowany wygrał 11 z 14 zadań i pobierał średnio o 9% mniej tokenów. Trzy przegrane miały wspólny wzorzec wart poznania: były to zadania, w których moja stara obudowa kodowała *prawdziwą wiedzę dziedzinową* (ograniczenie kolejności deploya, konwencję nazewnictwa z nieoczywistego powodu). Te linie wróciły — przepisane jako ograniczenia z dołączonym *dlaczego*, nie jako kroki. Fable 5 radzi sobie zauważalnie lepiej, gdy zna powód stojący za regułą; ograniczenie z uzasadnieniem jest stosowane z rozsądkiem, goła reguła stosowana jest dosłownie.
+
+Ten sam audyt dotyczy [Claude Code skills](/blog/claude-code-skills-reusable-ai-workflows-guide): skille napisane jako sztywne przepisy krok-po-kroku pod starsze modele ograniczają Fable 5 tak samo jak system prompty. Podaj cel i ograniczenia; pozwól, by procedurę przyniósł model — nawet zaktualizuje własne podejście w trakcie zadania na podstawie tego, czego się nauczy, czego żaden zamrożony przepis nie potrafi.
+
+## Checklista
+
+1. Przeszukaj (grep) swoje prompty pod kątem `First,` / `Then,` / `Step 1` — każde trafienie to kandydat do de-preskrypcji
+2. Przeszukaj pod kątem `CRITICAL`, `MUST`, `ALWAYS`, `If in doubt` — przepisz jako warunki wyzwalania lub usuń
+3. Usuń linie z wymuszoną kadencją (podsumowania postępu, „meldunek co N")
+4. Prompty w stylu review: przenieś filtrowanie priorytetu/pewności poniżej kroku znajdowania
+5. Zachowaj ograniczenia, kontrakty stylu, granice autonomii, standardy dowodowe — dodaj uzasadnienie do reguł, które przeżyły
+6. Testuj A/B na prawdziwych zadaniach; spodziewaj się przywrócenia kilku linii jako *ograniczeń z powodami*
+7. Powtórz audyt na skillach i CLAUDE.md, nie tylko na API system promptach
+
+Dwa lata prompt engineeringu nauczyło nas pisać procedury, bo modele nie potrafiły planować. Pamięć mięśniowa tamtej ery jest teraz narzutem. Prompty, które wyciskają z Fable 5 najwięcej, czytają się mniej jak runbooki, a bardziej jak brief, który dałbyś starszemu inżynierowi: oto cel, oto ograniczenia, oto dlaczego mają znaczenie — działaj. Claude Code zamienił od tego czasu ten brief w prymityw pierwszej klasy: [komenda /goal](/blog/claude-code-goal-command-fable-5-guide) bierze dokładnie taki weryfikowalny stan końcowy i utrzymuje model przy pracy, dopóki niezależny ewaluator nie potwierdzi, że jest osiągnięty.
+
+## Źródła (References)
+
+### Źródła
+- [Migration guide — Claude Platform Docs](https://platform.claude.com/docs/en/about-claude/models/migration-guide) - wytyczna o „zbyt preskryptywnych" promptach i zalecane snippety promptów dla Fable 5
+- [Introducing Claude Fable 5 and Claude Mythos 5 — Claude Platform Docs](https://platform.claude.com/docs/en/about-claude/models/introducing-claude-fable-5-and-claude-mythos-5) - zmiany behawioralne względem wcześniejszych modeli
+- [Claude Fable 5: What Changed, and How to Stop Prompting It Like Opus — Ken Huang](https://kenhuangus.substack.com/p/claude-fable-5-what-changed-and-how) - niezależne spojrzenie na zmianę w promptowaniu
+
+### Dalsza lektura
+- [Claude Fable 5 Benchmarks and Prompting Guide — Agentpedia](https://agentpedia.codes/blog/claude-fable-5-benchmark-prompting-guide) - szersze wzorce promptowania dla rodziny Claude 5
+- [Claude prompt engineering documentation — Anthropic](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/overview) - bazowe techniki, które wciąż obowiązują
+
+---
+
+~Seb 👊

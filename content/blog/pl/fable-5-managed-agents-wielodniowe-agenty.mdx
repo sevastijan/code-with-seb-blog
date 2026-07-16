@@ -1,0 +1,167 @@
+---
+title: 'Wielodniowe autonomiczne agenty: przewodnik po Fable 5 + Managed Agents'
+date: '2026-07-06'
+category: 'AI'
+tags: ['claude', 'managed-agents', 'autonomous-agents', 'claude-api', 'ai-agents']
+draft: false
+featured: false
+author: 'Sebastian'
+enSlug: 'fable-5-managed-agents-multi-day-autonomous-guide'
+excerpt: "Dałem Fable 5 rubrykę i kontener, a sam sprawdzałem postęp dwa razy dziennie. Oto pełna konfiguracja Managed Agents - outcomes, gradery, strumienie zdarzeń - z działającym kodem."
+---
+
+Najdłużej, jak kiedykolwiek przed tym miesiącem pozwoliłem agentowi AI działać bez nadzoru, było jakieś czterdzieści minut — i przez cały ten czas pilnowałem terminala. W miniony piątek po południu odpaliłem sesję, sprawdziłem ją dwa razy w ciągu weekendu, a dziś rano odebrałem gotową migrację data pipeline — testy przechodzą, spisany changelog i samoocena względem kryteriów akceptacji, które zdefiniowałem na starcie.
+
+Umożliwiły to dwie rzeczy i żadna z nich nie działa dobrze w pojedynkę. **Claude Fable 5** to pierwszy model, któremu ufam, że utrzyma spójność przez miliony tokenów autonomicznej pracy. **Claude Managed Agents** to harness, który sprawia, że wielodniowe przebiegi są operacyjnie sensowne — sesje zarządzane po stronie serwera, workspace w kontenerze i pętla oceniająca, która iteruje względem Twojej definicji ukończenia. Oto kompletna konfiguracja, z działającym kodem.
+
+## Dlaczego Fable 5 zmienia rachunek
+
+Autonomia o długim horyzoncie zawsze zawodziła w ten sam sposób: agent startuje mocno, kumuluje dług kontekstowy i gdzieś koło drugiej godziny zaczyna z pełnym przekonaniem robić coś nie tak. Bardziej wydajne modele odsuwały ten klif dalej; Fable 5 to pierwszy, przy którym — w moich przebiegach — klif w praktyce przestał być wiążącym ograniczeniem. Benchmarki premierowe Anthropic wskazują w tym samym kierunku (Stripe kompresujące miesiące migracji 50-milionowej bazy kodu do kilku dni), a moje doświadczenie na mniejszą skalę to potwierdza: model planuje w ramach etapów, deleguje do sub-agentów, weryfikuje własną pracę i koryguje kurs bez mojego udziału w pętli.
+
+Ale wydajny model w kruchym harnessie i tak zawiedzie — na procesie, nie na inteligencji. Jeśli Twoim „harnessem” jest pętla while w skrypcie na laptopie, zerwane połączenie o drugiej w nocy kończy przebieg. To właśnie problem, który Managed Agents naprawdę rozwiązuje: Anthropic uruchamia pętlę agenta *oraz* hostuje kontener, w którym wykonują się narzędzia, więc przebieg przetrwa zamknięcie Twojego laptopa.
+
+## Managed Agents w pięć minut
+
+Liczą się cztery obiekty:
+
+- **Agent** — utrwalona, wersjonowana konfiguracja (model, system prompt, narzędzia). Tworzony **raz**, referowany po ID na zawsze
+- **Environment** — reużywalny szablon kontenera (polityka sieciowa, chmura lub self-hosted)
+- **Session** — jeden przebieg: referuje agenta + environment, dostaje własny kontener, strumieniuje zdarzenia
+- **Events** — dwukierunkowy protokół: Ty wysyłasz `user.message` / `user.define_outcome`, a agent strumieniuje z powrotem wiadomości, wywołania narzędzi i przejścia statusów
+
+Błąd, który każdy popełnia pierwszego dnia: umieszczanie `model` i `system` na sesji. One żyją na obiekcie agenta — sesja bierze tylko wskaźnik. Utwórz agenta w skrypcie setupowym, zapisz ID i nigdy nie wywołuj `agents.create()` w ścieżce żądania.
+
+```python
+import anthropic
+
+client = anthropic.Anthropic()
+
+# JEDNORAZOWY SETUP — uruchom raz, zapisz ID
+environment = client.beta.environments.create(
+    name="migration-env",
+    config={"type": "cloud", "networking": {"type": "unrestricted"}},
+)
+
+agent = client.beta.agents.create(
+    name="Migration Agent",
+    model="claude-fable-5",
+    system="You are a senior engineer executing long-running migrations. "
+           "Verify your work against the test suite after every stage.",
+    tools=[{"type": "agent_toolset_20260401"}],  # bash, read, write, edit, glob, grep, web
+)
+print(agent.id, environment.id)  # zapisz te wartości
+```
+
+## Kluczowy ruch: outcomes, nie prompty
+
+Przy pracy wielodniowej nie odpalaj sesji wiadomością na czacie. Zamiast tego wyślij zdarzenie **`user.define_outcome`**: opis zadania plus **rubrykę** — jawne, oceniane kryteria „ukończenia”. Osobny model-grader (niezależne okno kontekstowe) punktuje każdą iterację względem Twojej rubryki i zwraca agentowi braki dla poszczególnych kryteriów, a agent poprawia, aż rubryka przejdzie albo wyczerpie się `max_iterations`. To ta sama separacja worker/sędzia, którą [komenda /goal w Claude Code](/blog/claude-code-goal-command-fable-5-guide) stosuje do sesji interaktywnych — model wykonujący pracę nigdy sam nie decyduje, że skończył.
+
+Rubryka to miejsce, w którym rozstrzyga się jakość Twojego weekendu. Mgliste kryteria („kod powinien być czysty”) dają zaszumione pętle oceniania; sprawdzalne kryteria dają zbieżność:
+
+```python
+RUBRIC = """
+## Acceptance criteria
+1. All 214 existing tests pass (`npm test` exit code 0)
+2. No remaining imports from `legacy/db` anywhere under `src/`
+3. New adapter module has unit tests covering the 4 public methods
+4. CHANGELOG.md has an entry describing the migration and any behavior changes
+5. A MIGRATION_NOTES.md exists listing every file touched and why
+"""
+
+session = client.beta.sessions.create(
+    agent={"type": "agent", "id": AGENT_ID, "version": AGENT_VERSION},
+    environment_id=ENV_ID,
+    title="Legacy DB adapter migration",
+    resources=[{
+        "type": "github_repository",
+        "url": "https://github.com/you/service",
+        "authorization_token": GITHUB_TOKEN,
+        "checkout": {"type": "branch", "name": "migration/db-adapter"},
+    }],
+)
+print(f"Trace: https://platform.claude.com/workspaces/default/sessions/{session.id}")
+
+client.beta.sessions.events.send(
+    session_id=session.id,
+    events=[{
+        "type": "user.define_outcome",
+        "description": "Migrate all data access from legacy/db to the new adapter pattern.",
+        "rubric": {"type": "text", "content": RUBRIC},
+        "max_iterations": 5,
+    }],
+)
+```
+
+Dwa szczegóły, które oszczędziły mi bólu: agent zaczyna pracę po otrzymaniu zdarzenia outcome — **nie** wysyłaj dodatkowo wiadomości „proszę zacznij”. I od razu wypisz URL trace do Console; obserwowanie strumienia wywołań narzędzi w przeglądarce bije parsowanie zdarzeń, gdy chcesz tylko rzucić okiem.
+
+## Śledzenie przebiegu (bez niańczenia go)
+
+Przy przebiegu wielodniowym będziesz łączyć się, rozłączać i łączyć ponownie wiele razy. Strumień SSE **nie ma powtórki (replay)** — przy każdym ponownym połączeniu najpierw pobierz historię i deduplikuj po ID zdarzenia, inaczej po cichu przegapisz to, co wydarzyło się w nocy:
+
+```python
+def catch_up_and_tail(client, session_id):
+    stream = client.beta.sessions.events.stream(session_id=session_id)
+    seen = set()
+    for ev in client.beta.sessions.events.list(session_id=session_id).data:
+        seen.add(ev.id)
+        handle(ev)                     # odtwórz historię
+    for ev in stream:                  # potem śledź na żywo
+        if ev.id in seen:
+            continue
+        seen.add(ev.id)
+        handle(ev)
+        if ev.type == "session.status_terminated":
+            break
+        if ev.type == "session.status_idle" and ev.stop_reason.type != "requires_action":
+            break                      # end_turn lub retries_exhausted — faktycznie skończone
+```
+
+Ten ostatni warunek to pułapka, która dopada każdego: sesje przechodzą w `idle` *przejściowo* — między partiami narzędzi albo w oczekiwaniu na potwierdzenie narzędzia. Przerwanie przy pierwszym `idle` sprawia, że myślisz, iż dwudniowy przebieg skończył się w dwadzieścia minut. Dopiero `idle` z terminalnym `stop_reason` oznacza ukończenie.
+
+Werdykty gradera przychodzą jako zdarzenia `span.outcome_evaluation_end` — `satisfied`, `needs_revision`, `max_iterations_reached` albo `failed` — każde z wyjaśnieniem dla poszczególnych kryteriów. Te wyjaśnienia to najlepszy sygnał do debugowania w całym systemie: kiedy mój przebieg utknął na trzeciej iteracji, notatka gradera („kryterium 5: MIGRATION_NOTES.md wymienia pliki, ale nie powody”) powiedziała mi dokładnie, czego agentowi brakuje.
+
+Dla prawdziwego wielodniowego rytmu przestałem w ogóle trzymać strumienie otwarte i zarejestrowałem **webhook** dla `session.status_idled` — Anthropic POST-uje na mój endpoint, gdy agent czegoś potrzebuje, a mały handler pinguje mnie na Slacku. Odpytywanie strumienia przez 60 godzin to zły kształt; bycie budzonym, gdy przebieg potrzebuje człowieka, to właściwy.
+
+## Odbieranie deliverables
+
+Agent zapisuje artefakty do `/mnt/session/outputs/` w swoim kontenerze; po przebiegu można je pobrać przez Files API, ograniczone do zakresu sesji:
+
+```python
+files = client.beta.files.list(
+    scope_id=session.id,
+    betas=["managed-agents-2026-04-01"],  # potrzebne obok bety Files
+)
+for f in files.data:
+    client.beta.files.download(f.id).write_to_file(f.filename)
+```
+
+Zmiany w kodzie lądują w samym zamontowanym repozytorium — agent commituje i pushuje przez `bash`, z tokenem GitHub wstrzykiwanym przez proxy po stronie Anthropic, więc token nigdy nie istnieje wewnątrz kontenera. Ten szczegół ma większe znaczenie, niż brzmi: nic, co agent zapisuje lub wykonuje, nie może odczytać poświadczenia, co jest właściwym domyślnym ustawieniem dla agenta, którego celowo nie obserwujesz.
+
+## Ile to kosztowało
+
+Moja weekendowa migracja: z grubsza 39 mln tokenów wejściowych (mocno zdyskontowanych przez cache — Managed Agents automatycznie stosuje prompt caching i kompakcję kontekstu) oraz 2,1 mln tokenów wyjściowych na Fable 5, plus narzut gradera. Nazwijmy to **~140 dolarów all-in** przy stawkach 10/50 dolarów, które rozłożyłem w mojej [recenzji Fable 5](/blog/claude-fable-5-developer-review-migration-guide). W porównaniu z alternatywą — moim własnym tygodniem wieczorów — matematyka nie jest nawet blisko. Ale oznacza to też, że niepilnowany rozbieg to realne ryzyko budżetowe: ustaw `max_iterations` konserwatywnie i pamiętaj, że ta sama [logika routingu modeli](/blog/fable-5-claude-code-model-routing-playbook) obowiązuje także wewnątrz CMA — rutynowe sesje nie potrzebują konfiguracji agenta na Fable 5.
+
+## Kiedy z tego nie korzystać
+
+- **Praca z ciasną pętlą sprzężenia zwrotnego** — interaktywne sesje kodowania należą do Claude Code, a nie do sesji po stronie serwera, którą sterujesz zdarzeniami
+- **Zadania poniżej godziny** — narzut setupu (environment, pisanie rubryki) amortyzuje się dopiero na długich przebiegach
+- **Praca, dla której nie potrafisz napisać rubryki** — jeśli nie umiesz zdefiniować „ukończenia” jako sprawdzalnych kryteriów, pętla oceniania degeneruje się do „przeczuć” i lepiej samemu być w pętli
+- **Cokolwiek związanego z bezpieczeństwem na Fable 5** — ryzyko fałszywie pozytywnych klasyfikatora, które omawiałem w recenzji migracyjnej, dotyczy każdego z tysięcy żądań, jakie wykonuje długi przebieg; dla tych domen skonfiguruj agenta z Opus 4.8
+
+Wzorzec, który się u mnie wyłonił: Claude Code do pracy, którą wykonuję *z* modelem, oraz Managed Agents + outcomes do pracy, którą mu *przekazuję*. Fable 5 to to, co urealniło tę drugą kategorię — a dobrze napisana rubryka to to, co pozwala bezpiecznie ją przespać.
+
+## References
+
+### Źródła
+- [Claude Fable 5 and Claude Mythos 5 — Anthropic](https://www.anthropic.com/news/claude-fable-5-mythos-5) - deklaracje o autonomii długiego horyzontu i benchmarki premierowe
+- [Managed Agents overview — Claude Platform Docs](https://platform.claude.com/docs/en/managed-agents/overview) - architektura: agents, sessions, environments, kontenery
+- [Define outcomes — Claude Platform Docs](https://platform.claude.com/docs/en/managed-agents/define-outcomes.md) - zdarzenie define_outcome, rubryki i semantyka gradera
+- [Events and streaming — Claude Platform Docs](https://platform.claude.com/docs/en/managed-agents/events-and-streaming.md) - wzorzec reconnect/dedupe i stop reasony dla idle
+
+### Dalsza lektura
+- [Managed Agents webhooks — Claude Platform Docs](https://platform.claude.com/docs/en/managed-agents/webhooks.md) - zastępowanie trzymanych otwartych strumieni powiadomieniami push dla długich przebiegów
+- [Claude Fable 5 Model Review — CodeRabbit](https://www.coderabbit.ai/blog/fable-5-model-review) - niezależna perspektywa na autonomiczne zachowanie Fable 5 przy kodowaniu
+
+---
+
+~Seb 👊

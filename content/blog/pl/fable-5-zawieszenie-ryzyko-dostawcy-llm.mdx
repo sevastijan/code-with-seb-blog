@@ -1,0 +1,120 @@
+---
+title: 'Gdy twój model AI znika: ryzyko dostawcy po Fable 5'
+date: '2026-07-01'
+category: 'Architecture'
+tags: ['architecture', 'ai-models', 'vendor-risk', 'claude', 'resilience']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: "12 czerwca rząd USA sprawił, że claude-fable-5 zniknął na dziewiętnaście dni. Jeśli twój pipeline sztywno przypina jeden model, to architektoniczny sygnał alarmowy."
+enSlug: 'fable-5-suspension-llm-vendor-risk-architecture'
+---
+
+12 czerwca 2026 produkcyjny endpoint modelu przestał istnieć. Nie zdegradowany, nie ograniczony limitami, nie oznaczony jako przestarzały z oknem migracji. Zniknął — dla każdego klienta, w każdym regionie, na dziewiętnaście dni. A powodem nie była awaria: Stany Zjednoczone nałożyły kontrolę eksportu na Claude Fable 5, a jego dostawca nie miał żadnego zgodnego z przepisami sposobu, by dalej go serwować.
+
+Jeśli projektujesz systemy zależne od LLM-ów, to zdarzenie należy do twojego modelu zagrożeń, bo **ryzyko dostawcy LLM** właśnie zyskało tryb awarii, którego nie pokrywał żaden runbook: *regulacyjne zniknięcie*. Ten wpis to architektoniczna retrospektywa — co się stało, dlaczego standardowe środki zaradcze w większości by nie pomogły oraz jakie konkretne wzorce oddzielają zespoły, które wzruszyły ramionami, od tych, które wpadły w panikę.
+
+## Co się właściwie stało
+
+Skompresowana oś czasu:
+
+- **9 czerwca** — Anthropic udostępnia Claude Fable 5, swój najbardziej wydajny ogólnodostępny model, obok objętego ograniczeniami Claude Mythos 5
+- **12 czerwca** — badacze Amazona demonstrują jailbreak, który skłania Fable 5 do identyfikowania podatności w oprogramowaniu i pokazania sposobu ich wykorzystania. Tego samego dnia rząd USA nakłada kontrolę eksportu, wymagając ograniczeń dostępu według narodowości. Anthropic, nie mając możliwości weryfikacji narodowości w czasie rzeczywistym, zawiesza oba modele **globalnie**
+- **26-30 czerwca** — ograniczenia zniesione po rządowym przeglądzie przeszkolonych na nowo zabezpieczeń
+- **1 lipca** — dostęp przywrócony, ze ściślejszymi klasyfikatorami i, co znamienne, większą liczbą fałszywych alarmów przy rutynowej pracy nad kodem
+
+Trzy dni dostępności, dziewiętnaście dni nieobecności i zmieniony model po powrocie. Szczegóły istotne dla programistów omówiłem w mojej [recenzji migracji do Fable 5](/blog/claude-fable-5-developer-review-migration-guide); ten wpis dotyczy tego, co to zdarzenie oznacza dla sposobu, w jaki budujesz systemy.
+
+## Dlaczego ten tryb awarii jest inny
+
+Wiedzieliśmy już, jak myśleć o ryzyku cyklu życia modelu. Wycofania przychodzą z miesiącami wyprzedzenia i datą zakończenia. Awarie trwają godziny i same się rozwiązują. Zmiany cen obejmują dziadkową klauzulą istniejący ruch. Każde z tych zdarzeń ma znany kształt, a zespoły je planują — luźno, ale planują.
+
+Regulacyjne wycofanie ma inny kształt na każdej osi, która ma znaczenie:
+
+| Oś | Wycofanie | Awaria | Regulacyjne wycofanie |
+|---|---|---|---|
+| Ostrzeżenie | Miesiące | Brak | Brak |
+| Czas trwania | Trwałe, zaplanowane | Godziny | **Nieokreślony, niepoznawalny** |
+| Zasięg | Jeden model, stopniowo | Zwykle częściowy | Całkowity, natychmiastowy, globalny |
+| Model po powrocie | nd. | Niezmieniony | **Prawdopodobnie zmieniony** |
+
+Ostatni wiersz zasługuje na podkreślenie. Fable 5, który wrócił 1 lipca, nie był tym samym Fable 5, który zniknął — jego klasyfikatory przeszkolono na nowo, a wskaźnik fałszywych alarmów przy kodzie systemowym wzrósł. Zespoły, które w początkach czerwca walidowały swoje obciążenia metodą A/B, w lipcu działały na nieaktualnej walidacji. Znikający model to problem; model *po cichu wracający jako inny* łamie założenie, że walidacja jest trwała.
+
+## Lekcja 1: identyfikatory modeli to konfiguracja, nie kod
+
+Zespoły, które 12 czerwca wzruszyły ramionami, miały jedną cechę wspólną: przełączenie modeli było zmianą konfiguracji, nie wdrożeniem. Zespoły, które wpadły w panikę, miały `"claude-fable-5"` jako literał tekstowy w czterdziestu miejscach, część z nich w usługach należących do osób na urlopie.
+
+Minimalny wzorzec nic nie kosztuje:
+
+```yaml
+# model-config.yaml — każde obciążenie deklaruje swoją drabinę, a nie model
+workloads:
+  code-review:
+    primary: claude-fable-5
+    fallback: claude-opus-4-8      # przetestowany, nie aspiracyjny
+    floor: claude-sonnet-5         # poniżej tego degraduj funkcję
+  classification:
+    primary: claude-haiku-4-5
+    fallback: claude-sonnet-5
+```
+
+Dwa słowa w tym fragmencie dźwigają cały ciężar. **Przetestowany**: fallback, przez który nigdy nie przepuściłeś ruchu, to nadzieja, a nie fallback — różnice API między poziomami (konfiguracje myślenia, parametry samplingu) sprawiają, że nieprzetestowane przełączenie może zamienić niedostępny model na taki, który zwraca 400. **Floor**: świadomość punktu, poniżej którego wolisz wyłączyć funkcję niż serwować zdegradowany wynik, to decyzja produktowa, a 12 czerwca to zły dzień, by podejmować ją po raz pierwszy.
+
+## Lekcja 2: poziomy degradacji, a nie binarne przełączanie
+
+„Fallback" to zbyt słabe słowo na to, czego naprawdę potrzebujesz, bo możliwości nie są binarne. Moja konfiguracja po zawieszeniu definiuje trzy jawne tryby pracy na każde obciążenie:
+
+1. **Pełna wydajność** — model podstawowy, wszystkie funkcje
+2. **Zdegradowany** — model fallback; zadania długodystansowe stają się krótsze, głębokość przeglądu spada, a system *mówi o tym* (flaga metadanych, którą mogą odczytać konsumenci poniżej w łańcuchu)
+3. **Floor** — najtańszy realny model lub wyłączenie funkcji, na scenariusz, w którym cały dostawca jest nieosiągalny
+
+Środkowy poziom to ten, który wszyscy pomijają i ten, który miał znaczenie w czerwcu. Sam projekt API Fable 5 popiera teraz ten wzorzec — parametr `fallbacks` po stronie serwera ponownie serwuje odrzucone żądania na Opus 4.8 w ramach tego samego wywołania. To obsługuje odmowy na poziomie pojedynczego żądania; twoja architektura potrzebuje tej samej idei o jeden poziom wyżej, na wypadek nieobecności całego modelu.
+
+## Lekcja 3: wielu dostawców zabezpiecza mniej, niż myślisz
+
+Odruchowa odpowiedź na ryzyko dostawcy brzmi „użyj dwóch dostawców". Zawieszenie obnażyło granicę tego odruchu: Fable 5 był niedostępny w Claude API, na Amazon Bedrock, w Google Cloud i w Microsoft Foundry *jednocześnie* — bo ograniczenie przypięto do **modelu**, a nie do infrastruktury serwującej. Różnorodność dostawców zabezpiecza przed awariami dostawców: sporami o rozliczenia, regionalnymi przestojami, wycofaniami API. Nic nie robi wobec regulacyjnego działania na poziomie modelu, wycofań z powodów bezpieczeństwa czy zmian możliwości.
+
+Tym, co naprawdę zabezpiecza ryzyko na poziomie modelu, jest **różnorodność modeli** — przetestowana ścieżka do innej rodziny lub innego poziomu modelu. I tu pojawia się niewygodny kompromis: przenośność między modelami kosztuje cię możliwości, bo prompty dostrojone do jednego czołowego modelu [radzą sobie gorzej po naiwnym przeniesieniu](/blog/fable-5-prompting-de-prescribing-guide), a funkcje takie jak długodystansowa autonomia w klasie Fable nie mają zamiennika wprost. Nie da się abstrakcją zejść do zerowego kosztu przełączenia. Możesz jedynie zdecydować, na każde obciążenie z osobna, ile możliwości jesteś gotów stracić w sytuacji awaryjnej — co jest dokładnie decyzją o poziomie floor z Lekcji 2.
+
+## Lekcja 4: monitoruj nieobecność i zmianę
+
+Czerwiec i lipiec nauczyły dwóch lekcji monitorowania, które standardowe dashboardy pomijają:
+
+**Nieobecność to nie skok błędów.** Zniknięty model produkuje błędy 404/400, które zauważysz — ale subtelniejsza wersja to codzienne zachowanie Fable 5: odmowy z powodów bezpieczeństwa przychodzą jako *udane* odpowiedzi HTTP 200, a po ponownym uruchomieniu ciche przełączenia na Opus 4.8 oznaczają, że żądania kończą się sukcesem, choć odpowiada inny model. Śledź *który model faktycznie obsłużył każde żądanie* (`response.model`, znaczniki fallbacku w `usage`) jako metrykę pierwszej kategorii, bo inaczej nie poznasz składu własnego systemu.
+
+**Zmiana to nie incydent.** Model z 1 lipca zachowywał się inaczej niż model z 9 czerwca pod tym samym identyfikatorem. Mały **zestaw kanarkowy** — kilkanaście reprezentatywnych promptów uruchamianych codziennie na każde obciążenie, oceniane względem złotych oczekiwań — to tania polisa. Mój oznaczył zwiększony wskaźnik odmów na promptach związanych z bezpieczeństwem w ciągu doby od ponownego uruchomienia, zanim ktokolwiek zauważył to w ruchu produkcyjnym.
+
+## Lekcja 5: ryzyko regulacyjne jest teraz w modelu zagrożeń
+
+Sednem jest precedens. Przed 12 czerwca „rząd z dnia na dzień czyni komercyjny model nielegalnym do serwowania" było hipotezą dla ludzi od polityki. Teraz jest to zaobserwowane zdarzenie z prawdopodobieństwem powtórki wyraźnie powyżej zera — czołowe możliwości i uwaga regulatorów rosną razem, a kolejna generacja modeli będzie bardziej wydajna, nie mniej.
+
+Dla większości zespołów nie oznacza to nowych narzędzi; oznacza szczerą odpowiedź na jedno pytanie zadane każdemu krytycznemu obciążeniu: *jeśli tego modelu zabraknie jutro rano, na czas nieokreślony, co się stanie?* Jeśli odpowiedź brzmi „zmiana konfiguracji, zdegradowany poziom, feature flag" — masz to z głowy. Jeśli odpowiedź zawiera zwrot „musielibyśmy dopiero wymyślić" — to właśnie jest praca do wykonania.
+
+## Playbook
+
+1. Każde obciążenie deklaruje primary / fallback / floor w konfiguracji; przełączenie nie wymaga wdrożenia
+2. Ścieżki fallback okresowo obsługują prawdziwy ruch (1% cień lub cotygodniowa próba) — nieprzetestowane fallbacki to fikcja
+3. Buildery żądań na poszczególne poziomy obsługują różnice API, więc przełączenie modelu nie może wprowadzić błędów 400
+4. Śledź skład obsłużonych modeli (`response.model`, znaczniki fallbacku) jako metrykę na dashboardzie
+5. Uruchamiaj codzienne zestawy kanarkowe na każde obciążenie; alarmuj o dryfie, nie tylko o awariach
+6. Zdefiniuj zachowanie produktu w trybie zdegradowanym *już teraz* (krótsze wyniki? wyłączona funkcja? widoczny dla użytkownika komunikat?)
+7. Przy wielodniowych autonomicznych przebiegach checkpointuj zewnętrznie — [sesja Managed Agents](/blog/fable-5-managed-agents-multi-day-autonomous-guide) przetrwa padnięcie twojego laptopa, ale nic nie przetrwa wycofania jej modelu w trakcie przebiegu
+8. Rewiduj drabinę co kwartał: poziomy się przesuwają, ceny się zmieniają, a [właściwy model na każde obciążenie](/blog/claude-5-family-model-selection-guide) to nie jednorazowa decyzja
+
+Dziewiętnaście dni po tym, jak najbardziej wydajny model na rynku zniknął, branża w większości wyparła to zdarzenie z pamięci, bo dobrze się skończyło. Nie rób tego. To była najtańsza możliwa lekcja w kategorii ryzyka, która będzie tylko rosła — opłacona, tym razem, przez kogoś innego.
+
+## Referencje
+
+### Źródła
+- [Redeploying Claude Fable 5 — Anthropic](https://www.anthropic.com/news/redeploying-fable-5) - oficjalna oś czasu: kontrola eksportu, zawieszenie, przeszkolone na nowo klasyfikatory
+- [Claude Fable 5 and Claude Mythos 5 — Anthropic](https://www.anthropic.com/news/claude-fable-5-mythos-5) - kontekst premiery i projekt zabezpieczeń
+- [Anthropic releases Mythos-like AI model to the public — CNBC](https://www.cnbc.com/2026/06/09/anthropic-mythos-claude-fable-5.html) - relacja z premiery
+- [Claude Fable relaunch disappoints users with nerfed performance — BleepingComputer](https://www.bleepingcomputer.com/news/artificial-intelligence/claude-fable-relaunch-disappoints-users-with-nerfed-performance/) - raporty o zmienionym zachowaniu po powrocie
+
+### Dalsza lektura
+- [Anthropic's Claude Fable 5 is a version of Mythos the public can access — TechCrunch](https://techcrunch.com/2026/06/09/anthropics-claude-fable-5-is-a-version-of-mythos-the-public-can-access-today/) - tło poziomów możliwości Fable/Mythos
+- [Migration guide — Claude Platform Docs](https://platform.claude.com/docs/en/about-claude/models/migration-guide) - różnice API między poziomami, które muszą obsłużyć twoje buildery fallbacku
+
+---
+
+~Seb 👊

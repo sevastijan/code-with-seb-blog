@@ -1,0 +1,166 @@
+---
+title: 'Fable 5 i pipeline vision: gęste dokumenty, złe skany, prawdziwe OCR'
+date: '2026-07-04'
+category: 'AI'
+tags: ['claude', 'vision', 'ocr', 'claude-api', 'document-processing']
+draft: false
+featured: false
+author: 'Sebastian'
+enSlug: 'fable-5-vision-pipelines-documents-ocr-guide'
+excerpt: "Fable 5 czyta obrócone, rozmyte skany, kadrując obraz aż do odpowiedzi. Działające pipeline'y dla gęstych PDF-ów i zdegradowanych danych plus matematyka tokenów."
+---
+
+Dokument, który zeszłego roku położył mój pipeline ekstrakcji, to był magazynowy list przewozowy: sfotografowany pod kątem, lekko rozmyty, z pieczątką na sumach, obrócony o dziewięćdziesiąt stopni. Tradycyjne OCR zwróciło konfetti. Ówczesny model vision zwrócił pewną siebie halucynację, co jest gorsze. Takie dokumenty kierowaliśmy do kolejki obsługiwanej przez człowieka i w tej kolejce już zostawały.
+
+W zeszłym tygodniu ponownie przepuściłem dokładnie ten dokument przez Claude Fable 5. Zrobił coś, czego nie widziałem u żadnego modelu bez podpowiedzi: napisał krótki skrypt, żeby obrócić obraz, wykadrował obszar z pieczątką, ponownie zbadał kadr w pełnej rozdzielczości i zwrócił poprawne sumy z adnotacją, co do której cyfry ma najmniejszą pewność. To zachowanie — *praca* z obrazem zamiast rzucenia na niego okiem — to prawdziwa historia **claude vision api** w 2026 roku i zmienia to, które zadania na dokumentach da się zautomatyzować. Oto pipeline'y, które uruchamiam, wraz z matematyką kosztów, o której nikt nie wspomina, dopóki nie przyjdzie faktura.
+
+## Co się naprawdę zmieniło
+
+Trzy przesunięcia, które się kumulują:
+
+**Dane wejściowe wysokiej rozdzielczości.** Fable 5 (podobnie jak Opus 4.8 i Sonnet 5) przyjmuje obrazy do 2576 pikseli na dłuższej krawędzi — w górę z pułapu 1568 px z ery 4.6. Dla gęstych dokumentów to różnica między odczytaniem tabeli a zgadywaniem: tekst przypisu 8-punktowego przetrwa przy 2576 px, a rozpuszcza się przy 1568 px.
+
+**Współrzędne wierne pikselom.** Współrzędne, które zwraca model, odwzorowują 1:1 rzeczywiste piksele Twojego obrazu — bez matematyki współczynnika skali. Jeśli budujesz workflow z bounding boxami (podświetl klauzulę, kliknij przycisk), krucha warstwa konwersji po prostu znika.
+
+**Widzenie wspomagane narzędziami.** To część specyficzna dla Fable 5: został jawnie wytrenowany, by używać narzędzi bash i kadrowania na odwróconych, rozmytych i zaszumionych danych. Daj mu wykonywanie kodu obok obrazu, a przestaje być opisywaczem z jednego rzutu oka — obraca, kadruje, poprawia i odczytuje ponownie. Anthropic zademonstrował górny pułap tego, każąc Fable 5 ukończyć Pokémon FireRed wyłącznie na podstawie obrazu; nudna wersja korporacyjna jest taka, że list przewozowy z pieczątką na wierzchu przestaje wymagać człowieka.
+
+## Pipeline 1: gęste PDF-y z weryfikowalnymi cytowaniami
+
+Dla umów, raportów i dokumentów urzędowych zabójczą funkcją nie jest ekstrakcja — jest to ekstrakcja, którą możesz *sprawdzić*. Włącz cytowania na bloku document, a każde stwierdzenie wraca z proweniencją zakotwiczoną na stronie:
+
+```python
+import anthropic, base64
+
+client = anthropic.Anthropic()
+
+with open("q2-contract.pdf", "rb") as f:
+    pdf_b64 = base64.standard_b64encode(f.read()).decode()
+
+response = client.messages.create(
+    model="claude-fable-5",
+    max_tokens=16000,
+    messages=[{
+        "role": "user",
+        "content": [
+            {
+                "type": "document",
+                "source": {"type": "base64", "media_type": "application/pdf", "data": pdf_b64},
+                "citations": {"enabled": True},
+            },
+            {"type": "text", "text": "List every termination condition, its notice period, and any penalties."},
+        ],
+    }],
+)
+
+for block in response.content:
+    if block.type == "text":
+        print(block.text)
+        for c in (block.citations or []):
+            print(f"   ↳ p.{c.start_page_number}: “{c.cited_text[:80]}…”")
+```
+
+Cytowania `page_location` zamieniają „model tak powiedział” w „strona 14, drugi akapit” — a to różnica między demem a czymś, co dział prawny zaakceptuje. Limity warte zapamiętania: 32 MB na żądanie, do 600 stron PDF (100 na modelach z kontekstem 200K), a jeśli odpytujesz ten sam dokument wielokrotnie, wgraj go raz przez Files API zamiast wysyłać base64 przy każdym wywołaniu.
+
+## Pipeline 2: zdegradowane dane wejściowe — pozwól modelowi popracować z obrazem
+
+Dla brzydkich przypadków — zdjęć z telefonu, faksów (wciąż istnieją), zeskanowanych, skośnych dokumentów z pieczątkami — wzorzec jest taki: **obraz + wykonywanie kodu + cel, nie instrukcje**. Nie mów mu, żeby obrócił; powiedz, czego potrzebujesz, i pozwól mu zdecydować, że obraz wymaga obrócenia:
+
+```python
+response = client.messages.create(
+    model="claude-fable-5",
+    max_tokens=16000,
+    tools=[{"type": "code_execution_20260120", "name": "code_execution"}],
+    messages=[{
+        "role": "user",
+        "content": [
+            {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": scan_b64}},
+            {"type": "text", "text":
+                "Extract vendor, date, line items, and total. The scan quality is poor - "
+                "verify anything uncertain by examining regions closely before answering, "
+                "and flag any field you cannot read with confidence."},
+        ],
+    }],
+)
+```
+
+Obserwując ślad narzędzi na moim teście z listem przewozowym: załadował obraz za pomocą PIL, wykrył obrót, wykadrował obszar z sumami, żeby zbadać przestemplowane cyfry w pełnej rozdzielczości, i sprawdził krzyżowo sumę pozycji względem wydrukowanej sumy przed odpowiedzią. Ten ostatni krok — weryfikacja arytmetyczna, bez podpowiedzi — wychwycił błędnie odczytaną cyfrę w jednym z moich testowych dokumentów. Prompt ma mniejsze znaczenie niż *brak* promptu: nadmierne opisywanie procedury daje gorszy wynik niż podanie celu, z tego samego powodu, dla którego [nakazowe prompty przynoszą odwrotny skutek wszędzie indziej](/blog/fable-5-prompting-de-prescribing-guide) na tym modelu.
+
+## Matematyka tokenów, która potraja Twój rachunek
+
+Oto część, którą każdy odkrywa na fakturze. Obraz w pełnej rozdzielczości na modelach high-res może kosztować nawet **~4784 tokeny obrazu — z grubsza 3x** więcej niż limit ~1600 tokenów z poprzedniej generacji. Pomnóż to przez cenę wejścia Fable 5 wynoszącą 10 USD/MTok i przez pipeline przetwarzający 50 000 stron miesięcznie, a „po prostu wysyłaj wszystko w rozdzielczości natywnej” staje się decyzją na pięć cyfr.
+
+Dyscyplina, która utrzymuje to w ryzach:
+
+- **Zmniejszaj rozdzielczość świadomie, nie domyślnie.** Czyste cyfrowe PDF-y z tekstem normalnej wielkości czytają się dobrze przy ~1568 px. Zarezerwuj rozdzielczość natywną dla gęstych tabel, drobnego druku i zdegradowanych danych — przypadków, które faktycznie wykorzystują wierność
+- **Mierz, nie zakładaj.** Uruchom `count_tokens` na reprezentatywnej próbce swoich prawdziwych dokumentów przy każdej rozważanej rozdzielczości. Mój korpus faktur: średni wzrost tokenów 1,9x przy rozdzielczości natywnej, nie 3x — ale mój korpus umów osiągał limit na niemal każdej stronie
+- **Buforuj to, co nie jest pilne.** Zaległości dokumentów to idealne zadanie dla Batches API: 50% taniej na wszystkim i nikt nie czeka na odpowiedź
+
+## Który model: router oparty na wskaźniku odrzuceń
+
+Fable 5 to pułap dokładności, nie domyślny wybór. Sonnet 5 ma to samo wsparcie high-res 2576 px w cenie 3/15 USD (wprowadzająco 2/10 USD) i na czystych-do-przyzwoitych dokumentach nie mierzę żadnej istotnej różnicy jakości. Mój produkcyjny routing jest wstydliwie prosty:
+
+1. **Wszystko trafia najpierw do Sonnet 5**, z instrukcją oznaczania pól o niskiej pewności
+2. **Dokumenty z oznaczonymi polami lub nieudaną walidacją trafiają do Fable 5** z włączonym wykonywaniem kodu
+3. **Wciąż niepewne dokumenty trafiają do kolejki obsługiwanej przez człowieka** — która teraz stanowi ~4% wolumenu zamiast ~20%, które odrzucał mój stary pipeline
+
+Ta 16-punktowa różnica to całe uzasadnienie biznesowe i bierze się z tego, że Fable 5 obsługuje dokładnie ten zdegradowany wycinek, który kiedyś definiował kolejkę ludzką. Płacenie premii za 100% wolumenu byłoby błędem w sztuce routingu — ta sama [logika poziomów eskalacji](/blog/claude-5-family-model-selection-guide) co wszędzie indziej w rodzinie.
+
+Jeden haczyk z [operacyjnej historii Fable 5](/blog/claude-fable-5-developer-review-migration-guide): zadania vision rzadko uruchamiają jego klasyfikatory bezpieczeństwa, ale „rzadko” to nie „nigdy” (artykuły z chemii, zrzuty ekranu z zabezpieczeń). Trzymaj skonfigurowany serwerowy fallback do Opus 4.8; zwróć uwagę, że Opus ma ten sam górny limit wejścia high-res, więc fallback degraduje się łagodnie.
+
+## Ekstrakcja strukturalna, wymuszona
+
+Ekstrakcja swobodnego tekstu jest dla dem. Pipeline'y produkcyjne chcą schematów, a `output_config.format` gwarantuje parsowalny wynik — żadnych błędów parsowania typu „model dodał przyjazną przedmowę” o 2 w nocy:
+
+```python
+response = client.messages.create(
+    model="claude-sonnet-5",  # volume tier first, remember
+    max_tokens=4096,
+    messages=[...],  # image content as above
+    output_config={"format": {"type": "json_schema", "schema": {
+        "type": "object",
+        "properties": {
+            "vendor": {"type": "string"},
+            "total": {"type": "string"},
+            "line_items": {"type": "array", "items": {"type": "object",
+                "properties": {"desc": {"type": "string"}, "amount": {"type": "string"}},
+                "required": ["desc", "amount"], "additionalProperties": False}},
+            "low_confidence_fields": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["vendor", "total", "line_items", "low_confidence_fields"],
+        "additionalProperties": False,
+    }}},
+)
+```
+
+Tablica `low_confidence_fields` to element nośny — to ona umożliwia działanie routera opartego na wskaźniku odrzuceń. Spraw, by model raportował własną niepewność jako dane, a Twoja logika routingu zostanie trzema liniami kodu.
+
+Jedna niekompatybilność do zapamiętania: cytowań i wyjść strukturalnych nie można łączyć w jednym żądaniu (API zwraca 400). Gęsty PDF z cytowaniami i ekstrakcja wymuszona schematem to dwa wywołania, nie jedno.
+
+## Lista kontrolna
+
+1. Wysyłaj rozdzielczość natywną tylko tam, gdzie wierność się opłaca: gęste tabele, drobny druk, zdegradowane skany
+2. `count_tokens` na prawdziwych dokumentach zanim zdecydujesz o polityce rozdzielczości
+3. Najpierw Sonnet 5, Fable 5 dla oznaczonego wycinka, ludzie dla reszty
+4. Zdegradowane dane wejściowe: obraz + wykonywanie kodu + cel — pozwól modelowi samemu kadrować i obracać
+5. Cytowania dla weryfikowalności, wyjścia strukturalne dla parsowalności — osobne wywołania
+6. Batches API dla zaległości (50% taniej)
+7. Files API dla dokumentów, które odpytujesz więcej niż raz
+8. Trzymaj skonfigurowany fallback do Opus 4.8 nawet dla vision
+
+Osiemnaście miesięcy temu moja zasada brzmiała: „modele vision opisują obrazy; OCR czyta dokumenty; żadne z nich nie jest godne zaufania w pojedynkę”. Fable 5 zniósł to rozróżnienie — nie dzięki ostrzejszemu wzrokowi, ale dzięki gotowości, by podnieść obraz, obrócić go i spojrzeć dwa razy. Pipeline'y, które z nim wygrywają, to te zbudowane wokół tego zachowania: routuj według pewności, weryfikuj przez cytowania i zachowaj kosztowne spojrzenie dla dokumentów, które go potrzebują.
+
+## References
+
+### Źródła
+- [Claude Fable 5 and Claude Mythos 5 — Anthropic](https://www.anthropic.com/news/claude-fable-5-mythos-5) - najnowocześniejsze deklaracje dotyczące vision i przebieg Pokémon FireRed wyłącznie na obrazie
+- [Introducing Claude Fable 5 and Claude Mythos 5 — Claude Platform Docs](https://platform.claude.com/docs/en/about-claude/models/introducing-claude-fable-5-and-claude-mythos-5) - wsparcie vision w wysokiej rozdzielczości i koszty tokenów obrazu
+- [Vision — Claude Platform Docs](https://platform.claude.com/docs/en/build-with-claude/vision.md) - obsługiwane formaty, limity rozmiaru, zachowanie rozdzielczości
+- [PDF support — Claude Platform Docs](https://platform.claude.com/docs/en/build-with-claude/pdf-support.md) - limity stron, rozmiar żądania, cytowania na dokumentach
+
+### Dalsza lektura
+- [Citations — Claude Platform Docs](https://platform.claude.com/docs/en/build-with-claude/citations.md) - format cytowań page_location dla proweniencji dokumentów
+- [Token counting — Claude Platform Docs](https://platform.claude.com/docs/en/build-with-claude/token-counting.md) - mierzenie kosztów tokenów obrazu, zanim Cię zaskoczą
+
+---
+
+~Seb 👊

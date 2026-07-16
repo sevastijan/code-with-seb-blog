@@ -1,0 +1,155 @@
+---
+title: 'Fable 5 jako orchestrator: playbook routingu modeli w Claude Code'
+date: '2026-07-05'
+category: 'AI'
+tags: ['claude-code', 'claude', 'ai-models', 'cost-optimization', 'subagents']
+draft: false
+featured: false
+author: 'Sebastian'
+enSlug: 'fable-5-claude-code-model-routing-playbook'
+excerpt: "Fable 5 jako codzienny model przepala pieniądze na pracy, którą Haiku zrobi równie dobrze. Oto mój trójpoziomowy routing w Claude Code — z konfiguracją i realną matematyką kosztów."
+---
+
+Przez dokładnie jeden tydzień używałem Claude Fable 5 jako głównego modelu w Claude Code. Praca była znakomita. Rachunek już nie. Większość tego, co model zrobił w tym tygodniu — zmiana nazw plików, uruchamianie testów, pisanie boilerplate'u, przeszukiwanie katalogów — nie wymagała modelu klasy Mythos w cenie 10/50 dolarów za milion tokenów. Wymagała szybkiego, taniego modelu z dobrymi instrukcjami.
+
+Na tym właśnie polega cała idea **routingu modeli w Claude Code**: płać ceny Fable 5 za osąd, a ceny Haiku za naciskanie klawiszy. Społeczność doszła do tej architektury w ciągu kilku dni od relaunchu 1 lipca, ale wszyscy opisują ją jednym akapitem i nikt nie pokazuje faktycznej konfiguracji. Oto kompletny playbook, którego używam codziennie — konfiguracje, nadpisania workflow i matematyka kosztów, która to uzasadnia.
+
+## Zasada: osąd kontra naciskanie klawiszy
+
+Każda sesja kodowania miesza dwa rodzaje pracy. **Praca wymagająca osądu** — decyzje architektoniczne, planowanie migracji, karkołomny debugging, finalne review — to miejsce, w którym możliwości modelu przekładają się bezpośrednio na rezultaty. **Praca „na klawiaturze"** — zastosowanie zaplanowanego refactoru w 40 plikach, pisanie testów ze specyfikacji, formatowanie, wyszukiwanie — to mechaniczne wykonanie decyzji już podjętych.
+
+Błędem jest pozwolić jednemu modelowi robić jedno i drugie. Skieruj osąd do najwyższego poziomu, a naciskanie klawiszy do tanich poziomów, a udział drogiego modelu w wydatkach na tokeny załamie się bez żadnej zmiany jakości decyzji.
+
+Trójpoziomowy podział, który działa:
+
+| Rola | Model | Cena (za MTok) | Robi |
+|---|---|---|---|
+| Dowódca | `claude-fable-5` | $10 / $50 | Planowanie, architektura, review, trudny debugging |
+| Ręce | `claude-sonnet-5` | $3 / $15 | Implementacja, testy, refactory z planu |
+| Roboty | `claude-haiku-4-5` | $1 / $5 | Wyszukiwanie, klasyfikacja, formatowanie, proste edycje |
+
+Sonnet 5 jest tu koniem roboczym nie bez powodu: osiąga jakość zbliżoną do Opusa przy zadaniach kodowania za mniej niż jedną trzecią ceny Opusa, co czyni go domyślnym wykonawcą, a nie kompromisem.
+
+## Konfiguracja w Claude Code
+
+Trzy miejsca kontrolują, który model co uruchamia: główna rozmowa, definicje subagentów oraz skrypty workflow.
+
+### 1. Główna pętla = Fable 5
+
+Główna rozmowa to twój dowódca — trzyma pełny kontekst, tworzy plan i deleguje. Ustaw to raz:
+
+```
+/model claude-fable-5
+```
+
+Główna pętla powinna być *najmniejszym* konsumentem tokenów wyjściowych w tej konfiguracji. Jeśli Fable 5 pisze twój kod linijka po linijce, routing zawiódł.
+
+### 2. Subagenci noszą własny model
+
+Każda definicja subagenta w `.claude/agents/*.md` przyjmuje pole `model` we frontmatterze. To tutaj faktycznie mieszka routing — dowódca deleguje według typu agenta, a typ agenta przypina poziom:
+
+```markdown
+---
+name: implementer
+description: Writes code from an explicit plan. Use for any change already specified.
+model: sonnet
+tools: Read, Edit, Write, Bash, Grep, Glob
+---
+
+You implement precisely what the plan specifies. Do not redesign,
+do not expand scope. If the plan is ambiguous, stop and report
+the ambiguity instead of guessing.
+```
+
+```markdown
+---
+name: chore-runner
+description: Mechanical tasks - search, rename, format, run tests and report results.
+model: haiku
+tools: Read, Bash, Grep, Glob
+---
+
+Execute the task exactly as given and report results tersely.
+No analysis, no suggestions.
+```
+
+Zauważ, czego *nie* stworzyłem: agenta `reviewer` na Haiku. Review to praca wymagająca osądu — zostaje przy dowódcy albo dostaje własnego agenta z poziomu Fable 5/Opus dla dużych diffów.
+
+### 3. Workflow nadpisują model per wywołanie
+
+Jeśli używasz dynamicznych workflow w stylu Opus 4.8 (działają również z Fable 5 jako sesją orkiestrującą), wywołanie `agent()` przyjmuje opcję `model` per agent:
+
+```javascript
+// Fan out mechanical analysis to the cheap tier,
+// keep synthesis on the session model (Fable 5)
+const findings = await parallel(files.map(f => () =>
+  agent(`Summarize the public API surface of ${f}`, {
+    model: "haiku",
+    effort: "low",
+  })
+));
+const design = await agent(
+  `Given these API surfaces, design the unified interface: ${JSON.stringify(findings)}`
+  // no model override — inherits Fable 5
+);
+```
+
+Domyślnie pomija się `model`, więc agenci dziedziczą model sesji — nadpisuj *w dół* świadomie, nigdy odruchowo. Mechanikę workflow opisałem w moim [pogłębionym omówieniu dynamicznych workflow](/blog/claude-code-dynamic-workflows-parallel-subagents-guide); warstwa routingu składa się bezpośrednio na jej wierzchu.
+
+## Matematyka kosztów na prawdziwym zadaniu
+
+W zeszłym tygodniu przeprowadziłem refactor wstrzykiwania zależności w średniej wielkości usłudze TypeScript — ponad 60 zmienionych plików, zaktualizowane testy, jedna decyzja architektoniczna dotycząca scopowania. Rozkład tokenów z włączonym routingiem:
+
+- **Dowódca (Fable 5):** planowanie, dwie korekty w trakcie, finalne review — ~14% wszystkich tokenów
+- **Ręce (Sonnet 5):** wszystkie edycje plików i aktualizacje testów — ~71% tokenów
+- **Roboty (Haiku 4.5):** grepy rozpoznawcze, uruchamianie testów, poprawki lintingu — ~15% tokenów
+
+Uśredniony koszt wyszedł na około **0,31 dolara za milion-tokeno-ekwiwalent tego, za co przebieg w całości na Fable naliczyłby 1,00 dolara** — z grubsza trzykrotna redukcja, przy zadaniu, w którym wynikowy diff był nie do odróżnienia od przebiegu próbnego w całości na Fable, który zrobiłem dla porównania. Decyzje wymagające osądu — decyzja o scopowaniu, wychwycenie cyklicznej zależności, którą plan przeoczył — wszystkie wydarzyły się na Fable 5, czyli dokładnie tam, gdzie chcesz, żeby szło twoje 50 dolarów za MTok.
+
+To ta sama zasada `opusplan`, której użyłem, żeby [ściąć swój rachunek za Claude Code o 70%](/blog/claude-code-token-optimization-bill-cut-guide), z nowym szczeblem na górze: drabina ma teraz cztery modele wysokości, a najwyższy szczebel jest dwa razy droższy od poprzedniego, co czyni dyscyplinę routingu cenniejszą, nie mniej.
+
+## Tryby awarii, na które trafiłem
+
+**Zbyt niski routing trudnej pracy.** Moja pierwsza wersja domyślnie wysyłała debugging do Sonneta 5. Przy naprawdę paskudnym race conditionie agent Sonnet przepalił cztery rundy, miotając się — więcej tokenów, niż zużyłby Fable 5, rozwiązując to za jednym razem. Zasada, na której się zatrzymałem: *pierwsze podejście* do czegokolwiek diagnostycznego idzie do dowódcy; deleguj debugging dopiero po ustaleniu przyczyny źródłowej, gdy poprawka jest już mechaniczna.
+
+**Przełączanie modeli w trakcie sesji zamiast delegowania.** Cache promptów jest przypisany do modelu. Jeśli w jednej sesji `/model` przełączasz tam i z powrotem, każde przełączenie unieważnia zbuforowany prefiks i płacisz pełną cenę wejścia za całą rozmowę od nowa. Subagenci nie mają tego problemu — cache głównej sesji pozostaje nienaruszony, podczas gdy subagent buduje swój własny. Deleguj, nie przełączaj.
+
+**Zapominanie o asymetrii odmów.** Fable 5 nosi klasyfikatory bezpieczeństwa, których pozostałe poziomy nie mają. Jeśli twoja praca jest bliska tematyce security, dowódca może trafić na fałszywie pozytywne odmowy przy promptach planistycznych — obsługę opisałem w moim [przeglądzie migracji do Fable 5](/blog/claude-fable-5-developer-review-migration-guide). Podłącz serwerowy fallback do Opusa 4.8 na ścieżce API dowódcy, a architektura degraduje się łagodnie.
+
+**Przeciążanie instrukcjami tanich agentów.** Haiku 4.5 z ciasnym, jednozadaniowym promptem jest niezawodny. Haiku z rozwlekłym promptem pełnym decyzji wymagających osądu to rzut monetą. Routing działa tylko wtedy, gdy dekompozycja zadania rzeczywiście wyciąga osąd z delegowanej pracy — to zadanie dowódcy i dlatego to dowódca musi być tym mądrym.
+
+## Kiedy jeden model to właściwy wybór
+
+Routing nie jest darmowy — kosztuje narzut orkiestracji, a każde delegowanie odtwarza kontekst, który główna sesja już miała. Pomiń go, gdy:
+
+- **Sesja jest krótka.** 20-minutowa sesja naprawy buga nie ma wolumenu tokenów do optymalizacji
+- **Praca jest jednolicie trudna.** Popołudnie ciężkiego, researchowego debuggingu to sam osąd; nie ma czego kierować w dół
+- **Jesteś na subskrypcji, nie na rozliczeniu API.** W ramach planu Max krańcowy koszt tokena to zero, dopóki nie dobijesz do limitów — choć Fable 5 zużywa tygodniowy limit szybciej niż Opus 4.8, więc routing i tak rozciąga twój przydział po zmianie okna wliczania z 7 lipca
+
+## Checklista
+
+1. Główna pętla na `claude-fable-5`, a jej udział w wyjściu trzymaj mały
+2. Agent `implementer` na `sonnet`, `chore-runner` na `haiku` — model przypięty we frontmatterze
+3. Review i diagnostyka zostają przy dowódcy; deleguj naprawy, nie diagnozy
+4. Wywołania `agent()` w workflow: nadpisuj model w dół świadomie, domyślnie dziedzicz
+5. Nigdy nie przełączaj `/model` w trakcie sesji — zamiast tego deleguj do subagenta (cache przeżyje)
+6. Serwerowy fallback do Opusa 4.8 na ścieżce dowódcy, jeśli twoja domena ryzykuje odmowami
+7. Pilnuj proporcji: jeśli najwyższy poziom przekracza ~20% tokenów, twoja dekompozycja przecieka naciskaniem klawiszy w górę
+
+Niewygodna prawda o Fable 5 jest taka, że jego cena jest funkcją: zmusza cię do zadania pytania, które części twojego workflow naprawdę potrzebują osądu z pierwszej ligi. W moim przypadku odpowiedź wyniosła około 15% — a pozostałe 85% stało się tańsze i szybsze w dniu, w którym przestałem udawać, że jest inaczej.
+
+## Źródła
+
+### Źródła
+- [Claude Fable 5 and Claude Mythos 5 — Anthropic](https://www.anthropic.com/news/claude-fable-5-mythos-5) - możliwości i cennik Fable 5
+- [Fable Is Back. Here's How to Actually Code With It — Wavect](https://wavect.io/blog/coding-with-claude-fable-5/) - społecznościowe wzorce routingu po relaunchu
+- [Claude Fable 5 Agent Functions: Multi-Agent Workflow Guide — YouMind](https://youmind.com/landing/x-viral-articles/claude-fable-5-agent-guide) - ujęcie dowódca/ręce/roboty
+- [Models overview — Claude Platform Docs](https://platform.claude.com/docs/en/about-claude/models/overview) - ID modeli i cennik per poziom
+
+### Dalsza lektura
+- [Claude Fable 5 Model Review — CodeRabbit](https://www.coderabbit.ai/blog/fable-5-model-review) - niezależne spojrzenie na to, gdzie Fable 5 zarabia na swój narzut
+- [Claude Code documentation — subagents](https://docs.anthropic.com/en/docs/claude-code) - referencja frontmattera agenta, w tym pola model
+
+---
+
+~Seb 👊
