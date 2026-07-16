@@ -1,0 +1,117 @@
+---
+title: 'Który model Claude? Fable 5 vs Opus 4.8 vs Sonnet 5 vs Haiku'
+date: '2026-07-02'
+category: 'AI'
+tags: ['claude', 'ai-models', 'claude-api', 'model-selection', 'pricing']
+draft: false
+featured: false
+author: 'Sebastian'
+enSlug: 'claude-5-family-model-selection-guide'
+excerpt: "Cztery aktywne poziomy Claude, dziesięciokrotny rozstrzał cen i różnice w API, które psują kod między nimi. Moja metoda decyzyjna po miesiącu produkcji."
+---
+
+Zespół, dla którego doradzam, wydawał czterocyfrowe kwoty miesięcznie, przepuszczając każde wywołanie LLM — klasyfikację, streszczenia, code review, wszystko — przez najbardziej wydajny dostępny model Claude. Gdy zapytałem dlaczego, odpowiedź była taka, jaką daje każdy: „nie chcieliśmy problemów z jakością". Płacili dziesięciokrotną premię za 80% ruchu za jakość, której nikt nie potrafił zmierzyć.
+
+Decyzja o tym, którego modelu Claude użyć, stała się w czerwcu naprawdę trudniejsza. Mamy teraz cztery aktywne poziomy — **Fable 5, Opus 4.8, Sonnet 5, Haiku 4.5** — o nakładających się możliwościach, dziesięciokrotnym rozstrzale cen i różnicach w API, które zepsują Twój kod, jeśli potraktujesz identyfikatory modeli jak wymienne ciągi znaków. Oto metoda decyzyjna, której faktycznie używam, zbudowana na miesiącu uruchamiania wszystkich czterech w produkcji.
+
+## Zestawienie w pigułce
+
+| Model | ID | Wejście / Wyjście (za MTok) | Kontekst | Maks. wyjście | Myślenie |
+|---|---|---|---|---|---|
+| Claude Fable 5 | `claude-fable-5` | $10 / $50 | 1M | 128K | Zawsze włączone (nie da się wyłączyć) |
+| Claude Opus 4.8 | `claude-opus-4-8` | $5 / $25 | 1M | 128K | Adaptacyjne (opt-in) |
+| Claude Sonnet 5 | `claude-sonnet-5` | $3 / $15 (promocyjnie $2 / $10 do 31 sierpnia) | 1M | 128K | Adaptacyjne (domyślnie włączone) |
+| Claude Haiku 4.5 | `claude-haiku-4-5` | $1 / $5 | 200K | 64K | budget_tokens (styl legacy) |
+
+Dwie przypisy, które znaczą więcej niż tabela: Fable 5 to jedyny model z **obowiązkowym 30-dniowym przechowywaniem danych** (organizacje ZDR są całkowicie zablokowane — każde żądanie zwraca 400), oraz jedyny wyposażony w **klasyfikatory bezpieczeństwa**, które mogą odrzucić żądanie z kodem HTTP 200. Oba zmieniają rachunek w sposób, którego benchmarki nigdy nie pokazują.
+
+## Co faktycznie różnicuje poziomy
+
+Różnice w benchmarkach są prawdziwe, ale mylące — na SWE-bench Verified rozstrzał wynosi od 95% (Fable 5) przez 88,6% (Opus 4.8) po liczby, które rok temu wciąż byłyby na poziomie state-of-the-art. W produkcji trzy inne osie znaczą więcej:
+
+**Spójność w długim horyzoncie.** To jest luka klasy Mythos. W zadaniach jednoturowych lub krótkich agentowych naprawdę nie potrafię odróżnić Fable 5 od Opus 4.8 w ślepych porównaniach. W wielogodzinnych przebiegach — dużych migracjach, sesjach nocnych, głębokim researchu — Fable 5 trzyma się planu tam, gdzie Opus zaczyna kumulować dryf. Jeśli Twoje obciążenie nie ma komponentu długiego horyzontu, płacisz podwójnie za zdolność, której nigdy nie uruchamiasz.
+
+**Powierzchnia odmów.** Klasyfikatory Fable 5 celują w ofensywne cyber, bio/chem oraz ekstrakcję rozumowania — i dają fałszywe alarmy przy legalnej pracy na poziomie systemowym i okołobezpieczeństwowej. Opus 4.8, Sonnet 5 i Haiku nie mają takiej warstwy. Dla bazy kodu narzędzi bezpieczeństwa „mniej wydajny" model jest operacyjnie tym *bardziej* wydajnym, bo odpowiada.
+
+**Koszt na zadanie, nie koszt na token.** Sonnet 5 jest tu czarnym koniem: jakość zbliżona do Opus w kodowaniu za $3/$15 — a do 31 sierpnia $2/$10 — czyni go najlepszym domyślnym wykonawcą dla większości zespołów. Bardziej wydajny model, który kończy w mniejszej liczbie tur, może pobić tańszy pod względem całkowitego kosztu, ale ta inwersja zachodzi tylko przy naprawdę trudnych zadaniach. Przy rutynowej pracy tańszy za token wygrywa, kropka.
+
+## Metoda decyzyjna
+
+Moje routowanie według typu zadania, po miesiącu strojenia:
+
+| Zadanie | Model | Dlaczego |
+|---|---|---|
+| Klasyfikacja, ekstrakcja, routowanie | Haiku 4.5 | Osiągnięto plateau jakości; płać $1, nie $10 |
+| Streszczenia, czat, szkice | Haiku 4.5 → Sonnet 5 | Zacznij tanio, eskaluj przy zmierzonych porażkach |
+| Codzienne kodowanie, implementacja z planu | Sonnet 5 | Jakość zbliżona do Opus za jedną trzecią ceny |
+| Code review, standardowe pętle agentowe | Sonnet 5 lub Opus 4.8 | Najpierw Sonnet; Opus, gdy głębia review jest mierzalnie lepsza |
+| Trudny debugging, architektura, planowanie | Opus 4.8 | Praca na poziomie oceny bez ograniczeń odmów/retencji Fable |
+| Wielogodzinna praca autonomiczna, najtrudniejsze rozumowanie | Fable 5 | Jedyny poziom, gdzie luka klasy Mythos faktycznie się ujawnia |
+| Narzędzia bezpieczeństwa, programowanie systemowe | Opus 4.8 | Celowo unikaj powierzchni klasyfikatorów Fable |
+| Cokolwiek o dużym wolumenie | Haiku 4.5 / Sonnet 5 + Batches API | 50% rabatu batch stacksuje się z tanim poziomem |
+
+Zasada eskalacji znaczy więcej niż tabela: **zacznij każde nowe obciążenie o jeden poziom niżej niż podpowiada instynkt**, mierz porażki i eskaluj tylko kategorię, która zawodzi. Zespoły routują w górę z lęku i prawie nigdy nie routują z powrotem w dół — to dokładnie ten czterocyfrowy rachunek z mojego wstępu.
+
+## Różnice w API, które gryzą
+
+Te cztery poziomy nie są wzajemnymi zamiennikami plug-and-play. Przeniesienie żądania między nimi oznacza znajomość tego:
+
+```python
+# Haiku 4.5 — wciąż obowiązuje starszy styl myślenia
+client.messages.create(model="claude-haiku-4-5",
+    thinking={"type": "enabled", "budget_tokens": 4000}, ...)
+
+# Opus 4.8 — adaptacyjne opt-in; budget_tokens zwraca 400
+client.messages.create(model="claude-opus-4-8",
+    thinking={"type": "adaptive"}, ...)
+
+# Sonnet 5 — adaptacyjne DOMYŚLNIE; pominięcie thinking != wyłączone myślenie
+client.messages.create(model="claude-sonnet-5", ...)  # to myśli (i nalicza za to)
+
+# Fable 5 — zawsze włączone; jawne "disabled" zwraca 400, pomiń to pole
+client.messages.create(model="claude-fable-5",
+    output_config={"effort": "high"}, ...)
+```
+
+Inne pułapki między poziomami z moich notatek migracyjnych: parametry próbkowania (`temperature`, `top_p`, `top_k`) są odrzucane na Fable 5, Opus 4.8 i Sonnet 5, ale działają na Haiku; prefille asystenta zwracają 400 na wszystkim aktualnym; a Sonnet 5 używa nowszego tokenizera, który liczy o ~30% więcej tokenów niż Sonnet 4.6 dla identycznego tekstu, więc przelicz od nowa `max_tokens` i dashboardy kosztów zamiast przenosić liczby. Jeśli routujesz dynamicznie między poziomami, Twój builder żądań potrzebuje gałęzi per model — nauczyłem się tego na własnej skórze podczas [migracji na Fable 5](/blog/claude-fable-5-developer-review-migration-guide).
+
+## Rozkład 80/15/5
+
+W moich obciążeniach wydatki układają się w kształt, który widzę też u innych zespołów: z grubsza **80% żądań należy do tanich poziomów** (Haiku/Sonnet — rutynowe, wysokowolumenowe, na plateau jakości), **15% na Opus 4.8** (praca oceny: planowanie, review, trudny debugging) oraz **5% na Fable 5** (wycinek długiego horyzontu i najtrudniejszego rozumowania). Konkretnie w Claude Code automatyzuję ten podział przez przypinanie modeli do subagentów — pełna konfiguracja jest w moim [poradniku routowania modeli](/blog/fable-5-claude-code-model-routing-playbook) — ale ten rozkład sprawdza się także dla zwykłych obciążeń API.
+
+Wniosek: jeśli Twój udział Fable 5 przekracza ~10% żądań, prawdziwa jest jedna z dwóch rzeczy — masz nietypowo trudne obciążenie albo Twoje routowanie przecieka. Zrób audyt, zanim ułożysz budżet.
+
+## Przypadki szczególne, które nadpisują metodę
+
+- **Organizacje ZDR** — Fable 5 jest niedostępny, twardy koniec. Twoim sufitem jest Opus 4.8 i szczerze, dla większości obciążeń wymagających ZDR Opus i tak był właściwą odpowiedzią
+- **Ścieżki wrażliwe na opóźnienie** — tury Fable 5 z założenia trwają minuty; nawet Opus przy wysokim wysiłku bywa powolny. Funkcje synchroniczne widoczne dla użytkownika należą do Sonnet 5 lub Haiku, z trybem szybkim Opus 4.8 ($10/$50, ~2,5x szybkości) jako opcją, gdy potrzebujesz jakości Opus przy interaktywnym opóźnieniu
+- **Pipeline'y intensywne wizualnie** — Fable 5 i Sonnet 5 oba obsługują wizję w wysokiej rozdzielczości (2576px dłuższa krawędź); do parsowania dokumentów na dużą skalę Sonnet 5 jest wyborem cena-wydajność, a Fable 5 sufitem dokładności przy zdegradowanych danych wejściowych — osobno rozłożyłem [pełne routowanie pipeline'ów wizyjnych](/blog/fable-5-vision-pipelines-documents-ocr-guide)
+- **Okno promocyjne Sonnet 5** — $2/$10 do 31 sierpnia czyni go tymczasowo tańszym *w stosunku do jakości* niż cokolwiek w zestawieniu. Jeśli masz uruchomić eksperyment z routowaniem, uruchom go, zanim cena wróci do normy
+
+## Lista kontrolna
+
+1. Domyślnie kieruj nowe obciążenia na Sonnet 5; schodź do Haiku, gdy jakość osiąga plateau, podnoś do Opus przy zmierzonych porażkach
+2. Zarezerwuj Fable 5 dla pracy długiego horyzontu i najtrudniejszego rozumowania — śledź jego udział w żądaniach i trzymaj poniżej ~10%
+3. Rozgałęź swój builder żądań per poziom (konfiguracja myślenia, parametry próbkowania) — identyfikatory modeli nie są wymiennymi ciągami znaków
+4. Domeny bezpieczeństwa/systemowe: Opus 4.8, celowo
+5. ZDR: sufit Opus 4.8, bez wyjątków
+6. Duży wolumen: Batches API + tani poziom przed jakimkolwiek upgradem modelu
+7. Przelicz od nowa liczby tokenów przy przekraczaniu granic tokenizera (Sonnet 4.6 → 5 lub cokolwiek → Fable/Opus 4.8)
+
+Zestawienie czterech poziomów to naprawdę dobra wiadomość przebrana za skomplikowaną decyzję: po raz pierwszy rodzina Claude pokrywa wszystko od wywołań klasyfikacji za $1 po autonomię klasy Mythos trwającą cały weekend. Zespoły, które wygrywają na koszcie, to nie te, które wybierają „najlepszy" model — to te, które w ogóle przestają używać jednego modelu.
+
+## Źródła
+
+### Źródła
+- [Przegląd modeli — Claude Platform Docs](https://platform.claude.com/docs/en/about-claude/models/overview) - identyfikatory modeli, okna kontekstu, ceny, flagi możliwości
+- [Claude Fable 5 i Claude Mythos 5 — Anthropic](https://www.anthropic.com/news/claude-fable-5-mythos-5) - pozycjonowanie klasy Mythos i zabezpieczenia
+- [Claude Fable 5 & Claude Mythos 5 Benchmarks Explained — Vellum](https://www.vellum.ai/blog/claude-fable-5-and-mythos-5-benchmarks-explained) - tabele benchmarków między modelami
+- [Przewodnik migracji — Claude Platform Docs](https://platform.claude.com/docs/en/about-claude/models/migration-guide) - zmiany łamiące API dla poszczególnych poziomów
+
+### Dalsza lektura
+- [Ranking SWE-bench Verified — vals.ai](https://www.vals.ai/benchmarks/swebench) - niezależne wyniki w całej rodzinie
+- [Claude Fable 5: Review, Benchmarks and Pricing — LLM Stats](https://llm-stats.com/blog/research/claude-fable-5-review) - analiza zewnętrzna tego, gdzie najwyższy poziom zarabia na swoją premię
+
+---
+
+~Seb 👊
