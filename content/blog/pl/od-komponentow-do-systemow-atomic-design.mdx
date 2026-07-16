@@ -1,0 +1,565 @@
+---
+title: 'Od komponentów do systemów: skalowalna architektura frontendu z Atomic Design + Feature Slices'
+date: '2026-01-06'
+category: 'Architecture'
+tags: ['React', 'TypeScript', 'Frontend Architecture', 'Atomic Design', 'Feature-Sliced Design', 'Design Systems', 'Modular UI', 'Scalable Architecture', 'Web Development', 'Best Practices']
+draft: false
+featured: false
+author: 'Sebastian'
+enSlug: 'from-components-to-systems-scalable-frontend-with-atomiec-design'
+excerpt: 'Połączenie metodyki UI z Atomic Design i domenowego podejścia Feature-Sliced Design daje modularną, skalowalną architekturę Reacta. Przewodnik, pułapki i najlepsze praktyki.'
+---
+
+Skalowanie aplikacji React od prostego prototypu do dużego, bogatego w funkcje produktu potrafi być wyzwaniem. Wiele zespołów zaczyna od "płaskiej" struktury projektu — wrzucając wszystkie komponenty do jednego folderu albo mieszając logikę biznesową z kodem UI. Z czasem takie podejście prowadzi do rozdętych folderów, chaotycznego katalogu współdzielonego i splątanych zależności między niepowiązanymi częściami aplikacji. Rezultatem jest zwykle kruchy kod, w którym drobna zmiana w jednym komponencie potrafi nieoczekiwanie zepsuć działanie innego.
+
+Aby rozwiązać te bolączki, architekci frontendu opracowali Atomic Design i Feature-Sliced Design jako metodyki organizowania kodu. Atomic Design rozbija interfejs użytkownika na hierarchię od atomów po strony, promując reużywalność i spójność komponentów UI. Z kolei Feature-Sliced Design (FSD) organizuje projekt wokół domen biznesowych lub funkcji zamiast wokół warstw technicznych, ułatwiając utrzymanie i skalowanie złożonej logiki. Każde z podejść rozwiązuje część układanki: Atomic Design świetnie radzi sobie z modularnym UI, a FSD wymusza wyraźne granice domen. W tym artykule przyjrzymy się, jak połączenie Atomic Design i Feature Slices może dać wysoce modularną, skalowalną architekturę frontendu — taką, która zachowuje zarówno spójność UI, jak i rozdzielenie odpowiedzialności, w miarę jak Twoja aplikacja React rośnie.
+
+Główna idea to projektowanie systemów, a nie tylko stron czy komponentów. Na koniec zrozumiesz, jak ustrukturyzować projekt React+TypeScript tak, aby najmniejsze elementy UI (przyciski, pola formularzy itd.) pasowały do większych modułów funkcji niczym kawałki dobrze poukładanej układanki. Omówimy pułapki tradycyjnych struktur plików, przypomnimy kluczowe zasady Atomic Design i Feature-Sliced Design, przejdziemy przez przykład budowy skalowalnego dashboardu i zakończymy najlepszymi praktykami oraz typowymi błędami, których warto unikać. Zaczynajmy!
+
+## Problem z płaskimi architekturami
+
+W "płaskiej" lub tradycyjnie warstwowej architekturze pliki organizuje się głównie według typu albo technicznego przeznaczenia. Na przykład wszystkie komponenty React lądują w folderze `components/`, serwisy w `services/`, funkcje pomocnicze w `utils/` i tak dalej. Na początku wydaje się to logiczne, ale wraz z rozrostem kodu prowadzi do poważnych problemów:
+
+**Przepełnione foldery:** globalny katalog `components/` zamienia się w worek zawierający wszystko, od podstawowych elementów UI po złożone komponenty specyficzne dla konkretnych stron. Trudno stwierdzić, które komponenty należą do której funkcji czy strony. Wdrożenie nowych deweloperów przebiega wolno, bo nic nie "krzyczy" o przeznaczeniu aplikacji — struktura nie mówi, co aplikacja właściwie robi.
+
+**Chaos we współdzielonym:** bez jasnych wytycznych wiele komponentów ląduje w ogólnym folderze `shared/` lub `common/`. Z czasem taki folder puchnie od niepowiązanych fragmentów kodu — staje się wysypiskiem wszystkiego, co uznano za reużywalne. Zamienia się w nowy monolit, w którym zmiana jednego "współdzielonego" komponentu może niechcący wpłynąć na funkcje w całej aplikacji.
+
+**Ścisłe powiązania (tight coupling):** w płaskiej strukturze funkcje często sięgają do swoich wnętrzności nawzajem. Na przykład komponent A z jednej części aplikacji może bezpośrednio importować komponent B z zupełnie innego modułu tylko dlatego, że tak wygodnie. Te ukryte zależności tworzą kruchą sieć — zmiany rozchodzą się nieprzewidywalnie przez cały system.
+
+**Długie łańcuchy importów:** zaczynasz widzieć instrukcje importu z wieloma segmentami `../`, nawigujące przez splątane ścieżki. To sygnał ostrzegawczy, że kod nie znajduje się tam, gdzie spodziewa się go czytelnik. Może komponent strony importuje niskopoziomową funkcję pomocniczą z głębi folderu innej funkcji. Takie importy-spaghetti wskazują na niejasne granice i utrudniają utrzymanie.
+
+Zilustrujmy typowy, źle ustrukturyzowany projekt React:
+
+```
+src/
+├── components/
+│   ├── Button.jsx           # Ogólny komponent przycisku
+│   ├── Navbar.jsx           # Pasek nawigacji (używany w nagłówku)
+│   ├── ProfileForm.jsx      # Formularz profilu użytkownika (specyficzny dla strony Profil)
+│   └── ...                  # (dziesiątki kolejnych komponentów)
+├── pages/
+│   ├── HomePage.jsx         # Używa Navbar itd.
+│   └── ProfilePage.jsx      # Używa ProfileForm itd.
+├── services/
+│   ├── api.js               # Wywołania AJAX, np. getUserProfile
+│   └── auth.js              # Logika uwierzytelniania
+├── utils/
+│   ├── formatDate.js        # Funkcje pomocnicze
+│   └── validateEmail.js
+└── ...                      # (inne globalne rzeczy)
+```
+
+W tej strukturze kod związany z funkcją jest rozproszony: UI strony Profil (`ProfileForm.jsx`) leży w `components/` obok niepowiązanych komponentów, podczas gdy pobieranie danych profilu może być w `services/api.js`. Nie ma żadnej wyraźnej granicy wokół pojęcia "Profil użytkownika" — jego UI, logika i dane są w różnych miejscach. W miarę rozrostu aplikacji folder `components/` wciąż się rozrasta, a deweloperzy muszą w głowie mapować, które pliki dotyczą której funkcji. Prowadzi to często do "monolitycznych" plików i zagmatwanych zależności przy wdrażaniu nowych funkcji.
+
+Ostatecznie płaska architektura źle się skaluje. Staje się Big Ball of Mud (osławionym antywzorcem architektonicznym), w którym "wszystko jest wszędzie", a kod nie ma modularnej struktury. Potrzebujemy lepszego sposobu organizacji naszego frontendu — takiego, który zapewnia wizualną spójność i reużywalność, a jednocześnie utrzymuje wyraźny podział według funkcji. I tu wkracza połączenie Atomic Design i Feature-Sliced Design.
+
+## Powtórka z Atomic Design (warstwa UI)
+
+Atomic Design, wprowadzony przez Brada Frosta, to metodyka budowania interfejsów od podstaw, przy użyciu hierarchii typów komponentów. Poziomy Atomic Design (od najmniejszego do największego) to: **atoms** (atomy), **molecules** (molekuły), **organisms** (organizmy), **templates** (szablony) i **pages** (strony). Przypomnijmy pokrótce każdy z nich:
+
+**Atoms (atomy):** podstawowe klocki UI. To prymitywne, niepodzielne komponenty, jak przyciski, pola formularzy, ikony czy pola tekstowe. Atomy zwykle nie mają logiki biznesowej; często są to po prostu ostylowane elementy HTML (np. komponent `<Button>`).
+
+**Molecules (molekuły):** małe komponenty złożone, powstające przez łączenie atomów. Molekuła realizuje stosunkowo prostą funkcję. Na przykład molekuła SearchField może składać się z atomu Input i atomu Button razem, albo etykiety formularza sparowanej z polem. Molekuły zwykle obsługują prostą logikę UI (jak stan pola), ale nie złożone zachowania.
+
+**Organisms (organizmy):** większe, bardziej złożone sekcje UI złożone z wielu molekuł i/lub atomów działających razem. Organizmem może być coś w rodzaju paska nawigacji, karty użytkownika czy wielopolowego formularza. Organizmy mogą przechowywać lokalny stan albo współpracować z logiką aplikacji, ale reprezentują wyodrębniony fragment interfejsu (np. pasek nagłówka z logo, formularzem wyszukiwania i menu profilu).
+
+**Templates (szablony):** układy na poziomie strony, zapewniające strukturę dla organizmów i molekuł. Szablon jest jak makieta czy szkielet — na przykład szablon układu dashboardu może definiować pasek boczny, nagłówek i obszar treści, nie precyzując faktycznej zawartości. Szablony rozmieszczają komponenty, ale wypełniane są prawdziwymi danymi później.
+
+**Pages (strony):** konkretne strony/ekrany aplikacji, gdzie szablony zostają wypełnione konkretną treścią i danymi. Strona jest zwykle powiązana z trasą (np. `ProfilePage`) i komponuje szablony, organizmy itd. z prawdziwymi propsami lub stanem. Strony reprezentują widok użytkownika końcowego i często integrują się z pobieraniem danych, by dostarczyć niezbędną treść.
+
+Wizualnie hierarchię Atomic Design można wyobrazić sobie jako piramidę reużywalności: **Atoms → Molecules → Organisms → Templates → Pages**. Niższe poziomy (atomy, molekuły) są wysoce reużywalne w całej aplikacji, podczas gdy wyższe poziomy (strony) są bardziej zależne od kontekstu.
+
+Atomic Design wprowadza porządek do warstwy UI, dbając o to, byś budował interfejsy systematycznie. Zamiast tworzyć doraźne komponenty dla każdego ekranu, identyfikujesz wspólne elementy projektowe (atomy) i reużywasz ich do budowy spójnych komponentów wyższego poziomu. Daje to wspólny język między projektantami a deweloperami (każdy wie, czym jest "atom", a czym "organizm") oraz bibliotekę komponentów, które można dowolnie łączyć. Zasada jest taka, że każda warstwa powinna komponować wyłącznie elementy z tej samej warstwy lub niższej (np. organizmy są zbudowane z molekuł/atomów, szablony zawierają organizmy itd.), nigdy odwrotnie. Ta jednokierunkowa linia montażowa zapobiega cyklicznym zależnościom i wymusza wyraźne rozdzielenie odpowiedzialności w UI.
+
+W praktyce zastosowanie Atomic Design w projekcie oznacza często ustrukturyzowanie folderu komponentów w podfoldery dla każdej warstwy. Na przykład możesz mieć:
+
+```
+shared/ui/
+├── atoms/
+│   ├── Button.tsx
+│   ├── Input.tsx
+│   └── Icon.tsx
+├── molecules/
+│   ├── SearchField.tsx      # używa Button + Input
+│   └── FormField.tsx        # np. połączenie etykiety + pola
+├── organisms/
+│   ├── LoginForm.tsx        # używa wielu molekuł/atomów
+│   └── NavBar.tsx           # używa Icon, przycisków itd.
+├── templates/
+│   └── MainLayout.tsx       # używa NavBar, miejsca na treść
+└── pages/
+    └── HomePage.tsx         # używa MainLayout, organizmów itd.
+```
+
+W kontekście aplikacji React+TypeScript atomy i molekuły to świetni kandydaci do katalogu `shared/ui` — scentralizowanego miejsca dla czysto prezentacyjnych komponentów, które można reużyć w dowolnej funkcji czy stronie. Przykłady: ogólny atom `Button`, `Input` czy `Spinner`; organizm `Modal`, którego może potrzebować wiele stron. Umieszczając je w `shared/ui`, unikasz duplikowania tych podstaw w wielu funkcjach.
+
+Jednak nie każdy komponent UI powinien być globalny. Kluczowa lekcja z łączenia Atomic Design z myśleniem opartym na funkcjach jest taka, by współdzielić tylko to, co naprawdę musi być współdzielone. Jeśli komponent jest bardzo specyficzny dla UI jednej funkcji, może żyć bliżej tej funkcji (zobaczymy jak, w kolejnych sekcjach). Atomic Design wciąż może Cię prowadzić na poziomie funkcji — np. w obrębie złożonej funkcji możesz mieć atomy, molekuły itd. specyficzne dla tej funkcji — ale nie będziesz przedwcześnie zanieczyszczać globalnej przestrzeni współdzielonej.
+
+Aby doprecyzować, co trafia do współdzielonego UI, a co do UI funkcji/encji:
+
+- **Umieść komponent atomowy w `shared/ui` tylko wtedy, gdy jest ogólny i używany w wielu miejscach.** Na przykład ostylowany `Button` czy `TextInput` pojawiający się w całej aplikacji to dobry kandydat do `shared/ui/atoms`. Modal albo date picker używany przez wiele funkcji może trafić do `shared/ui/organisms`.
+
+- **Jeśli komponent jest powiązany z konkretną domeną lub funkcją, trzymaj go lokalnie w jej kontekście.** Na przykład komponent `UserAvatar` (pokazujący zdjęcie profilowe użytkownika) wizualnie jest atomem, ale koncepcyjnie należy do domeny "User" — możesz umieścić go w `entities/user/ui` (w module encji user). Podobnie molekuła `ProfileDetails` wyświetlająca imię i e-mail użytkownika może żyć w folderze funkcji `user-profile`, a nie w globalnym shared. Dzięki temu zmiany tego komponentu są zlokalizowane w obrębie funkcji/domeny.
+
+- **Szablony i strony często pokrywają się z warstwą routingu/stron aplikacji.** Na przykład Next.js zachęca do folderu `pages/` dla każdej trasy; wewnątrz tych komponentów stron możesz używać swoich szablonów i organizmów. Jeśli masz wspólne szablony układów (np. `MainLayout`, `AdminLayout`), możesz trzymać je w `shared/ui/templates` albo w dedykowanym folderze `layouts/`. Strony specyficzne dla funkcji (jak strona ustawień tylko dla profilu użytkownika) znalazłyby się w funkcji albo w warstwie stron odwołującej się do komponentów tej funkcji.
+
+Spójrzmy na krótki przykład kodu komponentów atomowych, by utrwalić tę ideę:
+
+```tsx
+// shared/ui/atoms/Button.tsx
+import { ButtonHTMLAttributes, FC } from 'react'
+
+type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement>
+
+export const Button: FC<ButtonProps> = ({ children, ...props }) => (
+  <button {...props}>{children}</button>
+)
+```
+
+```tsx
+// shared/ui/atoms/Input.tsx
+import { InputHTMLAttributes, FC } from 'react'
+
+type InputProps = InputHTMLAttributes<HTMLInputElement>
+
+export const Input: FC<InputProps> = (props) => <input {...props} />
+```
+
+```tsx
+// shared/ui/molecules/SearchForm.tsx
+import { FC, useState } from 'react'
+import { Input } from '../atoms/Input'
+import { Button } from '../atoms/Button'
+
+export const SearchForm: FC<{ onSearch: (query: string) => void }> = ({ onSearch }) => {
+  const [query, setQuery] = useState('')
+
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault()
+    onSearch(query)
+  }
+
+  return (
+    <form onSubmit={submit}>
+      <Input value={query} placeholder="Search..." onChange={(e) => setQuery(e.target.value)} />
+      <Button type="submit">Go</Button>
+    </form>
+  )
+}
+```
+
+W tym fragmencie `Button` i `Input` to atomy (reużywalne, bez specjalnej logiki), a `SearchForm` to molekuła złożona z tych atomów. Zwróć uwagę, jak prosty i skupiony jest każdy komponent. Trzymając atomy "głupimi" (czysto prezentacyjnymi), a molekuły tylko na tyle "sprytnymi", na ile trzeba (tu `SearchForm` przechowuje trochę stanu pola), przestrzegamy zasady pojedynczej odpowiedzialności (Single Responsibility). `SearchForm` sam nie pobiera danych; jedynie zbiera dane wejściowe użytkownika i przekazuje je na zewnątrz przez props `onSearch`. W większej aplikacji komponent wyższego poziomu albo logika funkcji zajęłyby się tym, co dzieje się z tym zapytaniem wyszukiwania.
+
+Atomic Design sam w sobie daje nam ustrukturyzowany zestaw narzędzi UI. Ale nie mówi nam, gdzie umieścić zarządzanie stanem, pobieranie danych czy jak grupować komponenty według funkcji. Właściwie jednym z zarzutów wobec Atomic Design jest to, że "nie zapewnia wyraźnego poziomu odpowiedzialności za logikę biznesową", co może prowadzić do rozproszenia tej logiki po komponentach różnej wielkości. I tu wkracza Feature-Sliced Design — by ogarnąć szerszy obraz struktury aplikacji, podczas gdy nadal używamy zasad atomowych do części UI.
+
+## Przegląd Feature-Sliced Design (warstwa domenowa)
+
+Feature-Sliced Design (FSD) to metodyka architektoniczna dla projektów frontendowych, która organizuje kod według funkcji i domen biznesowych, a nie według ról technicznych. To zasadniczo zastosowanie koncepcji rozdzielenia odpowiedzialności na wyższym poziomie: każdy plaster (slice) aplikacji zawiera wszystko dla danej funkcji, od UI przez stan po wywołania API. Metoda ta jest inspirowana ideami domain-driven design, ale dostosowana do frontendu i projektów React. Główna korzyść to unikanie problemu "monolitycznych warstw" przez pionowe cięcie kodu według funkcji, tak by każda funkcja była samowystarczalnym modułem.
+
+FSD definiuje kilka warstw i konwencji strukturyzowania kodu frontendu:
+
+**Warstwa App:** najwyższy poziom aplikacji, odpowiedzialny za globalną konfigurację i inicjalizację. Obejmuje takie rzeczy jak punkt wejścia aplikacji, konfigurację routingu, dostawców kontekstu lub stanu (Redux Provider, klient React Query, ThemeProvider itd.) oraz style globalne. Zasadniczo `app/` to miejsce, gdzie bootstrapuje się aplikację React.
+
+**Warstwa Pages:** każda strona (zwykle odpowiadająca trasie lub odrębnemu widokowi w aplikacji) dostaje własny moduł w `pages/`. Strona komponuje funkcje i komponenty UI, tworząc ekran. Myśl o stronach jak o orkiestratorach: same nie zawierają ciężkiej logiki, lecz zbierają razem niezbędne elementy (funkcje, układy, encje) do wyświetlenia. W FSD strony mogą importować z warstw features, entities i shared, by złożyć finalne UI.
+
+**Warstwa Features:** funkcje to serce funkcjonalności aplikacji. Funkcja reprezentuje samowystarczalną, skierowaną do użytkownika możliwość albo sekcję aplikacji. Na przykład: uwierzytelnianie użytkownika, edycja profilu, koszyk, pasek wyszukiwania, widget komentarzy — każde z nich może być funkcją. Folder funkcji (np. `features/user-profile/`) będzie zawierał wszystko związane z działaniem tej funkcji: jej komponenty UI, zarządzanie stanem (np. Redux slice, store Zustand czy kontekst) oraz wszelką specyficzną logikę biznesową czy narzędzia. Funkcje są zaprojektowane jako reużywalne w tym sensie, że tę samą funkcję można w razie potrzeby dołączyć na wielu stronach. Powinny udostępniać wyraźne publiczne API (zwykle przez `index.ts`) do użytku przez strony lub inne wyższe warstwy.
+
+**Warstwa Entities:** encje to abstrakcje Twoich modeli domenowych — kluczowych obiektów biznesowych, wokół których może obracać się wiele funkcji. Na przykład `User`, `Product`, `Order`, `Article`, `Task` mogą być encjami. Folder `entities/<entity>/` zwykle zawiera struktury danych (interfejsy lub typy TypeScript dla tej encji), logikę pobierania danych dla tej encji (wywołania API, może mały hook-owrapper jak `useUser`) oraz może minimalne komponenty UI reprezentujące encję (np. komponent `UserAvatar` czy `ProductImage`). Encje mają być reużywalne między funkcjami; zwykle nie obsługują same złożonych interakcji, lecz dostarczają klocki budowlane.
+
+**Warstwa Shared:** warstwa współdzielona przechowuje kod, który jest ogólny i niepowiązany z konkretną funkcją czy encją. Obejmuje takie rzeczy jak funkcje pomocnicze (`shared/lib`), stałe oraz często komponenty UI używane szeroko (które przypisaliśmy do `shared/ui` dla atomów i molekuł z Atomic Design). Możesz mieć też `shared/api` dla ogólnych klientów API albo `shared/config` dla konfiguracji obejmującej całą aplikację. Kluczowe jest, by nic w `shared/` nie zawierało logiki specyficznej dla biznesu — jeśli zawiera, prawdopodobnie należy do features lub entities. Shared jest jak skrzynka z narzędziami dostępna dla wszystkich części aplikacji, ale trzeba ją starannie doglądać, by nie stała się wysypiskiem.
+
+W niektórych wersjach FSD możesz napotkać dodatkowe warstwy, jak "processes" czy "widgets". Są to bardziej granularne lub opcjonalne warstwy:
+
+- **Processes (procesy):** przepływy wyższego poziomu obejmujące wiele stron lub funkcji (na przykład złożony proces checkout obejmujący wiele kroków i funkcji może być procesem).
+
+- **Widgets:** koncepcja używana przez niektórych do oznaczenia części UI większych niż organizmy, ale nie będących pełnymi stronami — zasadniczo mini-sekcje aplikacji, które można komponować na stronie. (Terminologia bywa różna; niektórzy używają "widgets" zamiennie z funkcjami czy organizmami.)
+
+Jeśli brzmi to abstrakcyjnie, ugruntujmy to przykładem struktury folderów podkreślającym warstwy i plastry:
+
+```
+src/
+├── app/
+│   ├── providers/           # np. dostawcy kontekstu, konfiguracja globalnego store
+│   ├── router.tsx           # Konfiguracja routingu
+│   └── App.tsx              # Główny komponent aplikacji
+├── processes/
+│   └── onboarding/          # (Opcjonalnie) wielokrokowy przepływ onboardingu jako proces
+├── pages/
+│   ├── DashboardPage.tsx    # Składa funkcje dla trasy dashboardu
+│   └── ProfilePage.tsx      # Składa funkcje dla trasy profilu
+├── features/
+│   ├── user-profile/        # Funkcja: wyświetlanie i edycja profilu użytkownika
+│   ├── task-list/           # Funkcja: widget listy zadań
+│   └── notifications/       # Funkcja: dzwonek i lista powiadomień
+├── entities/
+│   ├── user/                # Encja: dane użytkownika (używana przez user-profile, notifications itd.)
+│   └── task/                # Encja: dane zadania (używana przez funkcję task-list)
+└── shared/
+    ├── ui/                  # Komponenty design systemu (atomy, molekuły itd.)
+    ├── lib/                 # Narzędzia, np. formatowanie dat
+    └── config/              # Globalna konfiguracja (np. endpointy API, feature flags)
+```
+
+**Plastry (slices):** w obrębie warstw features i entities każdy podfolder (np. `user-profile` czy `task`) jest plastrem reprezentującym konkretną domenę lub obszar funkcji. Każdy plaster ma być samowystarczalny — jeden plaster nie powinien bezpośrednio zależeć od innego plastra w tej samej warstwie. To krytyczna zasada: kod w jednej funkcji nie powinien bezpośrednio importować kodu z innej funkcji; to samo dotyczy encji. Dlaczego? Aby utrzymać niskie powiązania. Jeśli funkcja A potrzebuje czegoś z funkcji B, to coś prawdopodobnie należy do niższej warstwy (może encji albo shared), by obie mogły z tego korzystać bez wzajemnej zależności. Wymuszanie tej zasady oznacza, że możesz pracować nad pojedynczą funkcją albo ją refaktoryzować w izolacji, z mniejszym strachem o zepsucie innych.
+
+Każdy plaster (funkcja lub encja) jest dalej organizowany w **segmenty** według przeznaczenia. Typowe foldery segmentów to:
+
+- **ui:** wszystkie komponenty wizualne tej funkcji/encji (mogą być dalej rozbite na atomy, molekuły itd. albo po prostu folder komponentów).
+
+- **model:** zarządzanie stanem i logika biznesowa — na przykład store Zustand, store MobX czy Redux slice, a także funkcje specyficzne dla domeny. Także typy/interfejsy dla tego plastra.
+
+- **api:** funkcje żądań sieciowych związanych z tą funkcją lub encją (np. `fetchUserProfile` czy `updateUserProfile` w funkcji user-profile albo `fetchUserById` w encji user). Segment api może też zawierać typy odpowiedzi API i mappery.
+
+- **lib:** wszelkie biblioteki lub narzędzia specyficzne dla funkcji. Może własny hook używany tylko w tej funkcji albo mała funkcja pomocnicza.
+
+- **config:** stałe konfiguracyjne lub feature flags dla tej funkcji.
+
+Nie każdy plaster będzie miał wszystkie te segmenty — tylko te potrzebne. Na przykład encja jak `user` może mieć `model` (z typem User i może kontekstem lub store), `api` (dla wywołań HTTP związanych z użytkownikiem) oraz `ui` (jak komponent `UserAvatar`). Prosta funkcja może mieć tylko `ui` i `model`. Celem jest grupowanie według przeznaczenia, tak by w obrębie plastra wiadomo było, gdzie coś umieścić i gdzie tego szukać. Jednolita struktura we wszystkich plastrach czyni projekt przewidywalnym i łatwiejszym w nawigacji.
+
+**Kierunek zależności:** FSD przepisuje ogólny kierunek zależności między warstwami:
+
+- Warstwy wyższego poziomu (`app`, `pages`) mogą zależeć od wszystkiego poniżej (`features`, `entities`, `shared`).
+
+- `Features` mogą zależeć od `entities` i `shared`, ale nie od innych funkcji ani od stron (i najlepiej nie od warstwy app, poza użyciem niektórych dostawców kontekstu).
+
+- `Entities` mogą zależeć od `shared` (dla podstawowych narzędzi lub UI), ale zwykle nie od funkcji (encje powinny być niższego poziomu niż funkcje).
+
+- `Shared` powinno być najniższego poziomu, bez zależności od kodu specyficznego dla app/funkcji. (Na przykład współdzielone narzędzie nie powinno importować z encji, bo inaczej przestałoby być "współdzielone".)
+
+Tworzy to jednokierunkową ulicę, która pomaga zapobiegać cyklicznym zależnościom i utrzymuje logikę biznesową zlokalizowaną. Jest to analogiczne do tego, jak Atomic Design zapewnia, że atomy nie zależą od molekuł czy organizmów — tutaj funkcje nie powinny zależeć od innych funkcji w tej samej warstwie i tak dalej.
+
+Podsumowując, Feature-Sliced Design daje nam skalowalną strukturę: możemy dodawać nowe funkcje lub encje jako nowe plastry bez naruszania istniejących, a o aplikacji możemy rozumować w kategoriach domen biznesowych (user, tasks, profile itd.), a nie niskopoziomowych fragmentów technicznych. Dalej zobaczymy, jak zintegrować zasady Atomic Design z tą strukturą plastrów.
+
+## Łączenie obu podejść
+
+Skoro omówiliśmy już Atomic Design i Feature-Sliced Design osobno, prawdziwa siła bierze się z ich połączenia. Celem jest wyciągnięcie tego, co najlepsze z obu światów: hierarchicznej, reużywalnej biblioteki komponentów UI oraz zorientowanego na funkcje rozdzielenia kodu. Oto jak pasują do siebie:
+
+1. **Używaj Atomic Design wewnątrz plastrów:** każda funkcja lub encja będzie miała własny segment `ui`. Możemy zastosować kategoryzację atomową wewnątrz tych folderów ui. Oznacza to, że jeśli funkcja ma wiele komponentów o różnej złożoności, możesz w razie potrzeby zorganizować je w podfoldery jak `atoms`, `molecules`, `organisms`. To samo dotyczy komponentów UI encji. Dzięki temu struktura UI dużej funkcji pozostaje czysta i zrozumiała, odzwierciedlając warstwy atomowe, ale ograniczone do zakresu tej funkcji.
+
+2. **Współdzielone komponenty atomowe dla przekrojowego UI:** globalne `shared/ui` to miejsce dla naprawdę uniwersalnych atomów i molekuł (a może i niektórych organizmów) używanych przez wiele plastrów. Myśl o tym jak o swoim design systemie czy zestawie narzędzi UI, z którego mogą czerpać wszystkie funkcje. Na przykład podstawowe kontrolki formularzy, przyciski, ikony i może wspólne układy rezydują tutaj. Umieszczając je w shared, zapewniasz jedno źródło prawdy dla tych elementów (spójne style, brak duplikacji).
+
+3. **Komponenty specyficzne dla funkcji pozostają w funkcji:** jeśli komponent UI jest istotny tylko dla jednej funkcji, trzymaj go w folderze `ui` tej funkcji zamiast zaśmiecać shared. Na przykład organizm `ProfileCard` używany wyłącznie na stronie profilu użytkownika należy do `features/user-profile/ui/organisms/`. Może wciąż być złożony ze współdzielonych atomów/molekuł jak `Button` czy `Input`, ale sam organizm żyje ze swoją funkcją. Utrzymuje to wysoką kohezję — cały kod "profilu użytkownika" mieszka razem — i unika przypadkowych powiązań: inne funkcje nie będą losowo używać `ProfileCard`, chyba że naprawdę go potrzebują (w którym to przypadku może powinien zostać przeniesiony do bardziej współdzielonej lokalizacji).
+
+4. **Encje dostarczają atomy/molekuły specyficzne dla domeny:** plastry encji mogą również zawierać komponenty UI reprezentujące kluczowe koncepcje domenowe. Na przykład encja `user` może zawierać atom jak `UserAvatar` czy molekułę jak `UserNameLabel`. Mogłyby być używane przez wiele funkcji, ilekroć potrzebują pokazać fragment informacji o użytkowniku. Umieszczając je w `entities/user/ui`, sygnalizujemy, że to ogólne reprezentacje użytkownika do użytku wszędzie w aplikacji, ale wciąż część domeny user (mogą np. znać typ `User`). Unika to duplikowania rzeczy jak "wyświetl imię użytkownika z określonym stylowaniem" w każdej funkcji, która tego potrzebuje — piszesz to raz w encji. Inna funkcja mogłaby zaimportować `UserAvatar` z encji user zamiast tworzyć własny.
+
+Zwizualizujmy, jak połączona struktura Atomic + FSD mogłaby wyglądać dla konkretnej funkcji i encji:
+
+```
+src/
+├── features/
+│   └── user-profile/
+│       ├── ui/
+│       │   ├── atoms/
+│       │   │   └── EditButton.tsx              # mały przycisk specyficzny dla profilu
+│       │   ├── molecules/
+│       │   │   └── ProfileContactInfo.tsx      # wyświetla razem e-mail i telefon
+│       │   └── organisms/
+│       │       └── UserProfileCard.tsx         # większy komponent komponujący wiele elementów
+│       ├── model/
+│       │   └── useUserProfile.ts               # logika funkcji (np. pobranie użytkownika, obsługa stanu edycji)
+│       ├── api/
+│       │   └── updateProfile.ts                # wywołanie API aktualizujące profil użytkownika
+│       └── index.ts                            # Eksporty publicznego API (np. komponent UserProfileCard)
+├── entities/
+│   └── user/
+│       ├── ui/
+│       │   ├── UserAvatar.tsx                  # atom: wyświetlanie zdjęcia profilowego użytkownika
+│       │   └── UserNameLabel.tsx               # molekuła: może ostylowany tekst z nazwą użytkownika
+│       ├── model/
+│       │   ├── types.ts                        # np. interfejs/typ User
+│       │   └── userStore.ts                    # (opcjonalnie) zarządzanie stanem danych użytkownika
+│       ├── api/
+│       │   └── fetchUser.ts                    # wywołanie API pobierające informacje o użytkowniku
+│       └── index.ts                            # Eksporty publicznego API (UserAvatar, typy itd.)
+└── shared/
+    ├── ui/
+    │   ├── atoms/
+    │   │   ├── Button.tsx
+    │   │   ├── Input.tsx
+    │   │   └── Spinner.tsx
+    │   ├── molecules/
+    │   │   └── FormField.tsx
+    │   └── organisms/
+    │       └── Modal.tsx
+    ├── lib/
+    │   └── formatDate.ts
+    └── config/
+        └── routes.ts
+```
+
+W tym przykładzie funkcja User Profile (`features/user-profile`) używa mieszanki własnych komponentów UI oraz tych z encji User i biblioteki shared. Organizm `UserProfileCard` może wewnętrznie używać `UserAvatar` (z `entities/user`) do pokazania zdjęcia, `UserNameLabel` (również z `entities/user`) do pokazania imienia, i może `Button` (z `shared/atoms`) do akcji edycji. Wszystkie te elementy schodzą się razem dopiero w obrębie `UserProfileCard`, który jest eksportowany jako główny komponent UI funkcji.
+
+Z zewnątrz inne części aplikacji nie muszą znać wnętrzności. Strona Profil może po prostu zrobić `import { UserProfileCard } from "features/user-profile"` (przez `index.ts` tej funkcji). `UserProfileCard` z kolei importuje to, czego potrzebuje, z encji user i shared UI. To warstwowanie zapewnia czysty graf zależności: **Page → Feature → Entity/Shared**, bez cykliczności.
+
+Jak to poprawia utrzymywalność i reużywalność? Wyliczmy korzyści:
+
+**Wyraźne granice domen:** cały kod związany z funkcją profilu użytkownika siedzi w jednym folderze. Jeśli deweloper musi zmodyfikować funkcjonalność profilu, wie, gdzie szukać. Nie zepsuje przypadkiem niepowiązanych funkcji, bo nie będzie dotykał innych plastrów. I odwrotnie, jeśli coś się zepsuje w funkcji profilu, wiesz, że najpewniej znajduje się w tym plastrze. Ta izolacja to znak rozpoznawczy feature-sliced design.
+
+**Spójność współdzielonego UI:** dzięki używaniu współdzielonych atomów (jak `Button`, `Input`) w całej aplikacji wygląd i odczucie pozostają spójne. Jeśli zespół projektowy zaktualizuje styl głównego przycisku, aktualizujesz `shared/ui/atoms/Button.tsx` raz, a przyciski każdej funkcji automatycznie odzwierciedlają zmianę. Podejście atomowe zapewnia jedną kanoniczną implementację każdego podstawowego elementu UI, redukując niespójności.
+
+**Kontrolowana reużywalność przez encje:** encje działają jako pośrednicy w reużywaniu logiki domenowej i UI. Na przykład zarówno funkcja profilu, jak i może funkcja "zarządzanie użytkownikami" (dla adminów) mogą potrzebować wyświetlać awatary użytkowników. Mając `UserAvatar` w encji user, unikamy duplikowania tego komponentu w dwóch miejscach. A jednak nie jest on globalnie współdzielony w sposób zapraszający do nadużyć — jest konkretnie powiązany z danymi użytkownika (prawdopodobnie oczekuje obiektu `User` jako propsa). Oznacza to, że ulepszenia `UserAvatar` przynoszą korzyść wszystkim użyciom, a wszelka logika specyficzna dla domeny (jak może pokazanie domyślnego awatara, gdy żaden nie został podany) jest zaimplementowana raz. To równowaga między DRY a rozdzieleniem — pozostajemy "DRY" dla rzeczy, które naprawdę reprezentują tę samą koncepcję w całej aplikacji (jak awatar użytkownika).
+
+**Niezależność i komponowalność funkcji:** jeśli jedna funkcja potrzebuje użyć funkcjonalności z innej, wyodrębniamy tę funkcjonalność do odpowiedniego miejsca. Na przykład powiedzmy, że funkcja listy zadań chce pokazać imię użytkownika, który utworzył każde zadanie. Nie powinna importować komponentu UI z funkcji profilu; zamiast tego może użyć `UserNameLabel` z encji user (skoro imiona użytkowników to ogólna koncepcja). Jeśli czegoś nie było jeszcze w encji ani shared, to sygnał, by zrefaktoryzować i tam to przenieść. Każda funkcja udostępnia tylko to, co konieczne (często jeden lub dwa główne komponenty i może kilka hooków). Utrzymuje to niskie powiązania. Właściwie mógłbyś potencjalnie usunąć cały folder funkcji, a reszta aplikacji wciąż by się kompilowała/działała (poza częścią, która próbowała importować API tej funkcji). To silny znak modularności.
+
+**Skalowalność dla zespołów:** zespoły mogą pracować nad osobnymi funkcjami równolegle, nie wchodząc sobie w drogę. Jeśli funkcja A i funkcja B nie zależą bezpośrednio od siebie, dwóch deweloperów może je refaktoryzować lub rozwijać jednocześnie. Konflikty scalania i potrzeba koordynacji między zespołami maleją. Gdyby kod był cały splątany, dodanie nowego członka zespołu byłoby jak wrzucenie go do zabałaganionej kuchni; ale w architekturze plastrowej każdy zespół czy osoba może przejąć plaster (lub zestaw plastrów) na czysto.
+
+Łącząc Atomic Design z Feature Slices, zasadniczo budujemy design system wewnątrz każdego kontekstu. Zasady atomowe prowadzą to, jak budujemy komponenty i utrzymujemy je reużywalnymi i spójnymi. Struktura Feature-Sliced zapewnia, że te komponenty są zorganizowane według funkcji lub domeny, której służą. Unikamy skrajności "całkowicie globalnych, pozbawionych kontekstu komponentów" z jednej strony i "kopiuj-wklej podobnych komponentów w każdej funkcji" z drugiej.
+
+Dalej przejdźmy przez konkretny scenariusz, by zobaczyć te idee w działaniu.
+
+## Studium przypadku: budowa skalowalnego dashboardu
+
+Aby ugruntować koncepcje, przejdziemy krok po kroku przez projektowanie uproszczonej aplikacji dashboardu z użyciem Atomic Design + Feature Slices. Wyobraź sobie, że budujemy stronę dashboardu pokazującą przegląd konta użytkownika, w tym informacje o jego profilu i listę zadań do wykonania. Zidentyfikujemy zaangażowane encje i funkcje, utworzymy strukturę folderów i napiszemy trochę przykładowego kodu, by zilustrować interakcje.
+
+### Krok 1: Zidentyfikuj kluczowe encje
+
+Dla naszego dashboardu dwie oczywiste encje to **User** i **Task**. Encja User będzie reprezentować informacje o użytkowniku (imię, awatar itd.), a encja Task będzie reprezentować pojedynczy element do zrobienia. To koncepcje biznesowe, które prawdopodobnie będą używane w wielu miejscach (nie tylko na dashboardzie), więc zasługują na własne moduły `entities/`.
+
+Tworzymy foldery `src/entities/user/` i `src/entities/task/`. W każdym definiujemy model danych i wszelkie narzędzia specyficzne dla domeny:
+
+- `entities/user/model/types.ts` może definiować interfejs TypeScript `User`.
+- `entities/user/api/fetchUser.ts` może mieć funkcję ładującą dane użytkownika z API.
+- `entities/user/ui/UserAvatar.tsx` może być komponentem React wyświetlającym zdjęcie profilowe użytkownika (atom), a `UserCard.tsx` może być małym organizmem pokazującym podstawowe informacje o użytkowniku (imię + awatar).
+
+Podobnie dla Task:
+
+- `entities/task/model/types.ts` dla interfejsu `Task` (np. `{ id, title, completed, dueDate, ... }`).
+- `entities/task/api/fetchTasks.ts` do pobrania listy zadań.
+- Możemy nie potrzebować komponentu `entities/task/ui`, jeśli zadania są wyświetlane głównie przez UI funkcji, ale jeśli przewidujemy reużywalność (powiedzmy wiele funkcji pokazujących informacje o zadaniach), moglibyśmy dodać coś jak `TaskItem.tsx` jako molekułę dla pojedynczego wiersza zadania.
+
+### Krok 2: Zdefiniuj funkcje dla dashboardu
+
+Następnie pomyśl o odrębnych funkcjach na stronie dashboardu:
+
+**Funkcja User Profile:** sekcja dashboardu wyświetlająca informacje o użytkowniku (i może pozwalająca je edytować albo przejść do ustawień profilu). Nazwijmy tę funkcję `user-profile`. Będzie używać encji User pod spodem.
+
+**Funkcja Task List:** sekcja pokazująca zadania użytkownika lub listę do zrobienia. Nazwiemy ją `task-list`. Będzie używać danych encji Task i możliwie encji User (jeśli zadania mają pole przypisanej osoby czy właściciela z informacjami o użytkowniku, choć dla uproszczenia możemy założyć, że to własne zadania użytkownika).
+
+Tworzymy foldery `src/features/user-profile/` i `src/features/task-list/`. W każdym:
+
+- Funkcja `user-profile` będzie miała `ui/UserProfileWidget.tsx` (organizm wyświetlający imię użytkownika, awatar i może link do edycji profilu) oraz możliwie jakieś mniejsze komponenty jak `ui/atoms/EditProfileButton.tsx` czy `ui/molecules/ProfileStats.tsx`, jeśli potrzebne. Jej model mógłby zawierać hook `useUserProfile` używający `fetchUser` z encji User do pobrania danych i zarządzający lokalnym stanem edycji. Jej `index.ts` wyeksportuje główny komponent (`UserProfileWidget`) i wszelkie hooki, których mogą używać strony.
+
+- Funkcja `task-list` będzie miała `ui/TaskListWidget.tsx` (organizm pokazujący listę zadań, może z każdym elementem zadania i formularzem dodawania nowych). Może mieć mniejsze komponenty jak `ui/TaskItem.tsx` (molekuła lub organizm reprezentujący jeden wiersz zadania z checkboxem) i `ui/AddTaskForm.tsx`. Jej model może zawierać hook `useTaskList` pobierający zadania (używając `fetchTasks` z encji Task) i obsługujący dodawanie/ukończanie zadań. `index.ts` funkcji eksportuje komponent `TaskListWidget` i może hook.
+
+Każda funkcja hermetyzuje kawałek UI i logiki dla dashboardu, ale mogłyby być też używane gdzie indziej. Na przykład mógłbyś umieścić `TaskListWidget` na dedykowanej stronie Zadania, jak również na dashboardzie.
+
+### Krok 3: Układ ze stronami i szablonami
+
+Będziemy mieć `DashboardPage` w `src/pages/DashboardPage.tsx`. Ten komponent strony złoży nasze funkcje w finalne UI. Być może mamy też `ProfilePage` dla pełnego ekranu zarządzania profilem, ale skupmy się teraz na dashboardzie.
+
+Jeśli dashboard współdzieli wspólny układ (nagłówek, pasek boczny itd.) z innymi stronami, moglibyśmy mieć `shared/ui/templates/DashboardLayout.tsx`, by wymusić spójną strukturę. Dla zwięzłości załóżmy, że `DashboardPage` obsługuje układ inline albo używa ogólnego układu.
+
+### Krok 4: Złożenie wszystkiego w całość
+
+Teraz spinamy elementy. Strona Dashboard zaimportuje niezbędne komponenty funkcji. Dzięki naszej architekturze te importy są proste:
+
+```tsx
+// pages/DashboardPage.tsx
+import { UserProfileWidget } from '@/features/user-profile'
+import { TaskListWidget } from '@/features/task-list'
+import { FC } from 'react'
+
+const DashboardPage: FC = () => {
+  return (
+    <main className="dashboard-page">
+      <h1>Dashboard</h1>
+      <section className="user-profile-section">
+        <UserProfileWidget />
+      </section>
+      <section className="tasks-section">
+        <TaskListWidget />
+      </section>
+    </main>
+  )
+}
+
+export default DashboardPage
+```
+
+Zakładamy tu, że `index.ts` każdej funkcji re-eksportuje główny komponent (`UserProfileWidget`, `TaskListWidget`), więc możemy importować bezpośrednio ze ścieżki funkcji. Strona po prostu umieszcza te widgety na ekranie. Zwróć uwagę, że `DashboardPage` nie musi wiedzieć, jak `UserProfileWidget` czy `TaskListWidget` działają; nie zarządza ich stanem ani danymi — to zadanie funkcji. Utrzymuje to komponent strony bardzo lekkim, zasadniczo tylko układ + kompozycja.
+
+Zajrzyjmy, jak funkcja mogłaby implementować swoją logikę, używając encji i współdzielonych elementów:
+
+```tsx
+// features/user-profile/ui/UserProfileWidget.tsx
+import { FC } from 'react'
+import { useUserProfile } from '../model/useUserProfile'
+import { UserAvatar } from '@/entities/user'
+import { Button } from '@/shared/ui/atoms/Button'
+
+export const UserProfileWidget: FC = () => {
+  const { user, loading, error, refresh } = useUserProfile()
+
+  if (loading) return <div>Loading profile...</div>
+  if (error) return <div>Error loading profile.</div>
+  if (!user) return null
+
+  return (
+    <div className="user-profile-widget">
+      <UserAvatar user={user} size={80} />
+      <h2>{user.name}</h2>
+      <p>Role: {user.role}</p>
+      <Button onClick={refresh}>Refresh</Button>
+    </div>
+  )
+}
+```
+
+Kilka rzeczy wartych uwagi w tym komponencie `UserProfileWidget`:
+
+- Używa własnego hooka `useUserProfile` ze swojego modelu. Ten hook może wewnętrznie wołać `fetchUser` z encji User i być może przechowywać wynik w lokalnym stanie. Dostarcza `user`, `loading`, `error` oraz funkcję `refresh` do ponownego pobrania — hermetyzując logikę danych profilu. Zgodne to z zasadą, że logika biznesowa leży w warstwie modelu, a nie bezpośrednio w komponentach UI. Komponent UI jedynie konsumuje dane i renderuje.
+
+- Importuje `UserAvatar` z UI encji user. Ten komponent awatara prawdopodobnie oczekuje obiektu użytkownika i rozmiaru, i zajmuje się renderowaniem zdjęcia profilowego (może z fallbackiem do domyślnego obrazu, gdy żaden nie ma). Używając `UserAvatar`, zapewniamy, że zdjęcie profilowe jest pokazywane spójnie tutaj i wszędzie indziej w aplikacji, gdzie wyświetlany jest awatar użytkownika. Jeśli jutro zmienimy `UserAvatar`, by wyświetlał ozdobną ramkę wokół adminów, ta zmiana natychmiast zadziała też tutaj.
+
+- Importuje też ogólny `Button` ze współdzielonych atomów. Może to być ostylowany przycisk z naszego design systemu. Jego użycie oznacza, że przycisk "Refresh" będzie wyglądał tak samo jak inne przyciski w aplikacji, a wszelka zmiana stylu jest scentralizowana.
+
+Funkcja `TaskListWidget` wyglądałaby dość podobnie: jej komponent UI może mapować listę zadań, używając może pod-komponentu `TaskItem` dla każdego. Używałaby hooka `useTaskList` do pobrania zadań (który używa `fetchTasks` z encji Task) i może współdzielonego `Button` czy `Input` do dodawania nowych zadań.
+
+### Krok 5: Uruchomienie aplikacji
+
+Gdy użytkownik przechodzi na stronę Dashboard, renderuje się `DashboardPage`, co z kolei renderuje `UserProfileWidget` i `TaskListWidget`. Te uruchomią swoje odpowiednie hooki (`useUserProfile`, `useTaskList`), by pobrać dane przez encje. Gdy dane są w środku, komponenty UI funkcji renderują atomy i molekuły z warstw shared i encji, by wyświetlić informacje. Skutecznie rozdzieliliśmy odpowiedzialności:
+
+- **Encja User** wie, jak pobrać dane użytkownika i jak reprezentować podstawowe informacje o nim (awatar itd.).
+- **Funkcja UserProfile** wie, jak połączyć dane użytkownika z UI dla sekcji profilu.
+- **Encja Task** wie, jak pobrać zadania i definiuje, czym jest Task.
+- **Funkcja TaskList** obsługuje listowanie zadań i UI związane z zadaniami.
+- **Strona Dashboard** po prostu spina funkcje w odpowiednich miejscach.
+- **Współdzielone UI** dostarcza spójne podstawowe komponenty wszystkim.
+
+Gdybyśmy musieli dodać nową funkcję do dashboardu, powiedzmy `NotificationsWidget`, moglibyśmy utworzyć `features/notifications/` bez dotykania wielu innych rzeczy. Strona zaimportowałaby i umieściła `<NotificationsWidget />` w nowej sekcji. Funkcja powiadomień mogłaby używać encji `Notification`, jeśli taka istnieje, albo być po prostu samowystarczalna. Ten modularny wzrost to znak rozpoznawczy połączonego podejścia — dodajesz nowe elementy jak dokładanie nowych klocków Lego, bez przebudowywania całej struktury.
+
+### Podsumowanie struktury studium przypadku
+
+```
+src/
+├── entities/
+│   ├── user/
+│   │   ├── model/       # Typy User, może kontekst/store użytkownika
+│   │   ├── api/         # fetchUser itd.
+│   │   └── ui/          # UserAvatar, UserNameLabel
+│   └── task/
+│       ├── model/       # Typ Task
+│       ├── api/         # fetchTasks, addTask itd.
+│       └── ui/          # może TaskItem, jeśli szeroko reużywany
+├── features/
+│   ├── user-profile/
+│   │   ├── model/       # hook useUserProfile
+│   │   ├── ui/          # UserProfileWidget, może pod-komponenty
+│   │   └── index.ts     # eksportuje UserProfileWidget
+│   └── task-list/
+│       ├── model/       # hook useTaskList
+│       ├── ui/          # TaskListWidget, TaskItem, AddTaskForm
+│       └── index.ts     # eksportuje TaskListWidget
+├── pages/
+│   └── DashboardPage.tsx    # używa UserProfileWidget, TaskListWidget
+└── shared/
+    ├── ui/              # atomy: Button, Input; molekuły: może ogólny SearchBar lub Modal
+    └── lib/             # np. narzędzia do dat
+```
+
+Efektem końcowym jest skalowalna architektura dashboardu. Każdy nowy wymóg znajduje intuicyjne miejsce w tej strukturze:
+
+- Trzeba wyświetlić członków zespołu użytkownika na dashboardzie? To może wprowadzić encję `Team` i funkcję `TeamList`.
+- Potrzebny panel ustawień? Dodaj funkcję `settings`.
+- Design system ewoluuje? Zaktualizuj komponenty `shared/ui`.
+- Funkcja staje się bardzo duża? Możesz nawet dalej podzielić ją wewnętrznie (może wydzielić jakąś podfunkcję albo użyć większej liczby folderów atomowych).
+
+Nic nigdy nie wydaje się kompletnie nie na miejscu, bo podział odpowiedzialności jest jasny.
+
+## Najlepsze praktyki
+
+Projektowanie skalowalnej architektury frontendu to nie tylko początkowa struktura — to wytyczne, których przestrzegasz przez cały czas rozwoju. Oto kilka najlepszych praktyk, by Twoja implementacja Atomic + Feature-Sliced Design pozostała skuteczna i utrzymywalna:
+
+**Przestrzegaj zasady zależności:** wymuszaj regułę, że plastry nie zależą od innych plastrów w tej samej warstwie, a wyższe warstwy zależą w dół. Na przykład nie importuj czegoś z wewnętrznego pliku innej funkcji; zamiast tego wypromuj współdzieloną logikę do encji lub warstwy shared. Utrzymuje to niskie powiązania. Jeśli to możliwe, użyj reguł ESLint lub sprawdzania granic modułów, by zautomatyzować to wymuszanie.
+
+**Publiczne API i pliki barrel:** każda funkcja i encja powinna dostarczać jawny interfejs publiczny. Zwykle jest to plik `index.ts` eksportujący tylko te komponenty, hooki czy funkcje, których powinny używać inne moduły. Konsumenci modułu powinni importować z korzenia plastra (np. `import { UserProfileWidget } from '@/features/user-profile'`), a nie z głębi `ui/` czy `model/`. Ta hermetyzacja pozwala reorganizować pliki wewnętrznie bez psucia innych części aplikacji i jasno komunikuje, co jest przeznaczone do użytku na zewnątrz.
+
+**Projektowanie komponentów zgodne z SOLID:** stosuj zasady SOLID na poziomie komponentów i modułów. _Single Responsibility Principle_ (zasada pojedynczej odpowiedzialności) — każdy komponent lub moduł powinien mieć jeden powód do zmiany. Komponent jak `UserProfileWidget` idealnie powinien tylko obsługiwać renderowanie informacji o użytkowniku; jeśli zarządza też złożonym stanem albo wykonuje wywołania API, rozważ przeniesienie tego do hooka lub kontekstu (warstwa modelu). _Open/Closed Principle_ (otwarte/zamknięte) — buduj komponenty, które można rozszerzać (przez propsy lub kompozycję), a nie modyfikować; na przykład komponenty atomowe mogą przyjmować propsy dla różnych stylów czy treści, zamiast mieć osobne komponenty dla każdej wariacji. _Dependency Inversion_ (odwrócenie zależności) — funkcje wysokiego poziomu nie powinny być ściśle powiązane ze szczegółami implementacji niskiego poziomu; np. funkcja może polegać na interfejsie (typie TypeScript lub abstrahowanym hooku), a nie na konkretnej metodzie pobierania danych, dzięki czemu mógłbyś podmienić źródło danych (może na dane mockowe w testach albo inne API). Te zasady poprawiają utrzymywalność.
+
+**DRY vs WET — bądź pragmatycznie DRY:** nie powtarzaj się... chyba że ma to sens. Dąż do reużywania komponentów i logiki, umieszczając je w shared lub encjach, gdy dostrzeżesz realną potrzebę. Ale unikaj pokusy przedwczesnego abstrahowania czegoś tylko dlatego, że "może zostanie reużyte". Często lepiej trochę zduplikować kod dla dwóch funkcji niż tworzyć zagmatwaną współdzieloną abstrakcję, która nie pasuje dobrze do żadnej z potrzeb. Nadmierne abstrahowanie potrafi być równie szkodliwe co duplikacja. Dobra heurystyka: jeśli okazuje się, że tę samą poprawkę błędu trzeba zastosować w dwóch miejscach albo tę samą zmianę wprowadzić w dwóch miejscach, to podpowiedź, by je zunifikować. W przeciwnym razie trochę kopiuj-wklej jest w porządku, jeśli utrzymuje funkcje niezależnymi. Pamiętaj, "współdzielony" kod powinien być naprawdę współdzielony; jeśli używa go tylko jeden moduł, trzymaj go lokalnie.
+
+**Trzymaj komponenty atomowe czystymi:** atomy i molekuły (zwłaszcza te w `shared/ui`) powinny być prezentacyjne i wolne od logiki biznesowej czy ciężkiego stanu. Mogą mieć wewnętrzny stan UI (jak stan kontrolowanego pola, jeśli nie jest zarządzany przez rodzica), ale nie powinny wykonywać wywołań API ani polegać na globalnym kontekście. Czyni to je łatwymi do reużycia i testowania w izolacji. Logika biznesowa (pobieranie danych, złożone zarządzanie stanem) powinna żyć w warstwie modelu funkcji lub encji (np. hooki, funkcje kontrolera). To rozdzielenie jest zgodne z klasycznym wzorcem _Smart vs Dumb component_ — gdzie komponenty "głupie" (prezentacyjne) żyją w segmentach ui, a "sprytna" logika (kontenery) w segmentach model lub organizmach wyższego poziomu.
+
+**Używaj opisowego nazewnictwa:** nazywaj plastry i komponenty od domeny lub funkcji, którą reprezentują, a nie od szczegółów technicznych. Na przykład funkcja `user-profile` jest lepsza niż nazwanie jej `ProfileWidget` (co jest niejasne) czy `ProfileFeatureA`. Dobre nazwy sprawiają, że kod "krzyczy" o swoim przeznaczeniu (koncepcja z "screaming architecture") — gdy otwierasz projekt, od razu widzisz, o co w aplikacji chodzi, patrząc na nazwy folderów (`users`, `tasks`, `notifications` itd. zamiast ogólnych `components`, `misc`, `stuff`). Pomaga to nowym deweloperom (i Tobie w przyszłości) szybko nawigować po kodzie.
+
+**Hermetyzuj style i zasoby:** trzymaj stylowanie i zasoby blisko komponentu lub funkcji, do której należą. Na przykład jeśli `UserAvatar` używa modułu CSS albo konkretnego obrazu, umieść go w folderze `entities/user/ui` obok `UserAvatar.tsx`. Jest to zgodne z tą samą zasadą kolokacji — wszystko związane z tym komponentem trzyma się razem. Wciąż możesz mieć wspólny globalny styl (do resetowania czy motywowania), ale style specyficzne dla funkcji powinny rezydować w funkcji. Ułatwia to usuwanie lub przenoszenie funkcji bez pozostawiania osieroconych stylów.
+
+**Stopniowe warstwowanie dla nowych projektów:** jeśli zaczynasz nowy projekt, nie musisz implementować każdej warstwy FSD pierwszego dnia. Możesz zacząć tylko od `app`, `pages`, `features` i `shared` dla prostoty. W miarę rozrostu projektu wprowadzaj encje, gdy zauważysz powtarzające się koncepcje domenowe między funkcjami, i wprowadzaj więcej segmentacji, gdy funkcje staną się złożone. Idee Atomic Design można stosować nawet w lekki sposób: np. może zaczniesz tylko od `components/` dla każdej funkcji, a później podzielisz na foldery `atoms/molecules` w razie potrzeby. Kluczem jest refaktoryzowanie w stronę tej architektury w miarę wzrostu złożoności. Jest elastyczna — możesz zacząć prosto i dodawać strukturę stopniowo, o ile masz na uwadze nadrzędne zasady.
+
+**Zapewnij spójne przeglądy kodu:** uczyń architekturę wspólną odpowiedzialnością. Podczas przeglądów kodu wypatruj naruszeń zamierzonej architektury (jak ktoś importujący z wnętrzności innej funkcji albo wrzucający do shared coś, co nie powinno tam być). Uzgodnijcie granice modułów i pomagajcie sobie ich trzymać. Zapobiega to erozji architektury w czasie. Jeśli jakiś przypadek użycia naprawdę nie pasuje do ustalonej struktury, przedyskutujcie, jak ją dostosować — może architektura musi ewoluować, a może kod powinien zostać zreorganizowany. Lepiej dostosować się świadomie, niż pozwolić, by niespójność wkradła się niezauważona.
+
+**Barrele i pliki index dla zależności:** wspomnieliśmy o plikach index dla publicznego API, ale rozważ też użycie plików barrel wewnątrz segmentów, jeśli to pomaga. Na przykład wewnątrz `features/task-list/ui/`, jeśli jest wiele komponentów UI, możesz mieć `index.ts` eksportujący je wszystkie dla wygody. Dzięki temu główny komponent funkcji może importować pod-komponenty przez jedną ścieżkę. Uważaj jednak — unikaj tworzenia barrela eksportującego rzeczy, których nie powinno się używać na zewnątrz. Barrele są dla wygody, a nie do łamania hermetyzacji.
+
+**Testowanie w izolacji:** modularna struktura pozwala na bardziej skupione testowanie. Możesz pisać testy jednostkowe dla komponentów atomowych (np. `Button`, `Input`) bez żadnego kontekstu aplikacji. Możesz testować logikę funkcji (hooki w modelu), mockując wywołania API encji. I możesz robić testy integracyjne dla stron, montując stronę i weryfikując, że złożone funkcje działają razem. Zachęcaj do pisania testów na poziomie plastra — np. testy funkcji `user-profile` powinny pokrywać, jak zachowuje się przy różnych scenariuszach danych użytkownika (możesz zamockować API encji user). Zapewnia to, że każdy element działa niezależnie, więc integracja całej aplikacji ma mniej niespodzianek.
+
+Stosując te praktyki, zapewniasz, że Twoja architektura nie tylko wygląda dobrze na papierze, ale nadal dobrze Ci służy w miarę rozrostu kodu. Myśl o strukturze projektu jak o żywym projekcie — okresowo do niej wracaj i pytaj: "Czy to wciąż się skaluje? Czy gdzieś odczuwamy ból?". Jeśli jakiś współdzielony komponent staje się wąskim gardłem albo folder funkcji eksploduje rozmiarem, to znak, by zrefaktoryzować (może podzielić dużą funkcję na podfunkcje albo przenieść jakieś części do encji/shared). Świetna architektura to taka, która potrafi się adaptować bez rozpadania się.
+
+## Typowe błędy
+
+Nawet z solidną metodyką łatwo wpaść w pewne pułapki podczas wdrażania Atomic Design i Feature Slices razem. Miej na oku te typowe błędy:
+
+**Over-engineering od samego początku:** można przesadzić ze strukturą w małym lub nowym projekcie. Jeśli tworzysz każdą możliwą warstwę, dziesiątki folderów i abstrakcyjne komponenty, których nie potrzeba, możesz zdusić zwinność rozwoju. Unikaj tworzenia pustych folderów-szablonów "na wszelki wypadek". Dodawaj złożoność (nowe warstwy, abstrakcje) tylko wtedy, gdy wzrost projektu tego wymaga. Na przykład nie dziel każdego komponentu na atom/molekułę, jeśli masz tylko garstkę komponentów — to może być przesada. Rozwijaj architekturę jako odpowiedź na bolączki, a nie w antycypacji każdego teoretycznego problemu.
+
+**Przedwczesna abstrakcja i współdzielenie:** wiąże się to z dyskusją o DRY — czynienie czegoś współdzielonym lub abstrakcyjnym zbyt wcześnie. Sygnałem ostrzegawczym jest współdzielony komponent z mnóstwem flag konfiguracyjnych czy propsów obsługujących różne przypadki użycia, podczas gdy w rzeczywistości te przypadki mogły być osobnymi, prostszymi komponentami. Jeśli przyłapiesz się na pisaniu `if (prop) do A else do B` wewnątrz współdzielonego komponentu, by dogodzić potrzebom dwóch różnych ekranów, mogłeś połączyć dwie rzeczy, które powinny pozostać osobne. Zamiast tego trzymaj to prosto i duplikuj albo owijaj komponenty, dopóki nie wyłoni się wyraźny wzorzec uzasadniający unifikację.
+
+**Nadużywanie "shared" i powiązania:** nadużywanie warstwy `shared/` jako wysypiska na cokolwiek może ponownie wprowadzić chaos, który próbowaliśmy wyeliminować. Na przykład umieszczenie funkcji jak `calculateInvoiceTotal` w `shared/lib`, gdy jest ona naprawdę używana tylko w funkcji billing, to błędna kategoryzacja. Ta funkcja należy do konkretnego plastra (może `entities/invoice` albo do modelu funkcji billing). Warstwa shared idealnie nie powinna mieć wiedzy o domenach biznesowych. Wszystko w shared powinno być ogólne. Jeśli wyłapiesz terminy domenowe w `shared/` (jak "invoice", "userProfile"), przemyśl ponownie ich umiejscowienie. Rozdęty folder shared może stać się koszmarem utrzymania i zatrzeć granice.
+
+**Łamanie hermetyzacji funkcji:** dzieje się, gdy deweloperzy obchodzą zamierzone granice modułów. Na przykład wyobraź sobie, że mamy `features/user-profile`, a ktoś pisze `import { UserProfileCard } from '../user-profile/ui/UserProfileCard'` wewnątrz innej funkcji czy strony. Ten głęboki import narusza hermetyzację — powinien importować z `features/user-profile` (index) albo, jeszcze lepiej, rozważyć, czy to użycie oznacza, że komponent powinien zostać przeniesiony do bardziej współdzielonej lokalizacji. Takie skróty zwykle wskazują albo na brak znajomości architektury, albo na lukę architektoniczną (może ten komponent powinien być współdzielony). Niebezpieczeństwo polega na tym, że jeśli wewnętrzna struktura user-profile się zmieni, ten drugi import się zepsuje. Aby tego uniknąć, zawsze przechodź przez publiczne API plastrów. Jeśli okaże się, że musisz sięgnąć do wnętrza, potraktuj to jak dług techniczny do spłacenia.
+
+**Niespójna kategoryzacja atomowa:** terminy Atomic Design bywają czasem subiektywne. Jeden członek zespołu może uznać menu rozwijane za molekułę, inny nazwie je organizmem. To w porządku — dokładne definicje są mniej ważne niż spójność. Błąd pojawia się, gdy projekt nie ma jasności, co gdzie należy, prowadząc do zamieszania. Rozwiąż to, definiując pewne wytyczne: np. "Atomy to pojedyncze elementy HTML lub komponenty ikon; molekuły to kombinacje 2-3 atomów; organizmy to złożone kompozyty lub sekcje UI". I nie zadręczaj się przypadkami brzegowymi — kategorie są tylko po to, by pomóc w organizacji. Jeśli coś nie pasuje idealnie, użyj najlepszego osądu albo po prostu umieść to w `ui/` bez dalszej klasyfikacji, jeśli nie jest reużywalne.
+
+**Za dużo mikrokomponentów:** czasem entuzjazm dla Atomic Design prowadzi do nadmiernego dzielenia komponentów. Jeśli rozbijesz każdy fragment UI na najdrobniejsze atomy, możesz skończyć z mnóstwem komponentów, po których trudno nawigować i o których trudno rozumować. Na przykład tworzenie osobnego atomu dla każdej ikony czy każdego fragmentu tekstu może być przesadą. To w porządku mieć trochę większe komponenty, jeśli nie są reużywane gdzie indziej. Dąż do równowagi w granularności. Dobra praktyka to tworzenie nowego komponentu (atomu/molekuły) tylko wtedy, gdy albo planujesz go reużyć, albo znacząco upraszcza on komponent-rodzica. W przeciwnym razie trochę inline'owego JSX w organizmie jest w porządku.
+
+**Zaniedbywanie wydajności w abstrakcji:** architektura może być czysta, ale czasem wprowadzać narzut wydajnościowy, jeśli nie jesteśmy ostrożni. Na przykład owijanie wszystkiego w dostawców kontekstu albo nadużywanie Redux dla lokalnego stanu funkcji może spowalniać albo komplikować logikę renderowania. Miej oko na renderowanie React — jeśli Twój widget funkcji renderuje się za często, rozważ memoizację albo podzielenie go na mniejsze komponenty. Architektura nie powinna odbywać się kosztem responsywnego UI. W przypadku komponentów atomowych zadbaj, by np. czysty atom jak `Button` był zmemoizowanym komponentem funkcyjnym albo prostym do renderowania. Zwracaj też uwagę na rozmiar bundle: jeśli każda funkcja jest bardzo odseparowana, wypatruj duplikacji kodu między bundlami funkcji (jak gdy każda funkcja niezależnie dołącza dużą bibliotekę — może należy ona do `shared/lib`, by uniknąć duplikacji).
+
+**Ignorowanie zrozumienia przez zespół:** wymyślna architektura jest bezużyteczna, jeśli zespół jej nie akceptuje albo nie rozumie. Jednym z błędów jest, gdy jeden architekt ją ustawia, a inni są zdezorientowani, gdzie umieścić kod, więc zaczynają wpychać rzeczy w losowe miejsca (jak nowe wywołanie API wrzucone pod `shared/`, bo nie zdawali sobie sprawy, że encja byłaby odpowiednia). Rozwiąż to przez porządne wdrożenie: stwórz README dla struktury projektu, oprowadź wszystkich członków zespołu po architekturze i może paruj przy pierwszych kilku funkcjach, by utrwalić wzorce. Okresowo rób retrospektywy architektury, by sprawdzić, czy wszyscy się jej trzymają albo czy pewne części są mylące i wymagają dostosowania.
+
+**Sztywność — brak ewolucji architektury:** po drugiej stronie nietrzymania się jej, czasem zespoły trwają przy początkowej architekturze, nawet gdy potrzeby aplikacji się zmieniły. Na przykład może zacząłeś bez warstwy `entities/`, a teraz masz mnóstwo zduplikowanej logiki między funkcjami — czas wprowadzić encje. Albo uświadamiasz sobie, że koncepcja "widget" jest potrzebna do dzielenia większych funkcji. Unikaj dogmatyzmu; architektura powinna służyć aplikacji, a nie odwrotnie. To w porządku refaktoryzować strukturę w miarę poznawania domeny. Może odkryjesz, że pewne funkcje naprawdę powinny zostać połączone, albo istniejąca funkcja powinna zostać podzielona na dwie. Wprowadzaj te zmiany z odpowiednim planowaniem, a nie kuśtykaj z niepasującą strukturą.
+
+Podsumowując, największe błędy krążą wokół błędnego umieszczania kodu i błędnej oceny poziomu abstrakcji. Zachowując czujność i mając na uwadze zasady projektowe systemu, możesz omijać te pułapki. A jeśli wpadniesz w którąś — nie martw się; każdy duży projekt zaciąga jakiś dług techniczny czy wyzwania architektoniczne; kluczem jest ich rozpoznawanie i świadome refaktoryzowanie.
+
+## Podsumowanie
+
+Projektowanie architektury frontendu, która się skaluje, to podróż od myślenia w kategoriach pojedynczych komponentów do myślenia w kategoriach spójnych systemów. Łącząc Atomic Design z Feature-Sliced Design, otrzymujemy solidne podejście, które adresuje obie strony wyzwania skali: tworzymy system reużywalnych elementów UI oraz modularną strukturę dla złożonych funkcji. Ta kombinacja daje aplikację, po której łatwiej nawigować, którą łatwiej rozszerzać i bezpieczniej refaktoryzować niż doraźne, płaskie architektury z przeszłości.
+
+Widzieliśmy, jak Atomic Design daje nam słownictwo i hierarchię dla elementów UI, zachęcając do spójności i reużywalności w całym interfejsie. Widzieliśmy też, jak Feature-Sliced Design dzieli aplikację wzdłuż logicznych linii, tak by każda funkcja i encja była własnym światem, luźno powiązanym z innymi. Stosując zasady atomowe w granicach funkcji i encji, zapewniamy, że nasz kod jest DRY bez zbyt ścisłego powiązania i modularny bez fragmentacji.
+
+Korzyści z tego podejścia są znaczące: nowi członkowie zespołu mogą szybko znaleźć, gdzie coś mieszka (struktura plików opowiada historię aplikacji), dodanie nowej funkcji nie wymaga dotykania niepowiązanych części kodu, a przeprojektowanie wspólnego komponentu czy przepływu można zrobić w jednym miejscu. Zwiększa to klarowność, skalowalność, testowalność, a nawet szybkość zespołu, skoro wiele osób może komfortowo współpracować nad różnymi plastrami aplikacji jednocześnie.
+
+Wdrażając te idee, pamiętaj sedno: **projektuj systemy, a nie strony**. Ta maksyma, pierwotnie od Brada Frosta, ujmuje zmianę nastawienia. Nie kodujemy tylko pojedynczych stron czy komponentów w izolacji; budujemy żywy system części, które ze sobą współdziałają. Gdy skupiasz się na systemie — architekturze, spójności, kontraktach między modułami — tworzysz kod, który przetrwa zakręty ewolucji produktu. Funkcje będą przychodzić i odchodzić, trendy UI będą się zmieniać, ale dobrze ustrukturyzowany system potrafi się adaptować przy znacznie mniejszym wysiłku i bez zapadania się pod własnym ciężarem.
+
+W praktyce żadna architektura nie jest srebrną kulą. Będą kompromisy i sporadyczne naginanie reguł. Ale połączenie Atomic Design i Feature Slices zapewnia mocny fundament i drogowskaz. Zachęca nas, byśmy byli rozważni co do każdego fragmentu kodu: Dlaczego to istnieje? Gdzie powinno mieszkać? Kto powinien tego używać? Odpowiedzi na te pytania prowadzą do celowej organizacji kodu.
+
+Przestrzegając omówionych zasad i unikając pułapek, będziesz na dobrej drodze do budowania frontendów tak skalowalnych i utrzymywalnych jak backendy, które je napędzają. Spędzisz więcej czasu na dostarczaniu wartości, a mniej na rozplątywaniu kodu-spaghetti czy wymyślaniu przycisków po raz setny.
+
+Ostatecznie świetna architektura często wydaje się niewidoczna — rzeczy są po prostu tam, gdzie się ich spodziewasz, a wprowadzanie zmian "po prostu działa". Osiągnięcie tego wymaga przezorności i sporadycznej refaktoryzacji, ale opłaca się wykładniczo w miarę rozrostu aplikacji. Więc idąc naprzód, przyjmij nastawienie projektanta systemów. Trzymaj komponenty małymi, a abstrakcje znaczącymi. Trzymaj funkcje odizolowane, a UI spójne. I nigdy nie trać z oczu faktu, że naszym celem jest budowanie systemów oprogramowania, które mogą rosnąć z gracją — od pojedynczego komponentu po złożoną sieć funkcji — bez rozpadania się.
+
+Miłego architektowania i baw się dobrze, budując systemy, które sprawiają, że uśmiechają się zarówno deweloperzy, jak i użytkownicy!
+
+---
+
+# Zasoby do dalszej nauki i źródła
+
+Aby pogłębić wiedzę o skalowalnej architekturze frontendu, Atomic Design i Feature-Sliced Design, oto kilka wysokiej jakości źródeł:
+
+- [Atomic Design by Brad Frost](https://atomicdesign.bradfrost.com/) – oryginalna książka wprowadzająca metodykę Atomic Design. Lektura obowiązkowa, by zrozumieć, jak budować design systemy od atomów po strony.
+
+- [Feature-Sliced Design Official Documentation](https://feature-sliced.design/) – oficjalna dokumentacja FSD ze szczegółowymi wyjaśnieniami warstw, plastrów, segmentów i najlepszych praktyk organizacji projektów frontendowych.
+
+- [Storybook](https://storybook.js.org/) – niezbędne narzędzie do tworzenia i dokumentowania komponentów atomowych w izolacji. Idealne do budowania i prezentowania Twojego design systemu.
+
+- [Bulletproof React](https://github.com/alan2207/bulletproof-react) – przykład skalowalnej architektury React uwzględniający organizację opartą na funkcjach i najlepsze praktyki dla aplikacji gotowych na produkcję.
+
+- [React TypeScript Cheatsheet](https://react-typescript-cheatsheet.netlify.app/) – kompleksowy przewodnik po typowaniu komponentów React, hooków i wzorców w TypeScript – niezbędny do implementacji typowanych komponentów atomowych.
+
+- [Design Systems Handbook by DesignBetter](https://www.designbetter.co/design-systems-handbook) – darmowy przewodnik po budowaniu i utrzymywaniu design systemów, obejmujący zarówno perspektywę projektową, jak i deweloperską.
+
+- [Component Driven Development](https://www.componentdriven.org/) – zasoby i metodyka budowania UI od poziomu komponentów w górę, dobrze współgrające z zasadami Atomic Design.
+
+- [SOLID Principles in React](https://konstantinlebedev.com/solid-in-react/) – praktyczny przewodnik po stosowaniu zasad SOLID w komponentach i architekturze React.
+
+- [Modular Monolith Frontend](https://blog.logrocket.com/guide-modular-monolith-architecture/) – artykuł badający wzorce architektury modularnej uzupełniające koncepcje Feature-Sliced Design.
+
+- [ESLint Plugin Boundaries](https://github.com/javierbrea/eslint-plugin-boundaries) – wtyczka ESLint do wymuszania granic modułów i reguł zależności w kodzie – przydatna do utrzymania architektury FSD.
+
+~Seb 👊
