@@ -1,0 +1,360 @@
+---
+title: 'Debugowanie i eliminowanie wycieków pamięci w React + Next.js'
+date: '2026-03-28'
+category: 'Development'
+tags: ['react', 'nextjs', 'debugging', 'performance', 'memory']
+draft: false
+featured: false
+author: 'Sebastian'
+enSlug: 'debugging-memory-leaks-react-nextjs-guide'
+excerpt: 'Twoja aplikacja React zjada 400MB po 10 minutach. Zakładka w końcu się wykłada. Oto kompletny przewodnik po znajdowaniu i naprawianiu wycieków pamięci.'
+---
+
+Zgłosił się do mnie klient, bo jego dashboard w Next.js wykładał zakładki przeglądarki po jakichś 20 minutach użytkowania. Osoby z zespołu wsparcia — które trzymały dashboard otwarty przez cały dzień — musiały odświeżać go co pół godziny, inaczej przeglądarka się zawieszała. Menedżer zadań Chrome pokazywał, jak zużycie pamięci rośnie od 120MB do ponad 900MB, bez żadnego plateau.
+
+Główna przyczyna? `useEffect`, który subskrybował WebSocket, ale nigdy nie odsubskrybowywał go w cleanupie. Za każdym razem, gdy komponent renderował się ponownie (co działo się przy każdej przychodzącej wiadomości), tworzone było nowe połączenie WebSocket bez zamykania starego. Po 20 minutach istniało ponad 200 aktywnych połączeń, z których każde trzymało w pamięci bufory wiadomości.
+
+Jedna brakująca funkcja cleanup. 20 minut do awarii. A komponent działał idealnie w środowisku deweloperskim, bo krótsze sesje w trybie dev nigdy nie osiągały progu.
+
+Wycieki pamięci w React są podstępne, bo nie powodują błędów — powodują stopniową degradację, którą trudno odtworzyć w testach i która ujawnia się dopiero na produkcji, przy rzeczywistych wzorcach użytkowania.
+
+## 7 najczęstszych wzorców wycieków pamięci
+
+### 1. Brakujący cleanup w useEffect
+
+Przyczyna numer jeden. Każdy `useEffect`, który tworzy subskrypcję, timer, listener lub połączenie, **musi** zwracać funkcję cleanup:
+
+```typescript
+// ❌ WYCIEK: Timer nigdy nie wyczyszczony
+useEffect(() => {
+  const interval = setInterval(() => {
+    fetchNotifications();
+  }, 5000);
+  // Brak cleanupu!
+}, []);
+
+// ✅ NAPRAWIONE: Cleanup przy odmontowaniu
+useEffect(() => {
+  const interval = setInterval(() => {
+    fetchNotifications();
+  }, 5000);
+  return () => clearInterval(interval);
+}, []);
+```
+
+```typescript
+// ❌ WYCIEK: Event listener nigdy nie usunięty
+useEffect(() => {
+  window.addEventListener('resize', handleResize);
+  // Brak cleanupu!
+}, []);
+
+// ✅ NAPRAWIONE
+useEffect(() => {
+  window.addEventListener('resize', handleResize);
+  return () => window.removeEventListener('resize', handleResize);
+}, []);
+```
+
+```typescript
+// ❌ WYCIEK: WebSocket nigdy nie zamknięty
+useEffect(() => {
+  const ws = new WebSocket('wss://api.example.com/feed');
+  ws.onmessage = (event) => setMessages((prev) => [...prev, event.data]);
+  // Brak cleanupu!
+}, []);
+
+// ✅ NAPRAWIONE
+useEffect(() => {
+  const ws = new WebSocket('wss://api.example.com/feed');
+  ws.onmessage = (event) => setMessages((prev) => [...prev, event.data]);
+  return () => ws.close();
+}, []);
+```
+
+### 2. Nieaktualne domknięcia trzymające referencje
+
+Gdy domknięcie (closure) przechwytuje duży obiekt i przeżywa komponent:
+
+```typescript
+// ❌ WYCIEK: Domknięcie przechwytuje `largeData` nawet po odmontowaniu komponentu
+useEffect(() => {
+  const largeData = generateHugeDataset(); // Obiekt 50MB
+
+  const timer = setTimeout(() => {
+    processData(largeData); // Domknięcie trzyma referencję do largeData
+  }, 60000); // 60 sekund — komponent może się odmontować, zanim to się odpali
+
+  return () => clearTimeout(timer);
+  // Timer jest wyczyszczony, ale jeśli istnieją inne referencje, largeData zostaje
+}, []);
+
+// ✅ NAPRAWIONE: Użyj ref i wyzeruj przy cleanupie
+const dataRef = useRef<HugeDataset | null>(null);
+
+useEffect(() => {
+  dataRef.current = generateHugeDataset();
+
+  return () => {
+    dataRef.current = null; // Jawnie zwolnij
+  };
+}, []);
+```
+
+### 3. setState na odmontowanych komponentach
+
+Klasyczny wyścig asynchroniczny — fetch kończy się po odmontowaniu komponentu:
+
+```typescript
+// ❌ WYCIEK: setState wywołany po odmontowaniu
+useEffect(() => {
+  fetch('/api/data')
+    .then((res) => res.json())
+    .then((data) => setData(data)); // Komponent mógł się już odmontować!
+}, []);
+
+// ✅ NAPRAWIONE: AbortController
+useEffect(() => {
+  const controller = new AbortController();
+
+  fetch('/api/data', { signal: controller.signal })
+    .then((res) => res.json())
+    .then((data) => setData(data))
+    .catch((err) => {
+      if (err.name !== 'AbortError') throw err;
+    });
+
+  return () => controller.abort();
+}, []);
+```
+
+**Lepsze podejście:** Użyj [TanStack Query](/blog/tanstack-query-advanced-caching-rsc-guide) — obsługuje sygnały abort, wyścigi i cleanup automatycznie.
+
+### 4. Odłączone węzły DOM
+
+Gdy usuwasz element z DOM, ale JavaScript wciąż trzyma do niego referencję:
+
+```typescript
+// ❌ WYCIEK: Referencja do usuniętego węzła DOM
+const nodeRef = useRef<HTMLDivElement>(null);
+const [nodes, setNodes] = useState<HTMLDivElement[]>([]);
+
+function addNode() {
+  const div = document.createElement('div');
+  document.body.appendChild(div);
+  setNodes((prev) => [...prev, div]); // Tablica trzyma referencję
+}
+
+function removeNode(index: number) {
+  const node = nodes[index];
+  node.remove(); // Usunięty z DOM
+  // Ale tablica `nodes` wciąż trzyma referencję → WYCIEK
+}
+
+// ✅ NAPRAWIONE: Usuń referencję przy usuwaniu węzła DOM
+function removeNode(index: number) {
+  const node = nodes[index];
+  node.remove();
+  setNodes((prev) => prev.filter((_, i) => i !== index)); // Usuń referencję
+}
+```
+
+### 5. Rosnące bez ograniczeń tablice w stanie
+
+```typescript
+// ❌ WYCIEK: Tablica messages rośnie w nieskończoność
+const [messages, setMessages] = useState<Message[]>([]);
+
+useEffect(() => {
+  const ws = new WebSocket(url);
+  ws.onmessage = (event) => {
+    setMessages((prev) => [...prev, JSON.parse(event.data)]);
+    // Po 10 000 wiadomości: ponad 50MB w stanie
+  };
+  return () => ws.close();
+}, []);
+
+// ✅ NAPRAWIONE: Ogranicz rozmiar tablicy
+const MAX_MESSAGES = 100;
+
+ws.onmessage = (event) => {
+  setMessages((prev) => {
+    const next = [...prev, JSON.parse(event.data)];
+    return next.length > MAX_MESSAGES ? next.slice(-MAX_MESSAGES) : next;
+  });
+};
+```
+
+### 6. Wycieki pamięci po stronie serwera (specyficzne dla Next.js)
+
+W Next.js trasy API i Server Components działają w długo żyjącym procesie Node.js. Zmienne na poziomie modułu utrzymują się między żądaniami:
+
+```typescript
+// ❌ WYCIEK: Cache na poziomie modułu rośnie w nieskończoność
+const cache = new Map<string, any>();
+
+export async function GET(request: Request) {
+  const key = new URL(request.url).searchParams.get('key')!;
+
+  if (!cache.has(key)) {
+    const data = await fetchExpensiveData(key);
+    cache.set(key, data); // Nigdy nie usuwany → w końcu OOM
+  }
+
+  return Response.json(cache.get(key));
+}
+
+// ✅ NAPRAWIONE: Użyj cache LRU z maksymalnym rozmiarem
+import { LRUCache } from 'lru-cache';
+
+const cache = new LRUCache<string, any>({
+  max: 500,           // Maksymalnie 500 wpisów
+  ttl: 1000 * 60 * 5, // Wygasają po 5 minutach
+});
+```
+
+### 7. Akumulacja listenerów w event emitterach
+
+Częste przy Redux, bibliotekach do zarządzania stanem i wrapperach WebSocket:
+
+```typescript
+// ❌ WYCIEK: Nowy listener dodawany przy każdym renderze/utworzeniu store'a
+useEffect(() => {
+  const channel = new BroadcastChannel('sync');
+  channel.onmessage = handleSync;
+  // Brak cleanupu → listenery się kumulują
+}, []);
+
+// ✅ NAPRAWIONE
+useEffect(() => {
+  const channel = new BroadcastChannel('sync');
+  channel.onmessage = handleSync;
+  return () => channel.close();
+}, []);
+```
+
+## Wykrywanie wycieków pamięci za pomocą Chrome DevTools
+
+### Krok 1: Porównanie heap snapshotów
+
+1. Otwórz DevTools → zakładka Memory
+2. Wybierz „Heap snapshot" → zrób snapshot (baseline)
+3. Wykonaj podejrzewaną o wyciek akcję (nawigacja, otwarcie/zamknięcie modala itp.)
+4. Zrób kolejny snapshot
+5. Wybierz snapshot 2, zmień widok na „Comparison" względem snapshotu 1
+6. Posortuj malejąco po „Size Delta"
+
+Szukaj:
+- **Detached HTMLDivElement** — węzły DOM usunięte, ale wciąż referowane
+- **Dużych tablic/obiektów** rosnących między snapshotami
+- Wpisów **Closure** z nieoczekiwanie dużymi retained sizes
+- Rosnących wpisów **(string)** — często nieograniczone bufory logów/wiadomości
+
+### Krok 2: Allocation Timeline
+
+1. Zakładka Memory → „Allocation instrumentation on timeline"
+2. Naciśnij Start
+3. Wykonaj akcję wielokrotnie (otwórz/zamknij modal 10 razy)
+4. Naciśnij Stop
+5. Szukaj niebieskich słupków (alokacji), które nie mają odpowiadających im dealokacji
+
+### Krok 3: Performance Monitor
+
+DevTools → Performance Monitor (Cmd+Shift+P → „Show Performance Monitor"):
+- Obserwuj **JS Heap Size** — powinien osiągać plateau, a nie rosnąć w nieskończoność
+- Obserwuj **DOM Nodes** — licznik powinien się stabilizować po nawigacji
+- Obserwuj **Event Listeners** — licznik nie powinien rosnąć w czasie
+
+### Skrypt do szybkiej weryfikacji
+
+```typescript
+// Wklej do konsoli, aby monitorować pamięć w czasie
+const samples: number[] = [];
+const interval = setInterval(() => {
+  const memory = (performance as any).memory;
+  if (memory) {
+    samples.push(memory.usedJSHeapSize / 1048576);
+    console.log(`Heap: ${samples[samples.length - 1].toFixed(1)} MB`);
+
+    if (samples.length >= 2) {
+      const growth = samples[samples.length - 1] - samples[0];
+      console.log(`Wzrost: ${growth.toFixed(1)} MB od startu`);
+    }
+  }
+}, 5000);
+// clearInterval(interval) aby zatrzymać
+```
+
+Jeśli heap rośnie w sposób ciągły, bez osiągania plateau, masz wyciek.
+
+## Budowanie hooków odpornych na wycieki
+
+Twórz hooki, które obsługują cleanup automatycznie:
+
+```typescript
+// hooks/useInterval.ts — interwał odporny na wycieki
+function useInterval(callback: () => void, delay: number | null) {
+  const savedCallback = useRef(callback);
+
+  useEffect(() => {
+    savedCallback.current = callback;
+  }, [callback]);
+
+  useEffect(() => {
+    if (delay === null) return;
+    const id = setInterval(() => savedCallback.current(), delay);
+    return () => clearInterval(id);
+  }, [delay]);
+}
+
+// hooks/useEventListener.ts — listener odporny na wycieki
+function useEventListener<K extends keyof WindowEventMap>(
+  eventName: K,
+  handler: (event: WindowEventMap[K]) => void,
+  element: EventTarget = window,
+) {
+  const savedHandler = useRef(handler);
+
+  useEffect(() => {
+    savedHandler.current = handler;
+  }, [handler]);
+
+  useEffect(() => {
+    const listener = (event: Event) => savedHandler.current(event as any);
+    element.addEventListener(eventName, listener);
+    return () => element.removeEventListener(eventName, listener);
+  }, [eventName, element]);
+}
+```
+
+## Praktyczne wnioski
+
+1. **Każdy useEffect z setupem musi mieć cleanup.** Bez wyjątków. Timery, listenery, subskrypcje, połączenia — wszystkie potrzebują funkcji zwrotnej.
+2. **Używaj AbortController do żądań fetch.** Anuluj oczekujące żądania przy odmontowaniu.
+3. **Ograniczaj rosnące tablice.** Bufory wiadomości, wpisy logów i listy powiadomień potrzebują maksymalnych rozmiarów.
+4. **Używaj cache'ów LRU na serwerze.** Mapy na poziomie modułu w trasach API Next.js rosną w nieskończoność.
+5. **Profiluj co miesiąc.** Rób heap snapshoty przed i po typowych przepływach użytkownika. Porównuj.
+6. **Uważaj na odłączone węzły DOM.** Filtruj „Detached" w heap snapshotach, aby je znaleźć.
+7. **Używaj TanStack Query** zamiast ręcznego fetch+setState — obsługuje cleanup automatycznie.
+8. **Buduj hooki odporne na wycieki.** `useInterval`, `useEventListener`, `useWebSocket` — abstrahuj wzorzec cleanupu.
+9. **Monitoruj na produkcji.** Używaj `performance.memory` (Chrome) lub `process.memoryUsage()` (Node.js) z alertowaniem.
+10. **Testuj przy długich sesjach.** Twoje środowisko QA powinno symulować ponad 30 minut ciągłego użytkowania.
+
+Wycieki pamięci to bugi, które nigdy nie rzucają błędów i zawsze obwiniają maszynę użytkownika. Znajdź je, zanim zrobią to Twoi użytkownicy.
+
+## Referencje
+
+### Źródła
+- [Chrome DevTools: Fix Memory Problems](https://developer.chrome.com/docs/devtools/memory-problems) — oficjalny przewodnik po debugowaniu
+- [Next.js: Memory Usage Guide](https://nextjs.org/docs/app/guides/memory-usage) — optymalizacja pamięci po stronie serwera
+- [Medium: Understanding Memory Leaks in React](https://medium.com/@ignatovich.dm/understanding-memory-leaks-in-react-how-to-find-and-fix-them-fc782cf182be) — kompleksowe wzorce w React
+- [John Lewis Engineering: Memory Leaks in Next.js](https://medium.com/john-lewis-software-engineering/we-had-a-leak-identifying-and-fixing-memory-leaks-in-next-js-622977876697) — studium przypadku z produkcji
+
+### Dalsza lektura
+- [OneUpTime: Debug Memory Leaks in React Applications](https://oneuptime.com/blog/post/2026-01-15-debug-memory-leaks-react-applications/view) — przewodnik po DevTools krok po kroku
+- [Arunangshudas: Chrome DevTools Memory Leak Debugging](https://arunangshudas.com/blog/how-to-analyze-and-debug-memory-leaks-with-chrome-devtools/) — szczegółowa analiza heap snapshotów
+- [Albéric Trancart: Fixing a Memory Leak in Next.js/Node.js](https://alberic.trancart.net/2020/05/how-fixed-first-memory-leak-nextjs-nodejs/) — prawdziwa historia debugowania
+
+---
+
+~Seb 👊
