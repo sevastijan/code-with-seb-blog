@@ -2,20 +2,50 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react';
 import Link from 'next/link';
+import { usePathname } from 'next/navigation';
 
-const aiServices = [
-  { name: 'AI Strategy', href: '/services/ai' },
-  { name: 'AI Automation', href: '/services/ai' },
-  { name: 'LLM Integration', href: '/services/ai' },
-  { name: 'AI Agents', href: '/services/ai' },
-];
+const aiServices = {
+  en: [
+    { name: 'AI Strategy', href: '/services/ai' },
+    { name: 'AI Automation', href: '/services/ai' },
+    { name: 'LLM Integration', href: '/services/ai' },
+    { name: 'AI Agents', href: '/services/ai' },
+  ],
+  pl: [
+    { name: 'Strategia AI', href: '/services/ai' },
+    { name: 'Automatyzacja AI', href: '/services/ai' },
+    { name: 'Integracja LLM', href: '/services/ai' },
+    { name: 'Agenty AI', href: '/services/ai' },
+  ],
+};
 
-const devServices = [
-  { name: 'Web Development', href: '/services/development' },
-  { name: 'Technical Architecture', href: '/services/development' },
-  { name: 'Technical Consulting', href: '/services/consulting' },
-  { name: 'Code Review', href: '/services/development' },
-];
+const devServices = {
+  en: [
+    { name: 'Web Development', href: '/services/development' },
+    { name: 'Technical Architecture', href: '/services/development' },
+    { name: 'Technical Consulting', href: '/services/consulting' },
+    { name: 'Code Review', href: '/services/development' },
+  ],
+  pl: [
+    { name: 'Web Development', href: '/services/development' },
+    { name: 'Architektura techniczna', href: '/services/development' },
+    { name: 'Konsulting techniczny', href: '/services/consulting' },
+    { name: 'Code Review', href: '/services/development' },
+  ],
+};
+
+const footerCopy = {
+  en: {
+    tagline: <>Turning &quot;it can&apos;t be done&quot; into &quot;it&apos;s already live.&quot;<br />AI, code &amp; strategy for founders who ship.</>,
+    aiServices: 'AI Services', development: 'Development', connect: 'Connect',
+    localTime: 'Local time', availability: 'Available for work', builtWith: 'Built with', location: 'in Cracow',
+  },
+  pl: {
+    tagline: <>Zamieniam &quot;to się nie da&quot; w &quot;to już działa na produkcji.&quot;<br />AI, kod i strategia dla founderów, którzy wdrażają.</>,
+    aiServices: 'Usługi AI', development: 'Development', connect: 'Kontakt',
+    localTime: 'Czas lokalny', availability: 'Dostępny do współpracy', builtWith: 'Zbudowane z', location: 'w Krakowie',
+  },
+};
 
 const socialLinks = [
   { name: 'GH', fullName: 'GitHub', href: 'https://github.com/sevastijan' },
@@ -27,6 +57,11 @@ const socialLinks = [
 const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@#$%&';
 
 export function FooterAwwwards() {
+  const pathname = usePathname() || '/';
+  const isPl = pathname === '/pl' || pathname.startsWith('/pl/');
+  const lang = isPl ? 'pl' : 'en';
+  const p = isPl ? '/pl' : '';
+  const c = footerCopy[lang];
   const footerRef = useRef<HTMLElement>(null);
   const [time, setTime] = useState('');
   const [isVisible, setIsVisible] = useState(false);
@@ -119,7 +154,7 @@ export function FooterAwwwards() {
         <div className="footer-mega-top">
           {/* Logo + tagline */}
           <div className="footer-mega-brand">
-            <Link href="/" className="footer-mega-logo">
+            <Link href={p || '/'} className="footer-mega-logo">
               <span className="footer-mega-logo-main">
                 <span className="footer-mega-logo-at">@</span>
                 <span className="footer-mega-logo-text">codewithseb</span>
@@ -132,8 +167,7 @@ export function FooterAwwwards() {
               </span>
             </Link>
             <p className="footer-mega-tagline">
-              Turning "it can't be done" into "it's already live."<br />
-              AI, code & strategy for founders who ship.
+              {c.tagline}
             </p>
           </div>
 
@@ -191,13 +225,13 @@ export function FooterAwwwards() {
           <div className="footer-mega-service-col">
             <p className="footer-mega-nav-label">
               <span className="footer-mega-label-icon">◈</span>
-              AI Services
+              {c.aiServices}
             </p>
             <div className="footer-mega-service-links">
-              {aiServices.map((service, i) => (
+              {aiServices[lang].map((service, i) => (
                 <Link
                   key={service.name}
-                  href={service.href}
+                  href={`${p}${service.href}`}
                   className="footer-mega-service-link"
                   style={{ '--i': i } as React.CSSProperties}
                 >
@@ -212,13 +246,13 @@ export function FooterAwwwards() {
           <div className="footer-mega-service-col">
             <p className="footer-mega-nav-label">
               <span className="footer-mega-label-icon">◇</span>
-              Development
+              {c.development}
             </p>
             <div className="footer-mega-service-links">
-              {devServices.map((service, i) => (
+              {devServices[lang].map((service, i) => (
                 <Link
                   key={service.name}
-                  href={service.href}
+                  href={`${p}${service.href}`}
                   className="footer-mega-service-link"
                   style={{ '--i': i } as React.CSSProperties}
                 >
@@ -231,7 +265,7 @@ export function FooterAwwwards() {
 
           {/* Socials */}
           <div className="footer-mega-service-col">
-            <p className="footer-mega-nav-label">Connect</p>
+            <p className="footer-mega-nav-label">{c.connect}</p>
             <div className="footer-mega-social-links">
               {socialLinks.map((link) => (
                 <a
@@ -250,7 +284,7 @@ export function FooterAwwwards() {
 
           {/* Local time */}
           <div className="footer-mega-service-col">
-            <p className="footer-mega-nav-label">Local time</p>
+            <p className="footer-mega-nav-label">{c.localTime}</p>
             <div className="footer-mega-clock">
               <span className="footer-mega-clock-time">{time}</span>
               <span className="footer-mega-clock-zone">Warsaw, PL</span>
@@ -261,7 +295,7 @@ export function FooterAwwwards() {
         {/* Bottom bar */}
         <div className="footer-mega-bottom">
           <p className="footer-mega-copy">
-            Built with
+            {c.builtWith}
             <svg className="footer-mega-copy-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <polyline points="16 18 22 12 16 6" />
               <polyline points="8 6 2 12 8 18" />
@@ -275,12 +309,12 @@ export function FooterAwwwards() {
               <line x1="10" x2="10" y1="2" y2="4" />
               <line x1="14" x2="14" y1="2" y2="4" />
             </svg>
-            in Cracow
+            {c.location}
           </p>
 
           <div className="footer-mega-status">
             <span className="footer-mega-status-dot" />
-            <span>Available for work</span>
+            <span>{c.availability}</span>
           </div>
         </div>
       </div>
