@@ -1,0 +1,335 @@
+---
+title: 'Tailwind CSS 4: co nowego i czy warto migrować?'
+date: '2026-01-07'
+category: 'Development'
+tags: ['tailwind', 'css', 'frontend', 'migration', 'performance']
+featured: false
+author: 'Sebastian'
+draft: false
+enSlug: 'tailwind-css-4-whats-new-migration-guide'
+excerpt: 'Tailwind CSS 4 wprowadza nowy silnik Oxide, konfigurację CSS-first i buildy 100x szybsze. Ale czy warto migrować istniejący projekt? Oto co się zmieniło i jak zdecydować.'
+---
+
+Tailwind CSS 4 pojawił się w styczniu 2025 roku i jest to największa aktualizacja od premiery frameworka. Liczby robią wrażenie: **buildy przyrostowe 100x szybsze** (z 44 ms do 5 ms), całkowicie nowy system konfiguracji i wbudowane nowoczesne funkcje CSS.
+
+Ale imponujące liczby nie oznaczają, że powinieneś natychmiast migrować każdy projekt. Oto co faktycznie się zmieniło, co może się zepsuć i jak zdecydować, czy aktualizacja jest warta zachodu.
+
+## Najważniejsze nowości
+
+### Silnik Oxide: szybkość napędzana Rustem
+
+Nowy silnik Oxide, napisany w Ruście, to serce wersji 4. Poprawa wydajności jest realna:
+
+| Metryka              | v3          | v4          | Poprawa      |
+| -------------------- | ----------- | ----------- | ------------ |
+| Pełny build          | 378 ms      | 100 ms      | 3,8x szybciej |
+| Build przyrostowy    | 44 ms       | 5 ms        | 8,8x szybciej |
+| Hot reload           | Zauważalny  | Natychmiastowy | ~100x szybciej |
+
+W dużych projektach przekłada się to na naprawdę natychmiastowe hot reloady. Koniec z czekaniem na regenerację CSS, gdy dłubiesz przy wartościach paddingu.
+
+### Konfiguracja CSS-first
+
+To największa zmiana koncepcyjna. Zamiast `tailwind.config.js` konfigurujesz wszystko w CSS:
+
+```css
+/* v3: tailwind.config.js */
+module.exports = {
+  theme: {
+    extend: {
+      colors: {
+        brand: '#3b82f6',
+      },
+      fontFamily: {
+        display: ['Inter', 'sans-serif'],
+      },
+    },
+  },
+}
+```
+
+```css
+/* v4: Twój plik CSS */
+@import 'tailwindcss';
+
+@theme {
+  --color-brand: #3b82f6;
+  --font-display: 'Inter', sans-serif;
+}
+```
+
+Korzyści:
+
+- **Brak JavaScriptu w pipelinie stylowania** — czysty CSS
+- **Zmienne CSS domyślnie** — wszystko konfigurowalne w runtime
+- **Prostszy model myślowy** — jeden język do stylowania
+
+### Uproszczona konfiguracja startowa
+
+Dyrektywy `@tailwind` zniknęły. Cała konfiguracja Tailwinda to teraz:
+
+```css
+/* To wszystko. Serio. */
+@import 'tailwindcss';
+```
+
+Koniec z `postcss-import`, koniec z `autoprefixer` — v4 obsługuje importy i prefiksy producentów automatycznie.
+
+### Automatyczne wykrywanie treści
+
+Koniec z konfigurowaniem ścieżek `content`. Tailwind v4 automatycznie wykrywa Twoje pliki szablonów, inteligentnie pomijając wpisy z `.gitignore` i pliki binarne.
+
+## Nowe narzędzia warte poznania
+
+### Container queries (wbudowane)
+
+Plugin `@tailwindcss/container-queries` jest teraz częścią rdzenia:
+
+```html
+<div class="@container">
+  <div class="@md:flex @lg:grid">
+    <!-- Reaguje na rozmiar kontenera, nie viewportu -->
+  </div>
+</div>
+```
+
+### Wartości dynamiczne bez nawiasów
+
+W v3 wartości arbitralne wymagały nawiasów kwadratowych. W v4 wiele wartości działa bezpośrednio:
+
+```html
+<!-- v3 -->
+<div class="h-[100px] grid-cols-[15]">
+  <!-- v4 -->
+  <div class="h-100 grid-cols-15"></div>
+</div>
+```
+
+### Wariant `not-*`
+
+Stylowanie elementów, które _nie_ spełniają warunku:
+
+```html
+<button class="not-disabled:hover:bg-blue-600">
+  <!-- Efekt hover tylko gdy nie jest disabled -->
+</button>
+
+<div class="not-[:empty]:p-4">
+  <!-- Padding tylko gdy element ma zawartość -->
+</div>
+```
+
+### Ulepszony system kolorów
+
+Kolory korzystają teraz z przestrzeni barw OKLCH, co umożliwia szerokie gamuty P3 na obsługiwanych wyświetlaczach. Bardziej żywe, dokładniejsze kolory — szczególnie widoczne w błękitach i zieleniach.
+
+## Breaking changes: co Cię ugryzie
+
+### Zmienione nazwy utility
+
+Kilka utility zmieniło nazwy dla spójności. Narzędzie migracyjne to obsługuje, ale warto wiedzieć, co się zmienia:
+
+```html
+<!-- v3 → v4 -->
+shadow → shadow-sm shadow-sm → shadow-xs rounded → rounded-sm rounded-sm → rounded-xs outline-none →
+outline-hidden ring → ring-3
+```
+
+### Zmiany wartości domyślnych
+
+Niektóre wartości domyślne się zmieniły, co może subtelnie zepsuć istniejące projekty:
+
+```css
+/* Kolor border/divide */
+v3: gray-200 (jasnoszary)
+v4: currentColor (dziedziczy kolor tekstu)
+
+/* Szerokość ring */
+v3: 3px
+v4: 1px
+
+/* Kolor ring */
+v3: blue-500
+v4: currentColor
+```
+
+Jeśli polegałeś na domyślnych kolorach obramowań, teraz musisz je podać jawnie.
+
+### Utility opacity usunięte
+
+Stare utility `bg-opacity-*`, `text-opacity-*` zniknęły. Zamiast nich używaj składni ze slashem:
+
+```html
+<!-- v3 -->
+<div class="bg-black bg-opacity-50">
+  <!-- v4 -->
+  <div class="bg-black/50"></div>
+</div>
+```
+
+### Kolejność stackowania wariantów
+
+Warianty stosują się teraz od lewej do prawej (jak w CSS), a nie od prawej do lewej:
+
+```html
+<!-- v3: dark wygrywa (od prawej do lewej) -->
+<div class="hover:dark:bg-black">
+  <!-- v4: dark:hover oznacza "gdy dark, na hover" (od lewej do prawej) -->
+  <div class="dark:hover:bg-black"></div>
+</div>
+```
+
+Narzędzie migracyjne próbuje to naprawić, ale sprawdź dokładnie swoje stany hover w trybie ciemnym.
+
+### Składnia zmiennych CSS
+
+Arbitralne zmienne CSS potrzebują teraz nawiasów okrągłych:
+
+```html
+<!-- v3 -->
+<div class="bg-[--brand-color]">
+  <!-- v4 -->
+  <div class="bg-(--brand-color)"></div>
+</div>
+```
+
+## Wsparcie przeglądarek: słoń w pokoju
+
+Oto haczyk, który może zatrzymać Twoją migrację na dobre:
+
+**Tailwind CSS v4 wymaga:**
+
+- Safari 16.4+
+- Chrome 111+
+- Firefox 128+
+
+Oznacza to **brak IE11, brak starszego Safari na iOS 15** i brak starszych Android WebView. Framework korzysta z nowoczesnych funkcji CSS (`@property`, `color-mix()`, cascade layers), które po prostu nie działają w starszych przeglądarkach — to ta sama fala [obecnie już baseline'owego CSS, który zastępuje całe kategorie JavaScriptu](/blog/modern-css-2026-has-scope-container-queries-guide).
+
+**Jeśli potrzebujesz wsparcia dla starszych przeglądarek, zostań na v3.4.** Nie ma ścieżki z polyfillami.
+
+## Migracja: droga automatyczna
+
+Dla większości projektów narzędzie do aktualizacji wykonuje najcięższą robotę:
+
+```bash
+# Wymaga Node.js 20+
+npx @tailwindcss/upgrade
+```
+
+Narzędzie:
+
+- Zaktualizuje Twoje zależności
+- Przekonwertuje `tailwind.config.js` na reguły CSS `@theme`
+- Zaktualizuje składnię klas utility w szablonach
+- Usunie zbędne pluginy PostCSS
+
+**Zawsze uruchamiaj to na nowym branchu** i uważnie przejrzyj diff.
+
+### Użytkownicy Vite: przejdźcie na plugin
+
+Jeśli używasz Vite, migruj z pluginu PostCSS na dedykowany plugin Vite:
+
+```bash
+npm install @tailwindcss/vite
+```
+
+```typescript
+// vite.config.ts
+import tailwindcss from '@tailwindcss/vite'
+
+export default defineConfig({
+  plugins: [tailwindcss()],
+})
+```
+
+## Migracja: ręczne poprawki, których zapewne będziesz potrzebować
+
+Narzędzie do aktualizacji jest dobre, ale nie wyłapie wszystkiego. Uważaj na te rzeczy:
+
+### 1. Kompatybilność pluginów
+
+Pluginy firm trzecich mogą jeszcze nie być kompatybilne z v4. Sprawdź każdy:
+
+- `@tailwindcss/typography` — zaktualizowany, ale zmieniła się składnia
+- `@tailwindcss/forms` — zaktualizowany
+- `@tailwindcss/container-queries` — usuń go (jest już wbudowany)
+- Pluginy społecznościowe — sprawdź ich repozytoria
+
+### 2. Własne funkcje pluginów
+
+Jeśli pisałeś inline'owe pluginy w swojej konfiguracji, wymagają one ręcznej migracji:
+
+```javascript
+// v3: Nie zmigruje się automatycznie
+module.exports = {
+  plugins: [
+    function ({ addUtilities }) {
+      addUtilities({
+        '.custom-util': {
+          /* ... */
+        },
+      })
+    },
+  ],
+}
+```
+
+Przekonwertuj na nową dyrektywę `@utility` w CSS:
+
+```css
+/* v4 */
+@utility custom-util {
+  /* Twoje style */
+}
+```
+
+### 3. Dynamiczny dostęp do theme
+
+Jeśli używałeś `theme()` w JavaScripcie do dynamicznych wartości, będziesz musiał przerobić to na zmienne CSS.
+
+### 4. Importy design tokenów
+
+Złożone konfiguracje theme z głębokim spreadowaniem nie zmigrują się automatycznie. Będziesz musiał ręcznie przekonwertować je na bloki `@theme`.
+
+## Czy powinieneś migrować? Ramy decyzyjne
+
+### Migruj teraz, jeśli:
+
+- [ ] Twoje wymagania przeglądarkowe pozwalają na Safari 16.4+, Chrome 111+, Firefox 128+
+- [ ] Zaczynasz nowy projekt
+- [ ] Wydajność buildu to realny ból głowy
+- [ ] Chcesz konfiguracji natywnej dla CSS
+- [ ] Twoje zależności pluginowe są kompatybilne z v4
+
+### Poczekaj, jeśli:
+
+- [ ] Potrzebujesz wsparcia dla IE11 lub starszych przeglądarek
+- [ ] Mocno polegasz na pluginach firm trzecich, które nie zostały zaktualizowane
+- [ ] Twój projekt jest w krytycznej fazie (nie wprowadzaj ryzyka)
+- [ ] Twoje czasy buildów już teraz są w porządku
+
+### Zostań na v3.4, jeśli:
+
+- [ ] Wsparcie starszych przeglądarek to warunek nie do negocjacji
+- [ ] Twój tailwind.config.js zawiera złożoną logikę pluginów
+- [ ] Używasz Sass/Less (v4 nie wspiera preprocesorów)
+
+## Pozostanie na v3: całkowicie w porządku
+
+Tailwind v3.4 nigdzie się nie wybiera. Jest stabilny, dobrze udokumentowany i będzie otrzymywać aktualizacje bezpieczeństwa. Jeśli wymagania przeglądarkowe v4 Ci nie pasują, pozostanie na v3 to całkowicie rozsądny wybór.
+
+Gdy Twoje wymagania dotyczące wsparcia przeglądarek się zmienią, migracja wciąż będzie na Ciebie czekać.
+
+## Podsumowanie
+
+Tailwind CSS 4 naprawdę robi wrażenie. Silnik Oxide dowozi obiecaną wydajność, konfiguracja CSS-first jest czystsza, a nowe utility to przemyślane dodatki.
+
+Ale **migracja nie jest darmowa**. Wymagania przeglądarkowe są surowe, breaking changes są realne, a kompatybilność ekosystemu wymaga czasu. Dla nowych projektów z nowoczesnymi targetami przeglądarkowymi v4 to oczywisty wybór. Dla istniejących projektów zważ korzyści względem kosztu migracji i Twoich wymagań przeglądarkowych.
+
+Narzędzie do aktualizacji sprawia, że migracja jest łatwiejsza, niż mógłbyś się spodziewać. Ale się z nią nie spiesz — testuj dokładnie i pamiętaj, że v3.4 wciąż jest świetnym frameworkiem.
+
+Gotowy do migracji? Zacznij od [oficjalnego przewodnika aktualizacji](https://tailwindcss.com/docs/upgrade-guide) i najpierw uruchom narzędzie na branchu funkcyjnym.
+
+Zmigrowałeś już do Tailwind v4? Chętnie usłyszę, jak poszło — co Cię zaskoczyło, co się zepsuło i czy zyski wydajnościowe były tego warte.
+
+~Seb 👊

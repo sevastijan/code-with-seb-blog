@@ -1,0 +1,409 @@
+---
+title: 'React Concurrent Mode: praktyczny przewodnik po useTransition, useDeferredValue i asynchronicznych Actions'
+date: '2026-03-28'
+category: 'Development'
+tags: ['react', 'performance', 'concurrent-mode', 'hooks', 'typescript']
+draft: false
+featured: false
+author: 'Sebastian'
+enSlug: 'react-concurrent-mode-practical-guide'
+excerpt: 'Renderowanie współbieżne w Reakcie utrzymuje responsywny interfejs podczas ciężkich obliczeń — ale źle użyte podwaja liczbę re-renderów. Oto praktyczny przewodnik.'
+---
+
+Widziałem, jak senior spędził cały dzień, dodając debounce do komponentu wyszukiwania. Wyszukiwarka filtrowała 10 000 produktów w tabeli — każde naciśnięcie klawisza wywoływało re-render wszystkich 10 000 wierszy, zamrażając pole tekstowe na 200 ms. Debounce „naprawił" to, opóźniając filtrowanie o 300 ms. Pole tekstowe wydawało się responsywne, ale wyniki wyszukiwania spóźniały się o pół sekundy.
+
+Potem zastąpiłem debounce hookiem `useTransition`. Jeden hook, trzy linie kodu. Pole tekstowe pozostało responsywne, **a jednocześnie** wyniki pojawiały się tak szybko, jak procesor był w stanie je wyrenderować — bez sztucznego opóźnienia. Na szybkiej maszynie wyniki były natychmiastowe. Na wolnej maszynie pole tekstowe nadal nigdy się nie zamrażało.
+
+Właśnie to robi renderowanie współbieżne: pozwala Reactowi **przerwać** kosztowną pracę renderującą, gdy użytkownik zrobi coś pilnego. Żadnych opóźnień, żadnych zamrożeń, żadnych kompromisów.
+
+Ale renderowanie współbieżne nie jest darmowe. W pewnych przypadkach podwaja liczbę re-renderów. Wymaga zrozumienia systemu priorytetów Reacta. I jest kompletnie bezużyteczne dla 90% aktualizacji stanu. Oto kiedy go używać, kiedy unikać i jakie wzorce naprawdę mają znaczenie w produkcji.
+
+## Model mentalny: pasy priorytetów
+
+React concurrent mode dzieli aktualizacje na dwa pasy priorytetów:
+
+```
+PILNE (synchroniczne):              NIEPILNE (przerywalne):
+├── Pisanie w polu tekstowym        ├── Filtrowanie dużej listy
+├── Kliknięcie przycisku            ├── Renderowanie wyników wyszukiwania
+├── Przełączenie checkboxa          ├── Aktualizacja ciężkiego wykresu
+├── Najechanie na element           ├── Ładowanie nowej treści strony
+└── Przewijanie                     └── Aktualizacje danych w tle
+```
+
+Bez renderowania współbieżnego wszystkie aktualizacje są synchroniczne — blokują wątek do zakończenia. 200-milisekundowy re-render 10 000 elementów listy blokuje pole tekstowe na 200 ms.
+
+Z renderowaniem współbieżnym React zaczyna renderować listę, ale jeśli użytkownik ponownie zacznie pisać, React **porzuca** trwający render i najpierw obsługuje naciśnięcie klawisza. Re-render listy startuje od nowa z nowym terminem wyszukiwania. Pole tekstowe nigdy się nie zamraża.
+
+## useTransition: kontrolujesz funkcję aktualizującą
+
+`useTransition` opakowuje aktualizację stanu, aby oznaczyć ją jako niepilną (jako „transition"):
+
+```typescript
+import { useState, useTransition } from 'react';
+
+function ProductSearch({ products }: { products: Product[] }) {
+  const [query, setQuery] = useState('');
+  const [filtered, setFiltered] = useState(products);
+  const [isPending, startTransition] = useTransition();
+
+  function handleSearch(value: string) {
+    // PILNE: Zaktualizuj pole tekstowe natychmiast
+    setQuery(value);
+
+    // NIEPILNE: Filtruj listę w transition
+    startTransition(() => {
+      const result = products.filter(p =>
+        p.name.toLowerCase().includes(value.toLowerCase())
+      );
+      setFiltered(result);
+    });
+  }
+
+  return (
+    <div>
+      <input
+        value={query}
+        onChange={(e) => handleSearch(e.target.value)}
+        placeholder="Search products..."
+      />
+
+      {isPending && <Spinner className="ml-2" />}
+
+      <ProductTable products={filtered} />
+    </div>
+  );
+}
+```
+
+**Co się dzieje:**
+1. Użytkownik pisze „s" → `setQuery('s')` jest pilne → pole tekstowe aktualizuje się natychmiast
+2. `startTransition(() => setFiltered(...))` zaczyna renderować przefiltrowaną listę
+3. Użytkownik pisze „sh" zanim filtrowanie się zakończy → React **porzuca** filtr dla „s"
+4. `setQuery('sh')` aktualizuje pole tekstowe → nowy transition startuje z „sh"
+5. Użytkownik przestaje pisać → filtrowanie się kończy → `isPending` staje się false → wyniki się pokazują
+
+Pole tekstowe **nigdy się nie zamraża**, niezależnie od tego, ile produktów jest na liście.
+
+### useTransition kontra debounce
+
+| Aspekt | Debounce | useTransition |
+|--------|----------|---------------|
+| **Mechanizm** | Opóźnia wywołanie funkcji | Pozwala Reactowi przerwać render |
+| **Responsywność pola tekstowego** | Natychmiastowa | Natychmiastowa |
+| **Opóźnienie wyników** | Stałe (zwykle 300 ms) | Adaptacyjne (zależne od CPU) |
+| **Na szybkich maszynach** | Nadal czeka 300 ms | Wyniki pojawiają się natychmiast |
+| **Na wolnych maszynach** | Może nadal się ścinać, jeśli 300 ms to za mało | Pole tekstowe pozostaje responsywne |
+| **Żądania sieciowe** | Świetny — redukuje wywołania API | Bezużyteczny — nie opóźnia wywołań |
+| **Praca ograniczona przez CPU** | Maskuje problem | Rozwiązuje problem |
+
+**Zasada:** Używaj debounce do **żądań sieciowych** (redukcja wywołań API). Używaj useTransition do **renderowania ograniczonego przez CPU** (kosztowne re-rendery).
+
+## useDeferredValue: odracza wartość
+
+`useDeferredValue` to prostsza alternatywa — tworzy „opóźnioną kopię" wartości, która automatycznie aktualizuje się w transition:
+
+```typescript
+import { useState, useDeferredValue, useMemo } from 'react';
+
+function ProductSearch({ products }: { products: Product[] }) {
+  const [query, setQuery] = useState('');
+  const deferredQuery = useDeferredValue(query);
+
+  // Ta kalkulacja używa deferredQuery — jest odroczona (niepilna)
+  const filtered = useMemo(
+    () => products.filter(p =>
+      p.name.toLowerCase().includes(deferredQuery.toLowerCase())
+    ),
+    [products, deferredQuery]
+  );
+
+  const isStale = query !== deferredQuery;
+
+  return (
+    <div>
+      <input
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        placeholder="Search products..."
+      />
+      <div style={{ opacity: isStale ? 0.7 : 1, transition: 'opacity 0.2s' }}>
+        <ProductTable products={filtered} />
+      </div>
+    </div>
+  );
+}
+```
+
+**Kiedy którego używać:**
+- **useTransition:** Gdy kontrolujesz aktualizację stanu (sam wywołujesz `setState`)
+- **useDeferredValue:** Gdy otrzymujesz wartość jako prop i nie możesz kontrolować, kiedy się zmienia
+
+```typescript
+// useTransition — to Ty jesteś właścicielem aktualizacji stanu
+function SearchPage() {
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState([]);
+  const [isPending, startTransition] = useTransition();
+
+  function onSearch(value: string) {
+    setQuery(value);
+    startTransition(() => setResults(expensiveFilter(value)));
+  }
+}
+
+// useDeferredValue — otrzymujesz wartość jako prop
+function ResultsList({ query }: { query: string }) {
+  const deferredQuery = useDeferredValue(query);
+  const results = useMemo(() => expensiveFilter(deferredQuery), [deferredQuery]);
+  return <List items={results} />;
+}
+```
+
+## React 19: asynchroniczne Actions i useOptimistic
+
+React 19 rozszerzył transitions o obsługę **funkcji asynchronicznych**, tworząc potężny wzorzec dla przesyłania formularzy i mutacji:
+
+### Asynchroniczny startTransition
+
+```typescript
+import { useTransition } from 'react';
+
+function CreateOrderButton({ cartItems }: { cartItems: CartItem[] }) {
+  const [isPending, startTransition] = useTransition();
+
+  async function handleCreate() {
+    startTransition(async () => {
+      // isPending jest natychmiast true
+      const order = await createOrder(cartItems);
+      // isPending staje się false po zakończeniu akcji asynchronicznej
+      redirect(`/orders/${order.id}`);
+    });
+  }
+
+  return (
+    <button onClick={handleCreate} disabled={isPending}>
+      {isPending ? 'Creating order...' : 'Place Order'}
+    </button>
+  );
+}
+```
+
+Żadnego ręcznego stanu `setIsLoading`. Żadnego try/catch do ustawiania stanów błędu. React zarządza stanem oczekiwania automatycznie.
+
+### useActionState (Form Actions)
+
+```typescript
+import { useActionState } from 'react';
+
+async function submitForm(previousState: FormState, formData: FormData) {
+  const email = formData.get('email') as string;
+
+  if (!email.includes('@')) {
+    return { error: 'Invalid email', success: false };
+  }
+
+  await subscribe(email);
+  return { error: null, success: true };
+}
+
+function NewsletterForm() {
+  const [state, formAction, isPending] = useActionState(submitForm, {
+    error: null,
+    success: false,
+  });
+
+  return (
+    <form action={formAction}>
+      <input name="email" type="email" required />
+      {state.error && <p className="text-red-500">{state.error}</p>}
+      {state.success && <p className="text-green-500">Subscribed!</p>}
+      <button type="submit" disabled={isPending}>
+        {isPending ? 'Subscribing...' : 'Subscribe'}
+      </button>
+    </form>
+  );
+}
+```
+
+### useOptimistic
+
+Pokaż wynik mutacji **natychmiast**, zanim serwer to potwierdzi:
+
+```typescript
+import { useOptimistic, useTransition } from 'react';
+
+function TodoList({ todos }: { todos: Todo[] }) {
+  const [optimisticTodos, addOptimistic] = useOptimistic(
+    todos,
+    (state, newTodo: Todo) => [...state, newTodo]
+  );
+  const [isPending, startTransition] = useTransition();
+
+  async function handleAdd(formData: FormData) {
+    const title = formData.get('title') as string;
+    const optimisticTodo = { id: crypto.randomUUID(), title, completed: false };
+
+    startTransition(async () => {
+      addOptimistic(optimisticTodo); // Interfejs aktualizuje się NATYCHMIAST
+      await createTodo({ title });    // Wywołanie serwera dzieje się w tle
+      // Jeśli się nie powiedzie, React wraca do oryginalnych `todos`
+    });
+  }
+
+  return (
+    <div>
+      <form action={handleAdd}>
+        <input name="title" placeholder="New todo" />
+        <button type="submit">Add</button>
+      </form>
+      <ul>
+        {optimisticTodos.map(todo => (
+          <li key={todo.id} style={{ opacity: todo.id.includes('-') ? 0.7 : 1 }}>
+            {todo.title}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+```
+
+## Kiedy funkcje współbieżne pomagają (a kiedy nie)
+
+### Pomagają:
+- **Filtrowanie dużych list** (1000+ elementów renderowanych jednocześnie)
+- **Złożone re-rendery wykresów** (D3, recharts z wieloma punktami danych)
+- **Przełączanie zakładek** z ciężką treścią w każdej zakładce
+- **Paginacja** z setkami wierszy na stronę
+- **Przesyłanie formularzy** (asynchroniczne Actions z isPending)
+- **Optymistyczne aktualizacje** (useOptimistic)
+
+### Nie pomagają:
+- **Operacje ograniczone przez sieć** — useTransition nie przyspiesza wywołań API
+- **Proste komponenty** — narzut podwójnych re-renderów szkodzi bardziej, niż pomaga
+- **Pojedyncze aktualizacje stanu** — jeśli zmienia się tylko jedna rzecz, nie ma czego depriorytetyzować
+- **Już zmemoizowane komponenty** — jeśli React.memo zapobiega re-renderom, transitions są zbędne
+
+### Koszt podwójnego re-renderu
+
+useTransition powoduje **dwa re-rendery** na jeden transition:
+1. Pierwszy render: `isPending = true` (synchroniczny, pilny)
+2. Drugi render: transition się kończy, `isPending = false` (przerywalny)
+
+Dla prostych aktualizacji stanu jest to wolniejsze niż pojedynczy render. Używaj transitions tylko wtedy, gdy drugi render jest na tyle kosztowny, że przerywalność ma znaczenie.
+
+## Integracja z Server Components
+
+Transitions świetnie współgrają z [Server Components i strumieniowaniem](/blog/ssr-vs-ssg-vs-isr-vs-rsc-nextjs-strategies):
+
+```typescript
+// app/products/page.tsx — Server Component
+import { Suspense } from 'react';
+import { SearchInput } from './SearchInput';
+import { ProductGrid } from './ProductGrid';
+
+export default async function ProductsPage({
+  searchParams,
+}: {
+  searchParams: { q?: string };
+}) {
+  return (
+    <div>
+      <SearchInput defaultValue={searchParams.q} />
+      <Suspense key={searchParams.q} fallback={<ProductGridSkeleton />}>
+        <ProductGrid query={searchParams.q} />
+      </Suspense>
+    </div>
+  );
+}
+```
+
+```typescript
+// SearchInput.tsx — Client Component z transition
+'use client';
+
+import { useTransition } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
+
+export function SearchInput({ defaultValue }: { defaultValue?: string }) {
+  const router = useRouter();
+  const [isPending, startTransition] = useTransition();
+
+  function handleSearch(value: string) {
+    startTransition(() => {
+      router.push(`/products?q=${encodeURIComponent(value)}`);
+    });
+  }
+
+  return (
+    <div>
+      <input
+        defaultValue={defaultValue}
+        onChange={(e) => handleSearch(e.target.value)}
+        placeholder="Search products..."
+      />
+      {isPending && <Spinner />}
+    </div>
+  );
+}
+```
+
+`startTransition` opakowujący `router.push` sprawia, że Next.js traktuje nawigację jako transition — bieżąca strona pozostaje interaktywna, podczas gdy nowa ładuje się w tle.
+
+## Mierzenie wpływu
+
+Użyj React DevTools Profiler, aby zweryfikować, czy funkcje współbieżne rzeczywiście pomagają:
+
+1. Otwórz React DevTools → zakładka Profiler
+2. Kliknij „Record"
+3. Wykonaj akcję (pisanie w wyszukiwarce, przełączanie zakładek)
+4. Kliknij „Stop"
+5. Szukaj:
+   - Etykiety **Concurrent Feature Render** na flamegraphie
+   - Wielu mniejszych przebiegów renderowania zamiast jednego długiego bloku
+   - Renderów związanych z polem tekstowym kończących się przed renderami listy
+
+```bash
+# Włącz React Profiler na produkcji
+# next.config.mjs
+{
+  reactStrictMode: true,
+  compiler: {
+    reactRemoveProperties: process.env.NODE_ENV === 'production' ? { properties: ['^data-testid$'] } : false,
+  },
+}
+```
+
+## Praktyczne wnioski
+
+1. **Używaj `useTransition` do renderowania ograniczonego przez CPU** — duże listy, złożone wykresy, ciężka treść zakładek.
+2. **Używaj debounce do żądań sieciowych** — wywołania API, wyszukiwanie w trakcie pisania z wyszukiwaniem po stronie serwera.
+3. **Używaj `useDeferredValue`, gdy otrzymujesz wartości jako propsy** — nie możesz kontrolować, kiedy się zmieniają.
+4. **Asynchroniczne Actions z React 19** eliminują ręczne zarządzanie stanem ładowania — `isPending` masz za darmo.
+5. **`useOptimistic` dla natychmiastowego feedbacku** — pokaż wynik mutacji, zanim serwer go potwierdzi.
+6. **Nie używaj transitions do prostych aktualizacji** — podwójny re-render czyni je wolniejszymi przy trywialnych zmianach stanu.
+7. **Zawsze łącz z `useMemo`** — transitions re-renderują komponent; memoizacja zapobiega ponownemu przeliczaniu niezmienionych części.
+8. **`startTransition` + `router.push`** dla płynnych przejść nawigacyjnych w Next.js.
+9. **Profiluj przed i po** — React DevTools Profiler pokazuje, czy transitions rzeczywiście pomogły.
+10. **Zrozum, że [React Fiber](/blog/deep-dive-into-react-fiber-the-engine-behind-modern-react) to wszystko umożliwia** — renderowanie współbieżne jest zbudowane na przerywalnej architekturze Fibera.
+
+Renderowanie współbieżne nie jest funkcją, którą po prostu się włącza. To zestaw narzędzi do konkretnych problemów wydajnościowych. Użyte poprawnie — do kosztownych renderów przy pilnych interakcjach użytkownika — eliminuje ścinanie się bez sztucznych opóźnień. Użyte niepoprawnie — do każdej aktualizacji stanu — podwaja liczbę renderów bez żadnej korzyści.
+
+## Źródła
+
+### Źródła
+- [React Docs: useTransition](https://react.dev/reference/react/useTransition) — oficjalna dokumentacja hooka
+- [React Docs: useOptimistic](https://react.dev/reference/react/useOptimistic) — hook optymistycznych aktualizacji
+- [React v19 Blog Post](https://react.dev/blog/2024/12/05/react-19) — Actions i asynchroniczne transitions
+- [DeveloperWay: useTransition Performance Game Changer or...?](https://www.developerway.com/posts/use-transition) — analiza benchmarków
+- [3perf: React Concurrency, Explained](https://3perf.com/talks/react-concurrency/) — wizualny przewodnik po renderowaniu współbieżnym
+
+### Dalsza lektura
+- [Curiosum: React 18 Concurrent Rendering Performance Guide](https://www.curiosum.com/blog/performance-optimization-with-react-18-concurrent-rendering) — praktyczne wzorce optymalizacji
+- [Dawchihliou: Stress Testing Concurrent Features](https://dawchihliou.github.io/articles/stress-testing-concurrent-features-in-react-18) — benchmarki z ponad 100 tys. obiektów 3D
+- [Steve Kinney: Concurrent React and Scheduling](https://stevekinney.com/courses/react-performance/concurrent-react-scheduling) — głębokie zanurzenie w scheduler
+
+---
+
+~Seb 👊
