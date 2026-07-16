@@ -5,18 +5,26 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { ArrowUpRight } from 'lucide-react';
 import { LogoAnimated } from '@/components/LogoAnimated';
-
-const navigation = [
-  { name: 'Blog', href: '/blog', num: '01' },
-  { name: 'Services', href: '/services', num: '02' },
-  { name: 'About', href: '/about', num: '03' },
-];
+import { LanguageSwitcher, localeFromPathname } from '@/components/layout/LanguageSwitcher';
+import { t, localePrefix } from '@/lib/i18n';
 
 export function Header() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
   const pathname = usePathname();
   const headerRef = useRef<HTMLElement>(null);
+
+  const locale = localeFromPathname(pathname || '/');
+  const strings = t(locale);
+  const prefix = localePrefix(locale);
+  const homeHref = prefix || '/';
+  const ctaLabel = locale === 'pl' ? 'Porozmawiajmy' : "Let's Talk";
+
+  const navigation = [
+    { name: strings.nav.blog, href: `${prefix}/blog`, num: '01' },
+    { name: strings.nav.services, href: `${prefix}/services`, num: '02' },
+    { name: strings.nav.about, href: `${prefix}/about`, num: '03' },
+  ];
 
   useEffect(() => {
     const handleScroll = () => setScrolled(window.scrollY > 50);
@@ -49,7 +57,7 @@ export function Header() {
       >
         <nav className="container flex items-center justify-between h-20">
           {/* Logo */}
-          <Link href="/" className="nav-logo group" data-cursor-hover>
+          <Link href={homeHref} className="nav-logo group" data-cursor-hover>
             <LogoAnimated />
           </Link>
 
@@ -74,10 +82,11 @@ export function Header() {
             })}
           </div>
 
-          {/* CTA */}
-          <div className="hidden lg:block">
-            <Link href="/contact" className="nav-cta group" data-cursor-hover>
-              <span className="nav-cta-text">Let's Talk</span>
+          {/* CTA + language */}
+          <div className="hidden lg:flex items-center gap-4">
+            <LanguageSwitcher />
+            <Link href={`${prefix}/contact`} className="nav-cta group" data-cursor-hover>
+              <span className="nav-cta-text">{ctaLabel}</span>
               <span className="nav-cta-icon">
                 <ArrowUpRight className="w-4 h-4" />
               </span>
@@ -130,16 +139,20 @@ export function Header() {
             style={{ transitionDelay: mobileMenuOpen ? '450ms' : '0ms' }}
           >
             <Link
-              href="/contact"
+              href={`${prefix}/contact`}
               className="nav-cta nav-cta-mobile group"
               onClick={() => setMobileMenuOpen(false)}
             >
-              <span className="nav-cta-text">Let's Talk</span>
+              <span className="nav-cta-text">{ctaLabel}</span>
               <span className="nav-cta-icon">
                 <ArrowUpRight className="w-5 h-5" />
               </span>
               <span className="nav-cta-bg" />
             </Link>
+
+            <div className="nav-mobile-lang">
+              <LanguageSwitcher />
+            </div>
 
             <div className="nav-mobile-socials">
               <a href="https://github.com/sevastijan" target="_blank" rel="noopener noreferrer" className="nav-mobile-social">GitHub</a>
