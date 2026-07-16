@@ -19,15 +19,25 @@ function stripLocale(pathname: string): string {
   return '/' + parts.join('/');
 }
 
+export type BlogSlugMap = { enToPl: Record<string, string>; plToEn: Record<string, string> };
+
 // Compute the URL for a target locale from the current path.
-// Blog article detail pages have locale-specific slugs the client can't map,
-// so we fall back to the target locale's blog index for those (avoids 404s).
-function hrefForLocale(pathname: string, target: Locale): string {
+// For blog article detail pages we resolve the exact translated slug via the
+// slug map; if no translation exists we fall back to the blog index (no 404).
+function hrefForLocale(pathname: string, target: Locale, map?: BlogSlugMap): string {
   const bare = stripLocale(pathname); // e.g. /blog/some-slug, /about, /
   const prefix = target === defaultLocale ? '' : `/${target}`;
 
-  const isArticleDetail = /^\/blog\/.+/.test(bare);
-  if (isArticleDetail) {
+  const articleMatch = bare.match(/^\/blog\/(.+)$/);
+  if (articleMatch) {
+    const slug = decodeURIComponent(articleMatch[1]);
+    const current = localeFromPathname(pathname);
+    // Same locale as current: keep the same article.
+    if (target === current) return `${prefix}/blog/${slug}`;
+    if (map) {
+      const counterpart = target === defaultLocale ? map.plToEn[slug] : map.enToPl[slug];
+      if (counterpart) return `${prefix}/blog/${counterpart}`;
+    }
     return `${prefix}/blog`;
   }
   const path = bare === '/' ? '' : bare;
@@ -38,16 +48,17 @@ interface Props {
   className?: string;
   // Optional explicit targets (e.g. article pages that know the counterpart slug).
   hrefs?: Partial<Record<Locale, string>>;
+  blogSlugMap?: BlogSlugMap;
 }
 
-export function LanguageSwitcher({ className = '', hrefs }: Props) {
+export function LanguageSwitcher({ className = '', hrefs, blogSlugMap }: Props) {
   const pathname = usePathname() || '/';
   const current = localeFromPathname(pathname);
 
   return (
     <div className={`lang-switcher ${className}`} role="group" aria-label="Language">
       {locales.map((loc, i) => {
-        const href = hrefs?.[loc] ?? hrefForLocale(pathname, loc);
+        const href = hrefs?.[loc] ?? hrefForLocale(pathname, loc, blogSlugMap);
         const isActive = loc === current;
         return (
           <span key={loc} className="lang-switcher-item">

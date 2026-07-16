@@ -152,6 +152,22 @@ export function getRelatedPosts(slug: string, limit = 3, locale: Locale = defaul
     .slice(0, limit);
 }
 
+// Build a bidirectional blog slug map between English and Polish articles,
+// so the client-side language switcher can resolve the exact translated URL.
+export function getBlogSlugMap(): { enToPl: Record<string, string>; plToEn: Record<string, string> } {
+  const enToPl: Record<string, string> = {};
+  const plToEn: Record<string, string> = {};
+  for (const plSlug of getPostSlugs('pl')) {
+    const post = getPostBySlug(plSlug, 'pl');
+    const en = post?.enSlug;
+    if (en) {
+      enToPl[en] = plSlug;
+      plToEn[plSlug] = en;
+    }
+  }
+  return { enToPl, plToEn };
+}
+
 // Given a post slug in `fromLocale`, find the equivalent slug in `toLocale`.
 // Uses the `enSlug` frontmatter that Polish posts carry to link translations.
 export function getCounterpartSlug(

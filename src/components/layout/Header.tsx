@@ -5,10 +5,10 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { ArrowUpRight } from 'lucide-react';
 import { LogoAnimated } from '@/components/LogoAnimated';
-import { LanguageSwitcher, localeFromPathname } from '@/components/layout/LanguageSwitcher';
+import { LanguageSwitcher, localeFromPathname, type BlogSlugMap } from '@/components/layout/LanguageSwitcher';
 import { t, localePrefix } from '@/lib/i18n';
 
-export function Header() {
+export function Header({ blogSlugMap }: { blogSlugMap?: BlogSlugMap }) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
   const pathname = usePathname();
@@ -84,7 +84,7 @@ export function Header() {
 
           {/* CTA + language */}
           <div className="hidden lg:flex items-center gap-4">
-            <LanguageSwitcher />
+            <LanguageSwitcher blogSlugMap={blogSlugMap} />
             <Link href={`${prefix}/contact`} className="nav-cta group" data-cursor-hover>
               <span className="nav-cta-text">{ctaLabel}</span>
               <span className="nav-cta-icon">
@@ -151,7 +151,7 @@ export function Header() {
             </Link>
 
             <div className="nav-mobile-lang">
-              <LanguageSwitcher />
+              <LanguageSwitcher blogSlugMap={blogSlugMap} />
             </div>
 
             <div className="nav-mobile-socials">

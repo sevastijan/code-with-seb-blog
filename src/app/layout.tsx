@@ -10,6 +10,7 @@ import { Analytics } from "@vercel/analytics/react";
 import { SpeedInsights } from "@vercel/speed-insights/next";
 import { Header } from "@/components/layout/Header";
 import { Footer } from "@/components/layout/Footer";
+import { getBlogSlugMap } from "@/lib/mdx";
 import "./globals.css";
 
 const inter = Inter({
@@ -182,6 +183,7 @@ export default function RootLayout({
 }: {
   children: React.ReactNode;
 }) {
+  const blogSlugMap = getBlogSlugMap();
   return (
     <html
       lang="en"
@@ -199,7 +201,7 @@ export default function RootLayout({
         <a href="#main" className="skip-link">
           Skip to content
         </a>
-        <Header />
+        <Header blogSlugMap={blogSlugMap} />
         <main id="main">{children}</main>
         <Analytics />
         <SpeedInsights />
