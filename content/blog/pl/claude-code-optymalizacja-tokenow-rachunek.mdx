@@ -1,0 +1,286 @@
+---
+title: 'Optymalizacja tokenów w Claude Code: jak ściąłem rachunek o 70% w tydzień'
+date: '2026-04-19'
+category: 'AI'
+tags: ['claude-code', 'cost-optimization', 'token-management', 'ai-economics', 'productivity']
+draft: false
+featured: false
+author: 'Sebastian'
+enSlug: 'claude-code-token-optimization-bill-cut-guide'
+excerpt: 'Mój rachunek za Claude Code sięgnął 38 dolarów we wtorek. Tydzień później było znów 11 przy tym samym obciążeniu. Oto dziesięć zmian, które to zrobiły — z liczbami.'
+---
+
+Mój rachunek za Claude Code sięgnął 38 dolarów w jeden marcowy wtorek. Nic nadzwyczajnego tego dnia — kilka średnich funkcji, zwykła mieszanka review i prototypowania. 38 dolarów za jeden dzień pracy nad projektem po godzinach to albo hobby, na które mnie nie stać, albo sygnał, że robię coś źle.
+
+Tydzień później było znów 11 dolarów przy tym samym obciążeniu. Bez nowego planu, bez downgrade'u modelu, bez racjonowania. Dziesięć drobnych zmian, uszeregowanych poniżej według realnej kwoty, którą każda z nich zaoszczędziła, zweryfikowanych na podstawie dwóch tygodni dashboardów z użyciem sprzed i po zmianach.
+
+Jeśli używasz Claude Code codziennie i nie patrzysz na `/cost`, prawdopodobnie jesteś w tej samej sytuacji, w której byłem ja. Oto gotowy playbook.
+
+## Punkt wyjścia
+
+Najpierw dowiedz się, ile wydajesz. Uruchom `/cost` w sesji i zapisz liczbę. Jeszcze lepiej: uruchamiaj to codziennie przez tydzień. Wariancja pokaże ci, gdzie kopać.
+
+Moje liczby sprzed zmian, uśrednione za tydzień kończący się 17 marca 2026:
+
+- 22,40 dolara/dzień średnio
+- 38,00 dolarów w dniu szczytowym
+- 2,1 mln tokenów wejściowych/dzień
+- 180 tys. tokenów wyjściowych/dzień
+- 45% wydatków z jednego trybu (domyślny Sonnet, bez optymalizacji cachowania)
+
+Pytanie diagnostyczne: skąd biorą się tokeny wejściowe? Jeśli to 2 mln+ tokenów wejściowych, problemem jest rozdęty kontekst, a nie generowanie. Tak było u mnie i tak jest u większości osób zgłaszających wysokie rachunki.
+
+## Zmiana #1: tryb opusplan (zaoszczędzone ~7 dolarów/dzień)
+
+To pojedynczo największa wygrana i nie mogę uwierzyć, że przez sześć miesięcy działałem w trybie domyślnym, zanim to odkryłem.
+
+```json
+{
+  "mode": "opusplan"
+}
+```
+
+`opusplan` kieruje planowanie do Opusa, a implementację do Sonneta. Dostajesz rozumowanie klasy Opus przy decyzjach architektonicznych i cennik Sonneta przy mechanicznej robocie pisania kodu.
+
+Moje liczby:
+
+| Tryb       | Dzienny wydatek | Wskaźnik poprawek |
+| ---------- | --------------- | ----------------- |
+| Sam Sonnet | 22 dolary       | 31%               |
+| Sam Opus   | 65 dolarów      | 9%                |
+| opusplan   | 15 dolarów      | 11%               |
+
+Wskaźnik poprawek to metryka, która wszystko rozstrzyga. Sam Sonnet wygląda tanio, dopóki nie policzysz drugiego podejścia naprawiającego to, co spartaczył. Sam Opus daje mało poprawek i bankructwo. `opusplan` trafia w złoty środek.
+
+Głębsze uzasadnienie i wzorce workflow są w moim [przewodniku po trybie Plan na produkcji](/blog/claude-code-plan-mode-ultraplan-production-guide), ale w skrócie: ustaw i zapomnij. Największy zwrot z inwestycji na całej tej liście.
+
+## Zmiana #2: odchudź CLAUDE.md (zaoszczędzone ~3 dolary/dzień)
+
+CLAUDE.md jest czytany na początku każdej sesji. Każde słowo w nim to token, za który płacisz, na zawsze, przy każdym wywołaniu. Napisałem [kompletny przewodnik po hierarchii CLAUDE.md i systemie pamięci](/blog/claude-md-memory-persistent-context-guide) — ale tutaj chodzi o aspekt kosztowy.
+
+Mój miał 800 linii. Tutoriale, które skopiowałem. Aspiracyjne standardy kodowania. Sekcja zatytułowana „filozofia", którą napisałem w chwili ambicji. Nic z tego nie zmieniało zachowania Claude'a w sposób, który dałoby się zmierzyć.
+
+Skróciłem go do 147 linii. Trzy zasady:
+
+1. **Jeśli linia nie zmienia zachowania, nie ma tu miejsca.** Opisy projektu idą do README. Aspiracje idą na spotkania zespołu. CLAUDE.md jest dla zachowania.
+2. **Jeden imperatyw na linię.** „Use TypeScript strict mode", a nie „Wierzymy, że tryb strict prowadzi do lepszego...".
+3. **Poniżej 500 tokenów, jeśli to możliwe.** Policz przez `wc -c CLAUDE.md` i podziel przez 4.
+
+Samo to oszczędziło mi tokeny w każdej pojedynczej sesji. Efekt kumulacji ma znaczenie, gdy prowadzisz 50 sesji tygodniowo.
+
+## Zmiana #3: dodaj .claudeignore (zaoszczędzone ~2 dolary/dzień)
+
+`.claudeignore` działa jak `.gitignore`, tyle że dla odczytów Claude'a z systemu plików. Pliki w nim są niewidoczne dla `Read`, `Grep` i `Glob`.
+
+Pliki, które prawie zawsze chcesz wykluczyć:
+
+```
+# artefakty buildu
+dist/
+build/
+.next/
+out/
+
+# zależności
+node_modules/
+vendor/
+
+# pliki generowane
+*.min.js
+*.bundle.js
+coverage/
+.turbo/
+
+# sekrety — NIGDY nie pozwól Claude'owi ich czytać
+.env
+.env.*
+*.key
+*.pem
+
+# duże dane
+*.csv
+*.sqlite
+public/assets/
+```
+
+Wykluczenie `node_modules/` to ten najważniejszy. Bez niego rekurencyjny `Grep` może przypadkiem przeskanować całe drzewo zależności. Widziałem, jak Claude przepalił 80 tys. tokenów, bo wyszukiwanie trafiło na ciąg znaków wewnątrz `node_modules/react/umd/react.development.js`.
+
+Wykluczenie `.env` to nie optymalizacja — to wymóg bezpieczeństwa. Sekret w kontekście Claude'a to sekret wysłany do API Anthropic. Nie trenują na nim, ale w ogóle nie powinieneś go wysyłać.
+
+## Zmiana #4: używaj /compact zamiast /clear (zaoszczędzone ~2 dolary/dzień)
+
+Większość ludzi albo nigdy nie czyści kontekstu, albo bez przerwy wysadza go w powietrze przez `/clear`. Oba podejścia są błędne.
+
+`/clear` wyrzuca kontekst, za którego zbudowanie właśnie zapłaciłeś. Jeśli przestawiasz się na całkowicie niepowiązaną pracę, w porządku — użyj go. Ale jeśli wciąż jesteś przy tej samej funkcji, to marnotrawstwo.
+
+`/compact` podsumowuje dotychczasową rozmowę i zachowuje podsumowanie. Tracisz szczegóły, zachowujesz kierunek. Kosztuje raz tokeny podsumowania, oszczędza na zawsze tokeny ponownego tłumaczenia.
+
+Moja zasada: `/compact` mniej więcej co godzinę na długich sesjach. `/clear` tylko przy przełączaniu repozytoriów lub niepowiązanych projektów.
+
+## Zmiana #5: prompt caching (zaoszczędzone ~3 dolary/dzień)
+
+To dzieje się w większości automatycznie, ale możesz temu pomóc.
+
+Claude Code używa prompt cachingu dla powtarzalnej treści — system promptów, długich bloków kontekstu, stabilnej zawartości plików. Trafienia w cache są o 90% tańsze niż zapisy do cache.
+
+Co pomaga cachowaniu:
+
+- **Stabilny CLAUDE.md.** Edytowanie CLAUDE.md w środku dnia unieważnia cache. Ustaw go i zapomnij na cały dzień.
+- **Spójne ruchy otwarcia.** Jeśli zawsze zaczynasz sesje od tego, że Claude czyta `src/architecture.md`, ten odczyt jest cachowany po pierwszej sesji dnia.
+- **Unikaj zmiany kolejności.** Cache kluczuje po prefiksie. Te same pliki w innej kolejności to inne cache'e.
+
+Sprawdź swój współczynnik trafień w cache w `/cost`. Mój wzrósł z 12% do 61% po odchudzeniu CLAUDE.md i ustaleniu stabilnego wzorca startu sesji. Sześćdziesiąt jeden procent trafień oznacza, że prawie dwie trzecie tokenów wejściowych kosztuje jedną dziesiątą tego, co normalnie.
+
+## Zmiana #6: whitelista narzędzi w trybie headless (zaoszczędzone ~2 dolary/dzień)
+
+W moich pipeline'ach CI — zobacz [playbook CI/CD dla trybu headless](/blog/claude-code-headless-mode-cicd-automation-playbook) po pełny wzorzec — jawnie wypisuję dozwolone narzędzia.
+
+```bash
+claude -p "Review this diff" \
+  --allowedTools "Read,Grep,Glob,Bash(git diff),Bash(git log)"
+```
+
+Bez whitelisty Claude od czasu do czasu odkrywał, że może w trakcie działania odpalić nowe narzędzia. Workflow review, który powinien kosztować 15 tys. tokenów, kosztował 45 tys., bo Claude zaczął uruchamiać `npm test`, żeby „zweryfikować swoje rozumienie".
+
+Whitelista to nie tylko kwestia bezpieczeństwa. To dyscyplina zakresu. Jeśli Claude nie może edytować, nie może wydawać tokenów na rozważanie, czy powinien.
+
+## Zmiana #7: dobór modelu do zadania (zaoszczędzone ~2 dolary/dzień)
+
+Nawet przy opusplan niektóre zadania nie potrzebują Sonneta. Niektóre zadania nie potrzebują nawet Haiku.
+
+Zgrubny dobór modelu, którego teraz używam (rodzina Claude 5 uczyniła z tego decyzję czteropoziomową — mój [pełny framework doboru modeli](/blog/claude-5-family-model-selection-guide) omawia aktualny skład):
+
+| Zadanie                          | Model  | Dlaczego                          |
+| -------------------------------- | ------ | --------------------------------- |
+| Zmiana nazwy symbolu             | Haiku  | Mechaniczne, szybkie, tanie       |
+| Dodanie linii logowania          | Haiku  | Trywialna edycja                  |
+| Implementacja udokumentowanej specyfikacji | Sonnet | Implementacja, nie rozumowanie    |
+| Zaprojektowanie nowej funkcji    | Opus   | Decyzje projektowe się kumulują   |
+| Debugowanie dziwnego buga        | Opus   | Rozumowanie się opłaca            |
+| Napisanie release notes          | Haiku  | Generowanie tekstu z diffa        |
+
+Przełączaj przez `/model` w sesji. Dla zadań wsadowych ustaw per wywołanie:
+
+```bash
+claude -p "..." --model claude-haiku-4-5-20251001
+```
+
+Zmiana mentalna: dobór modelu to narzędzie, nie ustawienie domyślne. Używanie Sonneta do wszystkiego to odpowiednik jechania ciężarówką po zakupy spożywcze.
+
+## Zmiana #8: skill Context Mode (zaoszczędzone ~2 dolary/dzień)
+
+Istnieje społecznościowy skill o nazwie `context-mode`, który wstrzykuje do twoich sesji zachowanie świadome tokenów. Sprawia, że Claude preferuje zwięzłe odpowiedzi, unika przegadania i pomija „pomocne" komentarze w kodzie, których nikt nie czyta.
+
+Własną wersję możesz napisać w jakichś 20 liniach:
+
+```markdown
+---
+name: context-mode
+description: Keep responses terse and token-efficient
+---
+
+# Context Mode
+
+When this skill is active:
+
+- Do not explain what the code does unless asked
+- Do not add comments describing obvious behavior
+- Do not produce summaries after edits
+- Do not offer next steps unless asked
+- Do not re-read files you already have in context
+- If unsure whether to say something, do not say it
+```
+
+Wrzuć go do `.claude/skills/context-mode.md`. Oszczędności na tokenach wyjściowych z tłumienia rozwlekłych odpowiedzi kumulują się szybciej, niż mógłbyś się spodziewać, zwłaszcza na długich sesjach. Ta sama dyscyplina skaluje się w [wielokrotnie używalne workflow poprzez skille](/blog/claude-code-skills-reusable-ai-workflows-guide) — gdy raz dostrzeżesz ten wzorzec, znajdujesz dla niego coraz więcej miejsc.
+
+## Zmiana #9: krótkie, konkretne prompty (zaoszczędzone ~1 dolar/dzień, warte więcej)
+
+Niejasne prompty to podatek. „Napraw buga" prowadzi do trzech rund doprecyzowań, z których każda to pełny obieg kontekstu tam i z powrotem.
+
+Porównaj:
+
+```text
+Źle:  "Fix the login bug"
+
+Dobrze: "In src/auth/login.ts, the submit handler calls setLoading(true)
+        but never calls setLoading(false) on error. Add the error path."
+```
+
+Dobra wersja to cztery zdania i kupuje 95% pewności przy pierwszej odpowiedzi. Zła wersja kupuje rozmowę.
+
+To ta jedna zmiana, która oszczędza dolary i godziny. Pętle doprecyzowań są nie tylko drogie — drenują twoją uwagę. To ty jesteś kosztownym zasobem; tokeny to drobne.
+
+## Zmiana #10: higiena sesji (zaoszczędzone 0 dolarów, ale naprawia wszystko)
+
+To nie bezpośrednia oszczędność tokenów, ale meta-umiejętność, która sprawia, że wszystkie pozostałe się trzymają.
+
+- **Jedno zadanie na sesję.** Nie przeskakuj z „dodaj funkcję X" na „debuguj Y" w tej samej sesji. Zacznij od nowa.
+- **Zamykaj sesje po skończeniu.** Zostawianie otwartych sesji w trakcie zadania, powrót jutro, próba kontynuacji — właśnie tu chowają się największe rachunki. Sesja zapomniała połowę kontekstu, Claude musi go wyprowadzić na nowo, tokeny wyparowują.
+- **Zrównoleglaj porządnie.** Uruchomienie trzech skupionych sesji na trzech funkcjach jest tańsze niż jedna rozdęta sesja żonglująca całą trójką. Zobacz [przewodnik po równoległych sesjach z git worktrees](/blog/parallel-claude-code-sessions-git-worktrees-guide) po instrukcję konfiguracji.
+- **Przeglądaj `/cost` na koniec każdej sesji.** Wyrabiasz intuicję, ile powinno kosztować dane zadanie. Gdy małe zadanie kosztuje 15x normy, zauważasz to natychmiast, a nie przy fakturze na koniec miesiąca.
+
+To dyscyplina, nie konfiguracja. Zajęło mi najdłużej, by ją zinternalizować, a z czasem opłaca się najbardziej.
+
+## Liczby po zmianach
+
+Mój wzorzec użycia się nie zmienił. Te same wdrożone funkcje, ta sama jakość, ta sama liczba godzin. Liczby na rachunku:
+
+| Metryka               | Przed   | Po      |
+| --------------------- | ------- | ------- |
+| Dzienny wydatek       | 22,40 dolara | 7,60 dolara |
+| Dzień szczytowy       | 38,00 dolarów | 13,00 dolarów |
+| Tokeny wejściowe      | 2,1 mln | 0,9 mln |
+| Tokeny wyjściowe      | 180 tys.| 110 tys.|
+| Współczynnik trafień w cache | 12%     | 61%     |
+| Sesje z poprawkami    | 31%     | 11%     |
+
+Dwie trzecie taniej. Cachowane wejścia to ukryta wygrana — gdy raz wejdziesz w przyjazny cachowaniu wzorzec, każda przyszła sesja się kumuluje.
+
+## Co nie działa
+
+Kilka rzeczy, które próbowałem, a które nie ruszyły igły:
+
+- **Agresywne `/clear` przy każdym zadaniu.** Zbyt wiele niszczenia kontekstu; wydałem oszczędności na ponowne tłumaczenie.
+- **Własny routing modeli przez wrappery API.** Skomplikowane, kruche, zaoszczędziło grosze. Trzymaj się `opusplan`.
+- **Krótszy CLAUDE.md kosztem koniecznych zasad.** Wyciąłem zasadę mówiącą „zawsze uruchamiaj testy przed commitem". Tydzień później wdrożyłem regresję. Kosztowała mnie więcej, niż kosztowała ta zasada.
+- **Ograniczanie własnego użycia limitami.** Sztuczna wstrzemięźliwość po prostu cię spowalnia. Rozwiązaniem są lepsze wzorce, a nie mniejsze użycie.
+
+Optymalizacja to nie austerity. To usuwanie marnotrawstwa.
+
+## Checklista
+
+Wszystkie te zmiany są częścią szerszej [dyscypliny context engineering](/blog/context-engineering-claude-code-guide) — strukturyzowania tego, co Claude widzi, aby zmaksymalizować jakość wyjścia na token. Jeśli nie zrobisz w tym tygodniu nic więcej, to w tej kolejności:
+
+1. Włącz tryb `opusplan`. Pięć sekund, największa wygrana.
+2. Skróć swój CLAUDE.md do poniżej 500 tokenów. Piętnaście minut.
+3. Dodaj `.claudeignore` z `node_modules`, `dist`, `.env*`. Dwie minuty.
+4. Ustaw `--allowedTools` na wszystkich wywołaniach headless. Pięć minut na workflow.
+5. Sprawdzaj `/cost` na koniec każdej sesji przez tydzień. Wyrób sobie intuicję.
+
+Resztę na razie pomiń. Opanuj te pięć, a twój rachunek spadnie, zanim skończysz czytać resztę tego przewodnika dwa razy.
+
+## O co tu tak naprawdę chodzi
+
+Optymalizacja tokenów wygląda jak obsesja nerda na punkcie małych liczb. Nie jest. Każdy dolar niespalony na zbędnych tokenach wejściowych to dolar dostępny na trudniejsze zadanie. Każde trafienie w cache to opóźnienie usunięte z twojego workflow. Każda uniknięta pętla doprecyzowań to 30 sekund twojej uwagi oszczędzone.
+
+Claude Code to najszybszy mnożnik produktywności, jaki dodałem do swojego workflow od dekady. To też pierwsze narzędzie od dekady, w którym bycie oszczędnym jest umiejętnością. Najpierw stań się oszczędny. Potem działaj szybko.
+
+## Źródła i materiały
+
+### Źródła
+
+- [Claude Code Cost Management Docs](https://code.claude.com/docs/en/costs) — oficjalne rozliczanie tokenów i komenda `/cost`
+- [Claude Code Token Optimization Guide](https://buildtolaunch.substack.com/p/claude-code-token-optimization) — dogłębna analiza zachowania cachowania i optymalizacji
+- [18 Claude Code Token Management Hacks](https://www.mindstudio.ai/blog/claude-code-token-management-hacks-3) — praktyczne taktyki na poziomie sesji
+- [Stop Wasting Tokens: Optimize Claude Code Context](https://medium.com/@jpranav97/stop-wasting-tokens-how-to-optimize-claude-code-context-by-60-bfad6fd477e5) — playbook redukcji o 60%
+- [Claude Code Cost Optimisation Guide](https://systemprompt.io/guides/claude-code-cost-optimisation) — dobór modelu i dyscyplina promptów
+
+### Dalsza lektura
+
+- [Claude Token Efficient CLAUDE.md Template](https://github.com/drona23/claude-token-efficient) — gotowy do wrzucenia CLAUDE.md dla zwięzłych odpowiedzi
+- [Managing Costs and Token Usage in Claude Code](https://stevekinney.com/courses/ai-development/cost-management) — ustrukturyzowany kurs o dyscyplinie kosztowej
+- [Claude Code Pricing 2026](https://www.finout.io/blog/claude-code-pricing-2026) — porównanie planów i planowanie budżetu
+
+---
+
+~Seb 👊
