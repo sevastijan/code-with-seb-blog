@@ -1,0 +1,370 @@
+---
+title: 'React 19.2 — przewodnik po wydaniu: <Activity />, useEffectEvent, batching SSR i więcej'
+date: '2025-11-25'
+category: 'Development'
+tags: ['react', 'react19', 'frontend', 'javascript', 'reacthooks', 'ssr']
+featured: false
+author: 'Sebastian'
+draft: false
+enSlug: 'react-19-2-release-guide-activity-useeffectevent-ssr-batching-and-more-explained'
+excerpt: 'React 19.2 wprowadza komponent <Activity />, hook useEffectEvent, API cacheSignal, usprawnienia SSR i batching Suspense. Zobacz, jak podnoszą wydajność i DX.'
+---
+
+React 19.2 (wydany w październiku 2025) to nabite nowościami wydanie, które wprowadza nowe API, optymalizacje wydajności i usprawnienia renderowania po stronie serwera. To trzecie wydanie z serii React 19 (po 19.1 z połowy 2025 i 19.0 z końca 2024) i kontynuuje ono obrany przez React rytm przyrostowych ulepszeń. W tym artykule przejdziemy przez wszystkie nowo wprowadzone funkcje, breaking changes i usprawnienia w React 19.2, wraz ze szczegółowymi wyjaśnieniami technicznymi i przykładami kodu. Skupimy się na detalach istotnych dla developera, takich jak zmiany w zachowaniu renderowania, nowe API (w tym nowy komponent i hook), aktualizacje w React DOM i renderowaniu po stronie serwera (możliwości SSR), zmiany w regułach lintera oraz inne ważne poprawki.
+
+React 19.2 dostarcza kilka dużych nowych funkcji i usprawnień, których celem jest poprawa wydajności oraz doświadczenia developera. Z lotu ptaka, kluczowe dodatki w 19.2 to:
+
+- Komponent `<Activity />`: nowy komponent pozwalający utrzymać części UI zamontowane, lecz ukryte — zachowując ich stan, przy jednoczesnym odmontowywaniu efektów ubocznych i odraczaniu ich aktualizacji.
+- Hook `useEffectEvent`: nowy hook do oddzielania logiki „zdarzeniowej” od reaktywnych efektów, dostarczający stabilne callbacki, które zawsze widzą najświeższy stan bez ponownego uruchamiania efektu.
+- API `cacheSignal`: API dla React Server Components dostarczające AbortSignal informujący, kiedy zbuforowany zasób nie jest już potrzebny, tak byś mógł anulować lub posprzątać długo działające operacje.
+- Partial Pre-rendering: nowe możliwości renderowania po stronie serwera pozwalające wstępnie wyrenderować część aplikacji do statycznego HTML (dla szybkiego shella), a później wznowić renderowanie, by dołożyć dynamiczną zawartość.
+- Batching Suspense w SSR: usprawnione zachowanie Suspense w streamowanym SSR — React teraz grupuje odsłanianie granic Suspense, tak że zawartość pojawia się partiami (bardziej jak po stronie klienta), a nie jedna po drugiej.
+- Performance Tracks w DevTools: integracja nowych, specyficznych dla Reacta ścieżek wydajności w Chrome DevTools, dająca głębszy wgląd w harmonogramowanie Reacta i oś czasu renderowania komponentów.
+- Plugin ESLint dla hooków v6: zaktualizowany plugin lintera ze wsparciem nowego hooka i nowym formatem konfiguracji, dbający o to, by reguły hooków były spójne z funkcjami React 19.2.
+- Inne usprawnienia: drobne zmiany, takie jak aktualizacja domyślnego prefiksu `useId` dla zgodności z nowymi standardami webowymi, wsparcie dla Web Streams w API SSR w Node.js oraz liczne poprawki błędów podnoszące stabilność i wydajność.
+
+W dalszej części artykułu zagłębimy się w każdą z tych rzeczy szczegółowo. Przykłady kodu ilustrują, jak używać nowych funkcji w praktyce, a przy okazji omówimy wszelkie kwestie związane z aktualizacją lub dostosowywaniem istniejącego kodu. Na koniec powinieneś mieć jasny obraz tego, co oferuje React 19.2 i jak może to przynieść korzyści twoim projektom.
+
+---
+
+# Nowe funkcje rdzenia w React 19.2
+
+## Komponent `<Activity />`
+
+Jedną ze sztandarowych funkcji React 19.2 jest nowy komponent `<Activity>`. Pełni on rolę wrappera, który może ukrywać lub pokazywać fragment UI (drzewo komponentów potomnych) w sposób bardziej kontrolowany niż zwykłe warunkowe renderowanie. Kluczowa idea polega na tym, że `<Activity>` utrzymuje swoje dzieci zamontowane w DOM nawet gdy są „ukryte”, zachowując ich stan, a jednocześnie odmontowuje ich efekty uboczne (takie jak efekty `useEffect`) i odracza jakiekolwiek ich aktualizacje do momentu, gdy będą potrzebne. Pozwala to częściom aplikacji pozostawać żywymi w tle, bez wpływu na wydajność tego, co jest aktualnie widoczne.
+
+### Użycie komponentu Activity
+
+Aby użyć komponentu `<Activity>`, opakowujesz docelowe UI w `<Activity>` i sterujesz jego propem mode zamiast przełączać renderowanie. Na przykład tak można ukryć lub pokazać sidebar za pomocą Activity:
+
+```jsx
+// Bez Activity: warunkowe renderowanie (odmontowuje Sidebar, gdy ukryty)
+{
+  isShowingSidebar && <Sidebar />
+}
+
+// Z Activity: użycie trybów Activity (zachowuje Sidebar, gdy ukryty)
+;<Activity mode={isShowingSidebar ? 'visible' : 'hidden'}>
+  <Sidebar />
+</Activity>
+```
+
+W powyższym przykładzie, gdy isShowingSidebar ma wartość false, `<Sidebar>` zostanie ukryty, ale nie w pełni odmontowany. `<Activity mode="hidden">` mówi Reactowi, by wizualnie ukrył sidebar (używając pod maską CSS display: none), zachowując jego drzewo komponentów zamontowane w pamięci. Co istotne, w trybie hidden React automatycznie zniszczy (posprząta) wszelkie efekty wewnątrz `<Sidebar>`, aby zapobiec niepożądanej pracy w tle i zwolnić zasoby. Stan powiązany z `<Sidebar>` pozostaje nienaruszony, więc jeśli sidebar zostanie ponownie pokazany, przywróci się on ze swoim wcześniejszym stanem, bez potrzeby resetowania czy ponownego pobierania danych.
+
+Jak to działa: API `<Activity>` obsługuje obecnie dwa tryby:
+
+- `visible`: dzieci są pokazywane normalnie, ich efekty są zamontowane, a aktualizacje stanu przetwarzane jak zwykle.
+
+- `hidden`: dzieci są ukryte (nierenderowane dla użytkownika, np. przez CSS), ich efekty są odmontowane (posprzątane), a wszelkie aktualizacje stanu odroczone do chwili, gdy React nie ma innej pracy (tj. wykonywane w priorytecie idle).
+
+Oznacza to, że możesz wstępnie wyrenderować UI w tle albo utrzymać przy życiu UI poza ekranem, nie spowalniając tego, co jest na ekranie. Przykładowo, możesz wyrenderować kolejną stronę lub modal w trybie hidden z wyprzedzeniem, tak by przy nawigacji użytkownika pojawiły się natychmiast (bo zostały już wyrenderowane w tle). Albo możesz utrzymać komponent formularza ukryty, zachowując to, co użytkownik wprowadził, jeśli odejdzie i wróci (bo stan jest zapisany). W istocie `<Activity>` daje ci sposób na wdrożenie „natychmiastowej” nawigacji i buforowanego UI bez ręcznego żonglowania stanem czy sięgania po obejścia.
+
+### Przypadki użycia
+
+Scenariusze takie jak interfejsy z kartami (tabs), wieloetapowe formularze czy modale na żądanie zyskują dzięki `<Activity>`. Na przykład przełączanie kart może być płynniejsze, jeśli nieaktywne karty są w `<Activity hidden>` — ich stan (pola formularza, pozycje przewijania itd.) pozostaje dostępny, gdy karta zostanie ponownie pokazana, ale ich efekty (jak timery czy subskrypcje) nie będą działać, gdy są ukryte.
+
+Kolejnym przypadkiem użycia jest prefetching: opakuj komponent w `<Activity hidden>` tuż przed tym, jak przewidujesz, że będzie potrzebny (powiedzmy, predykcyjne wstępne załadowanie kolejnego ekranu w kreatorze). Zawartość może ładować dane w tle bez blokowania UI, a następnie przełączasz ją w tryb visible, gdy jest potrzebna, unikając jakiegokolwiek opóźnienia ładowania dla użytkownika.
+
+Warto zauważyć, że `<Activity>` to nowy prymityw i zespół Reacta planuje rozszerzać go w przyszłości o dodatkowe tryby dla kolejnych przypadków użycia. W React 19.2 mamy tylko „visible” i „hidden”, ale bardziej zniuansowane tryby (być może do zawieszania lub innych zachowań) mogą zostać dodane w dalszej perspektywie.
+
+---
+
+## Hook `useEffectEvent`
+
+Kolejnym dużym dodatkiem jest hook `useEffectEvent`, który adresuje długo obecny wzorzec związany z efektami. Ten hook pozwala oddzielić logikę zdarzeniową od normalnego reaktywnego przepływu `useEffect`, tworząc stabilny callback („Effect Event”), który można wywoływać z wnętrza efektów bez odtwarzania go przy każdym renderze. Główną motywacją jest uniknięcie zbędnego ponownego uruchamiania efektów z powodu zmieniających się wartości, które są używane wewnątrz callbacku efektu, ale w rzeczywistości nie są istotne dla kontrolowania tego, kiedy efekt się uruchamia.
+
+Problem: w Reakcie częstym wzorcem jest użycie `useEffect` do subskrybowania zewnętrznych zdarzeń lub wykonania akcji, gdy coś zdarzy się zewnętrznie. Rozważmy na przykład efekt, który ustawia WebSocket lub połączenie i reaguje na zdarzenie, wywołując funkcję z najświeższym motywem (theme) lub stanem. W naiwnej implementacji można by zrobić coś takiego:
+
+```jsx
+useEffect(() => {
+  const connection = createConnection(serverUrl, roomId)
+  connection.on('connected', () => {
+    showNotification('Connected!', theme)
+  })
+  connection.connect()
+  return () => connection.disconnect()
+}, [roomId, theme])
+```
+
+Tutaj efekt zależy od `roomId` i `theme`. Jednak tylko `roomId` jest naprawdę potrzebne, by określić, kiedy ponownie uruchomić efekt (np. przy przełączaniu pokojów czatu) — `theme` jest używane jedynie wewnątrz obsługi zdarzenia do ostylowania powiadomienia. Jeśli `theme` się zmieni, ten efekt niepotrzebnie rozłożyłby i ponownie ustanowił połączenie, co jest niepożądane. Typowym obejściem było albo pominięcie `theme` w tablicy zależności (i być może wyłączenie reguły ESLint), albo użycie ref-a do przechowywania najświeższej wartości `theme` — oba mają wady (potencjalnie nieaktualne wartości lub utrata pomocy ze strony lintera).
+
+Rozwiązanie — `useEffectEvent`: React 19.2 wprowadza `useEffectEvent`, aby rozwiązać to elegancko. Używając `useEffectEvent`, możesz stworzyć wewnątrz komponentu specjalną funkcję obsługi zdarzenia, która zawsze ma dostęp do najświeższych propsów/stanu, ale nie wyzwala ponownych uruchomień efektu, gdy te propsy/stan się zmienią. To wyłącznie efekt korzystający z tej funkcji decyduje, kiedy się uruchamia.
+
+Na przykład:
+
+```jsx
+function ChatRoom({ roomId, theme }) {
+  // Utwórz obsługę effect event dla zdarzenia "connected":
+  const onConnected = useEffectEvent(() => {
+    // Ten kod może używać najświeższego `theme` (lub innego stanu)
+    showNotification('Connected!', theme)
+  })
+
+  useEffect(() => {
+    const connection = createConnection(serverUrl, roomId)
+    connection.on('connected', () => {
+      // Użyj stabilnej obsługi zamiast wpisywać logikę tutaj
+      onConnected()
+    })
+    connection.connect()
+    return () => connection.disconnect()
+  }, [roomId]) // Uwaga: theme nie jest tutaj uwzględnione
+}
+```
+
+W tym przykładzie tablica zależności efektu to `[roomId]` — uruchomi się ponownie tylko wtedy, gdy zmieni się ID pokoju (co ma sens, bo potrzebujesz nowego połączenia). Obsługa `onConnected` może jednak bezpiecznie używać `theme` w swoim wnętrzu i za każdym razem, gdy zdarzenie „connected” połączenia się wyzwoli, wywoła ona onConnected() używające bieżącej wartości `theme`. Zmiana propa `theme` nie powoduje już ponownego uruchomienia efektu ani zresetowania połączenia, ale wszelkie nowe wywołania `onConnected` zobaczą zaktualizowany `theme`. Innymi słowy, `useEffectEvent` daje ci zawsze aktualny callback do scenariuszy zdarzeniowych, bez sprzęgania go z zależnościami efektu.
+
+---
+
+## Kluczowe cechy Effect Events
+
+### Najświeższy stan zawsze widoczny
+
+Funkcja effect event (jak `onConnected` powyżej) zawsze widzi w swoim ciele najświeższe wartości propsów/stanu, podobnie jak obsługa zdarzenia w onClick zawsze widzi najświeższy stan pomiędzy renderami. Pozwala to uniknąć nieaktualnych domknięć (stale closures).
+
+### Sama w sobie niereaktywna
+
+Nie uwzględniasz funkcji effect event w tablicy zależności swojego efektu (w istocie zaktualizowany plugin ESLint będzie to egzekwować). Obecność `onConnected` w efekcie nie sprawia, że uruchamia się on ponownie przy każdym renderze, więc możesz swobodnie używać wewnątrz `onConnected` wartości takich jak theme.
+
+### Deklarowana lokalnie
+
+Musisz zadeklarować hook `useEffectEvent` w tym samym komponencie lub hooku, który używa go w efekcie; nie można go dowolnie przekazywać. Te ograniczenia są sprawdzane przez linter, aby zapewnić poprawne użycie effect event.
+
+### Tylko dla logiki „zdarzeniowej”
+
+Powinieneś używać `useEffectEvent` wyłącznie dla kodu, który koncepcyjnie jest „obsługą zdarzenia” wyzwalaną wewnątrz efektu (jak callback z subskrypcji lub timera). Nie jest on przeznaczony dla każdej funkcji ani do uciszania reguł lintera; nadużywanie go do ogólnej logiki może ukryć rzeczywiste problemy z zależnościami.
+
+### Porównanie z alternatywami
+
+Przed `useEffectEvent` developerzy często uciekali się do `useRef`, by przechować mutowalną referencję do wartości lub funkcji, tak aby wewnętrzny callback efektu mógł używać najświeższej wartości bez ponownego uruchamiania efektu. Można było na przykład trzymać `theme` w ref-ie albo sprytnie użyć `useCallback`. `useEffectEvent` upraszcza ten wzorzec, dostarczając dedykowany hook, który jasno sygnalizuje intencję „to jest callback zdarzeniowy z wnętrza efektu”. Poprawia to utrzymywalność złożonych efektów mieszających logikę reaktywną i niereaktywną, czyniąc kod czytelniejszym i mniej podatnym na błędy. Wielu w społeczności uważało wręcz, że taki hook był „boleśnie potrzebny od czasu, gdy hooki wprowadzono po raz pierwszy”.
+
+Aby w pełni wykorzystać ten nowy hook, powinieneś też zaktualizować się do eslint-plugin-react-hooks v6+, który przychodzi z React 19.2 (patrz dalej poniżej). Nowe reguły lintera rozumieją useEffectEvent — nie będą błędnie sugerować dodania effect event do tablic zależności i będą egzekwować poprawne wzorce użycia.
+
+---
+
+## API `cacheSignal` dla Server Components
+
+React 19.2 dodaje też nowe API o nazwie `cacheSignal`, ukierunkowane na React Server Components i strategie pobierania danych. Aby zrozumieć `cacheSignal`, przypomnij sobie, że React ma narzędzie `cache()` (wprowadzone w React 18+ i używane w Server Components), które pozwala memoizować lub deduplikować wywołania asynchroniczne — na przykład opakowując wywołanie fetch, tak by wiele komponentów renderujących się na serwerze mogło współdzielić tę samą obietnicę żądania (unikając zdublowanych fetchy). Nowy `cacheSignal` dostarcza AbortSignal powiązany z cyklem życia tych zbuforowanych danych, pozwalając ci wiedzieć, kiedy zbuforowany wynik nie jest już potrzebny (np. render się zakończył lub został przerwany) i odpowiednio anulować trwającą pracę.
+
+### Cel
+
+Gdy używasz `cache()` do opakowania funkcji asynchronicznej (jak `fetch`), React będzie trzymał zbuforowany wynik przez czas trwania cyklu renderowania. Ale jeśli renderowanie zostanie przerwane (być może z powodu błędu lub nawigacji po stronie klienta) albo gdy renderowanie się zakończy, wynik może już nie być potrzebny. `cacheSignal()` daje ci sygnał AbortController, który wyzwoli się, gdy okres życia tego zbuforowanego wyniku dobiegnie końca. Przekazując ten sygnał do swoich operacji asynchronicznych, umożliwiasz im automatyczne przerwanie, gdy React uzna, że nie potrzebuje wyniku, oszczędzając transfer lub moc obliczeniową.
+
+Załóżmy, że mamy komponent serwerowy, który musi pobrać jakieś dane. Możemy użyć `cache()`, by zapewnić deduplikację fetcha, oraz `cacheSignal()`, by go anulować, jeśli to zasadne:
+
+```jsx
+import { cache, cacheSignal } from 'react'
+
+// Opakuj fetch w cache() dla deduplikacji
+const dedupedFetch = cache(async (url) => {
+  const response = await fetch(url, { signal: cacheSignal() })
+  return response.json()
+})
+
+// W komponencie serwerowym lub funkcji loadera:
+async function MyServerComponent() {
+  const data = await dedupedFetch('https://api.example.com/data')
+  // ... renderuj z data ...
+}
+```
+
+W tym fragmencie `cacheSignal()` dostarcza sygnał przekazywany do `fetch`. Jeśli React przerwie renderowanie `MyServerComponent` (powiedzmy użytkownik przeszedł gdzie indziej albo wystąpił błąd), sygnał zostanie przerwany, powodując anulowanie żądania `fetch` w locie. Podobnie, gdy render zakończy się pomyślnie, a wynik nie jest już potrzebny dla przyszłych renderów (wpis w cache wygasł), sygnał wyzwoli się, by zasygnalizować brak dalszej potrzeby. Zapobiega to zbędnej pracy i oszczędza zasoby, nie dokańczając żądań, których wyniki nie zostaną wykorzystane. Jest to szczególnie przydatne przy długo działających fetchach lub kosztownych obliczeniach na serwerze.
+
+Od strony technicznej `cacheSignal` integruje się z cache Reacta i cyklem życia renderowania dla komponentów serwerowych. Ma sens tylko w kontekście renderowania po stronie serwera lub renderowania statycznego, gdzie używane jest `cache()` — nie jest to coś, czego użyłbyś w czysto klienckim komponencie. Sprzątając po sobie, ta funkcja pomaga unikać wycieków pamięci lub porzuconych procesów asynchronicznych na serwerach Node.js i poprawia efektywność przy używaniu wzorców Server Components i pobierania danych w Reakcie.
+
+---
+
+## Rozszerzone funkcje renderowania i SSR
+
+React 19.2 to nie tylko nowe API w komponentach i hookach; przynosi również solidne usprawnienia w renderowaniu po stronie serwera (SSR) oraz w tym, jak React obsługuje zachowanie renderowania pod maską.
+
+### Partial Pre-rendering dla szybszego ładowania
+
+Jedną z najbardziej znaczących nowych możliwości jest Partial Pre-rendering. Ta funkcja pozwala wstępnie wyrenderować części aplikacji do statycznego HTML z wyprzedzeniem, a następnie później wznowić renderowanie, by wstrzyknąć dynamiczną lub spersonalizowaną zawartość. W istocie możesz wygenerować „prerenderowany shell” swojej aplikacji, który może być serwowany natychmiast (np. z CDN), a przy rzeczywistym żądaniu React będzie kontynuował renderowanie od miejsca, w którym przerwał, by wytworzyć finalne UI. Może to znacząco poprawić Time-to-First-Paint i ogólną odczuwaną wydajność, dostarczając szybko użyteczny shell strony, a następnie uzupełniając interaktywne części.
+
+### Jak to działa
+
+React 19.2 dodaje nowe API w `react-dom` do renderowania częściowego:
+
+- `prerender(element, options)`: wstępnie renderuje podany element React (zazwyczaj twoją aplikację lub jej część) i zwraca prelude (zawartość HTML dla statycznego shella) oraz obiekt stanu `postponed`.
+
+- `resume(element, postponedState):` przyjmuje wcześniejszy stan `postponed` z prerender i kontynuuje renderowanie, zwracając strumień (jeśli używasz streamingu) pozostałej zawartości.
+
+- `resumeAndPrerender(element, postponedState)`: wznawia renderowanie i natychmiast ponownie wykonuje prerender, by wyprodukować pełny wynik HTML (przydatne w scenariuszach generowania stron statycznych).
+
+Wyobraź sobie na przykład, że masz aplikację e-commerce. Mógłbyś prerenderować shell aplikacji (nawigacja, stopka, layout itd., które są w większości statyczne) i odroczyć renderowanie części specyficznych dla użytkownika lub dynamicznych (jak spersonalizowane rekomendacje produktów czy dane o stanie magazynowym). Oto ogólna ilustracja:
+
+```jsx
+// Przy buildzie lub w zadaniu serwerowym z wyprzedzeniem:
+const controller = new AbortController()
+const { prelude, postponed } = await prerender(<App />, { signal: controller.signal })
+// Zapisz stan `postponed` do późniejszego użycia (np. w bazie danych lub cache w pamięci)
+await savePostponedState(postponed)
+// Teraz serwuj lub prześlij HTML `prelude` do CDN dla szybkiej dostawy
+```
+
+Później, gdy użytkownik faktycznie zażąda strony, możesz zrobić:
+
+```jsx
+// Przy żądaniu:
+const postponed = await getPostponedState(request)
+// Wznów renderowanie z zapisanego stanu, produkując strumień pozostałego HTML
+const stream = await resume(<App />, postponed)
+// Przekieruj strumień do odpowiedzi HTTP (dla streamingu SSR)
+```
+
+W powyższym przepływie początkowy `prelude` jest jak szkielet strony (może z placeholderami lub stanami ładowania dla dynamicznych sekcji). Ta zawartość może zostać wysłana do klienta niemal natychmiast (zwłaszcza jeśli zbuforowana na CDN). Użytkownik szybko widzi podstawową strukturę strony. Następnie krok `resume` dokańcza renderowanie, streamując części, które zostały odroczone — zastępując placeholdery prawdziwymi danymi, interaktywnymi komponentami itd. Dzieje się to, gdy użytkownik już ma shell strony, co skutkuje szybszym First Contentful Paint i potencjalnie wcześniejszą interaktywnością strony.
+
+React dostarcza nawet wygodne `resumeAndPrerender`, które w praktyce wznawia render, a następnie ponownie prerenderuje, by uzyskać statyczny HTML całej strony (przydatne, jeśli chcesz wygenerować nową statyczną stronę HTML z kombinacji prelude i pewnych dynamicznych danych).
+
+### Dlaczego to ma znaczenie
+
+Partial pre-rendering jest potężne, jeśli chodzi o poprawę wydajności ładowania i skalowalności. Dzieląc pracę, możesz wykonać ciężkie zadania (renderowanie statycznej zawartości) z wyprzedzeniem, a na żądanie robić tylko minimalne renderowanie dynamiczne. Świetnie sprawdza się to przy generowaniu stron statycznych (SSG) z dynamicznymi wstawkami lub w aplikacjach dążących do natychmiastowego dostarczenia użytkownikowi części zawartości, odraczając resztę. Z perspektywy SEO krytyczna statyczna zawartość może być szybko serwowana crawlerom, a z perspektywy użytkownika strona nie wygląda na pustą, gdy czeka na personalizację.
+
+Pod maską ta funkcja bazuje na możliwościach streamowanego SSR i serializacji Reacta. Stan `postponed` zwracany przez prerender jest w istocie zserializowaną reprezentacją pracy Reacta, która pozostała niedokończona (części dynamiczne). Pakiety `react-dom/server` i `react-dom/static` w React 19.2 zawierają te nowe funkcje, ze wsparciem zarówno nowoczesnych Web Streams, jak i tradycyjnych strumieni Node. Na przykład `react-dom/server` eksportuje teraz `resume()` (dla Web Streams w środowiskach jak Cloudflare Workers czy nowoczesny Node) oraz `resumeToPipeableStream()` (dla strumieni Node), a także analogiczne warianty `prerender` i `resumeAndPrerender` dla strumieni Node. Oznacza to, że możesz używać partial pre-rendering w różnorodnych środowiskach JavaScript.
+
+Partial pre-rendering to zaawansowana funkcja i może wymagać ostrożnego obchodzenia się ze stanem oraz hydracją. Idea jest taka, że hydracja po stronie klienta również będzie w stanie wznowić się z tej częściowej zawartości. React zapewnia spójność tego procesu, ale jako developer powinieneś zadbać, by kod był napisany tak, aby obsługiwać przypadki, w których część zawartości była prerenderowana, a część nie. Dokumentacja Reacta na temat tych API dostarcza więcej szczegółów o wzorcach użycia.
+
+---
+
+## Grupowanie granic Suspense w SSR
+
+React Suspense to funkcja pozwalająca wyświetlić fallback (jak spinner lub placeholder), gdy jakaś zawartość (być może dzielona na fragmenty kodu lub pobierająca dane) się ładuje. W kliencie Reacta, gdy wiele granic Suspense rozwiązuje się (staje się gotowych) mniej więcej w tym samym czasie, React może wyrenderować je za jednym zamachem. Jednak w streamowanym SSR (renderowaniu po stronie serwera), przed React 19.2, zawartość każdej granicy Suspense streamowała i zastępowała swój fallback natychmiast, gdy tylko była gotowa, jedna po drugiej. Mogło to prowadzić do efektu „wyskakiwania”, gdzie części HTML aktualizują się w nieco różnych momentach, co mogło nie pasować do tego, jak aplikacja zachowuje się na kliencie.
+
+W React 19.2 renderer SSR grupuje teraz odsłanianie granic Suspense, które kończą się mniej więcej w tym samym czasie, tak by wiele fragmentów zawartości mogło zostać wysłanych do klienta razem, tuż przed pierwszym paintem. W praktyce oznacza to, że jeśli masz na stronie kilka leniwych komponentów lub komponentów zależnych od danych, ich zawartość zostanie wstawiona do HTML w mniejszej liczbie większych porcji, a nie w szybkiej sekwencji drobnych kawałków.
+
+### Co się zmieniło
+
+Podczas streamingu React wstrzyma się na bardzo krótką chwilę z zastąpieniem fallbacku, by sprawdzić, czy inne granice Suspense również się rozwiążą. Następnie wysyła zawartość dla wszystkich tych, które rozwiązały się w tym przedziale, w pojedynczej partii. W efekcie po stronie klienta użytkownik zobaczy, jak wiele placeholderów ładowania podmienia się na prawdziwą zawartość naraz, a nie jeden po drugim w szybkiej sekwencji. To zachowanie lepiej pasuje do renderowania po stronie klienta, gdzie React zazwyczaj grupuje aktualizacje stanu i painty razem.
+
+#### Korzyści:
+
+- Płynniejsze aktualizacje UI — grupowanie odsłon unika serii wizualnie rozpraszających sekwencyjnych aktualizacji. Strona sprawia wrażenie bardziej spójnej, gdy duże sekcje stają się gotowe razem.
+- Przygotowanie pod View Transitions: ta zmiana została też wprowadzona z myślą o nadchodzącym API `<ViewTransition>`. View Transitions (API platformy webowej) pozwalają na płynne animacje przy zmianach DOM. Jeśli zawartość jest odsłaniana w większych partiach, możesz animować przejście całej sekcji zamiast łańcucha drobnych. Grupowanie w React 19.2 zapewnia, że jeśli używasz View Transitions na zawartości SSR, przejścia mogą obejmować więcej zawartości naraz, prowadząc do ładniejszych animacji.
+- Spójność: naprawia to błąd/dziwactwo, gdzie zachowanie streamowanego SSR nie pasowało do zachowania klienta. Teraz developerzy mogą rozumować o Suspense w SSR bardziej podobnie jak o Suspense na kliencie.
+
+### Kwestie wydajności
+
+Zespół Reacta zaimplementował heurystyki, aby to grupowanie nie szkodziło metrykom wydajności takim jak Core Web Vitals. Na przykład Largest Contentful Paint (LCP) to kluczowa metryka. Jeśli React wykryje, że wstrzymanie zawartości popchnęłoby LCP poza dobry próg (~2,5 sekundy dla LCP), przestanie grupować i natychmiast wyśle zawartość, by uniknąć opóźnienia renderu. Innymi słowy, grupowanie ma górny limit — nie będzie arbitralnie czekać długo i spowalniać początkowego renderu. Celem jest uzyskanie tego, co najlepsze z obu światów: jak najwięcej grupowania dla UX, ale bez istotnych regresji w czasie ładowania. Z perspektywy developera ta zmiana jest w większości przezroczysta — nie musisz zmieniać swojego użycia Suspense, ale powinieneś być świadomy, że twój wynik streamowanego SSR będzie teraz przybywać nieco inaczej (w większych porcjach) niż wcześniej.
+
+---
+
+## Wsparcie Web Streams dla SSR w Node.js
+
+React 19.2 rozszerza wsparcie dla Web Streams API w środowiskach Node.js. Wcześniej streamowany SSR Reacta w Node używał głównie własnych strumieni Node (poprzez `renderToPipeableStream` i powiązane API). Teraz React dodaje możliwość używania tych samych API Web Streams (standardowych strumieni używanych w przeglądarkach i środowiskach edge) również na Node.js.
+
+Funkcje takie jak `renderToReadableStream` (które produkują WHATWG ReadableStream) oraz `prerender` (dla partial pre-rendering) były pierwotnie zaprojektowane do użycia w przeglądarce lub środowisku edge. W 19.2 są one teraz dostępne również przy uruchamianiu pod Node.js. Dodatkowo nowe funkcje `resume` i `resumeAndPrerender`, które omawialiśmy, są dostarczane dla Node (z osobnymi wariantami dla strumieni Node oraz Web Streams). Oznacza to, że masz elastyczność: możesz zdecydować się na użycie Web Streams od początku do końca, co jest przydatne, jeśli chcesz jednolite API streamingu w różnych środowiskach JavaScript.
+
+Zespół Reacta zaleca, by w miarę możliwości nadal używać API strumieni Node do SSR w Node, ponieważ są one obecnie szybsze i wspierają funkcje takie jak wbudowana kompresja, których Web Streams nie mają. Web Streams w Node (od Node 18/19) mogą być wolniejsze i domyślnie nie integrują się z kompresją HTTP w Node. Tak więc, choć React 19.2 daje ci opcję Web Streams w Node, jest ona głównie dla zgodności lub użytku eksperymentalnego. Do produkcyjnego renderowania serwerowego w Node prawdopodobnie pozostaniesz przy `renderToPipeableStream` itp., które są nadal w pełni wspierane.
+
+Może to być przydatne, jeśli celujesz w środowisko takie jak Cloudflare Workers czy Deno Deploy (które używają Web Streams) i chcesz uruchamiać podobny kod w Node. Upraszcza to kod potrzebny do obsługi strumieni w różnych środowiskach. Dodatkowo, w miarę jak platforma Node ewoluuje, Web Streams mogą stać się bardziej wydajne lub standardowe, więc React jest na to przygotowany. Krótko mówiąc, React 19.2 wypełnia lukę — czyniąc SSR bardziej elastycznym — ale pozostawia wybór developerom, w zależności od ich potrzeb wydajnościowych.
+
+---
+
+## Doświadczenie developera i różne usprawnienia
+
+Poza sztandarowymi funkcjami React 19.2 zawiera kilka aktualizacji nakierowanych na doświadczenie developera, narzędzia i szlifowanie chropowatych krawędzi.
+
+### React Performance Tracks w DevTools
+
+React 19.2 wprowadza integrację Performance Tracks z Chrome DevTools, co jest dobrodziejstwem dla developerów profilujących swoje aplikacje. Gdy nagrywasz profil wydajności w Chrome (zakładka Performance), zobaczysz teraz wyspecjalizowane ścieżki wizualizujące, co React robi pod maską podczas nagrywania. Te ścieżki dają wgląd w zachowanie harmonogramowania i renderowania Reacta, pomagając wskazać wąskie gardła wydajności lub zrozumieć timing aktualizacji.
+
+Dodano dwie główne ścieżki specyficzne dla Reacta:
+
+- Scheduler Track: ta ścieżka pokazuje aktywność wewnętrznego schedulera Reacta, skategoryzowaną według priorytetu. Na przykład możesz zobaczyć, kiedy React obsługuje aktualizację „blokującą” (jak input użytkownika, który musi zostać przetworzony natychmiast) w porównaniu z aktualizacją „transition” (niskopriorytetową aktualizacją stanu opakowaną w `startTransition`). Wewnątrz tej ścieżki zdarzenia są oznaczone tym, co React robi — np. zdarzenie, które wyzwoliło aktualizację stanu, start renderu, ustąpienia (yields) z powodu zmian priorytetu itd. Możesz nawet zaobserwować, kiedy React wstrzymuje się w oczekiwaniu na paint przeglądarki lub czy aktualizacja jest w kolejce za inną. Pomaga to developerom zwizualizować, jak React priorytetyzuje pracę, i może ujawnić, czy — powiedzmy — zbyt wiele pracy wykonuje się w wysokim priorytecie albo czy niskopriorytetowa aktualizacja opóźnia wysokopriorytetową.
+
+- Components Track: ta ścieżka pokazuje w czasie cykl życia renderowania i efektów komponentów. Wyświetla drzewo komponentów i podświetla, kiedy każdy komponent się montuje, aktualizuje lub odmontowuje, a także kiedy uruchamiają się efekty. Możesz na przykład zobaczyć blok „Render > MyComponent” wskazujący, kiedy ten komponent się renderował, albo etykiety takie jak „Effect mount”, gdy wywoływane są callbacki `useEffect`. Odnotowuje też, czy renderowanie było w którymś momencie zablokowane/ustąpione (z powodu kooperatywnego wielozadaniowego renderera concurrent Reacta). Jest to niezwykle przydatne do identyfikowania, które komponenty renderują się wolno lub które mogą powodować zbędne re-rendery.
+
+Używając tych ścieżek, developer lub tech lead może łatwiej diagnozować problemy z wydajnością. Na przykład, jeśli interakcja wydaje się szarpana, ścieżka Scheduler może ujawnić, że rzekomo „transition” aktualizacja przez przypadek jest przetwarzana jako blokująca. Albo ścieżka Components może pokazać, że głębokie poddrzewo niespodziewanie się re-renderuje. Te wglądy były trudniejsze do wychwycenia z ogólnej osi czasu wydajności, ale dzięki instrumentacji specyficznej dla Reacta profilowanie aplikacji React staje się o wiele bardziej intuicyjne.
+
+Aby z tego skorzystać, użyj aktualnej przeglądarki Chrome (lub devtoolsów opartych na Chromium) i po prostu nagraj profil wydajności na aplikacji React 19.2. Dokumentacja React DevTools zawiera szczegóły, jak czytać te nowe ścieżki. Zauważ, że nie jest potrzebna żadna zmiana kodu w twojej aplikacji, by to włączyć — jest to wbudowane w narzędzia deweloperskie Reacta.
+
+---
+
+## Ulepszony plugin ESLint dla React Hooks (v6)
+
+Wraz z React 19.2 zespół Reacta wydał `eslint-plugin-react-hooks` w wersji 6. Ta aktualizacja jest ważna dla developerów, ponieważ dostosowuje reguły lintera do nowych funkcji Reacta, a także przyjmuje pewne nowe konfiguracje.
+
+Kluczowe zmiany w pluginie ESLint dla hooków v6 obejmują:
+
+- Wsparcie dla useEffectEvent: reguły lintera (w szczególności reguła exhaustive-deps) zostały zaktualizowane tak, by rozpoznawały useEffectEvent i odpowiednio traktowały obsługi effect event. Konkretnie, nie będą już ostrzegać, że twoja funkcja effect event brakuje w tablicach zależności. Zapobiega to fałszywym alarmom i zachęca do poprawnego użycia useEffectEvent bez potrzeby wyłączania reguły lintera. W istocie, jeśli aktualizujesz się do React 19.2 i zaczynasz używać useEffectEvent, powinieneś też zaktualizować ten plugin, by uniknąć konfuzji lintera.
+- Flat config i nowe reguły: plugin dostarcza teraz domyślnie nowszy format flat config ESLint (dla tych migrujących do nowoczesnej konfiguracji ESLint) w rekomendowanej konfiguracji. Wprowadza też reguły napędzane przez React Compiler (które są opt-in), mogące wychwycić bardziej złożone problemy dzięki wykorzystaniu informacji Reacta z czasu kompilacji. Na przykład są reguły do wykrywania nadużyć hooków w pewnych wzorcach lub do egzekwowania nowych dobrych praktyk.
+- Dostępna konfiguracja legacy: jeśli z jakiegoś powodu musisz trzymać się starszej konfiguracji, jest preset recommended-legacy, którego możesz użyć, ale domyślnie recommended odnosi się teraz do nowego stylu konfiguracji.
+
+Z punktu widzenia migracji, po aktualizacji do React 19.2 powinieneś uruchomić:
+
+```bash
+npm install eslint-plugin-react-hooks@^6.0.0 --save-dev
+```
+
+i zaktualizować rozszerzenia (extends) swojej konfiguracji ESLint. Zapewni to, że kontrole lintera w twoim projekcie uwzględnią nowe zachowanie hooka. Dzięki tym usprawnieniom linting jest bardziej zgrany z runtime Reacta, pomagając ci wcześnie wychwytywać problemy i unikać wzorców mogących powodować błędy lub problemy z wydajnością. Na przykład linter będzie teraz poprawnie egzekwował reguły hooków dla `useEffectEvent` lub ignorował go w zależnościach, jak wspomniano, co utrzymuje twój kod czystym i zgodnym z intencjami Reacta.
+
+Ogólnie ta aktualizacja pluginu to usprawnienie zza kulis, które wzmacnia dobre praktyki z hookami i daje developerom pewność przy adaptowaniu nowych API.
+
+---
+
+## Zaktualizowany domyślny prefiks `useId`
+
+Hook `useId` w Reakcie generuje unikalne ID dla zawartości renderowanej po stronie serwera, by dopasować je do ID generowanych po stronie klienta (pomocne dla spójnej hydracji formularzy, id dostępności itd.). W React 19.0 i 19.1 ID miały domyślnie prefiksy takie jak `":r:"` lub `«r»`. Te prefiksy wybrano, ponieważ zawierały znaki nieprawidłowe w selektorach CSS, zmniejszając ryzyko kolizji z ID definiowanymi przez developera. Jednak w 19.2 zespół Reacta zmienił domyślny prefiks na `_r_`.
+
+Nowy prefiks `_r_` jest prostszy (tylko alfanumeryczne znaki i podkreślnik), a powodem tej zmiany jest przyszła zgodność: nadchodzące funkcje takie jak View Transitions (pozwalające animować zmiany DOM) oraz pewne standardy webowe wymagają, by ID elementów były prawidłowymi identyfikatorami CSS i nazwami XML. Stary prefiks `:r:` nie był prawidłowym identyfikatorem CSS (z powodu dwukropka na początku), co mogło kolidować z użyciem tych ID w przejściach opartych na CSS lub innych API. Przez przełączenie na `_r_` wszelkie ID generowane przez `useId` są teraz prawidłowe do tych zastosowań.
+
+Ta zmiana jest w większości przezroczysta. Jeśli używasz useId, po prostu zauważysz, że ID wyglądają teraz jak `_r_abcdef` zamiast czegoś w rodzaju `:r:abcdef`. Istnieje niewielka możliwość, że to będzie breaking change, jeśli kod lub testy twojej aplikacji zakładały coś o prefiksie albo jeśli miałeś CSS celujący w stary prefiks (co jest mało prawdopodobne, bo poleganie na nim było odradzane). Ogólnie nie powinno to wymagać zmian kodu dla większości aplikacji, ale to zauważalna poprawka dla tych, którym zależy na przewidywalnych ID. Korzyścią jest poprawiona zgodność z nowymi funkcjami przeglądarek (jak View Transitions) i zgodność ze standardami.
+
+---
+
+## Inne godne uwagi poprawki i usprawnienia
+
+React 19.2 zawiera liczne poprawki błędów i drobne usprawnienia, które, choć nie tak przyciągające nagłówki, są ważne dla stabilności i komfortu pracy developera. Kilka przykładów problemów rozwiązanych w 19.2:
+
+- Poprawki `useDeferredValue`: naprawiono błąd nieskończonej pętli związany z `useDeferredValue` przy użyciu ze zdarzeniami popstate historii przeglądarki. Zaadresowano też błąd inicjalizacji `useDeferredValue`. Te poprawki czynią użycie odroczonych wartości (do odraczania aktualizacji) bardziej odpornym.
+- Usprawnienia Suspense: rozwiązano błąd z głęboko zagnieżdżonym `<Suspense>` wewnątrz drzew fallbacku oraz naprawiono problem, w którym zdehydratowane granice Suspense (z SSR) nie ukrywały poprawnie zawartości, jeśli ponownie się zawiesiły. Zapewnia to bardziej niezawodne działanie Suspense w złożonych scenariuszach zagnieżdżania.
+- Poprawka crasha akcji formularza: naprawiono crash, który mógł wystąpić przy wysyłaniu formularzy używających nowych React Server Actions (dawniej znanych jako „Client Actions”).
+- Ostrzeżenia dev i znaki ucieczki: React 19.2 przestaje teraz ostrzegać o prawidłowych atrybutach ARIA 1.3 (renderer DOM został zaktualizowany, by rozpoznawał nowsze atrybuty ARIA). Poprawiono też stack trace komponentów w komunikatach o błędach w kilku przypadkach brzegowych, dla łatwiejszego debugowania.
+- Różne poprawki DOM: na przykład React DOM pozwala teraz na atrybut nonce na wynoszalnych (hoistable) tagach `<style>` (by lepiej wspierać polityki bezpieczeństwa CSP) i ostrzega, jeśli próbujesz wyrenderować węzeł kontrolowany przez Reacta do kontenera, który już zawiera tekst (co może wskazywać na problem z hydracją).
+
+Te poprawki przyczyniają się do płynniejszego doświadczenia developera i mniejszej liczby pułapek przy aktualizacji. Choć żadna z nich nie jest breaking change, mogą nieco zmienić niektóre zachowania w runtime (zazwyczaj na lepsze, np. brak fałszywych ostrzeżeń czy crashy). Zawsze dobrą praktyką jest przejrzeć oficjalny changelog dla pełnej listy zmian i przetestować swoją aplikację, ale generalnie React 19.2 to wstecznie zgodne wydanie minor z głównie addytywnymi funkcjami i poprawkami błędów.
+
+---
+
+## Kwestie migracji i zgodności
+
+Aktualizacja do React 19.2 powinna być względnie prosta dla większości projektów. Nie ma dużych breaking changes w API — istniejące komponenty i hooki działają nadal jak wcześniej. Nowe funkcje (Activity, useEffectEvent itd.) są w całości addytywne. Jednak oto kilka rzeczy, o których warto pamiętać przy migracji:
+
+- Jeśli planujesz użyć `useEffectEvent`, zaktualizuj plugin ESLint dla hooków do v6, tak by twój linter nie flagował nowego hooka niepoprawnie. Ponadto, jeśli używasz TypeScript, upewnij się, że twoje `@types/react` są aktualne (definicje typów React 19.2 powinny zawierać nowe API).
+- Zmiana prefiksu `useId` oznacza, że generowane ID będą się różnić. W mało prawdopodobnym przypadku, gdy testy lub kod twojej aplikacji polegają na dokładnym formacie tych ID, być może będziesz musiał je zaktualizować. Na przykład testy snapshot, które przechwytują ID DOM, mogą wymagać aktualizacji. Poleganie na tych ID jest generalnie odradzane, więc większość aplikacji nie będzie dotknięta.
+- Jeśli zamierzasz użyć partial pre-rendering, zauważ, że wymaga to zgodnej konfiguracji serwera. Będziesz miał do czynienia ze streamingiem i być może utrwalaniem stanu postponed. Upewnij się, że twoja wersja Node jest wystarczająco nowoczesna (Node 18+ dla Web Streams lub użyj wersji API dla strumieni Node). Ta funkcja może też wiązać się ze zmianami w twoim pipeline'ie wdrożeniowym, jeśli używasz jej do SSG (np. generowania i przechowywania danych prelude/postponed).
+- Jeśli twoja aplikacja intensywnie korzysta ze streamowanego SSR z Suspense, możesz chcieć przetestować, jak działa nowe grupowanie. W większości przypadków powinno ono tylko poprawić sytuację. Bądź jedynie świadomy tej zmiany, jeśli mierzyłeś lub animowałeś pojawianie się zawartości na kliencie — teraz wiele segmentów Suspense może wyskoczyć razem. Zazwyczaj jest to pożądane, ale zweryfikuj, czy nie wpływa to na twoje spinnery ładowania lub założenia UI.
+- Jeśli twój projekt nie potrzebuje nowych API od razu, możesz aktualizować się we własnym tempie. Wiele korzyści z 19.2 (jak performance tracks, poprawki błędów, usprawnienia Suspense) przychodzi „za darmo”, po prostu przez aktualizację. Decyzja może zależeć od tego, czy planujesz użyć Activity lub useEffectEvent. Zawsze dobrym pomysłem jest uruchomienie zestawu testów i może wykonanie odrobiny ręcznego testowania po aktualizacji, zwłaszcza dla złożonych projektów, by wychwycić wszelkie nieprzewidziane problemy (które powinny być rzadkie).
+
+Aktualizacja jest tak prosta jak uruchomienie:
+
+```bash
+npm install react@19.2 react-dom@19.2   # lub użyj @latest
+```
+
+(I podobnie zaktualizuj inne pakiety React, jak react-dom, do 19.2, by wersje były zsynchronizowane.)
+
+Ogólnie React 19.2 to podbicie wersji minor z dużymi zyskami w produktywności i wydajności. Otrzymujesz nowe możliwości bez konieczności przepisywania istniejącego kodu. Zwróć tylko uwagę na kilka zmian w domyślnych ustawieniach (jak prefiks `useId`) i upewnij się, że twoje narzędzia (ESLint, rozszerzenie DevTools itd.) są aktualne, by w pełni wykorzystać usprawnienia.
+
+---
+
+## Podsumowanie
+
+React 19.2 pakuje mnóstwo ekscytujących usprawnień jak na wydanie „point-two”. Wprowadza praktyczne nowe prymitywy, które czynią aplikacje React bardziej wydajnymi i łatwiejszymi w tworzeniu:
+
+- Komponent `<Activity>` i hook `useEffectEvent` adresują częste wzorce (przenoszenie UI do tła i obsługa zdarzeń efektów) w czysty, deklaratywny sposób, prawdopodobnie upraszczając kod dla modali, kart, subskrypcji sieciowych i nie tylko.
+- Usprawnienia w renderowaniu po stronie serwera — od partial pre-rendering po grupowanie Suspense — przybliżają React do bezszwowych, natychmiast ładujących się aplikacji, bez poświęcania SEO czy doświadczenia użytkownika. Aplikacje React mogą dostarczać zawartość szybciej i płynniej niż wcześniej.
+- Doświadczenie developera zostaje podniesione dzięki lepszym narzędziom profilowania (ścieżki DevTools) i inteligentniejszemu lintingowi. Pomagają one zespołom optymalizować i utrzymywać duże bazy kodu z pewnością.
+- Dziesiątki poprawek i drobnych zmian pod maską oznaczają większą niezawodność i zgodność ze standardami webowymi (jak dopasowanie do View Transitions i nowszych specyfikacji ARIA).
+
+Podsumowując, nawet jeśli React 19.2 jest oficjalnie wydaniem minor, przynosi znaczące usprawnienia komfortu pracy i funkcje patrzące w przyszłość do ekosystemu React. Frontendowcy i liderzy techniczni docenią, że te zmiany nie tylko rozwiązują bieżące bolączki (jak niezgrabne wzorce efektów czy wolne aktualizacje SSR), ale też kładą fundament pod przyszłość (jak płynniejsze przejścia i bardziej efektywny streaming). Jeśli utrzymujesz aplikację React, warto ocenić, jak te nowe możliwości mogą przynieść korzyści twojemu projektowi. Aktualizacja jest generalnie niskiego tarcia, a zyskasz dostęp do tych potężnych funkcji i optymalizacji, które mogą uczynić twoje UI szybszym, a kod czystszym.
+
+# Źródła i dalsza lektura
+
+Powyższe szczegóły opierają się na oficjalnych release notes React 19.2, dokumentacji Reacta i analizach ekspertów ze społeczności, zapewniając dokładny i kompleksowy przegląd wersji React 19.2.
+
+- [Dokumentacja React 19.2](https://react.dev/blog/2025/10/01/react-19-2)
+- [React 19.2 is here: Activity API, useEffectEvent and more](https://blog.logrocket.com/react-19-2-is-here/)
+
+~Seb 👊
