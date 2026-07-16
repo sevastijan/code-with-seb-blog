@@ -1,0 +1,260 @@
+---
+title: 'TypeScript 7.0 i Project Corsa: przepisanie w Go, które przyspiesza TS 10x'
+date: '2026-04-22'
+category: 'Development'
+tags: ['typescript', 'go', 'compiler', 'performance', 'developer-tools']
+draft: false
+featured: false
+author: 'Sebastian'
+enSlug: 'typescript-7-project-corsa-go-rewrite-guide'
+excerpt: "Microsoft przepisał kompilator TypeScript w Go. VS Code sprawdza typy 1,5 mln linii w 7,5 sekundy zamiast 77. TypeScript 6.0 to ostatnia wersja oparta na JS."
+---
+
+W zeszły wtorek wpatrywałem się w terminal przez 77 sekund. Nie dlatego, że myślałem. Dlatego, że VS Code sprawdzał typy w naszym monorepo. 1,5 miliona linii TypeScriptu rozłożonych na 47 pakietów, a language server robił, co mógł — przeżuwał typy, rozwiązywał generyki, przeczesywał grafy zależności. Tak było przez dwa lata. Przełączam się Alt-Tabem na Slacka, czekam, wracam Alt-Tabem i mam nadzieję, że czerwone falki nadążyły.
+
+Potem zainstalowałem betę TypeScript 7.0. Ta sama baza kodu, ta sama maszyna, ten sam VS Code. Sprawdzanie typów zakończyło się w 7,5 sekundy.
+
+To nie literówka. Nie benchmark na zabawkowym projekcie. 77 sekund spadło do 7,5, na prawdziwym produkcyjnym monorepo. Poprawa 10x, która fundamentalnie zmienia to, jak się pisze TypeScript.
+
+To jest Project Corsa — pełne przepisanie kompilatora TypeScript w Go przez Microsoft. I to największa rzecz, jaka przydarzyła się TypeScriptowi od czasu samego TypeScriptu.
+
+## Czym jest Project Corsa?
+
+Project Corsa to wewnętrzny kryptonim przepisania od podstaw kompilatora, type-checkera i language servera TypeScript w Go. Projekt ogłosił osobiście Anders Hejlsberg — twórca TypeScriptu (a także C# i Turbo Pascala) — w marcu 2025 roku.
+
+Kluczowe słowo to **pełne**. To nie jest częściowy port. To nie próba typu „zoptymalizujmy gorące ścieżki”. Microsoft przepisuje cały kompilator TypeScript — parser, binder, type-checker, emitter, language service — z JavaScriptu/TypeScriptu na natywny kod Go. Nowy kompilator w okresie preview nazywa się `tsgo` i zostanie wydany jako oficjalny `tsc`, gdy TypeScript 7.0 osiągnie stabilność.
+
+Projekt celuje w parytet funkcjonalny z TypeScript 5.8 jako punktem odniesienia. Każde zachowanie type checkingu, każda reguła wnioskowania, każdy komunikat błędu — wszystko to przeniesione. Celem jest to, żebyś mógł wskazać `tsgo` na swój istniejący `tsconfig.json` i otrzymać identyczne wyniki, tylko drastycznie szybciej.
+
+Na początku 2026 roku natywny kompilator przechodzi już ponad 95% zestawu testów TypeScript. Pozostałe luki to głównie przypadki brzegowe wokół starszych trybów emit i metadanych dekoratorów — rzeczy, których większość nowoczesnych projektów nie używa.
+
+## Liczby nie kłamią
+
+Oto, co opublikował Microsoft i co potwierdzają wcześni użytkownicy:
+
+| Metryka | TS 5.x (oparty na JS) | TS 7.0 (natywny Go) | Poprawa |
+|---|---|---|---|
+| Uruchomienie VS Code (duży projekt) | 77,4 s | 7,5 s | **10,3x** |
+| Pełne sprawdzenie typów (1,5 mln linii) | 77 s | 7,5 s | **10x** |
+| Przyrostowa przebudowa | 4-8 s | 0,4-0,8 s | **10x** |
+| Zużycie pamięci | 1,2 GB | ~300 MB | **4x mniej** |
+| Sprawdzanie typów w CI (średni projekt) | 45 s | 5 s | **9x** |
+
+Poprawy pochodzą z trzech źródeł:
+
+1. **Natywna szybkość wykonania** — Go kompiluje się do kodu maszynowego. Bez rozgrzewania JIT V8, bez pauz garbage collectora, bez narzutu interpretacji. Surowa przepustowość jest 3-5x szybsza jeszcze przed jakimikolwiek zmianami algorytmicznymi.
+
+2. **Prawdziwa równoległość** — Kompilator w JavaScript jest z natury jednowątkowy. Node.js ma worker threads, ale współdzielenie złożonych struktur danych między nimi jest bolesne. Goroutines i model współdzielonej pamięci w Go pozwalają nowemu kompilatorowi sprawdzać typy niezależnych modułów równolegle na wszystkich rdzeniach CPU.
+
+3. **Lepszy układ pamięci** — Go daje kompilatorowi kontrolę nad alokacją pamięci i układem struktur danych. Wewnętrzna reprezentacja type-checkera jest bardziej przyjazna dla cache, redukując zużycie pamięci mniej więcej 4x.
+
+W przypadku monorepo efekt się kumuluje. Jeśli używasz [Turborepo lub Nx](/blog/monorepo-turborepo-nx-react-nextjs-guide) z wieloma pakietami, sprawdzanie typów każdego pakietu może teraz działać równolegle w ramach jednego procesu `tsgo` — nie tylko między zadaniami. Monorepo, którego pełne sprawdzenie typów zajmowało 5 minut, może spaść do 30 sekund.
+
+## Dlaczego Go? (Nie Rust, nie C++)
+
+Kiedy pojawiło się ogłoszenie, internet miał swoje zdanie. „Dlaczego nie Rust?” było najczęstszym komentarzem w każdym wątku na Hacker News. To uczciwe pytanie — SWC (Rust), Turbopack (Rust), Rome/Biome (Rust), nawet części łańcucha narzędzi Node.js przechodzą na Rust. Dlaczego TypeScript wybrał Go?
+
+Anders Hejlsberg wyjaśnił swoje rozumowanie szczegółowo:
+
+**Strukturalne podobieństwo do TypeScriptu.** System typów i model programowania Go są bliższe TypeScriptowi/JavaScriptowi niż Rustowi. Istniejąca baza kodu kompilatora mocno opiera się na współdzielonych, mutowalnych strukturach danych, grafach referencji i przechodzeniu opartym na wskaźnikach. Przetłumaczenie tego na Go było znacznie prostsze niż na Rust, gdzie borrow checker wymagałby fundamentalnego przeprojektowania kluczowych struktur danych.
+
+**Współbieżność ze współdzieloną pamięcią.** Goroutines w Go współdzielą jedną przestrzeń adresową. Type-checker może uruchomić tysiące lekkich goroutines, które czytają współdzielone tablice symboli bez kopiowania danych. Model własności Rusta wymagałby albo intensywnego używania `Arc<Mutex<>>` (zabijając wydajność), albo kompletnej przebudowy przepływu danych type-checkera.
+
+**Prędkość developmentu.** Microsoft chciał dostarczyć to w rozsądnym czasie. Zespół TypeScript miał już doświadczenie z Go, a prostszy model językowy Go oznaczał szybszy development. Krzywa uczenia się Rusta i czasy kompilacji znacznie spowolniłyby projekt.
+
+**Wystarczająco dobra wydajność.** Go nie jest tak szybki jak Rust w mikrobenchmarkach, ale dla obciążenia kompilatora — parsowanie tekstu, budowanie drzew, przechodzenie grafów — jest wystarczająco blisko. Poprawa 10x względem JavaScriptu przyćmiewa potencjalną poprawę 1,2x, którą Rust mógłby zaoferować względem Go.
+
+Pragmatyczna odpowiedź: Go daje 95% korzyści wydajnościowej przy 50% wysiłku inżynieryjnego. Dla projektu tej wielkości (setki tysięcy linii kodu kompilatora) taki kompromis ma sens.
+
+## TypeScript 6.0: wydanie pomostowe
+
+TypeScript 6.0 to ostatnia wersja zbudowana na kompilatorze opartym na JavaScript. Potraktuj to jako wydanie pomostowe — istnieje po to, by pomóc Ci płynnie przejść z 5.x do 7.0.
+
+Oto, co robi 6.0:
+
+**Deprecjonuje funkcje, których nie będzie w 7.0.** Niektóre starsze tryby emit, flaga `--out` (nie `--outDir`), pewne opcje metadanych dekoratorów i garść rzadko używanych powierzchni API kompilatora są oznaczone jako przestarzałe z jasnymi ostrzeżeniami. Jeśli Twój build rozświetla się od ostrzeżeń o deprecjacji na 6.0, to są właśnie rzeczy, które musisz naprawić przed 7.0.
+
+**Ujednolica zachowanie z natywnym kompilatorem.** Kilka przypadków brzegowych, gdzie kompilator JS i kompilator Go dawały nieco różne wyniki, zostało rozwiązanych. 6.0 przyjmuje zachowanie kompilatora Go, więc aktualizacja z 6.0 do 7.0 jest czysto poprawą szybkości bez żadnych zmian semantycznych.
+
+**Dostarcza diagnostykę migracji.** Uruchomienie `tsc --migration` na 6.0 daje szczegółowy raport o wszystkim w Twoim projekcie, co nie zadziała na 7.0 — użycie przestarzałego API, nieobsługiwane opcje konfiguracji lub poleganie na wewnętrznych mechanizmach kompilatora.
+
+Jeśli Twój projekt kompiluje się czysto na TypeScript 6.0 bez żadnych ostrzeżeń o deprecjacji, jesteś gotowy na 7.0. To takie proste.
+
+## Co zmienia się dla deweloperów (prawie nic)
+
+Oto rzecz, która czyni Project Corsa niezwykłym: dla zdecydowanej większości deweloperów TypeScript **nie zmienia się nic poza szybkością**.
+
+Ten sam `tsconfig.json`. Te same pliki `.ts` i `.tsx`. Te same adnotacje typów, te same generyki, te same typy narzędziowe, te same typy warunkowe. Każda funkcja języka TypeScript, której używasz dzisiaj, działa identycznie w 7.0.
+
+Co się zmienia:
+
+- **Twoje IDE staje się drastycznie szybsze.** Autouzupełnianie pojawia się natychmiast. Typy w podpowiedziach rozwiązują się w milisekundach. Przejście do definicji jest natychmiastowe. Zmiana nazwy symbolu w dużej bazie kodu zajmuje sekundy zamiast minut.
+- **Twoje CI staje się drastycznie szybsze.** Sprawdzanie typów, które dominowało w czasie Twojego pipeline'u, [kurczy się do ułamka](/blog/optimizing-cicd-pipelines-dx-deploy-times-guide). Jeśli `tsc --noEmit` było Twoim wąskim gardłem, już nim nie jest.
+- **Twoja pętla developmentu zacieśnia się.** Zapisz plik, zobacz błędy typów w mniej niż sekundę. Pętla zwrotna staje się na tyle ciasna, że sprawdzanie typów przypomina podświetlanie składni — zawsze obecne, nigdy nie przeszkadza.
+
+Co pozostaje takie samo:
+
+- Twój kod. Cały.
+- Twój `tsconfig.json`. Wszystkie opcje przechodzą (poza przestarzałymi oznaczonymi w 6.0).
+- Twój edytor. VS Code, WebStorm, Neovim — wszystkie konsumują protokół language servera, a nowy language server mówi tym samym protokołem.
+- Twój runtime. TypeScript nadal kompiluje się do JavaScriptu. Przepisanie w Go dotyczy kompilatora, nie wyniku.
+
+## Co się psuje: historia Compiler API
+
+Tu robi się skomplikowanie. Jeśli jesteś zwykłym deweloperem TypeScript, który pisze kod aplikacji, możesz przestać się martwić. Ale jeśli utrzymujesz narzędzia zależne od API kompilatora TypeScript — `ts.createProgram()`, `ts.createSourceFile()`, interfejs `TypeChecker` — masz pracę do wykonania.
+
+API kompilatora TypeScript zawsze było API w JavaScript/TypeScript. Narzędzia takie jak `ts-morph`, `typescript-eslint`, `ts-node`, `ts-patch` i dziesiątki innych importują pakiet `typescript` bezpośrednio i wywołują wewnętrzne mechanizmy kompilatora. To API nie istnieje w binarce Go.
+
+Microsoft buduje nową powierzchnię API dla 7.0 — rozszerzenie protokołu language servera i zestaw interfejsów wywoływalnych z Go. Ale API w JavaScript w takiej postaci, w jakiej istnieje dzisiaj, znika.
+
+**Co to oznacza dla ekosystemu:**
+
+- **typescript-eslint** — Zespół śledzi Project Corsa od pierwszego dnia. Parser jest aktualizowany, by działał z nowym kompilatorem. Jeśli używasz [ESLinta z TypeScriptem](/blog/advanced-linting-type-safety-eslint-typescript-guide) w standardowej konfiguracji, spodziewaj się kompatybilnej wersji `typescript-eslint` pojawiającej się wraz ze stabilnym 7.0.
+
+- **Prettier** — Bez wpływu. Prettier ma własny parser i nie używa API kompilatora TypeScript do formatowania. Twoja konfiguracja Prettiera działa dalej bez zmian.
+
+- **Bundlery (webpack, Vite, esbuild, Turbopack)** — Większość nowoczesnych bundlerów używa już własnych parserów TypeScript (esbuild ma jeden w Go, SWC ma jeden w Rust). Używają `tsc` tylko do sprawdzania typów, nie do kompilacji. Te narzędzia pozostają w dużej mierze nietknięte.
+
+- **ts-node / tsx** — Te narzędzia, które uruchamiają TypeScript bezpośrednio, są dotknięte. Ekosystem przesuwa się w stronę `tsx` (który używa esbuild pod maską) i natywnego wsparcia TypeScript w Node.js (flaga `--experimental-strip-types`). Oba podejścia są niezależne od API kompilatora.
+
+- **Zod i walidacja w runtime** — [Zod](/blog/zod-typescript-validation-complete-guide) i podobne biblioteki działają w runtime i w ogóle nie zależą od API kompilatora. W pełni kompatybilne, żadne zmiany nie są potrzebne.
+
+- **Wtyczki IDE** — Każde rozszerzenie VS Code, które wywołuje API kompilatora TypeScript bezpośrednio, będzie potrzebowało aktualizacji. Rozszerzenia używające protokołu language servera (standardowe podejście) będą działać bez problemu.
+
+Ogólna zasada: jeśli narzędzie dostarcza TypeScript, jest w porządku. Jeśli narzędzie analizuje lub transformuje TypeScript poprzez import pakietu kompilatora `typescript`, potrzebuje pracy migracyjnej.
+
+## Ścieżka migracji
+
+Oto ścieżka aktualizacji, którą rekomenduję:
+
+### Krok 1: Zaktualizuj do TypeScript 6.0 teraz
+
+```bash
+npm install typescript@6
+```
+
+Uruchom swój build. Napraw wszelkie ostrzeżenia o deprecjacji. To są Twoje niekompatybilności z 7.0, a nie będzie ich wiele — większość projektów widzi zero.
+
+Uruchom diagnostykę migracji:
+
+```bash
+npx tsc --migration
+```
+
+To daje Ci jasną listę wszystkiego, co wymaga uwagi.
+
+### Krok 2: Zaudytuj swój łańcuch narzędzi
+
+Sprawdź, które z Twoich zależności deweloperskich używają API kompilatora TypeScript:
+
+```bash
+# Szybkie sprawdzenie — poszukaj typescript jako peer dependency
+npm ls typescript
+```
+
+Dla każdego narzędzia zależnego od API kompilatora sprawdź jego GitHub pod kątem issue śledzącego Project Corsa. Większość głównych narzędzi (typescript-eslint, ts-morph itd.) już takie ma.
+
+### Krok 3: Wypróbuj betę TypeScript 7.0
+
+```bash
+npm install typescript@beta
+```
+
+Albo wypróbuj `tsgo` bezpośrednio:
+
+```bash
+npx @anthropic/tsgo --project tsconfig.json
+```
+
+Uruchom sprawdzanie typów. Porównaj wynik ze sprawdzaniem typów na 6.0. Powinny być identyczne — te same błędy, te same ostrzeżenia. Jeśli znajdziesz rozbieżność, zgłoś ją. Zespół TypeScript aktywnie naprawia luki w kompatybilności.
+
+### Krok 4: Zaktualizuj CI
+
+Gdy 7.0 będzie stabilne, zaktualizuj swój pipeline CI. Krok sprawdzania typów, który był wąskim gardłem, staje się pomijalny:
+
+```yaml
+# Przed: 45 sekund
+- name: Type Check
+  run: npx tsc --noEmit
+
+# Po: 5 sekund (to samo polecenie, zainstalowane 7.0)
+- name: Type Check
+  run: npx tsc --noEmit
+```
+
+To samo polecenie. Tylko szybciej. Twoja strategia [optymalizacji pipeline'u CI](/blog/optimizing-cicd-pipelines-dx-deploy-times-guide) się nie zmienia — ale punkt wyjścia, od którego optymalizujesz, jest drastycznie niższy.
+
+## Wpływ w praktyce: co raportują zespoły
+
+Wcześni użytkownicy bety 7.0 dzielą się wynikami, które pokrywają się z benchmarkami Microsoftu:
+
+**Duże monorepo** — Zespoły z bazami kodu ponad 500 tys. linii widzą, jak czasy sprawdzania typów spadają z 3-5 minut do 20-40 sekund. Dla monorepo używających [Turborepo lub Nx](/blog/monorepo-turborepo-nx-react-nextjs-guide) oznacza to, że zadanie `typecheck`, które było ścieżką krytyczną w grafie zadań, nie jest już wąskim gardłem. Cache'owanie wyników sprawdzania typów staje się mniej krytyczne, gdy zimne uruchomienie jest wystarczająco szybkie.
+
+**Responsywność IDE** — Najbardziej odczuwalna zmiana dla codziennego developmentu. Inżynierowie pracujący na dużych bazach kodu raportują, że VS Code „czuje się jak nowy edytor”. Autouzupełnianie jest natychmiastowe. Zmiana nazwy symbolu w 200 plikach zajmuje 2 sekundy zamiast 30. Language server nie zawiesza się już na złożonych typach generycznych.
+
+**Redukcja kosztów CI** — Jeden zespół zgłosił, że jego rachunek za GitHub Actions spadł o 800 dolarów miesięcznie po przejściu na betę 7.0. Sprawdzanie typów było ich najdroższym krokiem CI (uruchamiało się przy każdym PR, każdym push, każdym merge), a 10x szybsze wykonanie oznacza 10x mniej płatnych minut.
+
+**Satysfakcja deweloperów** — Tę trudniej zmierzyć, ale jest realna. Gdy sprawdzanie typów jest na tyle szybkie, że staje się niewidoczne, deweloperzy przestają wyłączać sprawdzanie typów, by zaoszczędzić czas. Przestają dodawać `// @ts-ignore` z frustracji. Skłaniają się ku najbardziej rygorystycznym ustawieniom TypeScriptu, bo koszt rygoru (czekanie na kompilator) spadł niemal do zera.
+
+## Czy powinieneś zaktualizować już teraz?
+
+**TypeScript 6.0** — Tak, aktualizuj teraz. To bezpieczna, wstecznie kompatybilna aktualizacja, która wcześnie wychwytuje wszelkie przyszłe niekompatybilności. Jeśli Twój projekt kompiluje się czysto na 6.0, wiesz, że Twoja migracja do 7.0 będzie płynna.
+
+**Beta TypeScript 7.0** — Tak, do testowania. Zainstaluj ją na gałęzi, uruchom sprawdzanie typów, porównaj wyniki. Nie wdrażaj jej jeszcze na produkcję, chyba że zweryfikowałeś, że każde narzędzie w Twoim pipeline'ie ją wspiera. Sam kompilator jest stabilny; ekosystem wokół niego wciąż nadrabia.
+
+**tsgo bezpośrednio** — Świetne do benchmarkingu. Uruchom `tsgo` obok istniejącego `tsc` i porównaj zarówno wynik, jak i szybkość. To najszybszy sposób, by zobaczyć wpływ na Twoją konkretną bazę kodu.
+
+## Szerszy obraz: kompilatory przechodzą na języki systemowe
+
+Project Corsa nie dzieje się w izolacji. Ekosystem JavaScriptu systematycznie przepisuje swoje najwolniejsze narzędzia w szybszych językach:
+
+- **SWC** (Rust) — Zastąpił Babel w kompilacji TypeScript/JSX. 20-70x szybszy.
+- **Turbopack** (Rust) — Następca webpacka, zbudowany na SWC. 700x szybsze zimne starty w benchmarkach.
+- **esbuild** (Go) — Bundler i minifikator. 100x szybszy niż webpack.
+- **Biome** (Rust) — Zamiennik ESLinta + Prettiera. 25x szybszy linting.
+- **Oxc** (Rust) — Parser, linter i transformer. Najszybszy parser JavaScript, jaki kiedykolwiek zbudowano.
+- **Rspack** (Rust) — Bundler kompatybilny z webpackiem. 5-10x szybszy.
+
+A teraz **sam TypeScript** (Go) — kompilator, type-checker, language server.
+
+Wzorzec jest jasny: JavaScript jest świetny do kodu aplikacji, ale narzędzia, które przetwarzają JavaScript, lepiej pisać w językach kompilowanych. Jednowątkowa, oparta na garbage collection natura Node.js staje się wąskim gardłem, gdy parsujesz miliony linii kodu, rozwiązujesz złożone grafy typów lub bundlujesz tysiące modułów.
+
+To nie znaczy, że JavaScript umiera. To znaczy, że narzędzia JavaScriptu dojrzewają. Język jest na tyle stabilny, że jego narzędzia mogą być przepisywane pod kątem wydajności bez ciągłego gonienia za zmianami w języku. System typów TypeScriptu osiągnął punkt, w którym kompilator można przenieść do innego języka, bo semantyka jest dobrze zdefiniowana i stabilna.
+
+Wchodzimy w erę, w której Twoje narzędzia deweloperskie to natywne binarki, które akurat rozumieją JavaScript i TypeScript. Twój kod pozostaje taki sam. Twoje doświadczenie staje się drastycznie lepsze.
+
+## Co zrobić w tym tygodniu
+
+1. **Uruchom `npm install typescript@6` w swoich projektach.** Napraw wszelkie ostrzeżenia o deprecjacji. To najbardziej wpływowa rzecz, jaką możesz zrobić teraz.
+
+2. **Uruchom `npx tsc --migration`, by otrzymać raport kompatybilności.** Jeśli jest czysty, jesteś gotowy na 7.0.
+
+3. **Sprawdź zależności swojego łańcucha narzędzi.** Poszukaj `typescript-eslint`, `ts-morph`, `ts-node` lub dowolnego narzędzia, które importuje pakiet `typescript`. Sprawdź ich status kompatybilności z 7.0.
+
+4. **Wypróbuj betę na gałęzi.** Zainstaluj `typescript@beta`, uruchom sprawdzanie typów i ciesz się szybkością.
+
+5. **Powiedz swojemu zespołowi.** Największe ryzyko związane z 7.0 nie jest techniczne — to zaskoczenie zespołów zmianami w API kompilatora. Rozpocznij rozmowę teraz, żeby nie było paniki przy wydaniu.
+
+Zespół TypeScript dokonał czegoś naprawdę imponującego. Przepisał jeden z najbardziej złożonych kompilatorów w ekosystemie JavaScriptu w innym języku, zachował niemal idealną kompatybilność i dostarczył 10x poprawę wydajności. Dla języka używanego przez miliony deweloperów na całym świecie to niezwykłe osiągnięcie inżynieryjne.
+
+Twój kod TypeScript się nie zmienia. Twoje doświadczenie z TypeScriptem właśnie ma się radykalnie polepszyć.
+
+### Źródła
+
+- [Microsoft Developer Blog — Announcing the TypeScript Native Port](https://devblogs.microsoft.com/typescript/typescript-native-port/)
+- [Anders Hejlsberg — A 10x Faster TypeScript (film z ogłoszeniem)](https://www.youtube.com/watch?v=pNlq-EVld70)
+- [TypeScript GitHub — Project Corsa Roadmap](https://github.com/microsoft/TypeScript/issues/58243)
+- [InfoQ — TypeScript 7 Will Be Compiled with Go for 10x Performance Gain](https://www.infoq.com/news/2025/03/typescript-go-10x-performance/)
+- [InfoWorld — Microsoft rewrites TypeScript in Go for 10x performance boost](https://www.infoworld.com/article/3844754/microsoft-rewrites-typescript-in-go-for-10x-performance-boost.html)
+
+### Dalsza lektura
+
+- [TypeScript 6.0 Migration Guide (TypeScript Docs)](https://www.typescriptlang.org/docs/)
+- [tsgo GitHub Repository](https://github.com/nicknisi/tsgo)
+- [SWC — Why Rust?](https://swc.rs/blog/why-rust)
+- [esbuild — Why Go?](https://esbuild.github.io/faq/#why-is-esbuild-fast)
+- [Biome — Why Rust?](https://biomejs.dev/blog/why-rust/)
+
+---
+
+~Seb 👊

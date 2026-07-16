@@ -1,0 +1,735 @@
+---
+title: 'Zaawansowany linting i type safety: najbardziej rygorystyczna konfiguracja ESLint + TypeScript + Prettier w 2026'
+date: '2026-03-28'
+category: 'Development'
+tags: ['typescript', 'eslint', 'prettier', 'developer-tools', 'code-quality']
+draft: false
+featured: false
+author: 'Sebastian'
+enSlug: 'advanced-linting-type-safety-eslint-typescript-guide'
+excerpt: 'Większość projektów TypeScript ustawia "strict": true i uznaje temat za zamknięty. A TypeScript ma 5 dodatkowych flag, ESLint v9 flat config zmienia wszystko.'
+---
+
+W zeszłym miesiącu recenzowałem pull requesta, w którym doświadczony inżynier spędził dwa dni na debugowaniu crasha na produkcji. Główną przyczyną było `array[0]` zwracające `undefined`, ponieważ tablica była pusta — ale TypeScript twierdził, że typ to `string`, a nie `string | undefined`. Inżynier zaufał typowi, pominął sprawdzenie null, a `.toLowerCase()` wysadziło produkcję w powietrze.
+
+Jedna flaga kompilatora by to wychwyciła: `noUncheckedIndexedAccess`. A gdyby korzystali z [Zod do walidacji w runtime](/blog/zod-typescript-validation-complete-guide) na granicy API, typ byłby poprawny od samego początku. Ta flaga jest dostępna od TypeScript 4.1 — wydanego w 2020 roku. Sześć lat później większość projektów wciąż jej nie włącza.
+
+To jest luka, którą widzę w każdej bazie kodu, jaką audytuję: zespoły włączają `"strict": true`, instalują ESLint z jakimś presetem `recommended`, uruchamiają Prettier i uznają swoje narzędzia za „gotowe”. W międzyczasie pomijają dziesiątki opcji type safety, uruchamiają ESLint w przestarzałych formatach konfiguracji, walczą z konfliktami Prettiera i nie egzekwują niczego na etapie commita.
+
+Ten przewodnik to kompletna konfiguracja — najbardziej rygorystyczna konfiguracja TypeScript, ESLint v9 flat config z regułami type-checked, Prettier bez konfliktów, Husky + lint-staged do egzekwowania oraz alternatywa w postaci Biome, która robi to wszystko 50x szybciej.
+
+## TypeScript: poza "strict": true
+
+`"strict": true` włącza te flagi:
+- `strictNullChecks`
+- `strictFunctionTypes`
+- `strictBindCallApply`
+- `strictPropertyInitialization`
+- `noImplicitAny`
+- `noImplicitThis`
+- `alwaysStrict`
+- `useUnknownInCatchVariables`
+
+To dobrze. Ale TypeScript ma **pięć dodatkowych flag**, które wychwytują prawdziwe bugi, a nie są zawarte w `strict`. Oto najbardziej rygorystyczny `tsconfig.json`, jakiego używam w każdym projekcie:
+
+```json
+{
+  "compilerOptions": {
+    // Bazowy tryb strict
+    "strict": true,
+
+    // === PIĘĆ DODATKOWYCH FLAG ===
+
+    // 1. Indeksowanie tablicy/obiektu zwraca T | undefined (nie tylko T)
+    "noUncheckedIndexedAccess": true,
+
+    // 2. Właściwości opcjonalne (?) oznaczają "nieobecne", a nie "undefined"
+    "exactOptionalPropertyTypes": true,
+
+    // 3. Wymusza składnię obj["key"] dla index signatures (jawny dostęp dynamiczny)
+    "noPropertyAccessFromIndexSignature": true,
+
+    // 4. Błąd przy nieużywanych zmiennych lokalnych
+    "noUnusedLocals": true,
+
+    // 5. Błąd przy nieużywanych parametrach funkcji
+    "noUnusedParameters": true,
+
+    // === DODATKOWE BEZPIECZEŃSTWO ===
+
+    // Błąd, jeśli case w switch przechodzi dalej bez break
+    "noFallthroughCasesInSwitch": true,
+
+    // Błąd, jeśli funkcja nie zwraca jawnie wartości we wszystkich ścieżkach
+    "noImplicitReturns": true,
+
+    // Wymuś spójną wielkość liter w importach (wychwytuje bugi międzyplatformowe)
+    "forceConsistentCasingInFileNames": true,
+
+    // Zapewnij poprawne rozwiązywanie importów
+    "moduleResolution": "bundler",
+    "module": "ESNext",
+    "target": "ES2022",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+
+    // Izolowane buildy (wymagane przez większość bundlerów)
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+
+    // Pomiń sprawdzanie typów w node_modules
+    "skipLibCheck": true
+  }
+}
+```
+
+### Co dokładnie wychwytuje każda dodatkowa flaga
+
+#### noUncheckedIndexedAccess — pogromca bugów
+
+To najbardziej wpływowa flaga, której nie używasz. Bez niej:
+
+```typescript
+const users = ['Alice', 'Bob'];
+const first = users[0]; // Typ: string ← KŁAMSTWO! Może być undefined
+
+const scores: Record<string, number> = { alice: 100 };
+const bobScore = scores['bob']; // Typ: number ← KŁAMSTWO! To undefined
+```
+
+Z `noUncheckedIndexedAccess`:
+
+```typescript
+const users = ['Alice', 'Bob'];
+const first = users[0]; // Typ: string | undefined ← UCZCIWIE
+
+if (first) {
+  console.log(first.toLowerCase()); // Bezpiecznie
+}
+
+// Albo użyj non-null assertion, jeśli jesteś PEWIEN
+const definitelyFirst = users[0]!; // Typ: string (bierzesz ryzyko na siebie)
+```
+
+**Realny wpływ:** ta flaga wychwytuje dokładnie tę klasę bugów, w której odwołujesz się do tablic lub obiektów po indeksie i zakładasz, że wartość istnieje. Z mojego doświadczenia włączenie tej flagi w istniejących bazach kodu ujawnia 10-50 prawdziwych bugów.
+
+#### exactOptionalPropertyTypes — subtelne rozróżnienie
+
+W TypeScript `?` przy właściwości oznacza dwie różne rzeczy:
+1. Właściwość może nie istnieć na obiekcie
+2. Właściwość może być `undefined`
+
+To semantycznie różne rzeczy. Z `exactOptionalPropertyTypes`:
+
+```typescript
+interface User {
+  name: string;
+  nickname?: string; // Znaczy: może nie mieć tej właściwości
+}
+
+const user: User = {
+  name: 'Alice',
+  nickname: undefined, // BŁĄD! Nie można jawnie ustawić na undefined
+};
+
+// Jeśli MUSISZ zaakceptować undefined, powiedz to wprost:
+interface UserV2 {
+  name: string;
+  nickname?: string | undefined; // Teraz zarówno brak, JAK I undefined są OK
+}
+```
+
+**Dlaczego to ma znaczenie:** API rozróżniają między „pole nie wysłane” a „pole wysłane jako null/undefined”. Żądania `PATCH` często oznaczają „aktualizuj tylko pola, które są obecne”. Jeśli twój typ myli brak z `undefined`, przypadkowo nadpiszesz pola wartością `undefined`.
+
+#### noPropertyAccessFromIndexSignature — jawny dostęp dynamiczny
+
+```typescript
+interface Config {
+  name: string;
+  [key: string]: string; // Index signature
+}
+
+const config: Config = { name: 'App', theme: 'dark' };
+
+// Bez flagi:
+config.name;   // OK (znana właściwość)
+config.theme;  // OK (ale to dynamiczne — może być czymkolwiek!)
+
+// Z flagą:
+config.name;     // OK (znana właściwość)
+config.theme;    // BŁĄD! Użyj notacji nawiasowej dla kluczy dynamicznych
+config['theme']; // OK (jawne przyznanie, że to dynamiczne)
+```
+
+Ta flaga sprawia, że wizualnie oczywiste jest, które dostępy do właściwości są znane statycznie, a które rozwiązywane dynamicznie.
+
+## ESLint v9: rewolucja flat config
+
+ESLint v9 zastąpił `.eslintrc.json` formatem flat config (`eslint.config.mjs`). Stary format jest przestarzały i zostanie usunięty. Oto kompletna konfiguracja:
+
+### Instalacja
+
+```bash
+npm install -D eslint @eslint/js typescript-eslint eslint-config-prettier globals
+```
+
+### Plik konfiguracyjny
+
+```javascript
+// eslint.config.mjs
+import eslint from '@eslint/js';
+import tseslint from 'typescript-eslint';
+import eslintConfigPrettier from 'eslint-config-prettier';
+import globals from 'globals';
+
+export default tseslint.config(
+  // Globalne ignorowania
+  {
+    ignores: [
+      'node_modules/**',
+      '.next/**',
+      'out/**',
+      'dist/**',
+      'coverage/**',
+      '*.config.mjs',
+    ],
+  },
+
+  // Bazowe zalecane reguły ESLint
+  eslint.configs.recommended,
+
+  // Rygorystyczne reguły TypeScript ZE sprawdzaniem typów
+  ...tseslint.configs.strictTypeChecked,
+
+  // Reguły stylistyczne (opiniotwórcze, ale przydatne)
+  ...tseslint.configs.stylisticTypeChecked,
+
+  // Konfiguracja parsera TypeScript
+  {
+    languageOptions: {
+      globals: {
+        ...globals.browser,
+        ...globals.node,
+      },
+      parserOptions: {
+        projectService: true,
+        tsconfigRootDir: import.meta.dirname,
+      },
+    },
+  },
+
+  // Własne nadpisania reguł
+  {
+    rules: {
+      // Wymagaj jawnych typów zwracanych w eksportowanych funkcjach
+      '@typescript-eslint/explicit-function-return-type': ['error', {
+        allowExpressions: true,
+        allowTypedFunctionExpressions: true,
+        allowHigherOrderFunctions: true,
+      }],
+
+      // Wymuś spójne importy typów
+      '@typescript-eslint/consistent-type-imports': ['error', {
+        prefer: 'type-imports',
+        fixStyle: 'inline-type-imports',
+      }],
+
+      // Brak wiszących promise (nieobsłużone async)
+      '@typescript-eslint/no-floating-promises': 'error',
+
+      // Brak niewłaściwie użytych promise (przekazywanie async do synchronicznego callbacka)
+      '@typescript-eslint/no-misused-promises': ['error', {
+        checksVoidReturn: { attributes: false }, // Pozwól na async handlery onClick
+      }],
+
+      // Wymuś wyczerpujące instrukcje switch
+      '@typescript-eslint/switch-exhaustiveness-check': 'error',
+
+      // Zakaż określonych typów
+      '@typescript-eslint/no-restricted-types': ['error', {
+        types: {
+          '{}': { message: 'Użyj Record<string, unknown>', fixWith: 'Record<string, unknown>' },
+          'object': { message: 'Użyj Record<string, unknown>', fixWith: 'Record<string, unknown>' },
+          'Function': { message: 'Użyj konkretnego typu funkcji, np. () => void', },
+        },
+      }],
+
+      // Spójne konwencje nazewnictwa
+      '@typescript-eslint/naming-convention': ['error',
+        { selector: 'interface', format: ['PascalCase'] },
+        { selector: 'typeAlias', format: ['PascalCase'] },
+        { selector: 'enum', format: ['PascalCase'] },
+        { selector: 'enumMember', format: ['UPPER_CASE'] },
+      ],
+
+      // Preferuj nullish coalescing zamiast logicznego OR
+      '@typescript-eslint/prefer-nullish-coalescing': 'error',
+
+      // Preferuj optional chaining
+      '@typescript-eslint/prefer-optional-chain': 'error',
+
+      // Brak zbędnych asercji typów
+      '@typescript-eslint/no-unnecessary-type-assertion': 'error',
+
+      // Brak nieużywanych zmiennych (z sensownymi wyjątkami)
+      '@typescript-eslint/no-unused-vars': ['error', {
+        argsIgnorePattern: '^_',
+        varsIgnorePattern: '^_',
+        caughtErrorsIgnorePattern: '^_',
+      }],
+    },
+  },
+
+  // Nadpisania specyficzne dla React (jeśli dotyczy)
+  {
+    files: ['**/*.tsx'],
+    rules: {
+      // Pozwól pominąć jawne typy zwracane w komponentach JSX
+      '@typescript-eslint/explicit-function-return-type': 'off',
+    },
+  },
+
+  // Nadpisania dla plików testowych
+  {
+    files: ['**/*.test.ts', '**/*.test.tsx', '**/*.spec.ts'],
+    rules: {
+      '@typescript-eslint/no-floating-promises': 'off',
+      '@typescript-eslint/no-unsafe-assignment': 'off',
+    },
+  },
+
+  // Prettier MUSI być ostatni — wyłącza reguły formatowania, które są w konflikcie
+  eslintConfigPrettier,
+);
+```
+
+### Zrozumieć strictTypeChecked
+
+Preset `strictTypeChecked` włącza reguły, które wykorzystują system typów TypeScript do głębszej analizy. Wychwytuje to bugi, które podstawowy linting pomija:
+
+```typescript
+// @typescript-eslint/no-floating-promises
+async function fetchData() { /* ... */ }
+fetchData(); // BŁĄD! Nieobsłużone promise — musisz await lub void
+
+// @typescript-eslint/no-misused-promises
+const items = [1, 2, 3];
+items.forEach(async (item) => { // BŁĄD! forEach nie obsługuje zwróconego promise
+  await processItem(item);
+});
+// Poprawka: użyj pętli for...of lub Promise.all
+
+// @typescript-eslint/no-unnecessary-condition
+function greet(name: string) {
+  if (name) { // BŁĄD! name jest zawsze truthy (to string, a nie string | undefined)
+    console.log(`Hello ${name}`);
+  }
+}
+
+// @typescript-eslint/switch-exhaustiveness-check
+type Status = 'active' | 'inactive' | 'pending';
+function handleStatus(status: Status) {
+  switch (status) {
+    case 'active': return 'Active';
+    case 'inactive': return 'Inactive';
+    // BŁĄD! Brakuje przypadku dla 'pending'
+  }
+}
+```
+
+Te reguły type-checked są znacząco potężniejsze niż podstawowe reguły ESLint, ponieważ rozumieją faktyczne typy w twoim kodzie, a nie tylko składnię.
+
+## Prettier: formatter nie do negocjacji
+
+Prettier kończy spory o formatowanie na dobre. Oto konfiguracja:
+
+```bash
+npm install -D prettier eslint-config-prettier
+```
+
+```json
+// .prettierrc
+{
+  "semi": true,
+  "singleQuote": true,
+  "trailingComma": "all",
+  "printWidth": 100,
+  "tabWidth": 2,
+  "arrowParens": "always",
+  "endOfLine": "lf",
+  "bracketSpacing": true,
+  "jsxSingleQuote": false,
+  "plugins": ["prettier-plugin-tailwindcss"]
+}
+```
+
+```
+// .prettierignore
+node_modules
+.next
+out
+dist
+coverage
+pnpm-lock.yaml
+package-lock.json
+```
+
+### Złota zasada: ESLint do logiki, Prettier do formatowania
+
+**Nigdy** nie używaj ESLint do formatowania. Nigdy nie używaj `eslint-plugin-prettier` (jest wolny i powoduje konflikty). Zamiast tego:
+
+1. `eslint-config-prettier` **wyłącza** wszystkie reguły formatowania ESLint
+2. Prettier działa **osobno** i obsługuje całe formatowanie
+3. Żadnych konfliktów. Nigdy.
+
+```json
+// skrypty w package.json
+{
+  "scripts": {
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "typecheck": "tsc --noEmit"
+  }
+}
+```
+
+## Husky + lint-staged: egzekwowanie na etapie commita
+
+Reguły bez egzekwowania to sugestie. Husky i lint-staged zmieniają je w wymagania.
+
+### Konfiguracja
+
+```bash
+npm install -D husky lint-staged
+npx husky init
+```
+
+To tworzy plik `.husky/pre-commit`. Edytuj go:
+
+```bash
+#!/bin/sh
+npx lint-staged
+```
+
+### Konfiguracja lint-staged
+
+```json
+// .lintstagedrc.json
+{
+  "*.{ts,tsx}": [
+    "eslint --fix --max-warnings 0",
+    "prettier --write"
+  ],
+  "*.{js,mjs,cjs}": [
+    "eslint --fix --max-warnings 0",
+    "prettier --write"
+  ],
+  "*.{json,md,mdx,yml,yaml}": [
+    "prettier --write"
+  ],
+  "*.css": [
+    "prettier --write"
+  ]
+}
+```
+
+**Kluczowy szczegół:** `--max-warnings 0` oznacza, że jakiekolwiek ostrzeżenie ESLint blokuje commit. Bez tego ostrzeżenia po cichu narastają, aż będziesz miał ich setki.
+
+### Dodanie sprawdzania typów do pre-commit
+
+Sprawdzanie typów jest kosztowne — uruchamianie `tsc --noEmit` przy każdym commicie jest wolne dla dużych projektów. Oto pragmatyczne podejście:
+
+```json
+// .lintstagedrc.json
+{
+  "*.{ts,tsx}": [
+    "eslint --fix --max-warnings 0",
+    "prettier --write",
+    "bash -c 'tsc --noEmit --pretty'"
+  ]
+}
+```
+
+**Uwaga:** `tsc` nie obsługuje sprawdzania pojedynczych plików — zawsze sprawdza cały projekt. Dla dużych baz kodu przenieś sprawdzanie typów do hooka pre-push lub CI:
+
+```bash
+# .husky/pre-push
+#!/bin/sh
+npm run typecheck
+```
+
+## Biome: alternatywa 50x szybsza
+
+Biome to napisane w Rust narzędzie, które zastępuje zarówno ESLint, jak i Prettier w jednym binarium. Różnica wydajności jest oszałamiająca:
+
+| Operacja | ESLint + Prettier | Biome | Przyspieszenie |
+|-----------|------------------|-------|---------|
+| Lint 10K plików | 45.2s | 0.8s | **56x** |
+| Format 10K plików | 12.1s | 0.3s | **40x** |
+| Pełny check (duże monorepo) | ~12s | ~0.2s | **60x** |
+
+### Konfiguracja
+
+```bash
+npm install -D @biomejs/biome
+npx @biomejs/biome init
+```
+
+```json
+// biome.json
+{
+  "$schema": "https://biomejs.dev/schemas/2.0.0/schema.json",
+  "organizeImports": {
+    "enabled": true
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": true,
+      "correctness": {
+        "noUnusedImports": "error",
+        "noUnusedVariables": "error",
+        "useExhaustiveDependencies": "warn"
+      },
+      "suspicious": {
+        "noExplicitAny": "error",
+        "noConsole": "warn"
+      },
+      "complexity": {
+        "noForEach": "warn",
+        "useFlatMap": "error"
+      },
+      "style": {
+        "useConst": "error",
+        "useTemplate": "error",
+        "noNonNullAssertion": "warn"
+      }
+    }
+  },
+  "formatter": {
+    "enabled": true,
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineWidth": 100
+  },
+  "javascript": {
+    "formatter": {
+      "semicolons": "always",
+      "quoteStyle": "single",
+      "trailingCommas": "all",
+      "arrowParentheses": "always"
+    }
+  }
+}
+```
+
+```json
+// package.json
+{
+  "scripts": {
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "format": "biome format --write .",
+    "typecheck": "tsc --noEmit"
+  }
+}
+```
+
+### Kiedy używać Biome, a kiedy ESLint + Prettier
+
+**Wybierz Biome, gdy:**
+- Zaczynasz nowy projekt
+- Wydajność ma znaczenie (duża baza kodu, wolne CI)
+- Chcesz prostoty (jedno narzędzie, jedna konfiguracja)
+- Nie potrzebujesz reguł lint typu type-aware
+- Nie potrzebujesz pluginów specyficznych dla frameworków (eslint-plugin-react-hooks, @next/eslint-plugin-next)
+
+**Wybierz ESLint + Prettier, gdy:**
+- Potrzebujesz reguł type-aware (`strictTypeChecked` — Biome jeszcze tego nie potrafi)
+- Potrzebujesz `eslint-plugin-react-hooks` (odpowiednik w Biome się poprawia, ale nie jest kompletny)
+- Potrzebujesz `@next/eslint-plugin-next` dla reguł specyficznych dla Next.js
+- Masz własne reguły lub pluginy ESLint
+- Twój zespół jest już zainwestowany w ekosystem ESLint
+
+**Moja rekomendacja na 2026:** używaj Biome do formatowania + podstawowego lintingu, a ESLint tylko do reguł type-aware, których Biome nie ogarnie. Daje ci to szybkość Biome z głębią typescript-eslint.
+
+## Integracja z pipeline CI
+
+Twoje lokalne sprawdzenia (Husky) to pierwsza linia obrony. CI to druga — wychwytuje przypadki, gdy ktoś obchodzi hooki przez `--no-verify`:
+
+```yaml
+# .github/workflows/quality.yml
+name: Code Quality
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Type Check
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Format Check
+        run: npx prettier --check .
+
+      - name: Build
+        run: npm run build
+```
+
+**Uruchamiaj wszystkie trzy sprawdzenia w CI:** typecheck, lint, format. Jeśli którekolwiek się nie powiedzie, PR jest zablokowany. Bez wyjątków.
+
+## Częste pułapki i ich rozwiązania
+
+### 1. ESLint flat config nie znajduje moich plików
+
+Flat config używa innych wzorców glob niż stary format:
+
+```javascript
+// STARY (.eslintrc.json) — "overrides" z "files"
+// NOWY (eslint.config.mjs) — osobne obiekty konfiguracji
+{
+  files: ['**/*.tsx'],
+  rules: { /* reguły specyficzne dla TSX */ },
+},
+{
+  files: ['**/*.test.ts'],
+  rules: { /* reguły specyficzne dla testów */ },
+},
+```
+
+### 2. Reguły type-checked są wolne
+
+`strictTypeChecked` uruchamia kompilator TypeScript w tle. Jeśli jest zbyt wolne:
+
+```javascript
+// Użyj projectService zamiast project (szybsze)
+{
+  languageOptions: {
+    parserOptions: {
+      projectService: true,  // Nowe, szybsze API
+      // project: './tsconfig.json', // Stare, wolniejsze
+    },
+  },
+}
+```
+
+### 3. „Parsing error: Cannot read tsconfig.json”
+
+Twój `tsconfig.json` musi zawierać wszystkie pliki, które ESLint sprawdza:
+
+```json
+// tsconfig.json
+{
+  "include": ["src/**/*", "app/**/*", "*.config.mjs", "*.config.ts"]
+}
+```
+
+### 4. Prettier i sortowanie klas Tailwind
+
+Zainstaluj plugin Tailwind do automatycznego sortowania klas:
+
+```bash
+npm install -D prettier-plugin-tailwindcss
+```
+
+```json
+// .prettierrc
+{
+  "plugins": ["prettier-plugin-tailwindcss"]
+}
+```
+
+### 5. lint-staged działa na złych plikach
+
+Upewnij się, że twoje wzorce glob są poprawne:
+
+```json
+// Źle — nie dopasuje zagnieżdżonych plików
+{ "*.ts": ["eslint --fix"] }
+
+// Dobrze — dopasowuje pliki na dowolnej głębokości
+{ "**/*.ts": ["eslint --fix"] }
+
+// W rzeczywistości lint-staged dopasowuje pliki w stagingu, a nie wzorce glob
+// Wzorce filtrują, które pliki ze stagingu przetworzyć
+// "*.ts" DOPASOWUJE zagnieżdżone pliki w lint-staged (inaczej niż globy shellowe)
+```
+
+## Kompletna checklista konfiguracji
+
+Oto pełna sekwencja konfiguracji dla nowego projektu Next.js:
+
+```bash
+# 1. TypeScript (ze strict + dodatki)
+# Edytuj tsconfig.json z rygorystyczną konfiguracją z tego artykułu
+
+# 2. ESLint v9 flat config
+npm install -D eslint @eslint/js typescript-eslint eslint-config-prettier globals
+# Utwórz eslint.config.mjs z konfiguracją z tego artykułu
+
+# 3. Prettier
+npm install -D prettier prettier-plugin-tailwindcss
+# Utwórz .prettierrc i .prettierignore
+
+# 4. Husky + lint-staged
+npm install -D husky lint-staged
+npx husky init
+# Edytuj .husky/pre-commit, aby uruchamiał lint-staged
+# Utwórz .lintstagedrc.json
+
+# 5. Pipeline CI
+# Utwórz .github/workflows/quality.yml
+
+# 6. Zweryfikuj, że wszystko działa
+npm run typecheck && npm run lint && npx prettier --check .
+```
+
+## Praktyczne wnioski
+
+1. **Włącz `noUncheckedIndexedAccess`** — to najbardziej wpływowa flaga TypeScript, której prawdopodobnie nie używasz. Wychwytuje prawdziwe bugi produkcyjne.
+2. **Używaj `strictTypeChecked` w ESLint** — reguły type-aware wychwytują całe kategorie bugów, które podstawowe reguły pomijają (wiszące promise, niewłaściwie użyte promise, zbędne warunki).
+3. **ESLint do logiki, Prettier do formatowania** — nigdy ich nie mieszaj. Użyj `eslint-config-prettier`, aby wyłączyć konflikty.
+4. **Egzekwuj na etapie commita** przy pomocy Husky + lint-staged. Użyj `--max-warnings 0`, aby zapobiec narastaniu ostrzeżeń.
+5. **Egzekwuj w CI** — wychwytuje obejścia `--no-verify`. Blokuj PR-y, które nie przejdą typecheck, lint lub format.
+6. **Rozważ Biome** do formatowania + podstawowego lintingu. Używaj ESLint tylko do reguł type-aware.
+7. **Migruj do flat config już teraz** — `.eslintrc` jest przestarzały. ESLint v9 flat config to przyszłość.
+8. **Uruchamiaj sprawdzanie typów w pre-push lub CI** — jest zbyt wolne dla pre-commit w dużych projektach.
+
+Połącz tę konfigurację z [zasadami czystego kodu](/blog/principles-of-clean-frontend-code-dry-kiss-solid), a otrzymasz bazę kodu, która aktywnie walczy z bugami. Dodaj [feature flags z progresywnymi wdrożeniami](/blog/feature-flags-progressive-rollouts-nextjs-guide), a będziesz mógł dostarczać z pewnością nawet wtedy, gdy poruszasz się szybko.
+
+Solidna konfiguracja lintingu i type safety wychwytuje bugi, zanim dotrą do code review, zapobiega sporom o formatowanie i buduje pewność, że kod w `main` faktycznie działa. Te 30 minut, które zajmuje konfiguracja, oszczędza setki godzin debugowania przez całe życie projektu.
+
+## References
+
+### Źródła
+- [typescript-eslint: Shared Configs](https://typescript-eslint.io/users/configs/) — oficjalna dokumentacja strictTypeChecked
+- [ESLint: Configuration Migration Guide](https://eslint.org/docs/latest/use/configure/migration-guide) — migracja do flat config
+- [TypeScript TSConfig Reference](https://www.typescriptlang.org/tsconfig/) — wszystkie opcje kompilatora wyjaśnione
+- [The Strictest TypeScript Config](https://whatislove.dev/articles/the-strictest-typescript-config/) — kompleksowa analiza trybu strict
+- [Prettier: Pre-commit Hook](https://prettier.io/docs/precommit) — oficjalny przewodnik Prettier + lint-staged
+- [eslint-config-prettier](https://github.com/prettier/eslint-config-prettier) — wyłączanie konfliktujących reguł
+
+### Dalsza lektura
+- [PkgPulse: Biome vs ESLint + Prettier 2026](https://www.pkgpulse.com/blog/biome-vs-eslint-prettier-linting-2026) — szczegółowe benchmarki wydajności
+- [Biome Migration Guide for 2026](https://dev.to/pockit_tools/biome-the-eslint-and-prettier-killer-complete-migration-guide-for-2026-27m) — migracja do Biome krok po kroku
+- [Better Stack: Husky and lint-staged Guide](https://betterstack.com/community/guides/scaling-nodejs/husky-and-lint-staged/) — kompletny tutorial konfiguracji
+- [Advanced Frontends: ESLint Flat Config with TypeScript](https://advancedfrontends.com/eslint-flat-config-typescript-javascript/) — nowoczesne wzorce ESLint
+
+---
+
+~Seb 👊

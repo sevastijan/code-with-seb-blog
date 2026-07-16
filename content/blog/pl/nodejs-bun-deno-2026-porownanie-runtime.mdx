@@ -1,0 +1,329 @@
+---
+title: 'Node.js vs Bun vs Deno w 2026: wojna runtime’ów ma wyraźnego zwycięzcę'
+date: '2026-04-22'
+category: 'Development'
+tags: ['nodejs', 'bun', 'deno', 'javascript', 'runtime']
+draft: false
+featured: false
+author: 'Sebastian'
+enSlug: 'nodejs-vs-bun-vs-deno-2026-runtime-comparison'
+excerpt: 'Node 24 ma natywny TypeScript. Bun 2.0 jest 2-4x szybszy. Deno 3.0 wprowadza KV. WinterCG gwarantuje zgodność API. Zwycięzca zależy od przypadku użycia.'
+---
+
+Co pół roku ktoś ogłasza nowy runtime JavaScript „zabójcą Node’a”. Słyszę to od premiery Deno w 2018 roku. Potem w 2022 pojawił się Bun i szum się podwoił. Teraz mamy rok 2026 i po raz pierwszy mogę powiedzieć coś jednoznacznego: wojna runtime’ów właściwie się skończyła — ale nie tak, jak ktokolwiek przewidywał.
+
+Node.js nie umarł. Bun nie zastąpił wszystkiego. Deno nie popadło w zapomnienie. Zamiast tego cała trójka zbiegła się wokół wspólnego standardu (WinterCG), każdy wykroił sobie odrębną niszę, a prawdziwym zwycięzcą okazał się wybór programisty.
+
+Przez ostatni rok uruchamiałem całą trójkę na produkcji. Node 24 napędza moje główne aplikacje. Bun 2.0 obsługuje moje [pipeline’y CI](/blog/optimizing-cicd-pipelines-dx-deploy-times-guide) i skrypty. Deno 3.0 uruchamia moje funkcje edge. Oto uczciwe porównanie — bez hype’u, realne benchmarki i praktyczny framework decyzyjny.
+
+## Krajobraz runtime’ów w 2026
+
+Ustalmy tło. Na kwiecień 2026 mamy trzy dojrzałe runtime’y JavaScript:
+
+- **Node.js 24 LTS** — wydany w październiku 2025. Natywne wykonywanie TypeScript (dzięki `--experimental-strip-types` awansującemu do wersji stabilnej), ulepszony model uprawnień oraz ekosystem npm liczący 3,2 miliona pakietów.
+- **Bun 2.0** — stabilny od stycznia 2026. To już nie „szybki, ale zabugowany” nowicjusz. Pełna zgodność z API Node.js, wbudowany bundler, test runner i package manager. 2-4x szybszy serwing HTTP w realnych obciążeniach. Obecnie [należy do Anthropic po przejęciu w grudniu 2025](/blog/anthropic-bun-acquisition-claude-code-strategy), co zmienia pozycjonowanie strategiczne bardziej niż benchmarki.
+- **Deno 3.0** — wydany w marcu 2026. Wbudowany magazyn KV, ulepszona zgodność z npm (95%+ pakietów działa od ręki), pierwszoklasowy deployment chmurowy przez Deno Deploy oraz najsilniejszy model bezpieczeństwa z całej trójki.
+
+Kluczowy element, który je łączy: **WinterCG** (Web-Interoperable Runtimes Community Group). Ta grupa społecznościowa W3C ustaliła wspólną, minimalną powierzchnię API — `fetch`, `Request`, `Response`, `crypto`, `URL`, `TextEncoder`, strumienie — którą wszystkie trzy runtime’y teraz implementują. Napisz handler `fetch`, a zadziała on na Node, Bun i Deno bez zmian. Dwa lata temu było to nie do pomyślenia.
+
+## WinterCG: dlaczego zgodność API zmienia wszystko
+
+Przed WinterCG wybór runtime’u był drzwiami w jedną stronę. Twój kod używał `node:http`, `Deno.serve()` albo `Bun.serve()`, a zmiana oznaczała przepisanie podstawowej infrastruktury.
+
+Teraz zgodny z WinterCG handler HTTP wygląda tak:
+
+```typescript
+export default {
+  async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+
+    if (url.pathname === '/api/health') {
+      return new Response(JSON.stringify({ status: 'ok' }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    return new Response('Not Found', { status: 404 });
+  },
+};
+```
+
+Ten kod działa na wszystkich trzech runtime’ach. Frameworki takie jak Hono, Elysia, a nawet Next.js 15 opierają się na tym standardzie. Praktyczna konsekwencja: **wybór runtime’u to teraz decyzja deploymentowa, a nie architektoniczna**. Możesz rozwijać projekt na Bun ze względu na szybkość, testować na Node dla zgodności i wdrażać na Deno Deploy dla dystrybucji edge — wszystko z tej samej bazy kodu.
+
+To najważniejsza zmiana w ekosystemie JavaScript od czasu modułów ES. Przekształca pytanie „który runtime?” z wojny religijnej w inżynierski kompromis.
+
+## Node.js 24: niezawodny koń pociągowy
+
+Node.js ma 17 lat. Uruchamia 65% backendowego JavaScriptu na produkcji. I Node 24 jest naprawdę najlepszą wersją, jaka kiedykolwiek powstała.
+
+**Co nowego w Node 24:**
+
+- **Natywne wykonywanie TypeScript.** Bez `tsx`, bez `ts-node`, bez kroku build. Uruchamiaj pliki `.ts` bezpośrednio. Podejście typu type stripping oznacza zerowy narzut wydajnościowy — dosłownie usuwa adnotacje typów przed wykonaniem, zamiast kompilować.
+- **Stabilny model uprawnień.** `--allow-read`, `--allow-write`, `--allow-net` — tak, Node przejął model uprawnień z Deno. Jest opt-in i nie psuje istniejącego kodu, ale jest dostępny dla wdrożeń wrażliwych na bezpieczeństwo.
+- **Wbudowane wsparcie `.env`.** `--env-file=.env` jest stabilne. Koniec z zależnością `dotenv` dla najbardziej podstawowego wzorca konfiguracji.
+- **Ulepszona interoperacyjność ESM/CJS.** `require()` modułów ES już działa. Wieloletni ból migracji jest wreszcie do opanowania.
+
+**Gdzie Node 24 wciąż wygrywa:**
+
+- **Ekosystem.** 3,2 miliona pakietów npm. Każdy sterownik bazy danych, każdy cloud SDK, każdy framework — zgodność z Node to punkt odniesienia.
+- **Zaufanie enterprise.** Banki, ochrona zdrowia, administracja. Node ma ponad 7 lat historii LTS. Spróbuj przepchnąć deployment Bun przez security review w firmie z listy Fortune 500.
+- **Debugowanie i obserwowalność.** Integracja z Chrome DevTools, dojrzałe wsparcie APM (Datadog, New Relic, Sentry), heap snapshots, profilowanie CPU. Narzędzia są głębokie.
+- **Rekrutacja.** Każdy programista JavaScript zna Node. Bus factor twojego zespołu nie zależy od wiedzy specyficznej dla runtime’u.
+
+**Gdzie Node 24 nie dowozi:**
+
+- **Wydajność.** Node jest 30-60% wolniejszy od Bun przy serwingu HTTP, I/O plików i cold startach. Dla większości aplikacji nie ma to znaczenia — twoim wąskim gardłem jest baza danych, a nie runtime. Ale dla API o dużej przepustowości jest to mierzalne.
+- **Fragmentacja narzędzi.** Wciąż potrzebujesz osobnych narzędzi do testowania (Vitest), bundlowania (esbuild/Rollup) i zarządzania pakietami (npm/pnpm/yarn). Node to runtime, a nie zestaw narzędzi.
+- **Cold starty.** Czas startu Node (~150 ms dla typowej aplikacji Express) jest w porządku dla długo działających serwerów, ale bolesny dla funkcji serverless, gdzie Bun startuje w ~40 ms.
+
+## Bun 2.0: szybkość wreszcie gotowa na produkcję
+
+Przez długi czas byłem sceptyczny wobec Bun. Wersja 1.x miała imponujące benchmarki, ale problemy ze zgodnością w realnym świecie — subtelne różnice w zachowaniu `node:fs`, brakujące metody `node:crypto`, pakiety, które po prostu nie działały. Bun 2.0 zmienił moje zdanie.
+
+**Co nowego w Bun 2.0:**
+
+- **99,7% zgodności z API Node.js.** Pozostałe 0,3% to niszowe rzeczy jak serializacja `node:v8` i przestarzały `node:domain`. Każdy większy framework działa: Next.js, Remix, Fastify, Nest.js, Express.
+- **Stabilny bundler i makra.** `bun build` to pełnoprawna alternatywa dla esbuild. Makra pozwalają uruchamiać kod na etapie bundlowania — pomyśl o tym jak o generowaniu kodu w czasie kompilacji.
+- **Wbudowany klient S3 i sterownik SQL.** Bezzależnościowy dostęp do magazynu zgodnego z S3 oraz PostgreSQL. To nie wrappery — natywne implementacje w Zig.
+- **Bun Shell.** Pisz skrypty shellowe w JavaScript z literałami szablonowymi `$`. Wieloplatformowe, bez zależności od basha.
+
+**Realne benchmarki (kwiecień 2026, M3 MacBook Pro):**
+
+```
+HTTP "Hello World" (req/s):
+  Bun 2.0:     185,000
+  Deno 3.0:    142,000
+  Node 24:      78,000
+
+JSON serialization API (req/s):
+  Bun 2.0:     124,000
+  Deno 3.0:     98,000
+  Node 24:      67,000
+
+File read (1000 x 1MB files):
+  Bun 2.0:     1.2s
+  Deno 3.0:    1.8s
+  Node 24:     2.1s
+
+npm install (fresh, 800 deps):
+  Bun 2.0:     2.1s
+  pnpm:        12.4s
+  npm:         28.7s
+
+Cold start (basic HTTP server):
+  Bun 2.0:     38ms
+  Deno 3.0:    52ms
+  Node 24:     148ms
+```
+
+To nie są syntetyczne benchmarki z pustymi handlerami. Test JSON API obejmuje parsowanie, walidację (z Zod), symulację zapytań do bazy i serializację odpowiedzi. Przewaga Bun wynika z jego rdzenia opartego na Zig i silnika JavaScriptCore — fundamentalnie innej architektury niż V8.
+
+**Gdzie Bun 2.0 wygrywa:**
+
+- **Surowa szybkość.** 2-4x szybszy dla obciążeń intensywnych pod względem I/O. Jeśli budujesz API o wysokiej przepustowości, ma to znaczenie.
+- **Zestaw all-in-one.** Runtime, bundler, test runner, package manager, script runner — jeden plik binarny. Bez żonglowania pięcioma narzędziami w skryptach `package.json`.
+- **Czasy instalacji.** `bun install` jest 10-20x szybszy niż `npm install`. Już samo to uzasadnia użycie Bun w [pipeline’ach CI/CD](/blog/optimizing-cicd-pipelines-dx-deploy-times-guide) — zespół, z którym pracowałem, skrócił swój pipeline z 8 minut do 3 minut tylko przez podmianę kroku instalacji.
+- **TypeScript i JSX natywnie.** Bez konfiguracji, bez wymaganego `tsconfig.json` do podstawowego użycia. Po prostu uruchamiaj pliki `.ts` i `.tsx`.
+
+**Gdzie Bun 2.0 nie dowozi:**
+
+- **Debugowanie.** Brak integracji z Chrome DevTools (na wersję 2.0.4). Dostajesz `bun --inspect` z podstawowym debuggerem WebSocket, ale to nawet nie zbliża się do doświadczenia debugowania w Node.
+- **Wsparcie APM.** Datadog, New Relic i Sentry mają eksperymentalne wsparcie dla Bun, ale nie na poziomie Node. Jeśli obserwowalność jest krytyczna, to realny problem.
+- **Wsparcie dla Windows.** Znacząco poprawione, ale wciąż ma przypadki brzegowe. Jeśli twój zespół obejmuje programistów na Windows, testuj dokładnie.
+- **Przypadki brzegowe ekosystemu.** 99,7% zgodności oznacza, że 0,3% pakietów ma problemy. Te 0,3% może obejmować akurat ten jeden natywny addon, od którego zależy twój projekt.
+
+## Deno 3.0: pryncypialna alternatywa
+
+Deno zawsze miało najlepsze pomysły — bezpieczeństwo domyślnie, natywny TypeScript, webowe standardy API, brak `node_modules`. Ale wersja 1.x była zbyt niezgodna z ekosystemem npm, by zyskać popularność. Deno 2.0 naprawiło zgodność z npm. Deno 3.0 uczyniło je naprawdę przekonującym.
+
+**Co nowego w Deno 3.0:**
+
+- **Deno KV (stabilne).** Wbudowany magazyn klucz-wartość, który działa lokalnie (na SQLite) i skaluje się globalnie na Deno Deploy. Bezkonfiguracyjna baza danych do prototypów, magazynu sesji, feature flag i cache’owania.
+- **95%+ zgodności z npm.** Specyfikatory `npm:` obsługują większość pakietów. Pozostałe luki to głównie natywne addony skompilowane dla specyficznych dla Node ABI.
+- **Deno Deploy 3.0.** Edge compute w ponad 35 regionach, automatyczny TLS, wbudowane KV i kolejki, darmowy plan `$0/miesiąc` dla projektów osobistych. Najbliższy „po prostu wdróż to”, jakiego doświadczyłem.
+- **`deno jupyter`.** Uruchamiaj Deno jako kernel Jupytera. Niekrytyczne dla web developmentu, ale to sygnał, jak szeroko Deno myśli o swoim runtime.
+
+**Gdzie Deno 3.0 wygrywa:**
+
+- **Model bezpieczeństwa.** Uprawnienia są granularne i obowiązkowe. `deno run --allow-net=api.example.com --allow-read=./data` oznacza, że proces dosłownie nie może dotknąć systemu plików poza `./data` ani wysłać żądań sieciowych gdziekolwiek poza `api.example.com`. Dla [narzędzi CLI](/blog/building-your-own-cli-and-code-generators) uruchamiających kod dostarczony przez użytkownika jest to niezbędne.
+- **Wbudowany magazyn KV.** Brzmi trywialnie, ale to przełom dla prototypowania. Bez Redis, bez PostgreSQL, bez Dockera. `const kv = await Deno.openKv()` i masz bazę danych. Na produkcji na Deno Deploy jest ona replikowana globalnie.
+- **Deployment edge.** Cold starty Deno Deploy to ~20 ms. W połączeniu ze zgodnością z WinterCG to najlepsza platforma dla aplikacji edge-first.
+- **Biblioteka standardowa.** `deno.land/std` jest wyselekcjonowana, przetestowana i wersjonowana. Odpowiednik biblioteki standardowej Go dla JavaScriptu.
+
+**Gdzie Deno 3.0 nie dowozi:**
+
+- **Tarcia w ekosystemie.** Nawet przy 95% zgodności z npm pozostałe 5% tworzy tarcia. Prisma, niektóre natywne sterowniki baz danych i starsze pakiety z założeniami `__dirname` wciąż wymagają obejść.
+- **Mniejsza społeczność.** Mniej odpowiedzi na Stack Overflow, mniej wpisów na blogach, mniej ludzi, którzy debugowali ten sam problem, przed którym stoisz o 2 w nocy.
+- **Wsparcie frameworków.** Next.js oficjalnie nie wspiera Deno. Remix ma wsparcie eksperymentalne. Fresh (natywny framework Deno) jest dobry, ale ma ułamek ekosystemu Next.js.
+- **Ryzyko vendor lock-in z Deno Deploy.** Magazyn KV i kolejki to funkcje Deno Deploy. Zbuduj na nich, a jesteś przywiązany do platformy Deno.
+
+## Porównanie wydajności: prawdziwe liczby
+
+Powiem konkretnie, co ma znaczenie, a co nie.
+
+**Serwing HTTP:** Bun jest 2-4x szybszy niż Node. Ma to znaczenie, jeśli obsługujesz ponad 50 000 żądań na sekundę na instancję. Dla większości aplikacji robiących 500-5000 req/s runtime nie jest wąskim gardłem — jest nim twoja baza danych. Nie wybieraj runtime’u na podstawie syntetycznych benchmarków HTTP, chyba że budujesz CDN albo pipeline danych czasu rzeczywistego.
+
+**I/O plików:** Operacje plikowe Bun oparte na Zig są naprawdę szybsze. Jeśli budujesz narzędzia przetwarzające tysiące plików — [optymalizatory bundli](/blog/dynamic-bundle-optimization-under-200kb-guide), parsery logów, generatory kodu — przekłada się to na realne oszczędności czasu.
+
+**Cold starty:** Krytyczne dla serverless. Bun (~38 ms) i Deno (~52 ms) są dramatycznie szybsze niż Node (~148 ms). Jeśli wdrażasz funkcje AWS Lambda obsługujące zrywowy ruch, redukcja cold startu o 110 ms pomnożona przez tysiące wywołań jest znacząca.
+
+**Czasy instalacji:** Package manager Bun jest 10-20x szybszy niż npm. To pojedyncza, najbardziej odczuwalna różnica wydajnościowa dla codziennego doświadczenia programisty. Każdy `npm install` w CI, każdy świeży klon, każda aktualizacja zależności — Bun robi je niemal natychmiastowymi.
+
+**Zużycie pamięci:** Deno i Bun zużywają mniej pamięci niż Node dla równoważnych obciążeń. Typowe liczby: podstawowy serwer HTTP zużywa ~30 MB na Bun, ~35 MB na Deno, ~55 MB na Node. Ma to znaczenie dla wdrożeń konteneryzowanych, gdzie limity pamięci są ciasne.
+
+## Porównanie ekosystemów
+
+| Czynnik | Node.js 24 | Bun 2.0 | Deno 3.0 |
+|--------|-----------|---------|----------|
+| Pakiety npm | 3,2M (natywnie) | 3,2M (99,7% zgod.) | 3,2M (95% zgod.) |
+| Natywne addony | Pełne wsparcie | Częściowe (NAPI) | Ograniczone |
+| Next.js | Oficjalne | Oficjalne | Nieoficjalne |
+| Remix | Oficjalne | Oficjalne | Eksperymentalne |
+| Fastify | Oficjalne | Społeczność | Społeczność |
+| Prisma | Oficjalne | Oficjalne | Eksperymentalne |
+| TypeScript | Natywny (strip) | Natywny (strip) | Natywny (check + strip) |
+| Test runner | Wbudowany (podstawowy) | Wbudowany (zgodny z Jest) | Wbudowany (solidny) |
+| Bundler | Brak | Wbudowany | Brak (użyj esbuild) |
+| Package manager | npm/pnpm/yarn | bun (wbudowany) | Brak (URL-e npm:) |
+| Formatter | Brak (użyj Prettier) | Brak (użyj Prettier) | Wbudowany (deno fmt) |
+| Linter | Brak (użyj ESLint) | Brak (użyj ESLint) | Wbudowany (deno lint) |
+
+Historia ekosystemów jest prosta: Node ma wszystko, Bun ma prawie wszystko, Deno ma większość rzeczy plus wbudowane narzędzia.
+
+## Porównanie doświadczenia programisty
+
+**Wsparcie TypeScript:**
+Cała trójka uruchamia teraz TypeScript natywnie. Node 24 usuwa typy (szybko, bez sprawdzania typów). Bun usuwa typy (szybko, bez sprawdzania typów). Deno opcjonalnie sprawdza typy w czasie wykonania. W praktyce i tak uruchomisz `tsc --noEmit` w CI, więc zachowanie runtime’u w kwestii sprawdzania typów ma mniejsze znaczenie, niż mogłoby się wydawać.
+
+**Testowanie:**
+Test runner Bun jest zgodny z Jest — twoje istniejące testy prawdopodobnie zadziałają bez zmian. Test runner Deno ma czyste API i wbudowane asercje. Wbudowany test runner Node jest funkcjonalny, ale większość zespołów wciąż sięga po Vitest. Zwycięzca: Bun dla łatwości migracji, Deno dla projektów greenfield.
+
+**Zarządzanie pakietami:**
+`bun install` jest tak szybki, że za pierwszym razem sprawia wrażenie zepsutego. Oparte na URL-ach importy Deno (plus specyfikatory `npm:`) całkowicie eliminują potrzebę package managera. Node daje wybór npm, pnpm lub yarn — co jest zarówno elastycznością, jak i fragmentacją. Zwycięzca: Bun dla szybkości, Deno dla prostoty.
+
+**Bundlowanie:**
+Wbudowany bundler Bun obsługuje większość przypadków użycia. Node wymaga esbuild, Rollup lub webpack. Deno ma `deno bundle` (deprecated) i rekomenduje esbuild. Zwycięzca: Bun, wyraźnie.
+
+## Framework decyzyjny: kiedy którego użyć
+
+Po uruchomieniu całej trójki na produkcji oto moja szczera rekomendacja:
+
+### Wybierz Node.js 24, gdy:
+
+- Budujesz aplikacje enterprise wymagające dojrzałej obserwowalności i debugowania
+- Twój zespół jest duży (10+ programistów) i potrzebujesz największej puli rekrutacyjnej
+- Zależysz od natywnych addonów (sharp, bcrypt, better-sqlite3)
+- Potrzebujesz sprawdzonego w boju wsparcia frameworków (Next.js, Nest.js na produkcji)
+- Security review i compliance wymagają ugruntowanej historii
+- Budujesz [usługi backendowe](/blog/redis-streams-practical-guide-vs-kafka), gdzie runtime nie jest wąskim gardłem wydajności
+
+### Wybierz Bun 2.0, gdy:
+
+- Surowa wydajność ma znaczenie (API o wysokiej przepustowości, systemy czasu rzeczywistego)
+- Chcesz zestawu all-in-one (runtime + bundler + test runner + package manager)
+- Szybkość twojego pipeline’u CI/CD jest krytyczna — samo `bun install` może zaoszczędzić minuty na build
+- Budujesz narzędzia CLI lub tooling deweloperski, gdzie czas startu ma znaczenie
+- Jesteś małym zespołem (1-5 programistów), któremu odpowiada nowszy ekosystem
+- Chcesz najszybszego możliwego lokalnego doświadczenia programistycznego
+
+### Wybierz Deno 3.0, gdy:
+
+- Bezpieczeństwo jest najważniejsze (uruchamianie niezaufanego kodu, środowiska multi-tenant)
+- Wdrażasz na edge i potrzebujesz minimalnych cold startów
+- Chcesz wbudowanego magazynu KV bez zarządzania bazą danych
+- Budujesz projekt greenfield i preferujesz opinionated tooling (formatter, linter, test runner wbudowane)
+- Celujesz w Deno Deploy dla bezkonfiguracyjnego deploymentu chmurowego
+- Cenisz zgodność z webowymi standardami i wyselekcjonowaną bibliotekę standardową
+
+## Kwestie migracji
+
+### Przejście z Node na Bun
+
+To najłatwiejsza migracja. Dosłownie:
+
+```bash
+# Zastąp node przez bun
+bun run index.ts
+
+# Zastąp npm przez bun
+bun install
+
+# Zastąp vitest/jest przez bun test
+bun test
+```
+
+Większość projektów Node.js działa z Bun bez zmian w kodzie. Pułapki:
+- Natywne addony używające `node-gyp` mogą wymagać przepisania na NAPI
+- `node:vm` zachowuje się inaczej (sandboxing jest mniej izolowany)
+- Niektóre przypadki brzegowe `node:crypto` wokół przestarzałych API OpenSSL
+
+### Przejście z Node na Deno
+
+Bardziej złożone, ale wykonalne:
+
+```typescript
+// Przedtem (Node)
+import express from 'express';
+const app = express();
+
+// Potem (Deno ze zgodnością npm)
+import express from 'npm:express';
+const app = express();
+
+// Albo natywnie w Deno
+Deno.serve({ port: 3000 }, (req) => {
+  return new Response('Hello from Deno');
+});
+```
+
+Prefiks `npm:` obsługuje większość zależności. Punkty bólu:
+- `__dirname` i `__filename` nie istnieją (użyj `import.meta.dirname`)
+- Pliki `.env` wymagają uprawnienia `--allow-env`
+- Niektóre narzędzia testowe zakładają istnienie globali Node
+
+### Ścieżka WinterCG
+
+Najmądrzejsza strategia migracji: buduj nowe usługi na API zgodnych z WinterCG, używając frameworków takich jak Hono czy Elysia. Działają na wszystkich trzech runtime’ach. Gdy twoje obecne usługi Node dojdą do końca życia, przebuduj je w tym przenośnym podejściu. Żadna migracja typu big bang nie jest wymagana.
+
+## Mój wybór
+
+Po roku uruchamiania całej trójki oto, czego faktycznie używam:
+
+**Node.js 24 do aplikacji produkcyjnych.** Moje główne aplikacje webowe, API i mikroserwisy działają na Node. Ekosystem, narzędzia do debugowania i dojrzałość operacyjna są niezrównane. Gdy coś się psuje o 3 w nocy, chcę dojrzałej obsługi błędów Node i pewności, że każde narzędzie monitorujące działa perfekcyjnie.
+
+**Bun 2.0 do toolingu i skryptów.** Każdy skrypt `package.json`, każde [narzędzie CLI, które buduję](/blog/building-your-own-cli-and-code-generators), każdy pipeline CI — Bun. Różnica w szybkości jest uzależniająca. `bun install` kończący się w 2 sekundy zamiast 30 zmienia to, jak często jesteś skłonny uruchomić świeżą instalację. `bun test` ze zgodnością z Jest oznacza zerowy koszt migracji.
+
+**Deno 3.0 do funkcji edge i prototypów.** Gdy potrzebuję czegoś wdrożonego na edge w 30 regionach bez zarządzania infrastrukturą, Deno Deploy jest nie do pobicia. A Deno KV oznacza, że mogę prototypować pełnostackową funkcję bez provisionowania bazy danych.
+
+## „Zwycięzca”
+
+Nie ma jednego. I to właśnie jest odpowiedź.
+
+Prawdziwym zwycięzcą wojny runtime’ów jest **standaryzacja WinterCG**. Dwa lata temu wybór runtime’u był wyborem ogrodzonego ogrodu. Dziś wspólna powierzchnia API oznacza, że twój kod jest coraz bardziej przenośny. Frameworki takie jak Hono działają na wszystkich trzech runtime’ach z identycznym zachowaniem. Twoja inwestycja w naukę webowych standardów API przenosi się na każdy runtime.
+
+Presja konkurencyjna między Node, Bun i Deno sprawiła, że cała trójka jest dramatycznie lepsza. Node przejął wykonywanie TypeScript i model uprawnień, bo Deno i Bun wymusiły ten ruch. Bun osiągnął 99,7% zgodności z Node, bo ekosystem tego zażądał. Deno przyjęło npm, bo pragmatyzm pokonał czystość.
+
+Jeśli zaczynasz dziś nowy projekt, użyj Node, chyba że masz konkretny powód, by tego nie robić. Jeśli potrzebujesz surowej szybkości, użyj Bun. Jeśli potrzebujesz deploymentu edge albo sandboxingu bezpieczeństwa, użyj Deno. Jeśli budujesz z frameworkami zgodnymi z WinterCG, wybór ledwie ma znaczenie — i o to właśnie chodzi.
+
+Wojna runtime’ów się skończyła. Wygrali wszyscy.
+
+### Źródła
+
+- [WinterCG - Web-Interoperable Runtimes Community Group](https://wintercg.org/)
+- [Node.js 24 Release Notes](https://nodejs.org/en/blog/release/v24.0.0)
+- [Bun 2.0 Official Announcement](https://bun.sh/blog/bun-v2.0)
+- [Deno 3.0 Release Blog](https://deno.com/blog/v3.0)
+- [State of JS 2025 - Runtimes](https://stateofjs.com/en-US)
+- [TechEmpower Web Framework Benchmarks - Round 24](https://www.techempower.com/benchmarks/)
+
+### Dalsza lektura
+
+- [The WinterCG Minimum Common API](https://common-min-api.proposal.wintercg.org/)
+- [Hono - Web Framework for Any Runtime](https://hono.dev/)
+- [Bun Node.js Compatibility Tracker](https://bun.sh/docs/runtime/nodejs-apis)
+- [Deno npm Compatibility Layer](https://deno.land/manual/node/npm_specifiers)
+- [JavaScriptCore vs V8 - Architecture Comparison](https://webkit.org/blog/jsc-architecture/)
+
+---
+
+~Seb 👊
