@@ -1,0 +1,399 @@
+---
+title: 'Claude Code + Jira/Linear: programowanie sterowane issue bez wychodzenia z terminala'
+date: '2026-04-20'
+category: 'AI'
+tags: ['claude-code', 'jira', 'linear', 'mcp', 'project-management']
+draft: false
+featured: false
+author: 'Sebastian'
+enSlug: 'claude-code-jira-linear-issue-driven-dev-guide'
+excerpt: "Powiedz 'zaimplementuj fix dla ENG-4521', a Claude przeczyta ticket w Jira, znajdzie buga, napisze poprawkę, uruchomi testy i zacommituje. Oto jak to ustawić."
+---
+
+W zeszły wtorek spędziłem jedenaście minut na poprawce buga. Właściwa zmiana w kodzie to były dwie linie. Cała reszta to przełączanie kontekstu: otwórz Jira, przeczytaj ticket, przeklikaj się przez trzy powiązane issue, skopiuj kroki reprodukcji, wróć do terminala, znajdź odpowiedni plik, wprowadź poprawkę, wróć do Jira, zaktualizuj status, dodaj komentarz z linkiem do PR-a. Jedenaście minut. Dwie linie kodu.
+
+Potem skonfigurowałem serwer MCP dla Jira w Claude Code i ten sam workflow zamienił się w jedno zdanie: *"zaimplementuj fix dla ENG-4521."* Claude przeczytał ticket, znalazł plik, napisał poprawkę, uruchomił testy, zacommitował i zaktualizował status w Jira. Poniżej dziewięćdziesięciu sekund.
+
+Ten przewodnik obejmuje kompletną konfigurację zarówno dla Jira, jak i Linear, plus pięć komend, które zastąpiły większość mojego przeskakiwania między zakładkami przy zarządzaniu projektem.
+
+## Podatek od przełączania kontekstu
+
+Każdy programista zna tę pętlę:
+
+```
+Terminal → Jira/Linear → Przeczytaj ticket → Skopiuj szczegóły →
+Terminal → Znajdź kod → Zaimplementuj → Terminal → Uruchom testy →
+Jira/Linear → Zaktualizuj status → Dodaj komentarz → Skopiuj link do PR →
+Jira/Linear → Wklej link do PR → Terminal → Następny ticket
+```
+
+Badania Amerykańskiego Towarzystwa Psychologicznego (APA) szacują koszt przełączania zadań na 20-40% produktywnego czasu. Dla programistów kara jest jeszcze wyższa, bo nie przełączasz tylko zadań — przełączasz *modele myślowe*. Czytanie ticketu w Jira wymaga myślenia produktowego. Pisanie kodu wymaga myślenia systemowego. Aktualizacja ticketu wymaga myślenia procesowego. Każde przełączenie niesie ze sobą koszt poznawczego przeładowania, którego żadna ilość miejsca na monitorach nie wyeliminuje.
+
+Rozwiązaniem nie jest lepsza wtyczka do Jira ani ładniejszy terminal. Rozwiązaniem jest usunięcie przełączania w ogóle. Jeśli twój agent AI do kodowania potrafi czytać tickety, rozumieć kontekst, wprowadzać zmiany i aktualizować statusy — pętla zwija się do jednego kroku.
+
+## Konfiguracja serwera MCP dla Jira
+
+Masz dwie główne opcje połączenia Claude Code z Jira: oficjalny serwer MCP od Atlassiana oraz konektor od Composio. Używałem obu. Oto konfiguracja dla każdego z nich.
+
+### Opcja 1: oficjalny serwer MCP od Atlassiana
+
+Atlassian wydał własny [serwer MCP](https://github.com/atlassian/mcp-server-atlassian), który obsługuje zarówno Jira, jak i Confluence. Korzysta bezpośrednio z twojego tokenu API Atlassiana.
+
+Najpierw wygeneruj token API na [id.atlassian.com/manage-profile/security/api-tokens](https://id.atlassian.com/manage-profile/security/api-tokens).
+
+Następnie dodaj serwer do konfiguracji MCP w Claude Code. Utwórz lub edytuj plik `.mcp.json` w katalogu głównym projektu:
+
+```json
+{
+  "mcpServers": {
+    "atlassian": {
+      "command": "npx",
+      "args": ["-y", "@anthropic/mcp-atlassian"],
+      "env": {
+        "ATLASSIAN_SITE": "your-company.atlassian.net",
+        "ATLASSIAN_EMAIL": "you@company.com",
+        "ATLASSIAN_API_TOKEN": "your-api-token"
+      }
+    }
+  }
+}
+```
+
+To daje Claude Code dostęp do narzędzi takich jak `jira_search`, `jira_get_issue`, `jira_create_issue`, `jira_update_issue` oraz `jira_transition_issue`.
+
+### Opcja 2: konektor Jira od Composio
+
+[Composio](https://composio.dev) dostarcza zarządzaną bramę MCP z obsługą OAuth, co oznacza, że nie musisz ręcznie zajmować się tokenami API. Obsługuje też ponad 250 innych integracji, jeśli chcesz podłączyć obok Jira również Slack, Notion czy Google Docs.
+
+```bash
+# Zainstaluj serwer MCP Composio
+npm install -g composio-mcp
+
+# Uwierzytelnij się w Jira przez OAuth
+composio auth add jira
+```
+
+Następnie dodaj do `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "composio": {
+      "command": "composio-mcp",
+      "args": ["--tools", "jira"]
+    }
+  }
+}
+```
+
+Przepływ OAuth otwiera okno przeglądarki. Autoryzujesz, a Composio automatycznie zajmuje się odświeżaniem tokenów. Kompromis: kierujesz żądania przez serwery Composio, co może być nie do przyjęcia przy niektórych korporacyjnych politykach bezpieczeństwa.
+
+### Który wybrać
+
+Wybierz oficjalny serwer Atlassiana, jeśli chcesz bezpośredni dostęp do API bez zależności od podmiotów trzecich. Wybierz Composio, jeśli zależy ci na wygodzie OAuth lub planujesz podłączyć wiele usług przez jedną bramę. Dla większości zespołów oficjalny serwer jest prostszym i bardziej przejrzystym wyborem.
+
+## Konfiguracja serwera MCP dla Linear
+
+Ekosystem Linear jest bardziej przyjazny programistom niż ten z Jira, a [konfiguracja serwera MCP](https://github.com/linear/linear-mcp) to odzwierciedla. Oficjalny serwer MCP dla Linear jest utrzymywany przez zespół Linear i działa dobrze od razu po instalacji.
+
+Wygeneruj Personal API Key na [linear.app/settings/api](https://linear.app/settings/api), a następnie skonfiguruj `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "linear": {
+      "command": "npx",
+      "args": ["-y", "@anthropic/mcp-linear"],
+      "env": {
+        "LINEAR_API_KEY": "lin_api_your_key_here"
+      }
+    }
+  }
+}
+```
+
+Serwer MCP dla Linear udostępnia narzędzia do wyszukiwania issue, czytania ich szczegółów, tworzenia issue, aktualizacji statusów i zarządzania projektami. Oparte na GraphQL API sprawia, że odpowiedzi są zazwyczaj szybsze i lepiej ustrukturyzowane niż w REST API Jira.
+
+Jedna rzecz, którą doceniam w konfiguracji Linear: identyfikatory issue takie jak `ENG-4521` są spójne i przewidywalne. Żadnego zamieszania z kluczami projektów, żadnych debat epic-kontra-story-kontra-task. Podajesz ID issue, Claude je pobiera, gotowe.
+
+## Workflow sterowany issue
+
+Gdy serwer MCP jest już podłączony, workflow staje się konwersacyjny. Oto co się dzieje, gdy wpiszesz `zaimplementuj fix dla ENG-4521`:
+
+```
+1. Claude wywołuje jira_get_issue("ENG-4521")
+2. Czyta: tytuł, opis, kryteria akceptacji, powiązane issue, komentarze
+3. Analizuje bazę kodu, żeby znaleźć odpowiednie pliki
+4. Implementuje poprawkę na podstawie kontekstu ticketu
+5. Uruchamia testy, żeby zweryfikować
+6. Commituje z wiadomością odwołującą się do ENG-4521
+7. Wywołuje jira_transition_issue("ENG-4521", "In Review")
+8. Dodaje komentarz z SHA commita lub linkiem do PR-a
+```
+
+Kluczowy wniosek jest taki, że Claude nie czyta tylko tytułu ticketu. Czyta **pełny kontekst**: opis, kryteria akceptacji, dyskusję w komentarzach, powiązane issue nadrzędne i podzadania. To ten sam kontekst, który programista-człowiek zebrałby, przeklikując się przez trzy albo cztery ekrany Jira — z tą różnicą, że Claude robi to w jednym wywołaniu API.
+
+## Pięć komend, które zastąpiły przeskakiwanie między zakładkami
+
+### 1. Zaimplementuj ticket
+
+```
+> implement ENG-4521
+```
+
+Claude czyta ticket, rozumie wymaganie, znajduje odpowiedni kod, wprowadza zmianę, uruchamia testy i commituje. Przy poprawkach bugów czyta kroki reprodukcji z ticketu i weryfikuje, że poprawka je adresuje. Przy funkcjach traktuje kryteria akceptacji jak listę kontrolną.
+
+Wiadomość commita automatycznie odwołuje się do ticketu:
+
+```
+fix(auth): resolve race condition in session refresh
+
+Fixes ENG-4521: Users were intermittently logged out during token
+refresh because the mutex wasn't held across the async boundary.
+```
+
+### 2. Utwórz ticket z kodu
+
+```
+> Właśnie znalazłem wyciek pamięci w handlerze WebSocket. Utwórz dla tego ticket w Jira.
+```
+
+Claude generuje dobrze sformatowany ticket z odpowiednim kontekstem kodu, ścieżkami plików i sugerowanym priorytetem na podstawie wagi problemu. Potrafi też przypisać go do właściwego zespołu na podstawie wzorców własności kodu w twoim projekcie.
+
+```
+> Created ENG-4589: Memory leak in WebSocket handler
+> Priority: High | Assignee: Backend Team
+> Labels: bug, performance
+```
+
+Jest to szczególnie przydatne podczas code review. Zamiast tworzyć ticket ręcznie i kopiować fragmenty kodu, opisujesz problem w terminalu, a Claude zajmuje się formatowaniem w Jira.
+
+### 3. Wyszukaj issue
+
+```
+> jakie tickety są otwarte dla modułu auth?
+```
+
+Claude wyszukuje przy użyciu JQL (Jira) lub składni filtrów Linear, a następnie podsumowuje wyniki w czytelnej formie:
+
+```
+Found 7 open issues for auth:
+
+ENG-4521 [Bug/High]    Session refresh race condition
+ENG-4498 [Feature/Med] Add SAML SSO support
+ENG-4467 [Bug/Low]     Password reset email delay
+ENG-4445 [Tech Debt]   Migrate from JWT to Paseto
+...
+```
+
+Możesz doprecyzować w naturalny sposób: *"które z nich blokują wydanie 2.4?"* albo *"pokaż mi te przypisane do mnie."*
+
+### 4. Zaktualizuj status
+
+```
+> przenieś ENG-4521 do "In Review" i dodaj komentarz, że fix jest w PR #892
+```
+
+Proste, ale eliminuje najbardziej irytujące mikroprzerwanie w pętli programistycznej. Żadnej zakładki w przeglądarce. Żadnego ekranu ładowania. Żadnego przeklikiwania się przez rozwijaną listę przejść w Jira.
+
+### 5. Wygeneruj raport ze sprintu
+
+```
+> podsumuj, co ukończyłem w tym sprincie
+```
+
+Claude odpytuje wszystkie tickety przeniesione do "Done" w bieżącym sprincie, grupuje je według typu (naprawione bugi, wdrożone funkcje, spłacony dług techniczny) i generuje podsumowanie, które możesz wkleić na standup albo do sprint review.
+
+```
+Sprint 24 Summary (Apr 7–20):
+
+Completed: 12 tickets
+- 5 bug fixes (3 high, 2 medium)
+- 4 features (SAML SSO, rate limiting, webhook retry, audit log)
+- 3 tech debt (JWT migration, test coverage, dead code removal)
+
+Carried over: 2 tickets
+- ENG-4498: SAML SSO (90% complete, blocked on IdP sandbox access)
+- ENG-4501: Dashboard redesign (waiting on design review)
+```
+
+## Obsługa złożonych ticketów z podzadaniami
+
+Prawdziwe tickety nie zawsze są atomowe. Ticket z funkcją może mieć pięć podzadań, zależności od innych zespołów i kryteria akceptacji rozciągające się na trzy akapity. Claude radzi sobie z tym, czytając pełną hierarchię issue.
+
+```
+> implement ENG-4400
+```
+
+Jeśli ENG-4400 to epic albo story z podzadaniami, Claude czyta ticket nadrzędny dla kontekstu, a potem iteruje po podzadaniach po kolei. Dla każdego podzadania wprowadza zmianę, uruchamia odpowiednie testy i oznacza je jako ukończone, zanim przejdzie do następnego.
+
+Możesz też działać wybiórczo:
+
+```
+> zaimplementuj podzadania 1 i 3 z ENG-4400, resztę na razie pomiń
+```
+
+Ważne jest, żeby informować Claude o zależnościach. Jeśli podzadanie 3 zależy od migracji bazy danych, która nie została jeszcze uruchomiona, Claude to zasygnalizuje, zamiast pisać kod, który nie zadziała. Kontekst ticketu — zwłaszcza komentarze innych członków zespołu — daje Claude tę samą świadomość, jaką miałby programista-człowiek po przeczytaniu wątku.
+
+## Claude Code Skills dla workflow w Jira
+
+Dla powtarzalnych workflow [Claude Code Skills](/blog/claude-code-skills-reusable-ai-workflows-guide) pozwalają zapakować wielokrokowy proces w Jira w pojedynczą, wielokrotnego użytku komendę. Oto dwa, których używam codziennie.
+
+### Skill /fix-ticket
+
+Utwórz `.claude/skills/fix-ticket/skill.md`:
+
+```markdown
+# Fix Ticket Skill
+
+## Trigger
+User says "fix ticket [ID]" or "/fix-ticket [ID]"
+
+## Steps
+1. Read the ticket using the Jira/Linear MCP tool
+2. Analyze the ticket type (bug, feature, improvement)
+3. For bugs: read reproduction steps, find the root cause, implement fix
+4. For features: read acceptance criteria, implement incrementally
+5. Run the project's test suite (detect test runner from package.json)
+6. Create a commit with message referencing the ticket ID
+7. Transition ticket status to "In Review"
+8. Add a comment to the ticket with the commit SHA
+
+## Rules
+- Always run tests before committing
+- Never force-push
+- If tests fail, fix them before marking the ticket
+- Include the ticket ID in the commit message (e.g., "Fixes ENG-1234")
+```
+
+### Skill /create-issue
+
+Utwórz `.claude/skills/create-issue/skill.md`:
+
+```markdown
+# Create Issue Skill
+
+## Trigger
+User says "create issue" or "/create-issue"
+
+## Steps
+1. Ask for a brief description (or infer from conversation context)
+2. Determine issue type: bug, feature, or tech debt
+3. For bugs: include file paths, stack traces, reproduction steps
+4. For features: draft acceptance criteria
+5. Set priority based on severity/impact
+6. Create the ticket via Jira/Linear MCP tool
+7. Return the ticket ID and URL
+
+## Rules
+- Default to the project key from the nearest .jira-config or CLAUDE.md
+- Include relevant code context (file paths, function names)
+- Use the team's label conventions
+```
+
+Skills są szczególnie potężne przy [standaryzacji w zespole](/blog/claude-code-team-leads-onboarding-guide). Każdy programista w twoim zespole dostaje ten sam workflow `/fix-ticket`, co oznacza spójne wiadomości commitów, spójne przejścia statusów i spójne komentarze do ticketów — bez konieczności, żeby ktokolwiek zapamiętywał proces.
+
+## Połączenie z GitHub MCP: pełny pipeline
+
+Prawdziwa moc ujawnia się, gdy połączysz serwer MCP dla Jira/Linear z [serwerem GitHub MCP i GitHub Actions](/blog/claude-code-github-actions-pr-automation-guide). Pełny pipeline wygląda tak:
+
+```
+Ticket → Branch → Implementacja → Testy → PR → Review → Merge → Aktualizacja statusu
+```
+
+Wszystko wyzwolone pojedynczą komendą:
+
+```
+> zaimplementuj ENG-4521 i otwórz PR
+```
+
+Oto co robi Claude:
+
+1. **Czyta ticket** przez Jira MCP
+2. **Tworzy branch** o nazwie `fix/ENG-4521-session-refresh-race` przez Git
+3. **Implementuje poprawkę** na podstawie kontekstu ticketu
+4. **Uruchamia testy** lokalnie
+5. **Commituje i pushuje** branch
+6. **Otwiera PR** przez GitHub MCP, z opisem odwołującym się do ticketu
+7. **Przenosi ticket** do "In Review" przez Jira MCP
+8. **Linkuje PR** w komentarzach ticketu Jira
+
+Po tym, jak PR zostanie zrecenzowany i zmergowany (potencjalnie z [automatycznymi review PR-ów](/blog/claude-code-github-actions-pr-automation-guide)), GitHub Action może wyzwolić końcowe przejście statusu do "Done". Cały cykl życia — od ticketu do produkcji — jest zarządzany bez otwierania przeglądarki.
+
+Możesz nawet [zaplanować to za pomocą Routines](/blog/claude-code-routines-scheduled-automation-guide) dla powtarzalnych zadań. Ustaw nocną rutynę, która sprawdza tickety w określonym statusie, implementuje proste poprawki i otwiera PR-y do review na rano.
+
+## Ograniczenia, na które natrafisz
+
+### Duże opisy ticketów
+
+Tickety w Jira z rozbudowanymi opisami, osadzonymi obrazami i dwudziestoma komentarzami mogą przekroczyć praktyczne możliwości przetwarzania kontekstu przez Claude. Serwer MCP zwraca surowy tekst, a ticket na 5000 słów z historią komentarzy zjada twoje okno kontekstu. Przy epikach z dziesiątkami podzadań polecam pracować nad pojedynczymi podzadaniami, zamiast karmić Claude całym epikiem.
+
+### Obsługa załączników
+
+Ani serwer MCP dla Jira, ani dla Linear nie radzą sobie dobrze z załącznikami. Zrzuty ekranu, linki do Figmy i specyfikacje PDF przywoływane w ticketach nie będą dostępne dla Claude przez narzędzia MCP. Będziesz musiał ręcznie wyciągnąć istotne informacje z załączników i albo wkleić je do rozmowy, albo dodać do swojego CLAUDE.md.
+
+### Zakres uprawnień
+
+Token API Jira, który podajesz, ma te same uprawnienia co twoje konto Jira. Nie ma sposobu, żeby ograniczyć go do trybu tylko-do-odczytu dla niektórych projektów ani ograniczyć, które przejścia Claude może wykonywać. Bądź w tej kwestii rozważny — raczej nie chcesz, żeby Claude zamykał tickety w projekcie, który nie należy do ciebie. Klucze API Linear mają podobne ograniczenia, choć prostszy model uprawnień Linear czyni to mniejszym zagrożeniem.
+
+### Rate limiting
+
+Zarówno Jira Cloud, jak i Linear nakładają limity zapytań API. Limit Jira to mniej więcej 100 żądań na minutę na użytkownika. Jeśli Claude iteruje przez duży backlog albo wyszukuje szerokimi zapytaniami, może trafić na te limity. Linear jest bardziej hojny, ale też ma pułapy. Przy raportach ze sprintu albo operacjach masowych spodziewaj się okazjonalnego throttlingu.
+
+### Nieaktualne tickety
+
+Jeśli ktoś zaktualizuje ticket, gdy Claude jest w trakcie implementacji, Claude nie zobaczy zmiany, dopóki ponownie nie pobierze ticketu. To ten sam problem nieaktualnych danych, z którym mierzy się każda integracja, ale warto o nim wspomnieć — zwłaszcza przy ticketach z aktywną dyskusją.
+
+## Jira kontra Linear: który serwer MCP jest bardziej dojrzały?
+
+Po używaniu obu przez kilka miesięcy oto moje szczere porównanie:
+
+| Aspekt | Jira MCP | Linear MCP |
+|--------|----------|------------|
+| **Złożoność konfiguracji** | Średnia (token API + URL witryny) | Niska (pojedynczy klucz API) |
+| **Szybkość odpowiedzi** | Wolniejsza (REST API, cięższe payloady) | Szybsza (GraphQL, lekkie odpowiedzi) |
+| **Jakość danych** | Rozwlekła, czasem zaszumiona | Czysta, ustrukturyzowana |
+| **Przejścia workflow** | Potężne, ale złożone (customowe workflow) | Proste, przewidywalne |
+| **Wyszukiwanie** | JQL jest potężny, ale wymaga nauki | Prostsza składnia filtrów |
+| **Obciążenie utrzymaniem** | Wyższe (API Jira często się zmienia) | Niższe (stabilne API) |
+| **Funkcje enterprise** | Pełne (customowe pola, schematy, tablice) | Rosnące (projekty, cykle, triage) |
+
+**Serwer MCP dla Linear jest bardziej dopracowany pod workflow programistyczne.** Odpowiedzi są czystsze, API jest szybsze, a model issue naturalnie mapuje się na to, jak myślą programiści. Jeśli twój zespół używa Linear, integracja MCP wydaje się niemal natywna.
+
+**Serwer MCP dla Jira jest bardziej wydolny w kontekstach enterprise.** Customowe pola, złożone workflow, śledzenie na poziomie portfolio — Jira obsługuje organizacyjną złożoność, której Linear celowo unika. Serwer MCP udostępnia to wszystko, ale payloady są większe, a parsowanie schematów customowych pól wymaga trochę cierpliwości.
+
+Jeśli wybierasz narzędzie do zarządzania projektami specjalnie pod integrację z Claude Code, Linear jest dziś lepszym dopasowaniem. Jeśli jesteś już na Jira i twoja organizacja się nie przesiada, [integracja MCP](/blog/mcp-vs-a2a-ai-agent-protocols-guide-2026) działa dobrze — po prostu wymaga więcej konfiguracji na starcie.
+
+## Jak zacząć
+
+Oto co zrobiłbym w tym tygodniu:
+
+1. **Wybierz swój serwer MCP** — oficjalny Atlassiana dla Jira, oficjalny Linear dla Linear
+2. **Dodaj go do `.mcp.json`** najpierw w jednym projekcie, nie globalnie
+3. **Wypróbuj jedną komendę** — `"read ticket ENG-1234"` — i sprawdź, czy Claude zwraca właściwe dane
+4. **Dojdź do implementacji** — `"implement ENG-1234"` — gdy już zaufasz ścieżce odczytu
+5. **Utwórz Skill `/fix-ticket`**, żeby workflow był powtarzalny w całym zespole
+
+Podatek od przełączania kontekstu jest realny i kumuluje się u każdego programisty w zespole, każdego dnia. Wyeliminowanie go nie wymaga nowego narzędzia ani przebudowy workflow. Wymaga pliku konfiguracyjnego JSON i jednego zdania w terminalu.
+
+## Bibliografia
+
+### Źródła
+
+- [Atlassian MCP Server (GitHub)](https://github.com/anthropics/model-context-protocol) - implementacja serwera MCP i dokumentacja konfiguracji
+- [Dokumentacja API Linear](https://developers.linear.app/docs) - generowanie kluczy API i referencja schematu GraphQL
+- [Integracja MCP Composio](https://composio.dev/mcp) - zarządzana brama MCP dla Jira i ponad 250 innych narzędzi
+- [Specyfikacja Model Context Protocol](https://modelcontextprotocol.io) - oficjalna dokumentacja protokołu MCP
+- [Badania APA nad przełączaniem zadań](https://www.apa.org/topics/research/multitasking) - koszt przełączania kontekstu dla wydajności poznawczej
+
+### Dalsza lektura
+
+- [Przewodnik po Claude Code Skills](/blog/claude-code-skills-reusable-ai-workflows-guide) - dogłębne spojrzenie na budowanie wielokrotnego użytku Skills dla workflow zespołowych
+- [Przewodnik MCP kontra A2A](/blog/mcp-vs-a2a-ai-agent-protocols-guide-2026) - zrozumienie, kiedy używać MCP, a kiedy protokołów agent-do-agenta
+- [Automatyzacja GitHub Actions w Claude Code](/blog/claude-code-github-actions-pr-automation-guide) - konfiguracja automatycznych review PR-ów i integracji CI/CD
+- [Dokumentacja Atlassian Jira REST API](https://developer.atlassian.com/cloud/jira/platform/rest/v3/intro/) - pełna referencja API Jira dla customowych integracji
+- [Przewodnik po integracjach Linear](https://linear.app/docs/integrations) - natywne i zewnętrzne opcje integracji dla Linear
+
+---
+
+~Seb 👊

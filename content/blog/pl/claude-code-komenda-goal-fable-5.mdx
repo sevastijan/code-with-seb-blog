@@ -1,0 +1,176 @@
+---
+title: "Claude Code /goal: jak działa i kiedy obraca się przeciwko tobie"
+date: '2026-07-09'
+category: 'AI'
+tags: ['claude-code', 'ai-agents', 'fable-5', 'automation', 'developer-tools']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: "Komenda /goal w Claude Code utrzymuje Fable 5 przy pracy, aż osobny model potwierdzi, że zadanie skończone. Jak działa ewaluator i kiedy zawodzi."
+enSlug: 'claude-code-goal-command-fable-5-guide'
+---
+
+Przez wiele miesięcy moim najczęściej wpisywanym promptem w Claude Code było jedno słowo: „continue". Długie refaktory, migracje zestawów testów, przemielanie backlogu — model kończył turę, zatrzymywał się i czekał, aż go popchnę dalej. Płaciłem podatek od niańczenia w każdej sesji, a stawką była moja uwaga.
+
+Komenda `/goal` znosi ten podatek, ale nie tak, jak sugeruje większość opracowań. To nie jest „prompt, który sprawia, że Claude działa dalej". To zmiana architektoniczna: **model wykonujący pracę już nie decyduje, kiedy praca jest skończona**. Decyduje o tym drugi, osobny model. Zrozumienie tego podziału to różnica między celem, który kończy się czysto, a takim, który kręci się w kółko, dopóki nie wciśniesz Ctrl+C o drugiej w nocy.
+
+Uruchamiam `/goal` na realnej pracy od czasu, gdy Fable 5 wystartował na nowo z tą komendą — migracje, implementacje sterowane dokumentacją, przemielanie kolejki zgłoszeń. Oto wszystko, co wiem o tym, jak komenda goal w Claude Code działa pod maską, jak pisać warunki, które faktycznie się rozstrzygają, i gdzie to gryzie.
+
+## Co robi /goal, tura po turze
+
+Mechanika jest prosta do opisania:
+
+1. Uruchamiasz `/goal`, a po nim warunek zakończenia — do 4000 znaków zwykłego języka.
+2. Tura startuje natychmiast, z samym warunkiem jako dyrektywą. Żaden osobny prompt nie jest potrzebny.
+3. Gdy tura się kończy, **mały, szybki model** (domyślnie Haiku) czyta twój warunek plus dotychczasową rozmowę i zwraca decyzję tak-albo-nie wraz z krótkim uzasadnieniem.
+4. Przy „nie" Claude rozpoczyna kolejną turę — a uzasadnienie ewaluatora jest wstrzykiwane jako wskazówka, co robić dalej.
+5. Przy „tak" cel sam się kasuje, a w transkrypcie ląduje wpis „achieved".
+
+To cała pętla. Podczas jej działania wskaźnik `◎ /goal active` pokazuje upływający czas, a `/goal` bez argumentów pokazuje warunek, liczbę tur, zużycie tokenów i najnowszy werdykt ewaluatora. `/goal clear` (albo `stop`, `off`, `cancel`) ubija ją wcześniej.
+
+```text
+/goal all tests in test/auth pass and the lint step is clean
+```
+
+Jeden cel na sesję. Ustawienie nowego zastępuje stary. I wymaga to Claude Code w wersji v2.1.139 lub nowszej — jeśli masz starszy build, to pierwsza rzecz do sprawdzenia.
+
+## Architektura: pracownik kontra sędzia
+
+Oto część, którą większość opracowań pomija, a to właśnie ona ma znaczenie.
+
+Pod maską `/goal` to nakładka na **oparty na promptcie hook Stop** o zasięgu sesji. Za każdym razem, gdy główny model kończy turę, hook się odpala, wysyła twój warunek i rozmowę do skonfigurowanego małego, szybkiego modelu i działa na podstawie odpowiedzi. Mógłbyś zbudować to samo własnoręcznie za pomocą hooka Stop w swoim pliku ustawień — `/goal` po prostu robi z tego jednolinijkowca o zasięgu bieżącej sesji.
+
+Dlaczego ten podział ma znaczenie? Bo agenty oceniające własną pracę domową to dokładnie sposób, w jaki dostajesz „Ukończyłem zadanie!" na wierzchu zepsutego builda. Fable 5 [dobrze radzi sobie z oceną własnej pracy w trakcie zadania](/blog/claude-fable-5-developer-review-migration-guide) — ale „czy skończyłem?" to pytanie z wbudowanym konfliktem interesów. Model, który mielił przez czterdzieści minut, *chce* być gotowy. Świeży ewaluator bez udziału w wyniku, widzący tylko dowody w transkrypcie, to znacznie trudniejszy do przekonania rozmówca.
+
+Sędzia ma dwie właściwości, które musisz przyswoić:
+
+- **Nigdy nie uruchamia komend.** Ewaluator nie ma dostępu do narzędzi. Może oceniać tylko to, co model roboczy *ujawnił w rozmowie* — wyjście testów, logi builda, listingi plików, które faktycznie pojawiły się w transkrypcie.
+- **To mały model.** Domyślnie Haiku — czymkolwiek jest skonfigurowany „mały, szybki model" twojego dostawcy, ten sam poziom, do którego kieruję mechaniczną pracę w moim [poradniku routingu modeli](/blog/fable-5-claude-code-model-routing-playbook). Tokeny ewaluacji są rozliczane na tym modelu i zwykle są pomijalne obok zużycia głównej tury — ale sędzia nie wykona za ciebie głębokiego wnioskowania. Dopasowuje wzorce dowodów do twojego warunku.
+
+Obie właściwości wskazują na ten sam wniosek: **twój warunek jest tyle wart, ile dowodów wymusza do transkryptu.**
+
+## Pisanie warunków, które faktycznie się rozstrzygają
+
+Najczęstszy błąd — ten, który popełniłem w pierwszym tygodniu — to traktowanie `/goal` jak promptu. Nim nie jest. Prompt opisuje pracę; warunek opisuje **weryfikowalny stan końcowy**. Jeśli twój warunek nie potrafi rozstrzygnąć się w czyste tak albo nie, pętla nie ma wyjścia.
+
+Te nigdy nie kończą się dobrze:
+
+```text
+/goal the app is production-ready
+/goal the codebase is clean and well-organized
+/goal performance is optimized
+```
+
+„Production-ready" nie produkuje żadnego wyjścia. Nie istnieje komenda, której kod wyjścia dowodziłby tej tezy, więc ewaluator albo zawiesza pętlę na zawsze, albo — gorzej — mówi tak na czuja.
+
+Warunek, który wytrzymuje przez wiele tur, ma trzy części:
+
+1. **Jeden mierzalny stan końcowy** — wynik testu, kod wyjścia builda, liczba plików, pusta kolejka.
+2. **Określony sposób sprawdzenia** — *jak* Claude ma to udowodnić, żeby dowód wylądował w transkrypcie: „`npm test` kończy się kodem 0", „`git status` jest czysty".
+3. **Ograniczenia, które mają znaczenie** — cokolwiek, co nie może się zmienić po drodze.
+
+Oto jak to wygląda na realnej migracji:
+
+```text
+/goal every call site of fetchUser compiles against the v2 API,
+npm test exits 0 with no skipped tests, npx tsc --noEmit is clean,
+and no snapshot files are modified — or stop after 25 turns
+```
+
+Określony sposób sprawdzenia wykonuje najcięższą robotę. Ponieważ warunek nazywa komendy, model roboczy uruchamia je w każdej turze, ich wyjście pojawia się w rozmowie, a sędzia ma coś konkretnego do zweryfikowania. Bez tego Claude mógłby powiedzieć „Wierzę, że testy teraz przechodzą" — a ewaluator, który nie może uruchamiać komend, może wziąć to za dobrą monetę. To największy martwy punkt ewaluatora, a twój warunek to jedyna obrona.
+
+Zwróć uwagę też na ostatnią klauzulę: `or stop after 25 turns`. Cel nie ma wbudowanego budżetu tokenów. Claude raportuje postęp względem klauzuli tur w każdej turze, a ewaluator ocenia to na podstawie rozmowy — więc granica wpisana w warunek to najtańsze ubezpieczenie, jakie możesz kupić.
+
+### Dobre cele dla /goal
+
+Przykłady z dokumentacji dobrze odwzorowują to, co widziałem w praktyce:
+
+- Migrowanie modułu do nowego API, aż każde miejsce wywołania się kompiluje i testy przechodzą
+- Implementowanie dokumentu projektowego, aż wszystkie kryteria akceptacji są spełnione
+- Rozbijanie dużego pliku na skupione moduły, aż każdy mieści się w limicie rozmiaru
+- Przerabianie oznaczonego etykietą backlogu zgłoszeń, aż kolejka jest pusta
+
+Wzorzec: znacząca praca, mechaniczna weryfikacja. Jeśli nie potrafisz nazwać komendy, która dowodzi ukończenia, albo rozbij cel na mniejsze sekwencyjne cele budujące jeden na drugim, albo nie używaj do tego `/goal`.
+
+## /goal kontra /loop kontra hook Stop kontra tryb auto
+
+Claude Code ma teraz kilka sposobów na utrzymanie sesji przy działaniu i odpowiadają one na różne pytania:
+
+| Podejście | Kolejna tura startuje, gdy | Zatrzymuje się, gdy |
+| --- | --- | --- |
+| `/goal` | Poprzednia tura się kończy | Osobny model potwierdza, że warunek jest spełniony |
+| `/loop` | Upłynie interwał czasowy | Zatrzymasz to lub Claude uzna pracę za skończoną |
+| Hook Stop | Poprzednia tura się kończy | Zdecyduje twój własny skrypt lub prompt |
+| Tryb auto | — (pojedyncza tura) | Claude uzna pracę za skończoną |
+
+Sposób, w jaki wybieram między nimi:
+
+- **`/goal`** gdy istnieje weryfikowalny stan końcowy, a praca powinna biec jedna za drugą. Zasięg sesji, zero konfiguracji.
+- **`/loop`** gdy wyzwalaczem jest czas, nie ukończenie — odpytywanie deploya, sprawdzanie CI co kilka minut.
+- **Własny hook Stop** gdy potrzebujesz sprawdzenia w stylu goal w *każdej* sesji albo gdy sprawdzenie powinno być deterministyczne — skrypt, który dosłownie uruchamia zestaw testów i grepuje wynik, bije osąd modelu za każdym razem. `/goal` to dokładnie ta wygodna wersja tego samego o zasięgu sesji.
+- **Tryb auto** nie jest alternatywą — jest uzupełnieniem. Tryb auto zatwierdza wywołania narzędzi *wewnątrz* tury; `/goal` startuje *nowe* tury. Uruchom `/goal` bez trybu auto, a pętla zawiesi się przy pierwszym monicie o uprawnienia, czekając na OK, które nigdy nie nadejdzie. Do naprawdę nienadzorowanych przebiegów chcesz obu.
+
+Jeśli twoja długotrwała praca w ogóle nie mieści się w sesji — nocne zadania, wielodniowe autonomiczne projekty — to inna kategoria narzędzi; opisałem ją w moim poradniku o [zarządzanych agentach Fable 5 i wielodniowych sesjach](/blog/fable-5-managed-agents-multi-day-autonomous-guide).
+
+## Pytanie o pieniądze
+
+Cel działa, dopóki warunek nie zostanie spełniony albo dopóki go nie skasujesz. Przeczytaj to jeszcze raz jak wyciąg z rachunku.
+
+Przestroga, która krążyła po sieci: deweloper skonfigurował Claude Code, żeby uruchamiał się ponownie co 30 minut przez całą noc bez realnego warunku zatrzymania, i obudził się z **rachunkiem na 6000 dolarów**. To była raczej zaplanowana pętla niż `/goal`, ale tryb awarii przenosi się wprost — nieograniczona pętla agenta, której kontekst puchnie w każdej turze, przesyłając ponownie setki tysięcy tokenów na żądanie, spotęgowana, gdy Anthropic po cichu skrócił domyślny TTL cache'a promptów z godziny do pięciu minut.
+
+`/goal` daje ci lepsze zabezpieczenia niż zadanie cron, ale tylko jeśli z nich korzystasz:
+
+- **Wstaw do warunku klauzulę tur lub czasu.** `or stop after 20 turns` to jedno zdanie, a ogranicza najgorszy przypadek.
+- **Sprawdzaj zużycie w trakcie.** `/goal` bez argumentów pokazuje skumulowane zużycie tokenów i ocenione tury. Przy czymkolwiek długim rzuć na to okiem.
+- **Wybieraj kilka małych celów zamiast jednego wielkiego.** „Przebuduj cały moduł auth" jest trudny do oceny i łatwy do zawieszenia; trzy sekwencyjne cele z ostrymi sprawdzeniami kończą się samodzielnie i dają ci naturalne punkty kontrolne. To ta sama [dyscyplina określania celu i ograniczeń](/blog/fable-5-prompting-de-prescribing-guide), która sprawia, że prompty Fable 5 działają — klauzule ograniczeń to miejsce, gdzie żyje twój budżet.
+
+## Uruchamianie w trybie headless
+
+`/goal` nie jest wyłącznie interaktywne. Działa w trybie nieinteraktywnym, aplikacji desktopowej i Remote Control. Z `-p` ustawienie celu uruchamia całą pętlę do końca w jednym wywołaniu:
+
+```bash
+claude -p "/goal CHANGELOG.md has an entry for every PR merged this week"
+```
+
+Ta jedna linijka to kompletne autonomiczne zadanie: zaczyna pracę natychmiast, samodzielnie ocenia się po każdej turze i kończy, gdy warunek jest spełniony. Zawiń to w CI, hook gita albo zaplanowane zadanie, a masz automatyzację sterowaną celem bez pisania szkieletu. Ctrl+C przerywa to wcześniej. Pamiętaj tylko, że sekcja o kosztach powyżej obowiązuje podwójnie, gdy nikt nie patrzy na terminal.
+
+## Pułapki, które ugryzą cię dokładnie raz
+
+Kilka zachowań, które nie są oczywiste, dopóki ci się nie przytrafią:
+
+- **Semantyka wznawiania.** Cel, który był wciąż aktywny, gdy sesja się zakończyła, zostaje przywrócony przy `--resume` lub `--continue` — warunek przechodzi dalej, ale liczba tur, licznik czasu i punkt odniesienia zużycia tokenów wszystkie się **resetują**. Jeśli twój warunek mówi „stop after 20 turns", wznowienie po cichu daje mu 20 świeżych.
+- **Ustawienia trust i hooks.** Ponieważ ewaluator jeździ na systemie hooków, `/goal` działa tylko w przestrzeniach roboczych, gdzie zaakceptowałeś okno dialogowe zaufania, i jest niedostępne, gdy `disableAllHooks` jest ustawione na dowolnym poziomie ustawień lub gdy `allowManagedHooksOnly` jest ustawione w managed settings. Komenda mówi ci dlaczego, zamiast po cichu zawieść — ale jeśli wdrażasz Claude Code zespołowi z managed settings, wiedz, że możesz wyłączać `/goal`.
+- **`/clear` kasuje też cel.** Rozpoczęcie nowej rozmowy usuwa każdy aktywny cel. Oczywiste z perspektywy czasu; zaskakujące w środku przepływu pracy.
+- **Uzasadnienie ewaluatora to sterowanie, nie dekoracja.** Każdy werdykt „nie" wraca do kolejnej tury jako wskazówka. Jeśli pętla wydaje się utknięta, krążąc wokół niewłaściwej rzeczy, przeczytaj najnowsze uzasadnienie w statusie `/goal` — zwykle ujawnia ono, że twój warunek akcentuje coś, czego nie zamierzałeś.
+
+## Lista kontrolna przed startem
+
+Zanim ustawisz cel i odejdziesz:
+
+1. Czy potrafię nazwać **komendę, której wyjście dowodzi ukończenia**? Jeśli nie, przepisz warunek albo nie używaj `/goal`.
+2. Czy warunek określa **jak sprawdzić** („npm test exits 0"), a nie tylko co ma być prawdą?
+3. Czy są tam **ograniczenia „nie ruszać"** („no snapshot files modified")?
+4. Czy jest **limit tur lub czasu**?
+5. Czy **tryb auto jest włączony**, żeby pętla nie zawiesiła się na monitach o uprawnienia?
+6. Przy wznowieniu: czy pamiętam o **resecie licznika tur**?
+
+`/goal` to pierwsza mainstreamowa implementacja idei, która od dłuższego czasu krąży wokół projektowania agentów: oddziel agenta, który pracuje, od agenta, który decyduje, że skończone. Nie sprawi, że Fable 5 stanie się mądrzejszy — model już wcześniej był zdolny do długich autonomicznych przebiegów. To, co robi, to sprawienie, że *zakończenie* staje się wystarczająco godne zaufania, byś mógł faktycznie odejść. Pisz warunki jak kontrakty, ogranicz swoje ryzyko, a podatek od „continue" znika na dobre.
+
+## Źródła i lektura
+
+### Źródła
+
+- [Keep Claude working toward a goal — Claude Code Docs](https://code.claude.com/docs/en/goal) - pełna mechanika: zachowanie ewaluatora, implementacja hooka Stop, semantyka wznawiania, wymagania
+- [I finally understood Claude Code's /goal command after realizing I was using it completely wrong — XDA](https://www.xda-developers.com/finally-understood-claude-code-goal-command/) - tryb awarii „traktowania /goal jak promptu"
+- [Claude Code's '/goals' separates the agent that works from the one that decides it's done — VentureBeat](https://venturebeat.com/orchestration/claude-codes-goals-separates-the-agent-that-works-from-the-one-that-decides-its-done) - ujęcie pracownik/sędzia
+- [Someone left Claude Code running overnight, and it cost $6,000 — MakeUseOf](https://www.makeuseof.com/someone-left-claude-code-running-overnight-and-it-cost-6000/) - studium przypadku kosztu nieograniczonej pętli
+
+### Dalsza lektura
+
+- [Prompt-based hooks — Claude Code Docs](https://code.claude.com/docs/en/hooks-guide#prompt-based-hooks) - zbuduj własny hook Stop, gdy wyrośniesz ze sprawdzenia /goal o zasięgu sesji
+- [Run a prompt repeatedly with /loop — Claude Code Docs](https://code.claude.com/docs/en/scheduled-tasks#run-a-prompt-repeatedly-with-%2Floop) - czasowo-interwałowy rodzeństwo /goal
+- [Claude Code /goal: A Field Guide with Games — Jason Croucher](https://medium.com/@jason.croucher/claude-code-goal-a-field-guide-with-games-f6f3b617ce5b) - kreatywne testy obciążeniowe ewaluatora
+
+---
+
+~Seb 👊

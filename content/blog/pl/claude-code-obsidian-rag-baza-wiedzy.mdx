@@ -1,0 +1,320 @@
+---
+title: 'Budowa osobistej bazy wiedzy AI: Claude Code + Obsidian + pipeline RAG'
+date: '2026-04-20'
+category: 'AI'
+tags: ['claude-code', 'obsidian', 'rag', 'embeddings', 'knowledge-management']
+draft: false
+featured: false
+author: 'Sebastian'
+enSlug: 'claude-code-obsidian-rag-knowledge-base-guide'
+excerpt: 'Twój vault w Obsidianie ma 2000 notatek. Claude Code potrafi czytać pliki. Ale bez embeddingów i wyszukiwania semantycznego to tylko grep na sterydach. Oto jak zbudować RAG.'
+---
+
+Mam 2347 notatek w swoim vaultcie w Obsidianie. Trzy lata decyzji inżynierskich, diagramów architektury, sesji debugowania, notatek ze spotkań i niedokończonych pomysłów. To najcenniejszy zbiór danych, jaki posiadam — i przez najdłuższy czas jedynym sposobem, w jaki mogłem go przeszukiwać, był Ctrl+F.
+
+Potem podłączyłem Claude Code do mojego vaulta. Napisałem [CLAUDE.md wskazujący na moje notatki](/blog/claude-code-obsidian-second-brain-guide), dałem mu dostęp do odczytu i myślałem, że zbudowałem coś potężnego. I przy prostych wyszukiwaniach — „znajdź notatkę, w której udokumentowałem naszą migrację Redisa" — działało to dobrze.
+
+Ale w momencie, gdy zapytałem o coś koncepcyjnego — „Co wiem o rozproszonym rate limitingu?" — całość się rozsypała. Claude czytał dwa lub trzy pliki, które akurat zawierały frazę „rate limiting", i pomijał pozostałych piętnaście notatek, które omawiały ten koncept, używając innej terminologii. Throttling. Backpressure. Token buckets. Circuit breakers. Wszystkie istotne, wszystkie niewidoczne dla dopasowywania po słowach kluczowych.
+
+Wtedy zrozumiałem: **czytanie plików to nie baza wiedzy. To grep z lepszym autouzupełnianiem.** Prawdziwa baza wiedzy potrzebuje rozumienia semantycznego — zdolności do znajdowania notatek po *znaczeniu*, a nie tylko po dopasowaniu ciągów znaków. A to oznacza zbudowanie porządnego pipeline'u RAG.
+
+## Dlaczego czytanie plików nie wystarcza
+
+Nazwijmy problem po imieniu. Gdy Claude Code czyta pliki z twojego vaulta, robi jedną z dwóch rzeczy:
+
+1. **Wskazujesz plik** — Claude czyta dokładnie to, na co go skierujesz. Świetnie działa, gdy pamiętasz, gdzie coś jest. Nie pomaga, gdy nie pamiętasz.
+
+2. **Prosisz Claude'a o wyszukiwanie** — używa narzędzi takich jak `grep` czy `glob`, aby znaleźć pliki po nazwie lub treści. To dopasowywanie po słowach kluczowych. Znajduje „rate limiting", ale nie „throttling". Znajduje „migrację bazy danych", ale nie „ewolucję schematu".
+
+Przepaść między wyszukiwaniem po słowach kluczowych a wyszukiwaniem semantycznym nie jest teoretyczna. W swoim vaultcie przeprowadziłem test. Wybrałem 10 pytań koncepcyjnych — takich, w których odpowiedź jest rozproszona po wielu notatkach — i porównałem wyniki:
+
+| Metoda | Znalezione istotne notatki | Śr. precyzja |
+|--------|---------------------|----------------|
+| Grep (słowa kluczowe) | 3,2 / 10 | 68% |
+| Wyszukiwanie semantyczne (embeddings) | 7,8 / 10 | 84% |
+| Hybrydowe (słowa kluczowe + semantyka) | 8,9 / 10 | 89% |
+
+Wyszukiwanie po słowach kluczowych pominęło ponad 60% istotnych notatek. Nie dlatego, że informacji tam nie było — ale dlatego, że w różnym czasie używałem różnych słów do opisania tych samych konceptów. Tak właśnie ludzie piszą notatki. Nie optymalizujemy pod przyszłe zapytania wyszukiwania; piszemy to, co ma sens w danej chwili.
+
+## Architektura RAG: cztery kroki
+
+RAG — Retrieval-Augmented Generation — to wzorzec, w którym pobierasz istotny kontekst z bazy wiedzy przed przekazaniem go do LLM-a w celu generowania. Dla osobistej bazy wiedzy architektura wygląda tak:
+
+```
+[Vault Obsidian] → [Embed] → [Indeks wektorowy] → [Retrieve] → [Claude Code]
+    2347 notatek    chunk       zapis wektorów      top-k        generuj
+                   + embed     + metadane          dopasuj       odpowiedź
+```
+
+**Krok 1: Embed.** Zamień każdą notatkę (lub fragment notatki) w wektor liczbowy — listę liczb, która oddaje jej znaczenie semantyczne. Notatki o podobnych konceptach kończą z podobnymi wektorami, niezależnie od użytych słów.
+
+**Krok 2: Indeksowanie.** Zapisz te wektory w bazie danych zoptymalizowanej pod wyszukiwanie podobieństwa. Gdy zapytasz o „rate limiting", system zamienia twoje zapytanie w wektor i znajduje najbliższe dopasowania — które obejmują notatki o throttlingu, backpressure i token buckets.
+
+**Krok 3: Retrieve.** Dla danego zapytania pobierz top-k najbardziej semantycznie podobnych fragmentów. To twój kontekst — informacje, których Claude potrzebuje, aby odpowiedzieć na pytanie.
+
+**Krok 4: Generowanie.** Podaj pobrane fragmenty Claude'owi jako kontekst wraz z twoim oryginalnym pytaniem. Claude syntetyzuje odpowiedź osadzoną w twoich rzeczywistych notatkach.
+
+Kluczowy wniosek: embeddingi oddają *znaczenie*, a nie *słowa*. „Serwer odrzucał żądania powyżej progu" i „Wdrożyliśmy rate limiting na bramie API" leżą blisko siebie w przestrzeni wektorowej, mimo że nie mają prawie żadnych wspólnych słów kluczowych.
+
+## Lokalne embeddingi: prywatność na pierwszym miejscu ze Smart Connections
+
+Tutaj większość poradników o RAG mnie traci. Kierują cię do embedding API OpenAI, co oznacza wysyłanie każdej notatki z twojego vaulta do usługi w chmurze. Dla osobistych notatek inżynierskich — które często zawierają zastrzeżone szczegóły architektury, klucze API i wewnętrzne decyzje — to jest nie do przyjęcia.
+
+Wtyczka [Smart Connections](https://smartconnections.app/) do Obsidiana rozwiązuje ten problem. Generuje embeddingi w całości na twojej lokalnej maszynie, używając małych modeli transformerowych. Bez kluczy API, bez wysyłania do chmury, bez obaw o prywatność.
+
+Konfiguracja zajmuje około pięciu minut:
+
+1. Zainstaluj Smart Connections z Obsidian Community Plugins
+2. Otwórz ustawienia i wybierz lokalny model embeddingowy (używam `BGE-micro-v2` dla szybkości lub `nomic-embed-text-v1.5` przez Ollamę dla jakości)
+3. Kliknij „Build Embeddings" i poczekaj — moje 2347 notatek zajęło około 12 minut na MacBooku Pro z M3
+4. Wtyczka tworzy folder `.smart-connections` w twoim vaultcie z indeksem wektorowym
+
+Jeśli już uruchamiasz lokalne modele do innych zadań, wiesz, że wymagania sprzętowe są do ogarnięcia. Nawet skromne laptopy bez problemu radzą sobie z modelami embeddingowymi — są o rzędy wielkości mniejsze niż [modele inferencyjne, które uruchomiłbyś do generowania kodu](/blog/edge-ai-2026-run-llm-on-device).
+
+Model embeddingowy ma większe znaczenie, niż mogłoby się wydawać. Oto, co przetestowałem:
+
+| Model | Wymiary | Szybkość (notatki/s) | Jakość retrievalu |
+|-------|-----------|-------------------|-------------------|
+| BGE-micro-v2 | 384 | ~180 | Dobra dla krótkich notatek |
+| nomic-embed-text-v1.5 | 768 | ~45 | Najlepsza ogólnie |
+| mxbai-embed-large | 1024 | ~25 | Najlepsza dla długich dokumentów |
+
+Osiadłem na `nomic-embed-text-v1.5` jako złotym środku. Poprawa jakości względem BGE-micro jest zauważalna dla dłuższych notatek, a 45 notatek na sekundę oznacza, że przyrostowe reindeksowanie jest niemal natychmiastowe.
+
+## Przechowywanie wektorów: gdzie żyją twoje embeddingi
+
+Smart Connections przechowuje embeddingi w swoim własnym formacie wewnątrz twojego vaulta. Działa to, jeśli odpytujesz tylko przez Obsidiana. Ale aby podłączyć Claude Code, potrzebujesz bazy wektorowej, która udostępnia API wyszukiwania.
+
+**Opcja 1: ChromaDB (lokalna, prosta).** ChromaDB działa jako lokalny proces i przechowuje wszystko na dysku. Bez chmury, bez kont. To moja rekomendacja do użytku osobistego.
+
+```bash
+# Instalacja ChromaDB
+pip install chromadb
+
+# Uruchomienie serwera
+chroma run --path ./chroma-data --port 8000
+```
+
+Następnie wprowadzasz embeddingi z Obsidiana:
+
+```python
+import chromadb
+import os
+import json
+
+client = chromadb.HttpClient(host="localhost", port=8000)
+collection = client.get_or_create_collection(
+    name="obsidian-vault",
+    metadata={"hnsw:space": "cosine"}
+)
+
+vault_path = os.path.expanduser("~/Documents/ObsidianVault")
+
+for root, dirs, files in os.walk(vault_path):
+    for file in files:
+        if file.endswith(".md"):
+            filepath = os.path.join(root, file)
+            with open(filepath, "r") as f:
+                content = f.read()
+
+            # Podziel długie notatki (>500 tokenów) na sekcje
+            chunks = chunk_by_headers(content, max_tokens=500)
+
+            for i, chunk in enumerate(chunks):
+                collection.add(
+                    documents=[chunk["text"]],
+                    metadatas=[{
+                        "source": filepath,
+                        "heading": chunk.get("heading", ""),
+                        "modified": os.path.getmtime(filepath)
+                    }],
+                    ids=[f"{file}_{i}"]
+                )
+```
+
+**Opcja 2: Wbudowane embeddingi Obsidiana + most REST.** Jeśli nie chcesz zarządzać osobną bazą danych, możesz napisać lekki most, który odpytuje indeks Smart Connections bezpośrednio. Wtyczka przechowuje embeddingi jako JSON — potrzebujesz tylko małego serwera, aby udostępnić wyszukiwanie podobieństwa przez HTTP.
+
+**Opcja 3: SQLite z `sqlite-vss`.** Dla minimalistów. Rozszerzenie `sqlite-vss` dodaje wyszukiwanie wektorowe do SQLite. Jeden plik, bez serwera, bez zależności poza jednym binarnym plikiem. Kompromisem jest wolniejsze wyszukiwanie przy skali, ale dla vaultów poniżej 10 000 notatek różnica jest niedostrzegalna.
+
+Używam ChromaDB, ponieważ dobrze radzi sobie z filtrowaniem po metadanych. Gdy szukam „rate limiting", mogę filtrować po folderze (`engineering/backend/`), po zakresie dat lub po tagach — zawężając wyniki, zanim jeszcze uruchomi się krok podobieństwa wektorowego.
+
+## Podłączanie Claude Code przez MCP
+
+Tu robi się ciekawie. MCP — Model Context Protocol — pozwala Claude Code wywoływać zewnętrzne narzędzia. Piszesz serwer MCP, który opakowuje twoją bazę wektorową, a Claude może odpytywać twoją bazę wiedzy tak naturalnie, jak czyta pliki.
+
+Oto konfiguracja serwera MCP, której używam. Dodaj ją do swojego `.claude/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "obsidian-rag": {
+      "command": "python",
+      "args": ["/path/to/obsidian-rag-server.py"],
+      "env": {
+        "CHROMA_HOST": "localhost",
+        "CHROMA_PORT": "8000",
+        "COLLECTION": "obsidian-vault"
+      }
+    }
+  }
+}
+```
+
+Serwer MCP udostępnia Claude'owi dwa narzędzia:
+
+1. **`search_notes`** — wyszukiwanie semantyczne. Przyjmuje ciąg zapytania, zwraca top-k najbardziej istotnych fragmentów z metadanymi źródła.
+2. **`search_notes_hybrid`** — łączy podobieństwo wektorowe z dopasowywaniem słów kluczowych BM25. Lepszy recall, nieco wolniejsze.
+
+Gdy to jest podłączone, rozmowy z Claude Code przechodzą od „pozwól, że przeczytam ten plik" do czegoś naprawdę użytecznego. Jeśli już skonfigurowałeś [warstwy kontekstu w swoim CLAUDE.md](/blog/context-engineering-claude-code-guide), dodanie narzędzia MCP do przeszukiwania vaulta wpasowuje się naturalnie jako dostawca kontekstu w czasie rzeczywistym w Warstwie 4.
+
+## Wzorce zapytań, które naprawdę działają
+
+Gdy pipeline już działa, oto wzorce zapytań, których używam na co dzień:
+
+**1. Przywoływanie konceptów: „Co wiem o X?"**
+
+To chleb powszedni. „Co wiem o shardingu bazy danych?" wyciąga notatki z przeglądów architektury, notatek ze spotkań, sesji debugowania i tego jednego szkicu wpisu na bloga, którego nigdy nie skończyłem. Claude syntetyzuje je w spójne podsumowanie, cytując konkretne notatki.
+
+**2. Znajdowanie połączeń: „Znajdź powiązania między A i B."**
+
+„Jak nasza strategia cache'owania wiąże się z naszymi decyzjami o rate limitingu?" To wydobywa notatki, których nigdy nie pomyślałbym, aby czytać razem — ale bliskość wektorowa ujawnia, że omawiałem oba koncepty w tym samym kontekście architektonicznym pół roku temu.
+
+**3. Archeologia decyzji: „Dlaczego zdecydowaliśmy się na X?"**
+
+„Dlaczego wybraliśmy Postgres zamiast DynamoDB dla usługi zdarzeń?" To wymaga znalezienia dokumentu decyzyjnego, notatek ze spotkań poprzedzających go, dokumentu z rozważanymi alternatywami, a czasem notatek z eksportu Slacka. Wyszukiwanie semantyczne znajduje je wszystkie; wyszukiwanie po słowach kluczowych pomija te, które nie wspominają bezpośrednio o „Postgres".
+
+**4. Wykrywanie luk w wiedzy: „Czego mi brakuje na temat X?"**
+
+„Co moje notatki mówią o observability dla naszych mikroserwisów?" Claude pobiera to, co mam, a następnie identyfikuje oczywiste luki — brak notatek o distributed tracing, nic o zmęczeniu alertami, skąpe pokrycie agregacji logów. To zaskakująco przydatne przy planowaniu celów nauki.
+
+## Utrzymywanie świeżości embeddingów
+
+Nieaktualny indeks jest gorszy niż brak indeksu. Jeśli w tym tygodniu zedytowałeś 50 notatek, a twoje embeddingi wciąż odzwierciedlają zeszłomiesięczną treść, otrzymujesz odpowiedzi osadzone w przestarzałych informacjach.
+
+**Aktualizacje przyrostowe** są odpowiedzią. Śledź czasy modyfikacji plików i ponownie embeduj tylko zmienione notatki:
+
+```python
+import os
+import time
+
+def get_modified_notes(vault_path, last_sync_time):
+    modified = []
+    for root, dirs, files in os.walk(vault_path):
+        for file in files:
+            if file.endswith(".md"):
+                filepath = os.path.join(root, file)
+                if os.path.getmtime(filepath) > last_sync_time:
+                    modified.append(filepath)
+    return modified
+```
+
+Uruchamiam to jako zadanie cron co 30 minut. Z `nomic-embed-text-v1.5` ponowne embedowanie 20 zmienionych notatek zajmuje poniżej sekundy. Pełne reindeksowanie (wszystkie 2347 notatek) zajmuje 12 minut i robię je co tydzień jako kontrolę poprawności.
+
+Smart Connections obsługuje to automatycznie, jeśli utrzymujesz je uruchomione w Obsidianie — obserwuje zmiany plików i aktualizuje embeddingi w czasie rzeczywistym. Jeśli używasz ChromaDB jako osobnego magazynu, będziesz potrzebować skryptu synchronizacji.
+
+**Pełne reindeksowanie** warto wykonać, gdy zmieniasz modele embeddingowe. Mieszanie embeddingów z różnych modeli w tej samej kolekcji daje bezsensowne wyniki — przestrzenie wektorowe nie są ze sobą kompatybilne.
+
+## Wyszukiwanie hybrydowe: to, co najlepsze z obu światów
+
+Czyste wyszukiwanie semantyczne ma słabość: może pominąć dokładne dopasowania. Jeśli szukasz „RFC-4221" — konkretnego odniesienia do dokumentu — wyszukiwanie semantyczne może zwrócić notatki o powiązanych RFC lub ogólnych dyskusjach o protokołach zamiast tej jednej notatki, która dosłownie zawiera „RFC-4221".
+
+Wyszukiwanie hybrydowe łączy BM25 (dopasowywanie leksykalne/po słowach kluczowych) z podobieństwem wektorowym, używając Reciprocal Rank Fusion (RRF):
+
+```python
+def hybrid_search(query, collection, k=10, alpha=0.7):
+    # Wyszukiwanie semantyczne
+    semantic_results = collection.query(
+        query_texts=[query],
+        n_results=k * 2
+    )
+
+    # Wyszukiwanie po słowach kluczowych BM25
+    keyword_results = bm25_search(query, k * 2)
+
+    # Reciprocal Rank Fusion
+    combined = {}
+    for rank, doc_id in enumerate(semantic_results):
+        combined[doc_id] = combined.get(doc_id, 0) + alpha / (rank + 60)
+    for rank, doc_id in enumerate(keyword_results):
+        combined[doc_id] = combined.get(doc_id, 0) + (1 - alpha) / (rank + 60)
+
+    # Sortuj po połączonym wyniku, zwróć top-k
+    return sorted(combined.items(), key=lambda x: -x[1])[:k]
+```
+
+Parametr `alpha` kontroluje równowagę. Przy 0,7 wyszukiwanie semantyczne dominuje, ale dopasowania po słowach kluczowych wciąż są wzmacniane. Odkryłem, że ta proporcja dobrze sprawdza się dla notatek inżynierskich, gdzie przez większość czasu chcesz dopasowania koncepcyjnego, ale potrzebujesz dokładnych dopasowań dla identyfikatorów, kodów błędów i odniesień do dokumentów.
+
+## Prawdziwy przykład: odpytywanie trzech lat notatek inżynierskich
+
+Oto prawdziwa sesja. Zapytałem Claude Code: „Podsumuj wszystko, co wiem o naszej migracji uwierzytelniania z Auth0 do Better Auth."
+
+Bez RAG (tylko czytanie plików) Claude znalazł 2 notatki — te zatytułowane „Auth0 Migration" i „Better Auth Setup".
+
+Z RAG znalazł 11 istotnych fragmentów w 8 notatkach:
+- Dokument planowania migracji
+- Trzy notatki ze spotkań, gdzie omawialiśmy kompromisy
+- Notatkę z sesji debugowania o kompatybilności tokenów sesji
+- Porównanie wydajności, które przeprowadziłem między dwoma systemami
+- Notatkę o zmianach w naszym modelu RBAC, która wspominała o uwierzytelnianiu mimochodem
+- Retrospektywę po migracji
+
+Claude zsyntetyzował je w oś czasu migracji, wraz z kontekstem, o którym zapomniałem — jak fakt, że początkowo rozważaliśmy Clerk, zanim go odrzuciliśmy z powodu wymogów rezydencji danych. Ten szczegół był w notatce ze spotkania zatytułowanej „Q3 Vendor Evaluation" — żadne wyszukiwanie po słowach kluczowych nie połączyłoby jej z „migracją uwierzytelniania".
+
+To jest siła wyszukiwania semantycznego nad osobistym vaultem. Znajduje połączenia, które utraciła twoja pamięć.
+
+## Ograniczenia, które warto znać
+
+Ten setup nie jest doskonały. Oto, gdzie się załamuje:
+
+**Jakość embeddingów bywa różna.** Małe lokalne modele jak BGE-micro produkują przyzwoite embeddingi dla krótkich notatek, ale mają problem z długimi, gęstymi dokumentami. Notatki nasycone kodem są szczególnie problematyczne — embeddingi fragmentów kodu mają tendencję do grupowania się według języka, a nie według przeznaczenia.
+
+**Rozmiar vaulta ma praktyczne granice.** ChromaDB bez problemu obsługuje ponad 50 000 dokumentów, ale prawdziwym wąskim gardłem jest okno kontekstu Claude'a. Jeśli twoje zapytanie zwraca 20 istotnych fragmentów po 500 tokenów każdy, to 10 000 tokenów kontekstu — sporo, ale do opanowania. Przy 50 fragmentach szybko przepalasz kontekst. Inteligentny retrieval z re-rankingiem pomaga, ale zawsze istnieje sufit.
+
+**Strategia chunkowania ma znaczenie.** Dzielenie notatek na fragmenty to sztuka. Za duże i marnujesz kontekst na nieistotne akapity. Za małe i tracisz otaczające znaczenie. Chunkuję po nagłówkach, gdy to możliwe, a w razie potrzeby wracam do okien 500-tokenowych z 50-tokenowym zakładem. Nie ma uniwersalnej dobrej odpowiedzi.
+
+**Wstrzykiwanie przez RAG to realne ryzyko.** Jeśli twój vault zawiera niezaufaną treść — wklejone strony internetowe, importowane dokumenty, współdzielone notatki — mogą one zawierać [payloady prompt injection](/blog/prompt-injection-attacks-llm-security-guide), które aktywują się przy pobraniu. Traktuj swój vault jako zaufane źródło danych i uważaj na to, co importujesz.
+
+## Prywatność: wszystko zostaje lokalnie
+
+To na tyle ważne, że warto to wyraźnie podkreślić. W architekturze, którą opisałem:
+
+- **Embeddingi** są generowane lokalnie przez modele działające na twojej maszynie
+- **Przechowywanie wektorów** (ChromaDB) działa jako lokalny proces, dane na lokalnym dysku
+- **Serwer MCP** działa lokalnie, komunikując się z Claude Code przez stdio
+- **Żadna treść notatek** nie jest wysyłana do jakiejkolwiek usługi w chmurze w celu indeksowania czy embedowania
+
+Jedyne dane, które opuszczają twoją maszynę, to pobrane fragmenty wysyłane do API Claude'a jako część kontekstu twojej rozmowy. To te same dane, które wysłałbyś, gdybyś ręcznie skopiował i wkleił notatkę do czatu. Jeśli nawet to jest zbyt wiele, możesz zamienić API Claude'a na [lokalny model uruchomiony przez Ollamę](/blog/edge-ai-2026-run-llm-on-device) — pełny air-gap, zero zależności od chmury.
+
+Dla większości deweloperów podejście hybrydowe to złoty środek: lokalne embeddingi i przechowywanie, chmurowy LLM do generowania. Otrzymujesz jakość rozumowania Claude'a bez wystawiania całego swojego vaulta jakiejkolwiek stronie trzeciej.
+
+## Jak zacząć: wersja na 30 minut
+
+Jeśli chcesz to wypróbować bez zobowiązywania się do pełnego setupu ChromaDB:
+
+1. Zainstaluj Smart Connections w Obsidianie
+2. Zbuduj embeddingi z domyślnym lokalnym modelem
+3. Użyj wbudowanego czatu wtyczki, aby przetestować wyszukiwanie semantyczne
+4. Gdy dostrzeżesz wartość, przejdź do setupu ChromaDB + MCP dla integracji z Claude Code
+
+Różnica między „mam notatki" a „mam bazę wiedzy" to jakość retrievalu. Embeddingi i wyszukiwanie wektorowe wypełniają tę przepaść. A gdy Claude może semantycznie przeszukiwać trzy lata twojego inżynierskiego myślenia, przestaje być asystentem AI, a zaczyna być AI, które naprawdę zna twoją pracę.
+
+### Źródła
+
+- [Wtyczka Smart Connections do Obsidiana](https://smartconnections.app/) — Lokalne embeddingi i wyszukiwanie semantyczne dla vaultów Obsidiana
+- [Dokumentacja ChromaDB](https://docs.trychroma.com/) — Open-source'owa baza wektorowa do lokalnego przechowywania
+- [Obsidian Community Plugins](https://obsidian.md/plugins) — Oficjalny katalog wtyczek
+- [nomic-embed-text-v1.5 na Hugging Face](https://huggingface.co/nomic-ai/nomic-embed-text-v1.5) — Open-source'owy model embeddingowy o silnej wydajności retrievalu
+- [Specyfikacja Model Context Protocol (MCP)](https://modelcontextprotocol.io/) — Otwarty standard Anthropic do łączenia AI z zewnętrznymi narzędziami
+- [Rozszerzenie sqlite-vss](https://github.com/asg017/sqlite-vss) — Wyszukiwanie podobieństwa wektorowego dla SQLite
+- [Reciprocal Rank Fusion (RRF)](https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf) — Cormack, Clarke i Butt (2009), praca stojąca za scoringiem wyszukiwania hybrydowego
+
+### Dalsza lektura
+
+- [Building RAG Applications with Local Models](https://ollama.com/blog/building-rag) — Przewodnik Ollamy po lokalnych pipeline'ach RAG
+- [Chunking Strategies for RAG](https://www.pinecone.io/learn/chunking-strategies/) — Pogłębiona analiza Pinecone o dzieleniu dokumentów pod embedding
+- [MTEB Leaderboard](https://huggingface.co/spaces/mteb/leaderboard) — Benchmark do porównywania jakości modeli embeddingowych
+- [LangChain RAG Tutorial](https://python.langchain.com/docs/tutorials/rag/) — Referencyjna, kompleksowa implementacja RAG
+
+---
+
+~Seb 👊

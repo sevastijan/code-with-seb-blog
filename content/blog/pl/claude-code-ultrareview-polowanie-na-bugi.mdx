@@ -1,0 +1,184 @@
+---
+title: "Claude Code /ultrareview: chmurowe agenty do polowania na bugi przed każdym merge'em"
+date: '2026-05-05'
+category: 'AI'
+tags: ['claude-code', 'ai-agents', 'code-review', 'security', 'ci-cd']
+draft: false
+featured: true
+author: 'Sebastian'
+enSlug: 'claude-code-ultrareview-cloud-bug-hunting-guide'
+excerpt: 'Claude Code /ultrareview wypuszcza na twój diff flotę 5–20 chmurowych agentów, każdy weryfikuje własne znaleziska, a raport ląduje w CLI w mniej niż 10 minut. Oto workflow.'
+---
+
+Kiedy pierwszy raz uruchomiłem `/ultrareview`, wyłapał race condition w handlerze kolejki, który już miałem zmergować. Lokalne `/review` przeszło czysto. Dwóch moich inżynierów zrecenzowało PR-a i zaakceptowało go. Osiem minut po tym, jak wpisałem pięć znaków w Claude Code, agent w chmurze wyjaśnił — z numerami linii i reprodukcją — dokładnie, jak dwa równoległe enqueue'y uszkodziłyby nasz licznik ponowień pod obciążeniem.
+
+To cały pitch w jednym akapicie. Poniżej: co naprawdę dzieje się za tą komendą slashową, kiedy po nią sięgać oraz konkretne tryby awarii, o których nikt jeszcze nie pisze.
+
+## Czym właściwie jest /ultrareview
+
+Claude Code wypuścił `/ultrareview` jako research preview na początku maja 2026 w wersji CLI 2.1.86. Wpisujesz komendę slashową w CLI albo aplikacji Desktop, Claude Code pakuje stan twojego repozytorium — commity na bieżącym branchu, niezacommitowane zmiany w stage'u, diff względem `main` — wysyła ten pakiet do zdalnego sandboksa na infrastrukturze Anthropic i rozstawia flotę agentów-recenzentów.
+
+Domyślna konfiguracja to pięć agentów dla zwykłego pull requesta. Dla większych diffów flota skaluje się do dwudziestu. Każdy agent dostaje pełny diff, ale ma inny system prompt, który zawęża jego zakres: jeden poluje na race condition i problemy ze współbieżnością, drugi skupia się na SQL injection i sanityzacji wejścia, trzeci audytuje obsługę błędów na granicach systemu, czwarty sprawdza wycieki zasobów i tak dalej. Działają równolegle.
+
+Kluczowa rzecz — i powód, dla którego `/ultrareview` to nie jest po prostu "więcej `/review`" — to etap weryfikacji. Każde kandydujące znalezisko wyprodukowane przez agenta-recenzenta trafia do niezależnego agenta-weryfikatora, który musi zreprodukować bug albo udowodnić tezę, zanim znalezisko wyląduje w finalnym raporcie. Stylistyczny szum, false positive'y, "rozważ wyodrębnienie tego do funkcji" — to wszystko zostaje odfiltrowane. To, co wypływa na twój terminal, to wyłącznie zweryfikowane bugi.
+
+Przebieg trwa od 5 do 10 minut. Całość dzieje się na infrastrukturze Anthropic, więc wentylator w laptopie milczy, a ty możesz dalej kodować, gdy flota pracuje.
+
+## /review kontra /ultrareview: kiedy którego używać
+
+Claude Code miał już `/review`. Działa lokalnie, korzysta z twojej bieżącej sesji i kończy w sekundy. Jest szybkie, tanie i wyłapuje realne problemy — uruchamiam je na każdym branchu przed pushem.
+
+`/ultrareview` nie jest zamiennikiem. To inne narzędzie. Oto model mentalny, przy którym się zatrzymałem po kilku tygodniach uruchamiania obu:
+
+- **`/review`** — Ciągła pętla feedbacku. Uruchamiaj po każdej znaczącej zmianie. Pojedynczy agent, lokalny kontekst, żaden koszt poza normalnym zużyciem tokenów.
+- **`/ultrareview`** — Bramka przed merge'em dla istotnych diffów. Wieloagentowe, chmurowy sandbox, zweryfikowane znaleziska, 5–20 USD za przebieg.
+
+Wzorzec, który działa: opieraj się na `/review` podczas kodowania, a potem sięgaj po `/ultrareview` przed zmergowaniem czegokolwiek, co dotyka uwierzytelniania, pieniędzy, migracji danych albo współbieżności. Traktuj to jak wezwanie senior inżyniera do finalnego przejścia — nie ściągasz go do poprawki literówki, ale absolutnie chcesz go mieć przy migracji, która przepisuje logikę billingu.
+
+## Właściwy workflow
+
+Mechanika jest minimalna. Bez argumentów Claude Code recenzuje twój bieżący lokalny branch:
+
+```bash
+/ultrareview
+```
+
+Pakuje to, co masz w working tree, względem `main`, wysyła i raportuje z powrotem. Żaden remote na GitHubie nie jest wymagany, żadnego PR-a nie trzeba, nie trzeba pushować. Prywatny branch na forku? Też działa. To było dla mnie zaskoczenie — spodziewałem się, że to będzie coś z GitHub Actions, ale to jest naprawdę natywnie terminalowe.
+
+Jeśli masz otwartego PR-a, podaj jego numer:
+
+```bash
+/ultrareview 1842
+```
+
+Teraz flota recenzuje PR-a z GitHuba po numerze, wliczając wszelkie commity wypchnięte przez współpracowników. Raport wraca z odniesieniami do numerów linii PR-a, co sprawia, że wklejanie znalezisk jako komentarzy do PR-a jest trywialne.
+
+Typowa sesja wygląda tak:
+
+```text
+$ /ultrareview
+→ Bundling branch (47 files changed, 1,203 lines)
+→ Uploading to cloud sandbox
+→ Dispatching 8 reviewer agents
+→ Reviewing... (5–10 min)
+→ Verifying findings...
+→ 4 verified issues, 3 informational notes
+
+[CRITICAL] Race condition in queue.ts:142
+  Two concurrent enqueues can corrupt retry counter.
+  Reproduction: see attached test case.
+[HIGH] Missing input validation in api/upload.ts:67
+  Path traversal possible via filename parameter.
+  Reproduction: ../../etc/passwd resolves through your join().
+[MEDIUM] Unhandled rejection in worker.ts:201
+  Promise.all rejects orphan an in-flight DB connection.
+[LOW] Stale cache key in cache.ts:88
+  TTL not refreshed on partial write.
+```
+
+Każdy problem ma plik, linię, poziom istotności, pisemne wyjaśnienie oraz — to jest ta ważna część — reprodukcję. Ten ostatni element przekonuje inżynierów, by potraktowali znaleziska poważnie. To już nie jest "AI uważa, że może być problem", to jest "oto test case, który go wywołuje".
+
+## Co to naprawdę wyłapuje
+
+Po uruchomieniu `/ultrareview` na mniej więcej czterdziestu branchach w projektach osobistych i pracy klienckiej wzorzec tego, co wyłapuje, jest spójny:
+
+**Bugi współbieżności.** Race condition, brakujące locki, niepoprawne granice transakcji, założenia o kolejności async, które trzymają się w developmencie i rozsypują pod obciążeniem. To kategoria, w której narzędzie zarabia na siebie. Lokalne `/review` rzadko je wyłapuje, bo wymagają rozumowania w wielu miejscach wywołań naraz.
+
+**Awarie na granicach.** Luki w walidacji wejścia, brakujące kontrole uwierzytelniania na bratnich endpointach, obejścia autoryzacji przez nieoczywiste ścieżki. Klasa bugów typu "czy zapomniałeś kontroli auth na nowym adminowym route".
+
+**Sprzątanie i wycieki zasobów.** Nieobsłużone rejection'y, wyciekające połączenia do bazy, uchwyty plików nigdy niezamknięte na ścieżkach błędu, sprzątanie w `useEffect`, które faktycznie niczego nie anuluje. Jeśli czytałeś [przewodnik po wyciekach pamięci w Reakcie](/blog/debugging-memory-leaks-react-nextjs-guide), wiesz, jak łatwo je wypuścić; `/ultrareview` znajduje je w diffie, zanim trafią na produkcję.
+
+**Ryzyka migracji.** Zmiany schematu, które psują istniejące zapytania, zmiany typów danych, które po cichu ucinają wartości, wartości domyślne błędnie wypełniane przy równoległych zapisach. To kategoria, w której koszt przeoczonego buga jest najwyższy i w której reprodukcja od agenta-weryfikatora jest najcenniejsza.
+
+**Problemy bezpieczeństwa.** SQL injection, command injection, path traversal, prompt injection w ścieżkach kodu korzystających z LLM. Agent bezpieczeństwa pokrywa się z tym, co znalazłby ludzki audytor. Nie zastępuje [porządnego przeglądu bezpieczeństwa pod kątem prompt injection](/blog/prompt-injection-llm-security-guide), ale niezawodnie wyłapuje oczywiste przypadki.
+
+Czego **nie** wyłapuje dobrze: bugów w logice biznesowej (agent nie zna twoich intencji), regresji wydajności zależnych od realnych danych produkcyjnych, niczego, co wymaga uruchomienia kodu przeciwko żywemu systemowi.
+
+## CLAUDE.md jest częścią powierzchni recenzji
+
+Flota czyta twój `CLAUDE.md`. To ma większe znaczenie, niż brzmi.
+
+Jeśli twój projekt ma nieoczywiste reguły — "nigdy nie loguj surowego wejścia użytkownika", "wszystkie zapisy do bazy muszą przechodzić przez middleware audytu", "feature flagi muszą domyślnie być wyłączone" — umieszczenie ich w `CLAUDE.md` sprawia, że agenci-recenzenci sprawdzają naruszenia. Zgłaszany przez nich bug staje się "reguła X z CLAUDE.md jest naruszona w linii Y" zamiast "to wygląda podejrzanie".
+
+To najbardziej dźwigniowa optymalizacja `/ultrareview`, jaką znalazłem, i wiąże się bezpośrednio z szerszą [praktyką context engineeringu](/blog/context-engineering-claude-code-guide) — ta sama dyscyplina `CLAUDE.md`, która poprawia twoje codzienne sesje z Claude Code, wyostrza też twoje recenzje. Zwięzły `CLAUDE.md` daje zwięźlejszą recenzję.
+
+Odwrotność również jest prawdziwa. Jeśli twój `CLAUDE.md` jest napchany nieaktualnymi instrukcjami, agenci-recenzenci marnują moc na dopasowywanie do reguł, które już nie obowiązują. Przyciąłem swój z 18 KB do 6 KB i stosunek sygnału do szumu w recenzjach zauważalnie wzrósł.
+
+## Ekonomia kosztów: kiedy 5–20 USD jest tego warte
+
+Cennik jest prosty: subskrybenci Pro i Max dostają trzy darmowe przebiegi jako jednorazowy przydział, który wygasa 5 maja 2026. Potem każdy przebieg jest rozliczany jako dodatkowe zużycie po 5–20 USD w zależności od rozmiaru diffa.
+
+Model mentalny to nie "czy to tanie" — to "ile kosztuje przeoczony bug". Dla mojej pracy klienckiej matematyka wygląda tak:
+
+- Incydent produkcyjny z przeoczonego buga współbieżności: 4 godziny śledztwa, 1 godzina łatania, 1 godzina post-mortemu przy stawkach senior. Powiedzmy 1500–2500 USD.
+- Przebieg `/ultrareview`, który wyłapie go przed merge'em: 15 USD.
+- Próg opłacalności: jeden wyłapany bug na 100–150 przebiegów.
+
+W swojej pracy wyłapuję mniej więcej jeden zweryfikowany problem krytyczny na 8 przebiegów, a w bazach kodu klientów, które mają już przyzwoite pokrycie testami, mniej więcej jeden na 12. Nawet przy zachowawczej stawce matematyka się spina.
+
+Kiedy to **nie** ma sensu:
+
+- Trywialne diffy (poprawki literówek, zmiany treści, bumpy zależności).
+- Diffy już pokryte rozległymi testami integracyjnymi, którym ufasz.
+- Wewnętrzne narzędzia, gdzie bugi kosztują cię kilka minut, a nie realne pieniądze.
+
+Zbieraj poprawki w paczki przed ponownym uruchomieniem. Każdy przebieg to realny koszt. Instynkt ponownego uruchamiania po każdej drobnej poprawce szybko spala pieniądze — napraw wszystko, a potem uruchom raz na końcu, by potwierdzić, że krytyczne problemy są rozwiązane.
+
+## Wpięcie tego w workflow zespołu
+
+`/ultrareview` sprawdza się najlepiej jako **ostatnia** bramka przed merge'em, po `/review`, po przejściu CI, po recenzji człowieka. Kolejność, przy której się zatrzymałem:
+
+1. **Lokalne `/review` po każdym commicie.** Tanie, szybkie, pojedynczy agent.
+2. **Zielone CI.** Testy, linting, kontrola typów. Jeśli nie [dopięsciłeś swojego pipeline'u CI](/blog/optimizing-cicd-pipelines-dx-deploy-times-guide), to jest miejsce, od którego zacząć.
+3. **Recenzja człowieka od kolegi z zespołu.** Wyłapuje intencje, nazewnictwo, kwestie architektoniczne.
+4. **`/ultrareview` przed merge'em do main.** Wieloagentowa weryfikacja stanu finalnego.
+
+Przy wdrożeniu zespołowym wzorzec, który działa, to uczynienie `/ultrareview` obowiązkowym dla diffów dotykających konkretnych ścieżek — `auth/`, `billing/`, `migrations/`, czegokolwiek w konfiguracji runtime produkcyjnego — i opcjonalnym wszędzie indziej. Możesz to zakodować w checkliście przed merge'em albo w instrukcji `CLAUDE.md`. Nie rób go obowiązkowym na każdym PR-ze; koszt kumuluje się szybko, a wartość spada na małych diffach.
+
+Dla pracy solo moja reguła jest taka: jeśli byłoby mi niekomfortowo wypuścić diff w piątek po południu i nie patrzeć na niego przez dwa dni, dostaje `/ultrareview`. Jeśli zbugowana wersja irytowałaby mnie tylko przez dziesięć minut, nie dostaje.
+
+## Ograniczenia i pułapki
+
+Kilka uczciwych zastrzeżeń z uruchamiania tego na poważnie:
+
+**Flota wysyła twój kod do chmury Anthropic.** Ta sama postawa zaufania co sam Claude Code, ale warto to zaznaczyć, jeśli działasz w środowiskach regulowanych. Pakiet zostaje w sandboksie na czas trwania przebiegu i nie jest zatrzymywany do trenowania. Przeczytaj dokumentację dotyczącą obsługi danych pod wymagania swojej branży.
+
+**To nie jest zamiennik testów.** Zweryfikowane znalezisko wciąż wymaga dodania testu, zanim naprawisz buga. Inaczej nic nie powstrzyma tego samego buga przed ponownym wprowadzeniem za pół roku. `/ultrareview` to lepszy sposób na znajdowanie bugów; test jest tym, co trzyma je martwymi.
+
+**Może przeoczyć bugi intencji.** "To działa poprawnie, ale nie implementuje tego, o co prosił ticket" jest niewidoczne dla floty. Od tego jest recenzja człowieka.
+
+**Pięć agentów bywa czasem za mało dla dużych diffów.** Jeśli twój PR ma 5000+ linii, budżet kontekstu na agenta robi się cienki. Albo podziel PR-a, albo zaufaj automatycznemu skalowaniu floty do dwudziestu.
+
+**Niespodzianki kosztowe na monorepo.** Pakowanie monorepo może wciągnąć więcej plików, niż się spodziewasz. Użyj `.claudeignore`, by wykluczyć tę połowę repozytorium, która i tak nie jest istotna dla diffa. Ta sama higiena opłaca się też w [workflow równoległych sesji](/blog/parallel-claude-code-sessions-git-worktrees-guide).
+
+**Darmowe przebiegi wygasają 5 maja 2026.** Jeśli jesteś na Pro albo Max i jeszcze nie spróbowałeś, niewykorzystane darmowe kredyty zaraz znikną. Warto co najmniej jednego przebiegu na realnym diffie, by skalibrować, czy ten workflow pasuje twojemu zespołowi.
+
+## Co to zmienia w tym, jak wypuszczam kod
+
+Uczciwa odpowiedź jest taka, że `/ultrareview` nie zastąpił żadnego kroku w moim procesie. Dodał jeden — świadomą bramkę "zanim to trafi na main, niech chmurowe agenty spróbują to złamać" — i przesunął mój poziom komfortu przy mergowaniu diffów dotykających wrażliwych ścieżek kodu.
+
+Wciąż uruchamiam lokalne `/review` bez przerwy. Wciąż polegam na testach. Wciąż proszę ludzi o recenzję, gdy zmiana ma znaczenie. Ale klasa bugów, która kiedyś wymagała, bym był niezwykle paranoiczny — współbieżność, kontrole na granicach, bezpieczeństwo migracji — ma teraz zweryfikowaną drugą opinię, która kosztuje mniej niż lunch.
+
+Dla developerów solo i małych zespołów bez silnego senior recenzenta, na którym można się oprzeć, to najbardziej znacząca funkcja Claude Code wypuszczona w 2026. Dla większych zespołów to mnożnik siły dla senior inżynierów, których już masz. Tak czy inaczej wzorzec jest ten sam: używaj oszczędnie, używaj na diffach, gdzie bugi kosztują realne pieniądze, i traktuj zweryfikowane znaleziska tak, jakby szanowany inżynier napisał do ciebie na Slacku "hej, ta rzecz w twoim PR-ze jest zepsuta — oto repro".
+
+Jeśli jeszcze tego nie uruchomiłeś, uruchom raz na swoim następnym nietrywialnym branchu, zanim darmowe kredyty wyparują. To najtańszy możliwy sposób, by się przekonać, czy ten workflow pasuje do tego, jak twój zespół wypuszcza kod.
+
+## References
+
+### Źródła
+
+- [Find bugs with ultrareview — Claude Code Docs](https://code.claude.com/docs/en/ultrareview) — oficjalny opis komendy, opis floty agentów
+- [Claude Code /ultra review: 5 Things You Need to Know — MindStudio](https://www.mindstudio.ai/blog/claude-code-ultra-review-5-things-to-know-before-running) — szczegóły cennika, wygasanie darmowych przebiegów
+- [Claude Code Ultrareview: Multi-Agent Bug Hunting — Zen van Riel](https://zenvanriel.com/ai-engineer-blog/claude-code-ultrareview-multi-agent-bug-hunting-guide/) — rozbicie specjalizacji agentów
+- [Claude Code ultrareview: Deep cloud bug hunt — All Things How](https://allthings.how/claude-code-ultrareview-deep-cloud-bug-hunt-before-you-merge/) — wyjaśnienie etapu weryfikacji
+- [Anthropic Release Notes — May 2026](https://releasebot.io/updates/anthropic/claude-code) — kontekst wydania CLI 2.1.86
+
+### Dalsza lektura
+
+- [Claude Code Code Review Docs](https://code.claude.com/docs/en/code-review) — oficjalne odniesienie do `/review` i `/ultrareview` razem
+- [Claude Code GitHub Actions PR automation](/blog/claude-code-github-actions-pr-automation-guide) — wzorce automatycznej recenzji, które dobrze łączą się z `/ultrareview`
+- [Claude Code Security Hardening Enterprise Guide](/blog/claude-code-security-hardening-enterprise-guide) — uprawnienia i ślady audytu dla recenzji wysyłanych do chmury
+
+---
+
+~Seb 👊

@@ -1,0 +1,591 @@
+---
+title: 'Claude Code Remote Control i Dispatch: budowa headlessowych pipelineów agentowych'
+date: '2026-04-20'
+category: 'AI'
+tags: ['claude-code', 'automation', 'remote-control', 'dispatch', 'multi-agent']
+draft: false
+featured: false
+author: 'Sebastian'
+enSlug: 'claude-code-remote-control-dispatch-guide'
+excerpt: 'Remote Control, Dispatch i Channels — trzy mechanizmy z Q1 2026, które zmieniają Claude Code z narzędzia deweloperskiego w programowalny backend automatyzacji.'
+---
+
+Większość lutego spędziłem, budując wewnętrzne narzędzie, które musiało orkiestrować cztery sesje Claude Code jednocześnie — jedna analizowała bazę kodu, druga pisała testy, trzecia recenzowała wyniki, a supervisor obserwował całą trójkę. [Tryb headless](/blog/claude-code-headless-mode-cicd-automation-playbook) `claude -p` doprowadził mnie mniej więcej do 60% celu. Ostatnie 40% wymagało czegoś, co jeszcze nie istniało.
+
+A potem nadszedł Q1 2026. Anthropic wypuścił trzy mechanizmy w krótkich odstępach — Dispatch, Channels i Remote Control — i luka tych 40% zniknęła z dnia na dzień. To nie są przyrostowe usprawnienia. To prymitywy, które zmieniają Claude Code z „CLI, które można oskryptować" w „środowisko uruchomieniowe agentów, które można programować".
+
+Przeprowadzę Cię przez każdy z nich: kiedy wybrać który i jakie produkcyjne wzorce wyłaniają się, gdy się je połączy.
+
+## Trzy prymitywy
+
+Zanim wejdziemy głębiej, oto model mentalny. Wyobraź sobie sesje Claude Code jako procesy na maszynie. Zawsze mogłeś je uruchamiać. Teraz możesz też:
+
+- **Dispatch** — uruchamiaj sesje programowo, ze strukturalnymi wejściami, i zbieraj strukturalne wyjścia. Pomyśl o `child_process.spawn()`, ale dla agentów.
+- **Channels** — otwieraj dwukierunkowy strumień do działającej sesji. Pomyśl o WebSockecie, ale otypowanym.
+- **Remote Control** — podłącz się do cyklu życia sesji. Wstrzymaj ją, wznów, przechwyć wywołania narzędzi zanim się wykonają. Pomyśl o systemie breakpointów w debuggerze.
+
+Każdy rozwiązuje inny problem. Większość systemów produkcyjnych potrzebuje wszystkich trzech.
+
+## Dispatch: uruchom-i-zapomnij wykonanie agenta
+
+Dispatch jest najprostszy z trójki. Wywołujesz `claude.dispatch()`, przekazujesz prompt i konfigurację, a otrzymujesz uchwyt (handle). Sesja działa asynchronicznie. Wyniki zbierasz, gdy skończy.
+
+```typescript
+import { dispatch } from '@anthropic-ai/claude-code';
+
+const handle = await dispatch({
+  prompt: 'Analyze src/api/ for N+1 query patterns and suggest fixes',
+  workdir: '/home/app/backend',
+  model: 'sonnet',
+  allowedTools: ['Read', 'Grep', 'Glob'],
+  maxTokens: 50_000,
+  timeout: 120_000,
+});
+
+// Nieblokujące — rób inną pracę, gdy Claude działa
+const result = await handle.result();
+console.log(result.output);    // Ostateczna odpowiedź Claude'a
+console.log(result.tokenUsage); // { input: 12400, output: 3200 }
+```
+
+Kluczowa różnica względem `claude -p` to struktura. Dispatch daje Ci otypowane wejścia, otypowane wyjścia, obsługę błędów, która nie polega na „parsowaniu stderr", oraz możliwość uruchamiania wielu sesji równolegle bez shellowej gimnastyki.
+
+### Automatyzacja wsadowa z Dispatch
+
+Tam, gdzie Dispatch błyszczy, jest praca wsadowa. Załóżmy, że chcesz przeprowadzić audyt bezpieczeństwa w każdym mikroserwisie w monorepo:
+
+```typescript
+import { dispatch } from '@anthropic-ai/claude-code';
+import { readdir } from 'fs/promises';
+
+const services = await readdir('/home/app/services', {
+  withFileTypes: true,
+});
+
+const handles = await Promise.all(
+  services
+    .filter((d) => d.isDirectory())
+    .map((service) =>
+      dispatch({
+        prompt: `Audit this service for:
+          1. SQL injection vectors
+          2. Unvalidated user input reaching shell commands
+          3. Hardcoded secrets
+          Output a JSON array of findings with file, line, severity, description.`,
+        workdir: `/home/app/services/${service.name}`,
+        model: 'sonnet',
+        allowedTools: ['Read', 'Grep', 'Glob'],
+        outputFormat: 'json',
+        maxTokens: 30_000,
+      })
+    )
+);
+
+const results = await Promise.all(handles.map((h) => h.result()));
+const allFindings = results.flatMap((r) => JSON.parse(r.output));
+console.log(`Found ${allFindings.length} issues across ${services.length} services`);
+```
+
+Dwanaście serwisów, dwanaście równoległych sesji, jeden zagregowany raport. Każda sesja dostaje własne okno kontekstu, własny budżet tokenów, własną białą listę narzędzi. Jeśli jeden serwis zajmuje więcej czasu, pozostałe nie czekają.
+
+To wzorzec, którego używam do [automatyzacji CI/CD wyzwalanej z GitHub Actions](/blog/claude-code-github-actions-pr-automation-guide). Webhook się odpala, dispatcher rozdziela pracę, a wyniki są agregowane i publikowane z powrotem jako komentarz do PR-a.
+
+### Pipeline'y sterowane zdarzeniami
+
+Dispatch wpasowuje się też naturalnie w architektury sterowane zdarzeniami. Opakuj go w konsumenta kolejki, a otrzymasz agenta, który reaguje na zdarzenia:
+
+```typescript
+import { dispatch } from '@anthropic-ai/claude-code';
+import { consume } from './queue'; // Twój klient kolejki komunikatów
+
+consume('code-review-requests', async (event) => {
+  const handle = await dispatch({
+    prompt: `Review the changes in commit ${event.commitSha}.
+             Focus on breaking API changes and missing tests.
+             Respond in JSON: { approved: boolean, comments: Comment[] }`,
+    workdir: event.repoPath,
+    model: 'sonnet',
+    allowedTools: ['Read', 'Grep', 'Glob', 'Bash(git diff)'],
+    outputFormat: 'json',
+    maxTokens: 40_000,
+    timeout: 180_000,
+  });
+
+  const review = await handle.result();
+  await postReview(event.prNumber, JSON.parse(review.output));
+});
+```
+
+Źródło zdarzeń nie ma znaczenia — webhooki GitHuba, Kafka, SQS, zadanie cron. Dispatch normalizuje interfejs. Logika Twojego agenta pozostaje taka sama niezależnie od tego, co ją wyzwala.
+
+## Channels: dwukierunkowy streaming
+
+Dispatch świetnie nadaje się do „uruchom i zbierz". Ale co, jeśli musisz widzieć, co się dzieje w trakcie? Co, jeśli musisz przekazać informacje do działającej sesji?
+
+Channels otwierają otypowany, dwukierunkowy strumień między Twoim kodem a sesją Claude Code.
+
+```typescript
+import { createSession } from '@anthropic-ai/claude-code';
+
+const session = await createSession({
+  workdir: '/home/app/backend',
+  model: 'opus',
+  allowedTools: ['Read', 'Edit', 'Bash(npm test)', 'Grep', 'Glob'],
+});
+
+const channel = session.openChannel();
+
+// Strumieniuj zdarzenia w miarę ich występowania
+channel.on('thinking', (thought) => {
+  dashboard.updateStatus(session.id, thought.summary);
+});
+
+channel.on('toolCall', (call) => {
+  metrics.trackToolUsage(call.tool, call.duration);
+  logger.info(`[${session.id}] ${call.tool}: ${call.input.substring(0, 100)}`);
+});
+
+channel.on('output', (chunk) => {
+  websocket.broadcast('agent-output', { sessionId: session.id, text: chunk });
+});
+
+// Wyślij prompt przez kanał
+await channel.send({
+  type: 'prompt',
+  content: 'Refactor the auth middleware to use JWT verification with RS256',
+});
+
+// Poczekaj na zakończenie
+const result = await channel.waitForIdle();
+```
+
+### Dashboard monitorowania w czasie rzeczywistym
+
+Najbardziej bezpośrednim zastosowaniem jest obserwowalność. Każdy produkcyjny system agentowy potrzebuje dashboardu, a Channels dają Ci strumień danych za darmo:
+
+```typescript
+import { createSession } from '@anthropic-ai/claude-code';
+import { WebSocketServer } from 'ws';
+
+const wss = new WebSocketServer({ port: 8080 });
+
+async function runMonitoredTask(prompt: string, workdir: string) {
+  const session = await createSession({ workdir, model: 'sonnet' });
+  const channel = session.openChannel();
+
+  const telemetry = {
+    sessionId: session.id,
+    startedAt: Date.now(),
+    tokensUsed: 0,
+    toolCalls: [] as string[],
+    status: 'running',
+  };
+
+  channel.on('tokenUsage', (usage) => {
+    telemetry.tokensUsed += usage.total;
+    broadcast(wss, { type: 'telemetry', data: telemetry });
+  });
+
+  channel.on('toolCall', (call) => {
+    telemetry.toolCalls.push(call.tool);
+    broadcast(wss, { type: 'toolCall', data: call });
+  });
+
+  channel.on('error', (err) => {
+    telemetry.status = 'error';
+    broadcast(wss, { type: 'error', data: { sessionId: session.id, error: err.message } });
+  });
+
+  await channel.send({ type: 'prompt', content: prompt });
+  const result = await channel.waitForIdle();
+
+  telemetry.status = 'complete';
+  broadcast(wss, { type: 'complete', data: telemetry });
+
+  return result;
+}
+```
+
+To znacząco lepsze niż parsowanie `--output-format stream-json` ze stdout. Channels dają Ci otypowane zdarzenia, obsługę backpressure oraz możliwość odsyłania danych z powrotem do sesji — czego potoki stdout z zasady nie potrafią.
+
+### Podawanie kontekstu w trakcie sesji
+
+Dwukierunkowość Channels jest tym, co czyni je naprawdę nowymi. Możesz wstrzykiwać kontekst do działającej sesji:
+
+```typescript
+channel.on('toolCall', async (call) => {
+  if (call.tool === 'WebFetch' && call.input.includes('api.internal')) {
+    // Przechwytuj wewnętrzne wywołania API i dostarczaj odpowiedzi z cache'u
+    await channel.send({
+      type: 'context',
+      content: `Here is the cached response for ${call.input}: ${cachedResponses[call.input]}`,
+    });
+  }
+});
+```
+
+Używam tego wzorca, aby podawać informacje o schemacie bazy danych, dokumentację API i wyniki testów do sesji, które w przeciwnym razie marnowałyby tokeny na ich pobieranie.
+
+## Remote Control: zarządzanie cyklem życia sesji
+
+Remote Control jest najpotężniejszy i najbardziej niebezpieczny z trójki. Daje Ci programową kontrolę nad wykonaniem sesji — wstrzymywanie, wznawianie, inspekcję i przechwytywanie.
+
+```typescript
+import { createSession, attachRemote } from '@anthropic-ai/claude-code';
+
+const session = await createSession({
+  workdir: '/home/app/backend',
+  model: 'opus',
+});
+
+const remote = attachRemote(session);
+
+// Wstrzymaj przed każdą edycją pliku
+remote.intercept('toolCall', async (call, control) => {
+  if (call.tool === 'Edit' || call.tool === 'Write') {
+    control.pause();
+
+    // Wyślij do człowieka do zatwierdzenia
+    const approved = await requestHumanApproval({
+      sessionId: session.id,
+      tool: call.tool,
+      file: call.input.filePath,
+      diff: call.input.diff,
+    });
+
+    if (approved) {
+      control.resume();
+    } else {
+      control.skip('Human reviewer rejected this edit');
+    }
+  }
+});
+
+await remote.send('Migrate the database schema from v2 to v3');
+```
+
+### Nadzór z człowiekiem w pętli (human-in-the-loop)
+
+To zabójcza aplikacja Remote Control. Pozwalasz Claude'owi myśleć i proponować, ale człowiek zatwierdza każdą destrukcyjną akcję:
+
+```typescript
+const remote = attachRemote(session);
+
+// Zdefiniuj, co wymaga zatwierdzenia przez człowieka
+const SENSITIVE_PATTERNS = [
+  { tool: 'Edit', pathMatch: /\.(env|config|secret)/ },
+  { tool: 'Bash', commandMatch: /(rm|delete|drop|truncate|push)/ },
+  { tool: 'Write', pathMatch: /migration/ },
+];
+
+remote.intercept('toolCall', async (call, control) => {
+  const isSensitive = SENSITIVE_PATTERNS.some(
+    (p) =>
+      p.tool === call.tool &&
+      ((p.pathMatch && p.pathMatch.test(call.input.filePath || '')) ||
+        (p.commandMatch && p.commandMatch.test(call.input.command || '')))
+  );
+
+  if (isSensitive) {
+    control.pause();
+    const decision = await slackApproval(call);
+
+    switch (decision) {
+      case 'approve':
+        control.resume();
+        break;
+      case 'reject':
+        control.skip('Rejected by ops team');
+        break;
+      case 'abort':
+        control.abort('Session terminated by ops team');
+        break;
+    }
+  }
+});
+```
+
+Różnica między tym a `--allowedTools` to granularność. `--allowedTools` jest binarne: narzędzie jest dozwolone albo nie. Przechwytywanie w Remote Control pozwala dopuścić narzędzie ogólnie, ale bramkować konkretne wywołania na podstawie argumentów, kontekstu lub zewnętrznej polityki. Możesz dopuścić `Bash`, ale zablokować `Bash(rm -rf /)`. Możesz dopuścić `Edit`, ale wymagać zatwierdzenia edycji plików `*.migration.*`.
+
+### Checkpointing sesji
+
+Remote Control umożliwia też checkpointing — zapisywanie stanu sesji, abyś mógł wznowić ją później:
+
+```typescript
+const remote = attachRemote(session);
+
+// Checkpoint co 5 minut
+const checkpointInterval = setInterval(async () => {
+  const state = await remote.checkpoint();
+  await saveToRedis(`session:${session.id}`, state);
+}, 5 * 60 * 1000);
+
+// Wznów z checkpointu po awarii
+const savedState = await loadFromRedis(`session:${session.id}`);
+if (savedState) {
+  const resumed = await createSession({
+    workdir: '/home/app/backend',
+    restore: savedState,
+  });
+  const remote = attachRemote(resumed);
+  await remote.send('Continue where you left off');
+}
+```
+
+To kluczowe dla długo działających zadań agentowych. Jeśli sesja działa przez 20 minut, a Twój serwer się zrestartuje, bez checkpointingu tracisz wszystko. Z nim tracisz co najwyżej pięć minut.
+
+## Framework decyzyjny
+
+Kiedy powinieneś użyć którego mechanizmu? Oto jak o tym myślę:
+
+| Scenariusz | Mechanizm | Dlaczego |
+|---|---|---|
+| Przetwarzanie wsadowe (lint 50 plików) | Dispatch | Uruchom-i-zapomnij, zbierz wyniki |
+| Krok pipeline'u CI/CD | Dispatch | Strukturalne wejście/wyjście, kontrola timeoutu |
+| Live dashboard / monitoring | Channels | Strumieniowanie zdarzeń, telemetria w czasie rzeczywistym |
+| Podawanie kontekstu w trakcie zadania | Channels | Komunikacja dwukierunkowa |
+| Bramki zatwierdzania przez człowieka | Remote Control | Wstrzymanie/wznowienie, przechwytywanie narzędzi |
+| Długo działająca migracja | Remote Control | Checkpointing, zarządzanie cyklem życia |
+| Zespoły agentów | Wszystkie trzy | Dispatch tworzy, Channels monitorują, Remote interweniuje |
+
+Prosta heurystyka: jeśli potrzebujesz wyniku, użyj Dispatch. Jeśli potrzebujesz strumienia, użyj Channels. Jeśli potrzebujesz kontroli, użyj Remote Control.
+
+## Wzorzec produkcyjny: wszystkie trzy razem
+
+W praktyce dojrzałe systemy agentowe łączą wszystkie trzy. Oto architektura, którą uruchamiam do zautomatyzowanego utrzymania bazy kodu:
+
+```typescript
+import { dispatch, createSession, attachRemote } from '@anthropic-ai/claude-code';
+
+async function weeklyMaintenance(repos: string[]) {
+  // DISPATCH: Rozdziel analizę na wiele repozytoriów
+  const analysisHandles = repos.map((repo) =>
+    dispatch({
+      prompt: 'Analyze for dependency vulnerabilities, dead code, and type errors. Output JSON.',
+      workdir: repo,
+      model: 'sonnet',
+      allowedTools: ['Read', 'Grep', 'Glob', 'Bash(npm audit)'],
+      outputFormat: 'json',
+      maxTokens: 30_000,
+    })
+  );
+
+  const analyses = await Promise.all(analysisHandles.map((h) => h.result()));
+  const issues = analyses.flatMap((a) => JSON.parse(a.output));
+
+  // CHANNELS + REMOTE CONTROL: Napraw problemy pod nadzorem
+  for (const issue of issues.filter((i) => i.severity === 'high')) {
+    const session = await createSession({
+      workdir: issue.repoPath,
+      model: 'opus',
+      allowedTools: ['Read', 'Edit', 'Bash(npm test)', 'Grep', 'Glob'],
+    });
+
+    const channel = session.openChannel();
+    const remote = attachRemote(session);
+
+    // CHANNELS: Strumieniuj postęp do monitoringu
+    channel.on('toolCall', (call) => {
+      datadog.increment('agent.tool_calls', { tool: call.tool });
+    });
+
+    channel.on('tokenUsage', (usage) => {
+      datadog.gauge('agent.tokens', usage.total, { session: session.id });
+    });
+
+    // REMOTE CONTROL: Bramkuj operacje destrukcyjne
+    remote.intercept('toolCall', async (call, control) => {
+      if (call.tool === 'Edit') {
+        const approved = await pagerdutyApproval(call, issue);
+        approved ? control.resume() : control.skip('Rejected');
+      }
+    });
+
+    await channel.send({
+      type: 'prompt',
+      content: `Fix this issue: ${JSON.stringify(issue)}. Run tests after fixing.`,
+    });
+
+    await channel.waitForIdle();
+  }
+}
+```
+
+Dispatch rozdziela analizę tylko do odczytu. Channels strumieniują telemetrię do Datadoga. Remote Control bramkuje każdą edycję za zatwierdzeniem przez człowieka. Trzy prymitywy, jeden spójny system.
+
+Tak też strukturyzuję [zaplanowane rutyny automatyzacji](/blog/claude-code-routines-scheduled-automation-guide), które działają co tydzień w naszych bazach kodu.
+
+## Zespoły agentów: koordynacja wielu instancji
+
+Połączenie Dispatch i Channels sprawia, że [koordynacja wieloagentowa](/blog/claude-code-sub-agents-multi-agent-systems-guide) jest znacznie czystsza niż podejścia oparte na podprocesach z początku 2026 roku.
+
+```typescript
+async function agentTeam(task: string, workdir: string) {
+  // Sesja supervisora z Remote Control
+  const supervisor = await createSession({
+    workdir,
+    model: 'opus',
+    allowedTools: ['Read', 'Grep', 'Glob'],
+  });
+  const supervisorChannel = supervisor.openChannel();
+
+  // Pula workerów przez Dispatch
+  const workers = {
+    researcher: await dispatch({
+      prompt: `Research the codebase for context on: ${task}. Output a summary.`,
+      workdir,
+      model: 'sonnet',
+      allowedTools: ['Read', 'Grep', 'Glob'],
+    }),
+    planner: await dispatch({
+      prompt: `Create an implementation plan for: ${task}. Output step-by-step JSON.`,
+      workdir,
+      model: 'sonnet',
+      allowedTools: ['Read', 'Grep', 'Glob'],
+    }),
+  };
+
+  // Zbierz wyniki workerów
+  const [research, plan] = await Promise.all([
+    workers.researcher.result(),
+    workers.planner.result(),
+  ]);
+
+  // Podaj wyniki workerów do supervisora
+  await supervisorChannel.send({
+    type: 'prompt',
+    content: `Based on this research:\n${research.output}\n\nAnd this plan:\n${plan.output}\n\nImplement the changes for: ${task}`,
+  });
+
+  // Rozdziel workerów implementacyjnych na podstawie planu supervisora
+  const supervisorResult = await supervisorChannel.waitForIdle();
+  return supervisorResult;
+}
+```
+
+Wzorzec jest taki: Dispatch workerów do równoległego researchu, agregacja do supervisora przez Channels, a Remote Control, jeśli supervisor potrzebuje ludzkich checkpointów. To wzorzec orchestrator-worker z badań Anthropic, ale zbudowany na pierwszoklasowych prymitywach zamiast na skryptach shellowych.
+
+## Integracja z CI/CD i systemami zewnętrznymi
+
+Dispatch wpasowuje się bezpośrednio w każdy system CI/CD zdolny uruchomić Node.js. Oto przykład dla GitHub Actions:
+
+```yaml
+name: Agent Pipeline
+on:
+  schedule:
+    - cron: '0 6 * * 1' # Poniedziałek 6:00
+
+jobs:
+  maintenance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Run agent pipeline
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: npx tsx scripts/weekly-maintenance.ts
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-report
+          path: reports/
+```
+
+Skrypt `weekly-maintenance.ts` używa Dispatch wewnętrznie. GitHub Actions nie wie ani nie obchodzi go, że w grę wchodzą agenci — to po prostu skrypt Node, który kończy się kodem 0 lub 1. Ta komponowalność jest sednem sprawy.
+
+Dla integracji ze Slackiem naturalnym wyborem są Channels:
+
+```typescript
+import { App } from '@slack/bolt';
+import { dispatch } from '@anthropic-ai/claude-code';
+
+const app = new App({ token: process.env.SLACK_TOKEN, signingSecret: process.env.SLACK_SECRET });
+
+app.command('/agent', async ({ command, ack, respond }) => {
+  await ack();
+  await respond('Starting agent task...');
+
+  const handle = await dispatch({
+    prompt: command.text,
+    workdir: '/home/app',
+    model: 'sonnet',
+    maxTokens: 20_000,
+  });
+
+  const result = await handle.result();
+  await respond(`Done!\n\`\`\`\n${result.output}\n\`\`\``);
+});
+```
+
+## Kwestie kosztów i bezpieczeństwa
+
+### Koszt
+
+Największym ryzykiem kosztowym tych prymitywów jest równoległość. Dispatch sprawia, że banalnie łatwo utworzyć 50 współbieżnych sesji. Każda sesja zużywa tokeny niezależnie. Bez limitów pojedyncze zadanie wsadowe może pochłonąć setki dolarów.
+
+Środki zaradcze, które wymuszam w każdym projekcie:
+
+1. **Limity tokenów na sesję.** Zawsze ustawiaj `maxTokens`. Domyślnie stosuję 30 000 dla zadań analitycznych i 80 000 dla zadań implementacyjnych.
+2. **Limity współbieżności.** Nigdy nie uruchamiaj więcej sesji, niż możesz sobie pozwolić w pełni obciążyć jednocześnie. Używam semafora:
+
+```typescript
+import pLimit from 'p-limit';
+
+const limit = pLimit(5); // Maksymalnie 5 współbieżnych sesji
+
+const handles = repos.map((repo) =>
+  limit(() =>
+    dispatch({
+      prompt: '...',
+      workdir: repo,
+      maxTokens: 30_000,
+    })
+  )
+);
+```
+
+3. **Routing modeli.** Używaj Sonnet do analizy, Opus tylko gdy potrzebujesz głębokiego rozumowania. Różnica w koszcie to około 5-krotność.
+4. **Wyłączniki awaryjne (kill switches).** `control.abort()` z Remote Control to Twój bezpiecznik. Jeśli zużycie tokenów przekroczy próg, przerwij sesję.
+
+### Bezpieczeństwo
+
+Remote Control wprowadza nową powierzchnię ataku: kto kontroluje endpoint Remote Control, ten kontroluje to, co Claude może robić. Traktuj to jak dostęp SSH.
+
+1. **Uwierzytelniaj połączenia Remote Control.** Nigdy nie wystawiaj API Remote Control bez uwierzytelniania. Używaj co najmniej mTLS lub kluczy API.
+2. **Ogranicz dostęp do narzędzi na sesję.** Każde wywołanie Dispatch powinno dostać minimum narzędzi, których potrzebuje. Analiza dostaje `Read, Grep, Glob`. Implementacja dostaje `Read, Edit`. Dostęp do shella to wyjątek, nie domyślna opcja.
+3. **Audytuj wszystko.** Channels dają Ci kompletny strumień każdej akcji. Kieruj go do niezmiennego magazynu. Gdy coś pójdzie nie tak — a pójdzie — potrzebujesz pełnej retransmisji.
+4. **Izolacja sieciowa.** Uruchamiaj sesje agentów w kontenerach z ograniczonym ruchem wychodzącym. Claude nie potrzebuje dostępu do Twojej produkcyjnej bazy danych, aby recenzować kod.
+
+## Co to zmienia
+
+Przed Q1 2026 budowanie pipeline'ów agentowych z Claude Code oznaczało wywoływanie `claude -p` przez shell, parsowanie stdout i liczenie na to, że kod wyjścia powie Ci coś użytecznego. Działało, ale było kruche w sposób, w jaki krucha jest cała automatyzacja oparta na skryptach shellowych.
+
+Dispatch, Channels i Remote Control zastępują to otypowanymi, strukturalnymi, obserwowalnymi prymitywami. Ta zmiana nie jest przyrostowa. To różnica między wywoływaniem API przez `curl` w skrypcie basha a użyciem SDK.
+
+Jeśli uruchamiasz dziś Claude Code na produkcji — czy to do [automatyzacji CI/CD](/blog/claude-code-github-actions-pr-automation-guide), [zaplanowanego utrzymania](/blog/claude-code-routines-scheduled-automation-guide), czy [systemów wieloagentowych](/blog/claude-code-sub-agents-multi-agent-systems-guide) — te trzy prymitywy są teraz fundamentem. Naucz się ich. Era skryptów shellowych w automatyzacji agentowej się skończyła.
+
+## Referencje
+
+### Źródła
+
+- [Claude Code SDK Documentation](https://docs.anthropic.com/en/docs/claude-code/sdk) — oficjalna dokumentacja SDK dla API Dispatch, Channels i Remote Control
+- [Claude Code CLI Reference](https://docs.anthropic.com/en/docs/claude-code/cli) — flagi, formaty wyjścia i dokumentacja trybu headless
+- [Building Effective Agents — Anthropic Research](https://www.anthropic.com/engineering/building-effective-agents) — wzorce orchestrator-worker i projektowanie systemów wieloagentowych
+- [Claude Code GitHub Action](https://github.com/anthropics/claude-code-action) — oficjalna Action z przykładami integracji Dispatch
+
+### Dalsza lektura
+
+- [Claude Code Best Practices](https://docs.anthropic.com/en/docs/claude-code/best-practices) — inżynieria promptów i konfiguracja narzędzi dla pipeline'ów agentowych
+- [Multi-Agent Systems with Claude](https://docs.anthropic.com/en/docs/claude-code/sub-agents) — oficjalny przewodnik po architekturze subagentów
+- [Claude Code Hooks Documentation](https://docs.anthropic.com/en/docs/claude-code/hooks) — hooki sterowane zdarzeniami do niestandardowego zachowania agentów
+- [Agent Protocol Specification](https://agentprotocol.ai/) — wyłaniający się standard komunikacji agent-agent
+
+---
+
+~Seb 👊
