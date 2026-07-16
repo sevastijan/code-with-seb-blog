@@ -14,7 +14,6 @@ import { ArticleContent } from '@/components/blog/ArticleContent';
 import { RelatedPosts } from '@/components/blog/RelatedPosts';
 import { CopyLinkButton } from '@/components/blog/ShareButton';
 import { FooterAwwwards } from '@/components/FooterAwwwards';
-import { CustomCursor } from '@/components/CustomCursor';
 import { ScrollProgress } from '@/components/ScrollProgress';
 
 const LOCALE = 'pl' as const;
@@ -126,7 +125,6 @@ export default async function BlogPostPagePL({ params }: Props) {
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify(articleSchema) }}
       />
-      <CustomCursor />
       <ScrollProgress />
 
       <ArticleHero

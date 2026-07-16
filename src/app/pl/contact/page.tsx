@@ -3,7 +3,6 @@
 import { useRef, useEffect, useState } from 'react';
 import { ArrowRight, ArrowUpRight, Mail, MapPin, Clock, Github, Linkedin, Youtube, Instagram, ChevronDown } from 'lucide-react';
 import { ContactForm } from '@/components/ContactForm';
-import { CustomCursor } from '@/components/CustomCursor';
 import { ScrollProgress } from '@/components/ScrollProgress';
 import { FooterAwwwards } from '@/components/FooterAwwwards';
 
@@ -92,7 +91,6 @@ export default function ContactPage() {
 
   return (
     <div className="grain">
-      <CustomCursor />
       <ScrollProgress />
 
       {/* HERO - Full Viewport with 3D Typography */}

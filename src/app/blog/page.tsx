@@ -1,6 +1,5 @@
 import type { Metadata } from 'next';
 import { getAllPosts, getFeaturedPosts, getAllCategories } from '@/lib/mdx';
-import { CustomCursor } from '@/components/CustomCursor';
 import { ScrollProgress } from '@/components/ScrollProgress';
 import { FooterAwwwards } from '@/components/FooterAwwwards';
 import { BlogArchiveClient } from '@/components/blog/BlogArchiveClient';
@@ -45,7 +44,6 @@ export default function BlogPage() {
 
   return (
     <div className="grain">
-      <CustomCursor />
       <ScrollProgress />
 
       <BlogArchiveClient

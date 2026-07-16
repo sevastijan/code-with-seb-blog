@@ -3,7 +3,6 @@
 import { useRef, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { ArrowRight, ArrowLeft, Users, Shield, Lightbulb, Target, CheckCircle2, TrendingUp, Building2, Scale, Compass, FileSearch, UserCheck, BarChart3 } from 'lucide-react';
-import { CustomCursor } from '@/components/CustomCursor';
 import { ScrollProgress } from '@/components/ScrollProgress';
 import { FooterAwwwards } from '@/components/FooterAwwwards';
 
@@ -143,7 +142,6 @@ export default function ConsultingServicePage() {
 
   return (
     <div className="grain">
-      <CustomCursor />
       <ScrollProgress />
 
       {/* HERO */}

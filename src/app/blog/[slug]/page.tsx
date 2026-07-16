@@ -15,7 +15,6 @@ import { RelatedPosts } from '@/components/blog/RelatedPosts';
 import { CopyLinkButton } from '@/components/blog/ShareButton';
 import { NewsletterCTA } from '@/components/blog/NewsletterCTA';
 import { FooterAwwwards } from '@/components/FooterAwwwards';
-import { CustomCursor } from '@/components/CustomCursor';
 import { ScrollProgress } from '@/components/ScrollProgress';
 
 interface Props {
@@ -149,7 +148,6 @@ export default async function BlogPostPage({ params }: Props) {
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify(articleSchema) }}
       />
-      <CustomCursor />
       <ScrollProgress />
 
       {/* Hero section */}

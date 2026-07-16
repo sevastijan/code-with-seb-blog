@@ -1,6 +1,5 @@
 import Link from 'next/link';
 import { ArrowRight } from 'lucide-react';
-import { CustomCursor } from '@/components/CustomCursor';
 import { ScrollProgress } from '@/components/ScrollProgress';
 import { HeroParallax } from '@/components/HeroParallax';
 import { HeroCodeSymbol } from '@/components/HeroCodeSymbol';
@@ -35,7 +34,6 @@ export default function HomePagePl() {
 
   return (
     <div className="grain">
-      <CustomCursor />
       <ScrollProgress />
 
       {/* Hero - Blog First */}

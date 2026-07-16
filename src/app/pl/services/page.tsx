@@ -3,7 +3,6 @@
 import { useRef, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { ArrowRight, ArrowUpRight, Code2, Users, Sparkles, Shield, Rocket, Target, Zap, Brain, GitBranch, Search, Layers } from 'lucide-react';
-import { CustomCursor } from '@/components/CustomCursor';
 import { ScrollProgress } from '@/components/ScrollProgress';
 import { FooterAwwwards } from '@/components/FooterAwwwards';
 
@@ -185,7 +184,6 @@ export default function ServicesPage() {
 
   return (
     <div className="grain">
-      <CustomCursor />
       <ScrollProgress />
 
       {/* HERO - Mind-blowing 3D Typography */}

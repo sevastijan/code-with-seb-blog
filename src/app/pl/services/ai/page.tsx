@@ -3,7 +3,6 @@
 import { useRef, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { ArrowRight, ArrowLeft, Bot, Workflow, BrainCircuit, Database, Gauge, Shield, CheckCircle2, Zap, Search, Target } from 'lucide-react';
-import { CustomCursor } from '@/components/CustomCursor';
 import { ScrollProgress } from '@/components/ScrollProgress';
 import { FooterAwwwards } from '@/components/FooterAwwwards';
 
@@ -140,7 +139,6 @@ export default function AIServicePage() {
 
   return (
     <div className="grain">
-      <CustomCursor />
       <ScrollProgress />
 
       {/* HERO */}
