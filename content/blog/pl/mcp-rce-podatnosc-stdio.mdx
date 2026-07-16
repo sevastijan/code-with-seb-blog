@@ -1,0 +1,138 @@
+---
+title: "Podatność RCE w MCP: 200 tys. serwerów narażonych i stanowisko Anthropic „działa zgodnie z założeniem”"
+date: '2026-05-05'
+category: 'AI'
+tags: ['mcp', 'security', 'supply-chain', 'prompt-injection', 'ai-security']
+draft: false
+featured: true
+author: 'Sebastian'
+enSlug: 'mcp-rce-vulnerability-stdio-flaw-guide'
+excerpt: 'Ox Security ujawnił architektoniczną wadę MCP, która pozwala atakującym wykonywać dowolne polecenia na około 200 tys. serwerów. Anthropic odmówił łatki — nazywa to oczekiwanym zachowaniem.'
+---
+
+15 kwietnia 2026 roku Ox Security opublikował badanie, które w świecie bezpieczeństwa AI zdarza się rzadko: udokumentowało podatność, której opiekun projektu odmówił naprawy. Nie „pracujemy nad łatką”, nie „zaplanowane na najbliższe wydanie poboczne” — odpowiedź brzmiała, że to zachowanie jest poprawne, a jego zabezpieczenie należy do zadań dewelopera.
+
+Podatność tkwi w transporcie STDIO protokołu Model Context Protocol. Umożliwia zdalne wykonanie kodu, dotyczy około 200 000 serwerów w skali 150 milionów pobrań pakietów i wygenerowała ponad dziesięć podatności CVE o wysokim lub krytycznym poziomie w znanych narzędziach AI. American Banker wskazał niezałataną wadę jako zagrożenie dla sektora bankowego. Odpowiedź ze strony Anthropic była taka, że wykonanie przez STDIO to „oczekiwane zachowanie”, a sanityzacja danych wejściowych to „odpowiedzialność dewelopera”.
+
+Poniżej znajdziesz to, co naprawdę się wydarzyło, co da się wykorzystać już dziś oraz konkretne rzeczy do wdrożenia przed najbliższym przeglądem sprintu w Twoim zespole.
+
+## Wada w kategoriach technicznych
+
+Transport STDIO w MCP to domyślny sposób, w jaki aplikacja AI uruchamia lokalny serwer MCP jako podproces. Proces hosta — Claude Desktop, Cursor, Windsurf, agent zbudowany na Anthropic SDK — odczytuje wpis konfiguracyjny, który określa polecenie i argumenty, wykonuje to polecenie i przesyła komunikaty JSON-RPC przez standardowe wejście i wyjście powstałego procesu.
+
+Problem architektoniczny polega na tym, że nie istnieje granica między konfiguracją a wykonaniem polecenia. Host uruchamia dowolne polecenie, które pojawi się w konfiguracji, z dowolnymi argumentami, jakie mu towarzyszą, z uprawnieniami procesu hosta. Jeśli polecenie uruchamia serwer MCP, odda ono uchwyt STDIO. Jeśli poleceniem jest `rm -rf ~`, zostanie wykonane właśnie ono — bez handshake'u, bez sandboxa, bez weryfikacji tego, co faktycznie zostało wywołane.
+
+W poprawnie zaprojektowanym protokole warstwa transportowa wymuszałaby kontrakt, zgodnie z którym uruchomiony podproces musi „mówić” w danym protokole w wyznaczonym oknie czasowym albo zostanie zabity. W transporcie STDIO protokołu MCP uruchomienie następuje bezwarunkowo, a jakikolwiek efekt uboczny polecenia — łącznie z całkowitym przejęciem systemu — już zdążył wystąpić, zanim host zdąży zorientować się, że podproces nie odpowiada.
+
+Oficjalny SDK MCP w językach Python, TypeScript, Java i Rust dziedziczy to zachowanie. Każdy deweloper, który przeczyta rekomendowany przez protokół transport, sięgnie po STDIO, a każdy host podążający za wzorcem konfiguracji staje się powierzchnią do zdalnego wykonania kodu dla każdego, kto może zapisać do tej konfiguracji.
+
+## Cztery rodziny ataków
+
+Badanie Ox Security skatalogowało cztery praktyczne wzorce eksploatacji. Żaden nie wymaga nowatorskiego łamania kryptografii; wszystkie łączą ze sobą komponenty, których większość zespołów już używa.
+
+### 1. Nieuwierzytelnione wstrzyknięcie polecenia (command injection)
+
+Pierwsza rodzina jest najbardziej bezpośrednia: jeśli atakujący może dotrzeć do punktu końcowego konfiguracji hosta MCP lub do jego pliku konfiguracyjnego na dysku, może wstrzyknąć polecenie. Protokół posłusznie je wykona.
+
+Narzędzia, które udostępniają konfigurację serwera MCP przez nieuwierzytelnione interfejsy — a Ox znalazł ich kilka — dają atakującemu prymityw do zdalnego wykonania kodu bez żadnego łańcucha eksploatacji. Do podatnych platform należą środowiska programistyczne AI oraz kilka frameworków agentowych, w których dodanie serwera MCP do przestrzeni roboczej traktowano jako niskouprzywilejowaną akcję użytkownika.
+
+Naprawa na poziomie platformy jest prosta — uwierzytelnij punkt końcowy konfiguracji, potraktuj rejestrację serwera MCP jako operację uprzywilejowaną, którą faktycznie jest — ale fakt, że protokół tego nie wymaga, oznacza, że wielu integratorów popełniło błąd już w ustawieniach domyślnych.
+
+### 2. Obejścia listy dozwolonych (allowlist)
+
+Bardziej wyrafinowana rodzina ataków celuje w platformy, które faktycznie próbowały się bronić. Kilku integratorów wdrożyło listy dozwolonych poleceń serwerów MCP i usuwało znaki specjalne z argumentów. Ox obszedł te zabezpieczenia za pomocą narzędzi już znajdujących się na liście dozwolonych.
+
+Najwyraźniejszym przykładem jest `npx -c`, które wykonuje dowolne polecenie powłoki. Jeśli platforma zezwala na `npx` (rozsądny wybór — większość serwerów MCP z ekosystemu JavaScript jest dostarczana jako pakiety npm) i sanityzuje metaznaki powłoki w argumentach (również rozsądne), flaga `-c` zamienia całą listę dozwolonych w listek figowy. Atakujący przekazuje w pełni poprawne wywołanie `npx -c "<dowolne polecenie>"`, a host je wykonuje.
+
+To właśnie ten wzorzec sprawia, że podatność jest naprawdę systemowa. Każda obrona, którą integratorzy dodali w warstwie platformy, okazywała się mieć podobne obejście gdzieś w łańcuchu narzędzi — `node -e`, `python -c`, `bash -c` oraz odpowiedniki dla każdego interpretera powszechnie używanego przez serwery MCP.
+
+### 3. Wstrzyknięcie promptu typu zero-click
+
+Trzecia rodzina jest najbardziej bezpośrednio widoczna dla użytkownika. Windsurf — z przypisanym CVE-2026-30615 — był jedynym IDE w badaniu Ox, w którym eksploatacja wymagała zerowej interakcji użytkownika. Otwarcie złośliwej przestrzeni roboczej wystarczało, by wywołać zdalne wykonanie kodu przez transport MCP.
+
+Mechanizm przypomina klasyczne [ataki typu prompt injection](/blog/prompt-injection-llm-security-guide), ale z pewnym haczykiem: wstrzyknięte instrukcje w ogóle nie celują w model. Celują w loader konfiguracji. Plik przestrzeni roboczej zawierający złośliwie spreparowany wpis serwera MCP powoduje, że IDE uruchamia polecenie atakującego przy otwarciu przestrzeni roboczej. Model nigdy nie widzi ładunku, ponieważ atak żyje poniżej warstwy modelu.
+
+Dla deweloperów myślących o [bezpieczeństwie LLM jako o „SQL injection ery AI”](/blog/prompt-injection-attacks-llm-security-guide) jest to ostrzegawcza aktualizacja: powierzchnią ataku nie jest wyłącznie prompt i wyjścia narzędzi. Obejmuje ona każdą ścieżkę kodu, która zamienia dostarczoną z zewnątrz konfigurację w uruchomienie procesu.
+
+### 4. Zatruwanie marketplace'ów
+
+Czwarta rodzina to wektor łańcucha dostaw (supply chain). Ox skutecznie zatruł dziewięć z jedenastu przetestowanych marketplace'ów MCP. Niektóre z nich obsługują setki tysięcy odwiedzających miesięcznie. Przebieg jest taki sam jak w klasycznych atakach na rejestry pakietów — typosquatting, pomieszanie przestrzeni nazw, zawłaszczone poświadczenia opiekuna — ale ładunek jest wzmocniony, ponieważ każda instalacja zatrutego serwera MCP natychmiast uruchamia się w drzewie procesów hosta.
+
+To rodzina, która skaluje wpływ z „200 000 podatnych instancji” do „każdy użytkownik, który kiedykolwiek zainstaluje społecznościowy serwer MCP, jest o jeden skompromitowany pakiet od RCE”. Problem pogłębia fakt, że serwery MCP często proszą o szerokie uprawnienia — dostęp do systemu plików, dostęp do powłoki, dostęp do zmiennych środowiskowych — ponieważ protokół zachęca autorów narzędzi do udostępniania modelowi maksymalnej powierzchni.
+
+## Lista CVE i dotknięte projekty
+
+Ujawnienie wygenerowało ponad dziesięć podatności CVE o poziomie wysokim lub krytycznym. Do wymienionych z nazwy dotkniętych projektów należą LiteLLM, LangFlow, Flowise, Windsurf, Langchain-Chatchat, Bisheng, DocsGPT, GPT Researcher, Agent Zero oraz LettaAI. Nadrzędne ostrzeżenie jest śledzone jako CVE-2026-30623 (command injection w MCP SDK od Anthropic), z powiązanymi CVE-2026-30624 obejmującym konkretne integracje oraz CVE-2025-49596 obejmującym narzędzie MCP Inspector.
+
+W badaniu Ox wykazano podatność sześciu żywych, produkcyjnych platform. American Banker relacjonował implikacje konkretnie dla sektora finansowego — w świetle obowiązujących wytycznych dotyczących zarządzania ryzykiem stron trzecich poleganie banku na podatnym zewnętrznym protokole nie umniejsza jego odpowiedzialności za bezpieczne działanie. Banki, które przyjęły MCP, są właścicielami tego ryzyka, w tym ryzyka związanego z jego eksploatacją przy znanej, niezałatanej wadzie.
+
+## Odpowiedź Anthropic: „oczekiwane zachowanie”
+
+To właśnie ta część czyni tę podatność nietypową. Większość ujawnionych podatności RCE kończy się CVE, łatką i skoordynowanym wydaniem. Wada STDIO w MCP zakończyła się CVE i publicznym oświadczeniem opiekuna, że projekt jest poprawny w obecnej postaci.
+
+Stanowisko Anthropic jest takie, że STDIO to transport lokalny, że lokalne wykonanie wymaga, aby użytkownik już wcześniej skonfigurował polecenie, a odpowiedzialność za sanityzację tej konfiguracji należy do integratora. W ich ocenie protokół dostarcza prymitywy; to, co integratorzy z nimi zrobią, jest poza zakresem protokołu.
+
+Istnieje broniący się odczyt tego stanowiska: STDIO jest naprawdę bardziej niskopoziomowy niż HTTP, a protokół, który uruchamia `npx some-package`, z zasady nie potrafi odróżnić „użytkownik zainstalował pakiet, bo chce jego funkcji” od „użytkownik kliknął link, który bez jego wiedzy zapisał wpis w konfiguracji przestrzeni roboczej”. Na jakiejś warstwie granica zaufania musi znajdować się ponad protokołem.
+
+Istnieje też mniej broniący się odczyt: protokół został wydany z STDIO jako domyślnym transportem, SDK zachęca do jego użycia, a dokumentacja nie zaczyna się od „musisz wdrożyć uwierzytelnioną warstwę konfiguracji z listą dozwolonych poleceń odporną na obejścia w stylu `npx -c`, zanim to wdrożysz”. Protokół, którego lista kontrolna bezpiecznego użycia zawiera pozycje, których dziewięć na jedenaście marketplace'ów nie wdrożyło, to protokół, którego ustawienia domyślne są błędne — niezależnie od tego, gdzie leży formalna granica zaufania.
+
+Ta debata będzie się toczyć dalej. Przeniesienie zarządzania MCP do [Agentic AI Foundation pod skrzydła Linux Foundation](https://workos.com/blog/everything-your-team-needs-to-know-about-mcp-in-2026) oznacza, że decyzje o ustawieniach domyślnych protokołu są teraz kierowane przez społeczność, a nie wyłącznie przez Anthropic. To, czy kolejna rewizja specyfikacji zaostrzy STDIO, czy podwoi stawkę na obecny model, jest najważniejszym pytaniem o MCP w 2026 roku.
+
+## Co faktycznie wdrożyć już dziś
+
+Rezygnacja z używania MCP nie jest realnym rozwiązaniem dla większości zespołów w 2026 roku — [deweloperski stack MCP](/blog/developer-mcp-stack-multi-tool-workflow-guide) stał się naprawdę produktywny. Pragmatyczna ścieżka to dalsze korzystanie z niego przy jednoczesnym utwardzaniu warstwy konfiguracji, którą kontroluje Twój zespół.
+
+**Traktuj konfigurację serwera MCP jako operację uprzywilejowaną.** Każdy, kto może zapisać do Twojego `claude_desktop_config.json`, Twojego `.cursor/mcp.json`, konfiguracji runnera CI lub ustawień Claude Code, ma zdalne wykonanie kodu na Twojej maszynie lub w Twoim środowisku budowania. Jeśli Twoje pliki konfiguracyjne są w repozytorium, to deweloper, który pushuje do tego repo. Jeśli konfiguracja jest provisionowana przez IaC, to każdy, kto może edytować ten IaC. Audytuj odpowiednio.
+
+**Używaj listy dozwolonych serwerów MCP, nie poleceń.** Zamiast zezwalać na `npx`, `node` i `python` oraz próbować sanityzować ich argumenty, zezwalaj na konkretne pakiety serwerów MCP według nazwy i wersji. Jeśli używany przez Ciebie host tego nie obsługuje, zgłoś issue lub owiń host launcherem, który to potrafi.
+
+**Przypinaj wersje serwerów MCP i weryfikuj sumy kontrolne.** Zatruwanie marketplace'ów działa, ponieważ integratorzy instalują najnowsze wersje społecznościowych serwerów MCP. Przypinaj do konkretnych commitów lub konkretnych wersji pakietów, weryfikuj sumy kontrolne i traktuj aktualizacje serwerów MCP z taką samą rutyną przeglądu jak każdą inną aktualizację zależności. Ta sama higiena łańcucha dostaw, którą [playbook po włamaniu do Vercel](/blog/vercel-breach-supply-chain-security-audit-guide) stosuje do aplikacji OAuth i rozszerzeń narzędzi deweloperskich, ma zastosowanie tutaj.
+
+**Uruchamiaj środowisko MCP w sandboxie.** Uruchamiaj proces hosta w kontenerze lub z włączonym macOS App Sandbox / przestrzeniami nazw użytkownika w Linuksie. Celem nie jest „powstrzymanie ataku” — zanim STDIO uruchomi polecenie, jest już przegrane — lecz ograniczenie zasięgu rażenia. Skompromitowany host MCP, który nie może dosięgnąć Twoich kluczy SSH, to znacznie mniejszy incydent niż taki, który może.
+
+**Blokuj publiczny ruch wychodzący z hostów MCP, gdzie to możliwe.** Krok eksfiltracji w większości zademonstrowanych exploitów wymaga wychodzącego dostępu do sieci. Jeśli zadanie CI korzystające z MCP nie ma powodu, by komunikować się z dowolnymi zewnętrznymi punktami końcowymi, odmów tej możliwości na poziomie sieci. To ta sama zasada utwardzania co w [playbooku bezpieczeństwa korporacyjnego Claude Code](/blog/claude-code-security-hardening-enterprise-guide) — obrona w głąb, nawet gdy własna granica protokołu jest zbyt luźna.
+
+**Audytuj zainstalowane serwery MCP.** Przeprowadzaj comiesięczną kontrolę względem swojego `mcp.json` lub jego odpowiednika. Wiedz, które serwery są zainstalowane, do jakich wersji są przypięte, o jakie uprawnienia proszą i z których marketplace'ów pochodzą. Wszystko, czego nie potrafisz uzasadnić, usuń.
+
+**Dla aplikacji korzystających z LLM połącz to z obronami przed prompt injection.** Wektor zero-click przeciwko IDE łączy manipulację konfiguracją z dostarczeniem ładunku zbliżonym do prompt injection. [Sześciowarstwowa architektura obrony w głąb](/blog/prompt-injection-attacks-llm-security-guide) przeciwko prompt injection to właściwe uzupełnienie utwardzania specyficznego dla MCP.
+
+## Bankowość i środowiska regulowane
+
+Jeśli wdrażasz MCP w środowisku regulowanym, pragmatyczna postawa na dziś brzmi: „MCP to narzędzie uprzywilejowane, które wymaga udokumentowanego reżimu środków kompensujących”. Środki kompensujące — uwierzytelniona konfiguracja, sandboxing, przypinanie wersji, whitelisting marketplace'ów, ścieżki audytu — to te same środki, które zastosowałbyś do dowolnego zewnętrznego frameworku wykonania agentów.
+
+Implikacje regulacyjne nie są teoretyczne. Relacja American Banker jasno pokazała, że w świetle wytycznych z 2023 roku dotyczących zarządzania ryzykiem stron trzecich poleganie banku na nadrzędnym protokole z niezałataną wadą nie przenosi odpowiedzialności banku za bezpieczne działanie. Fakt, że Anthropic uznaje to zachowanie za oczekiwane, nie zmienia obowiązku banku do bezpiecznej eksploatacji.
+
+W praktyce oznacza to, że w środowiskach regulowanych użycie MCP prawdopodobnie musi przejść przez ten sam przegląd akceptacji ryzyka co każdy inny dostawca ze znaną, niezałataną podatnością CVE. Udokumentuj środki kompensujące, uzyskaj ich zatwierdzenie na odpowiednim poziomie i przeglądaj je, gdy zmienia się zachowanie protokołu — co, biorąc pod uwagę zmianę zarządzania na rzecz AAIF, może nastąpić wcześniej, niż sugerowała pierwotna mapa drogowa kierowana przez Anthropic.
+
+## Głębsze pytanie o protokół
+
+Wada STDIO w MCP to jak dotąd najbardziej brzemienna w skutki historia bezpieczeństwa narzędzi AI 2026 roku, ale trwałe pytanie, które stawia, jest szersze niż ten konkretny błąd.
+
+Obserwujemy, jak protokoły, które zaczynały jako prymitywne połączenia między narzędziami AI, stają się podłożem dla systemów produkcyjnych z ekspozycją regulacyjną. Ich pierwotne modele zagrożeń — „deweloper uruchamiający narzędzia na własnym laptopie” — nie pasują do kształtu wdrożeń, jaki faktycznie mają dziś. Ustawienia domyślne, które miały sens w listopadzie 2024, gdy MCP wystartował, nie przetrwają przejścia do korporacyjnych integratorów, ekosystemów marketplace'ów i obciążeń bankowych.
+
+To, czy grupy robocze AAIF popchną protokół w stronę bardziej restrykcyjnych ustawień domyślnych — uwierzytelnione transporty jako domyślne, allowlisting wbudowany w SDK, podpisywanie marketplace'ów jako część specyfikacji — przesądzi o tym, czy następnym razem, gdy badacze przeprowadzą podobny audyt, znajdą tę samą klasę błędów, czy też ekosystem dojrzeje.
+
+Na razie odpowiedź operacyjna jest taka sama jak zawsze, gdy ustawienia domyślne protokołu pozostają w tyle za kształtem jego wdrożeń: utwardzaj warstwę, którą kontrolujesz, zakładaj, że warstwa powyżej jest wroga, i obserwuj, co zrobi kolejna rewizja specyfikacji. Darmowa przepustka na bezpieczeństwo na poziomie protokołu dobiegła końca.
+
+## Bibliografia (References)
+
+### Źródła
+
+- [The Mother of All AI Supply Chains — OX Security](https://www.ox.security/blog/the-mother-of-all-ai-supply-chains-critical-systemic-vulnerability-at-the-core-of-the-mcp/) — pierwotne ujawnienie i taksonomia rodzin ataków
+- [MCP Supply Chain Advisory — OX Security](https://www.ox.security/blog/mcp-supply-chain-advisory-rce-vulnerabilities-across-the-ai-ecosystem/) — dotknięte projekty i lista CVE
+- [MCP design flaw puts 200k servers at risk — The Register](https://www.theregister.com/2026/04/16/anthropic_mcp_design_flaw/) — odpowiedź Anthropic „oczekiwane zachowanie”
+- [Anthropic MCP Design Vulnerability Enables RCE — The Hacker News](https://thehackernews.com/2026/04/anthropic-mcp-design-vulnerability.html) — techniczny rozbiór wady STDIO
+- [Unpatched AI flaw poses risk to banking sector — American Banker](https://www.americanbanker.com/news/unpatched-ai-flaw-poses-risk-to-banking-sector) — implikacje dla sektora regulowanego
+- [CVE-2026-30624 — NVD](https://nvd.nist.gov/vuln/detail/CVE-2026-30624) — oficjalny wpis CVE
+- [Security Update CVE-2026-30623 — LiteLLM](https://docs.litellm.ai/blog/mcp-stdio-command-injection-april-2026) — notatki o łatce po stronie integratora
+
+### Dalsza lektura
+
+- [MCP Security Vulnerabilities Complete Guide — Aembit](https://aembit.io/blog/the-ultimate-guide-to-mcp-security-vulnerabilities/) — szerszy krajobraz bezpieczeństwa MCP
+- [MCP Security Risks & Mitigations — SOC Prime](https://socprime.com/blog/mcp-security-risks-and-mitigations/) — operacyjna lista kontrolna działań łagodzących
+- [Przewodnik po protokołach MCP vs A2A](/blog/mcp-vs-a2a-ai-agent-protocols-guide-2026) — kiedy sięgnąć po MCP, a kiedy po A2A
+- [Utwardzanie bezpieczeństwa Claude Code dla przedsiębiorstw](/blog/claude-code-security-hardening-enterprise-guide) — sandboxing, ścieżki audytu i modele uprawnień
+
+---
+
+~Seb 👊
