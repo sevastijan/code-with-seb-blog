@@ -1,0 +1,580 @@
+---
+title: 'Claude Code Skills: architektura oszczędzająca 98% tokenów, której nikt nie tłumaczy'
+date: '2026-01-15'
+category: 'AI'
+tags: ['claude-code', 'ai-agents', 'developer-tools', 'productivity', 'ai-automation']
+featured: false
+author: 'Sebastian'
+draft: false
+enSlug: 'claude-code-skills-reusable-ai-workflows-guide'
+excerpt: 'Skills, slash commands, subagenty, MCP - Claude Code ma cztery sposoby rozszerzania możliwości. Większość devów wybiera zły. Oto framework decyzyjny.'
+---
+
+Skills, slash commands, subagenty, serwery MCP. Claude Code ma teraz cztery różne sposoby rozszerzania swoich możliwości i jeśli nie wiesz, którego użyć, nie jesteś sam.
+
+Spędziłem godziny na czytaniu dokumentacji tylko po to, żeby zdać sobie sprawę, że poradniki nie odpowiadają na fundamentalne pytanie: **kiedy powinienem użyć każdego z nich?** Co gorsza, większość tutoriali kompletnie ignoruje architekturę progressive disclosure - projekt, który daje skills 98% redukcję tokenów, gdy są obecne, ale nieaktywowane.
+
+Rozwiejmy te wątpliwości i pokażmy Ci to, czego nikt inny nie wyjaśnia.
+
+## Krajobraz rozszerzeń Claude Code
+
+Zanim zanurkujemy głębiej, oto mapa myślowa, której potrzebujesz:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    CLAUDE CODE EXTENSIONS                       │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  SLASH COMMANDS          SKILLS             SUBAGENTS           │
+│  ┌─────────────┐      ┌─────────────┐     ┌─────────────┐       │
+│  │ /command    │      │ Auto-invoked│     │ Isolated    │       │
+│  │ Manual      │      │ by Claude   │     │ context     │       │
+│  │ Single file │      │ Directory   │     │ Workers     │       │
+│  └─────────────┘      └─────────────┘     └─────────────┘       │
+│         │                    │                   │              │
+│         └────────────────────┼───────────────────┘              │
+│                              │                                  │
+│                     ┌────────┴────────┐                         │
+│                     │   MCP SERVERS   │                         │
+│                     │   (Tools layer) │                         │
+│                     └─────────────────┘                         │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+Kluczowy wniosek: **MCP dostarcza narzędzia; Skills uczą, jak z nich korzystać.** Uzupełniają się, a nie konkurują.
+
+## Skills kontra slash commands kontra subagenty kontra MCP: framework decyzyjny
+
+Oto drzewo decyzyjne, którego brakowało mi na starcie:
+
+| Potrzeba                                          | Użyj tego      | Dlaczego                                                    |
+| ------------------------------------------------- | -------------- | ---------------------------------------------------------- |
+| **Jawna kontrola nad tym, kiedy coś się uruchamia** | Slash Commands | Wpisujesz `/command`, uruchamia się. Przewidywalnie.       |
+| **Claude ma sam zdecydować, kiedy wywołać**       | Skills         | Claude automatycznie dopasowuje zadanie do opisu skilla    |
+| **Izolowany kontekst do skupionej pracy**         | Subagenty      | Świeże okno kontekstu 200K, zwraca podsumowanie            |
+| **Połączenie z zewnętrznymi usługami/danymi**     | MCP            | Protokół dla baz danych, API, systemów plików              |
+| **Nauczenie Claude, jak skutecznie używać narzędzi** | Skills + MCP   | Skills dostarczają wiedzy proceduralnej dla narzędzi MCP   |
+
+### Scalona rzeczywistość (Claude Code 2.1+)
+
+Oto coś, co większość poradników pomija: **Claude Code 2.1 połączył skills i slash commands.** Skills domyślnie pojawiają się teraz w menu slash command, dając Ci jawne wywołanie przez `/skill-name`.
+
+Oznacza to, że rozróżnienie „skills kontra slash commands" jest w kwestii wywołania w dużej mierze przestarzałe. Prawdziwa różnica to:
+
+- **Slash commands:** Pojedynczy plik markdown, proste prompty
+- **Skills:** Katalog z wieloma plikami, progressive disclosure, dołączone zasoby
+
+### Kiedy używać którego
+
+**Używaj Slash Commands, gdy:**
+
+- Zadanie jest proste i powtarzalne
+- Zawsze chcesz jawnej kontroli
+- Wystarczy pojedynczy prompt
+- Nie potrzeba plików pomocniczych
+
+**Używaj Skills, gdy:**
+
+- Zadanie wymaga kontekstu, który Claude powinien ładować na żądanie
+- Masz szablony, skrypty lub materiały referencyjne
+- Wielu członków zespołu potrzebuje spójnego zachowania
+- Liczy się kompatybilność międzyplatformowa (Skills to otwarty standard)
+
+**Używaj Subagentów, gdy:**
+
+- Zadanie potrzebuje izolowanego kontekstu (research, eksploracja)
+- Chcesz równoległego wykonania
+- Zadanie nie powinno zaśmiecać głównej rozmowy
+- Wyniki można streścić z powrotem
+
+**Używaj [Hooks](/blog/claude-code-hooks-custom-agents-ai-pipelines-guide), gdy:**
+
+- Musisz przechwycić wywołania narzędzi lub zdarzenia cyklu życia
+- Wymuszasz bramki bezpieczeństwa lub automatyczne formatowanie
+- Budujesz samowalidujące się pipeline'y w stylu CI/CD
+
+**Używaj MCP, gdy:**
+
+- Łączysz się z zewnętrznymi usługami
+- Dostęp do bazy danych
+- Integracje z API
+- Operacje na systemie plików wykraczające poza lokalny projekt
+
+## Jak naprawdę działa progressive disclosure
+
+To architektura, która zapewnia 98% oszczędności tokenów - i której prawie nikt porządnie nie wyjaśnia.
+
+Skills ładują się w trzech etapach:
+
+### Etap 1: Skanowanie metadanych (~100 tokenów)
+
+Przy starcie Claude ładuje jedynie `name` i `description` z frontmatteru YAML każdego skilla. To wszystko.
+
+```yaml
+---
+name: code-reviewing
+description: Reviews code for bugs, security issues, and style violations
+---
+```
+
+Przy zainstalowanych 10 skills płacisz łącznie ~1000 tokenów - a nie 50 000+, które zapłaciłbyś, gdyby wszystko ładowało się z góry. W połączeniu z pozostałymi [technikami optymalizacji tokenów](/blog/claude-code-token-optimization-bill-cut-guide) - `opusplan`, odchudzonym CLAUDE.md, `.claudeignore` - skills są istotną dźwignią kosztów długich sesji.
+
+### Etap 2: Pełne instrukcje (poniżej 5K tokenów)
+
+Gdy Claude ustali, że skill dotyczy bieżącego zadania (poprzez dopasowanie semantyczne do opisu), ładuje pełną treść `SKILL.md`.
+
+**Dlatego opisy mają tak duże znaczenie.** Mgliste opisy = skill nigdy się nie uruchomi. Opisy bogate w triggery = Claude dokładnie wie, kiedy się aktywować.
+
+```yaml
+# ❌ Zbyt mgliste - nie uruchomi się niezawodnie
+description: Helps with code
+
+# ✅ Bogate w triggery - jasne warunki aktywacji
+description: Reviews TypeScript and JavaScript code for security vulnerabilities, performance issues, and adherence to team coding standards when user asks for code review or mentions reviewing changes
+```
+
+### Etap 3: Dołączone zasoby (na żądanie)
+
+Pliki pomocnicze (szablony, skrypty, dokumenty referencyjne) ładują się dopiero wtedy, gdy skill jawnie się do nich odwołuje i wymaga tego zadanie.
+
+```markdown
+# In SKILL.md
+
+When reviewing authentication code, consult `./security-checklist.md` for the full OWASP verification list.
+```
+
+Plik `security-checklist.md` zajmuje zero tokenów, dopóki Claude faktycznie go nie potrzebuje.
+
+**Matematyka:** Możesz dołączyć 10+ skills do swojej konfiguracji, ale płacisz tylko za te, które Claude aktywuje przy każdym żądaniu.
+
+## Anatomia dobrze skonstruowanego SKILL.md
+
+Uwaga przed szablonem: na nowszych modelach - zwłaszcza Fable 5 - skills napisane jako sztywne przepisy krok po kroku ograniczają model, zamiast mu pomagać. Podawaj cele i ograniczenia, a nie procedury; mój [przewodnik po de-preskrypcji](/blog/fable-5-prompting-de-prescribing-guide) omawia wzorce takiego przepisania.
+
+Każdy skill potrzebuje minimum pliku `SKILL.md` w dedykowanym folderze:
+
+```
+.claude/skills/
+└── code-reviewing/
+    ├── SKILL.md           # Required
+    ├── security-checklist.md   # Optional reference
+    ├── style-guide.md     # Optional reference
+    └── templates/         # Optional templates
+        └── review-report.md
+```
+
+### Niezbędna struktura
+
+```markdown
+---
+name: code-reviewing
+description: Reviews code for security vulnerabilities, performance issues, and coding standard violations when user requests code review
+---
+
+# Code Reviewing
+
+## When to Use This Skill
+
+Activate when the user:
+
+- Explicitly asks for code review
+- Mentions "review these changes"
+- Asks about security or performance of specific code
+
+## Review Process
+
+### Step 1: Security Analysis
+
+Check for:
+
+- SQL injection vectors
+- XSS vulnerabilities
+- Authentication bypasses
+- Exposed secrets
+
+### Step 2: Performance Review
+
+Look for:
+
+- N+1 query patterns
+- Unnecessary re-renders
+- Memory leaks
+- Blocking operations
+
+### Step 3: Style Compliance
+
+Verify against team standards in `./style-guide.md`
+
+## Output Format
+
+Present findings as:
+
+1. **Critical** - Must fix before merge
+2. **Warning** - Should address
+3. **Suggestion** - Nice to have
+
+## References
+
+- Security details: `./security-checklist.md`
+- Style guide: `./style-guide.md`
+```
+
+### Najlepsze praktyki
+
+1. **Trzymaj SKILL.md poniżej 500 linii** - Rozbij szczegółową treść na osobne, przywoływane pliki
+2. **Używaj nazewnictwa z rzeczownikiem odczasownikowym** - `code-reviewing`, nie `code-reviewer`
+3. **Pisz opisy bogate w triggery** - Uwzględnij konkretne słowa kluczowe, do których Claude się dopasowuje
+4. **Strukturyzuj pod skanowanie** - Jasne nagłówki, numerowane kroki, punkty
+5. **Odwołuj się, nie osadzaj** - Umieszczaj obszerną treść w osobnych plikach
+
+## Budowa Twojego pierwszego skilla
+
+Zbudujmy praktyczny skill: generator opisów PR, który podąża za szablonem Twojego zespołu.
+
+### Krok 1: Utwórz strukturę katalogów
+
+```bash
+mkdir -p .claude/skills/pr-describing
+```
+
+### Krok 2: Utwórz SKILL.md
+
+```markdown
+---
+name: pr-describing
+description: Generates pull request descriptions following team template when user creates PR or asks for PR description
+---
+
+# PR Description Generator
+
+## Activation Triggers
+
+Use this skill when user:
+
+- Says "create PR" or "open PR"
+- Asks for "PR description"
+- Mentions "pull request" with intent to create
+
+## Process
+
+### Step 1: Analyze Changes
+
+Use git diff to understand:
+
+- Files modified
+- Nature of changes (feature, fix, refactor)
+- Breaking changes
+
+### Step 2: Generate Description
+
+Follow the template in `./pr-template.md`
+
+### Step 3: Add Context
+
+- Link related issues
+- Tag reviewers if mentioned
+- Add appropriate labels
+
+## Template Reference
+
+See `./pr-template.md` for the exact format.
+```
+
+### Krok 3: Utwórz szablon pomocniczy
+
+```markdown
+<!-- .claude/skills/pr-describing/pr-template.md -->
+
+## Summary
+
+[2-3 sentences describing what this PR does]
+
+## Changes
+
+- [ ] Change 1
+- [ ] Change 2
+
+## Testing
+
+- [ ] Unit tests added/updated
+- [ ] Manual testing performed
+
+## Screenshots
+
+[If UI changes]
+
+## Related Issues
+
+Closes #[issue-number]
+```
+
+### Krok 4: Przetestuj
+
+```bash
+# In Claude Code
+"Create a PR for my current changes"
+```
+
+Claude automatycznie załaduje skill na podstawie dopasowania opisu.
+
+## Wzorzec integracji MCP + Skills
+
+Oto wzorzec, który większość devów pomija: użycie Skills, aby nauczyć Claude, jak skutecznie korzystać z narzędzi MCP.
+
+### Problem
+
+MCP daje Claude dostęp do narzędzi (zapytania do bazy danych, wywołania API), ale Claude nie zna Twoich konkretnych:
+
+- Modeli danych
+- Wzorców zapytań
+- Konwencji API
+- Preferencji obsługi błędów
+
+### Rozwiązanie
+
+Twórz skills, które dostarczają wiedzy proceduralnej dla narzędzi MCP:
+
+````markdown
+---
+name: database-querying
+description: Executes database queries using the postgres MCP server following team conventions
+---
+
+# Database Query Skill
+
+## Prerequisites
+
+Requires `postgres` MCP server connection.
+
+## Data Model Reference
+
+Our main tables:
+
+- `users` - id, email, created_at, subscription_tier
+- `orders` - id, user_id, amount, status, created_at
+- `products` - id, name, price, category
+
+## Query Conventions
+
+### Always Use
+
+- Parameterized queries (never string concatenation)
+- LIMIT clauses (default 100, max 1000)
+- Created_at DESC for time-series data
+
+### Never Use
+
+- SELECT \* (always specify columns)
+- DELETE without WHERE
+- UPDATE without transaction
+
+## Common Patterns
+
+### User lookup
+
+```sql
+SELECT id, email, subscription_tier
+FROM users
+WHERE email = $1
+```
+````
+
+### Order history
+
+```sql
+SELECT o.id, o.amount, o.status, o.created_at
+FROM orders o
+WHERE o.user_id = $1
+ORDER BY o.created_at DESC
+LIMIT 50
+```
+
+````
+
+Teraz, gdy Claude korzysta z serwera MCP postgres, ma kontekst na temat Twojego konkretnego modelu danych i konwencji.
+
+## Gdy Skills nie chcą się uruchomić: przewodnik debugowania
+
+Nieaktywowanie się skills to najczęstsza frustracja. Oto systematyczne podejście do debugowania.
+
+### Sprawdzenie 1: Dopasowanie opisu
+
+Claude używa dopasowania semantycznego do opisów. Jeśli Twój skill się nie uruchamia:
+
+```yaml
+# Test with explicit keywords
+description: >
+  Handles code review, PR review, merge request review,
+  reviewing changes, checking code quality, security audit
+````
+
+Dodaj synonimy i warianty tego, jak użytkownicy mogą sformułować żądanie.
+
+### Sprawdzenie 2: Lokalizacja skilla
+
+Skills muszą znajdować się we właściwym katalogu:
+
+| Lokalizacja         | Zakres                        |
+| ------------------- | ----------------------------- |
+| `~/.claude/skills/` | Wszystkie projekty (poziom użytkownika) |
+| `.claude/skills/`   | Tylko bieżący projekt         |
+
+Zweryfikuj poleceniem:
+
+```bash
+ls -la .claude/skills/
+ls -la ~/.claude/skills/
+```
+
+### Sprawdzenie 3: Składnia YAML
+
+Błędy YAML kończą się cichą porażką. Zwaliduj swój frontmatter:
+
+```yaml
+# ❌ Missing quotes around special characters
+description: Reviews "code" for issues
+
+# ✅ Properly quoted
+description: 'Reviews "code" for issues'
+```
+
+### Sprawdzenie 4: Konflikt skilla z komendą
+
+Jeśli slash command ma tę samą nazwę co skill, komenda ma pierwszeństwo. Zmień nazwę jednego z nich.
+
+### Sprawdzenie 5: Przetestuj jawne wywołanie
+
+Skoro skills pojawiają się w menu slash command:
+
+```bash
+/pr-describing
+```
+
+Jeśli jawne wywołanie działa, ale automatyczne uruchamianie nie, problem leży w Twoim opisie.
+
+## Workflow zespołowy: wersjonowanie i udostępnianie skills
+
+### Strategia kontroli wersji
+
+Commituj skills do swojego repozytorium:
+
+```
+project/
+├── .claude/
+│   └── skills/
+│       ├── code-reviewing/
+│       ├── pr-describing/
+│       └── testing/
+├── src/
+└── ...
+```
+
+Dzięki temu wszyscy członkowie zespołu pracują ze spójnymi standardami.
+
+### Udostępnianie między projektami
+
+Dla skills obowiązujących w całej organizacji użyj katalogu globalnego z dowiązaniami symbolicznymi:
+
+```bash
+# Create shared skills repo
+git clone git@github.com:your-org/claude-skills.git ~/shared-claude-skills
+
+# Symlink to global location
+ln -s ~/shared-claude-skills/* ~/.claude/skills/
+```
+
+### Publikowanie w społeczności
+
+Oficjalny marketplace Anthropic:
+
+1. Zforkuj `github.com/anthropics/skills`
+2. Dodaj swój skill zgodnie z ich strukturą
+3. Wyślij PR
+
+Albo wnieś wkład do zbiorów społecznościowych, takich jak `awesome-claude-skills`.
+
+## Z życia wzięte: konfiguracja Hugging Face z 1000 eksperymentów dziennie
+
+To nie jest hipoteza - zespoły ML w Hugging Face używają skills Claude Code do przeprowadzania ponad 1000 eksperymentów dziennie.
+
+### Ich architektura
+
+```
+skills/
+├── model-training/
+│   ├── SKILL.md
+│   ├── sft-config.yaml
+│   ├── dpo-config.yaml
+│   └── rlhf-config.yaml
+├── experiment-tracking/
+│   ├── SKILL.md
+│   └── wandb-templates/
+└── deployment/
+    ├── SKILL.md
+    └── gguf-conversion.py
+```
+
+### Kluczowe cechy
+
+1. **Rejestr skills** - Jedno źródło prawdy dla wiedzy eksperymentalnej
+2. **Wieloetapowe pipeline'y** - SFT → DPO → RLHF w jednej rozmowie
+3. **Zakresy parametrów** - Modele od 0,5B do 70B
+4. **Zautomatyzowane raportowanie** - Generowanie PPTX z wynikami
+
+### Rezultaty
+
+To, co zajmowało 2-3 tygodnie konfiguracji, teraz zajmuje 2 dni. Skills wychwytują wiedzę instytucjonalną, która w przeciwnym razie żyłaby wyłącznie w głowach starszych inżynierów.
+
+## Przewaga otwartego standardu
+
+18 grudnia 2025 roku Anthropic opublikował Agent Skills jako otwarty standard na agentskills.io.
+
+### Kompatybilność międzyplatformowa
+
+Skills, które piszesz dla Claude Code, działają w:
+
+- OpenCode
+- Cursor
+- Amp
+- Letta
+- goose
+- GitHub Copilot
+- VS Code
+
+To nie vendor lock-in - to przenośna wiedza ekspercka.
+
+### Adopcja w branży
+
+Strona główna wymienia już integracje z OpenAI Codex, Gemini CLI od Google oraz ekosystemem Hugging Face. Napisz raz, używaj wszędzie.
+
+### Funkcje dla przedsiębiorstw
+
+Anthropic wypuścił narzędzia do zarządzania na poziomie całej organizacji wraz ze skills zbudowanymi przez partnerów:
+
+- Atlassian
+- Figma
+- Canva
+- Stripe
+- Notion
+- Zapier
+
+To nie zabawki - to automatyzacje workflow klasy produkcyjnej.
+
+## Źródła i materiały
+
+### Źródła
+
+- [Claude Code Skills Documentation](https://code.claude.com/docs/en/skills) - Oficjalna dokumentacja struktury SKILL.md i progressive disclosure
+- [Equipping agents for the real world with Agent Skills](https://www.anthropic.com/engineering/equipping-agents-for-the-real-world-with-agent-skills) - Inżynierska analiza otwartego standardu od Anthropic
+- [Claude Code Slash Commands](https://code.claude.com/docs/en/slash-commands) - Oficjalne porównanie ze skills
+- [How We Use Claude Code Skills to Run 1,000+ ML Experiments a Day](https://huggingface.co/blog/sionic-ai/claude-code-skills-training) - Produkcyjne studium przypadku Hugging Face
+
+### Dalsza lektura
+
+- [anthropics/skills](https://github.com/anthropics/skills) - Oficjalne repozytorium skills z produkcyjnymi przykładami
+- [awesome-claude-skills](https://github.com/travisvn/awesome-claude-skills) - Wyselekcjonowany przez społeczność zbiór skills
+- [Skill authoring best practices](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices) - Oficjalny przewodnik optymalizacji
+
+---
+
+~Seb 👊

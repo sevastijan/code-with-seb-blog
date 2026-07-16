@@ -1,0 +1,299 @@
+---
+title: "Context engineering w Claude Code: dlaczego struktura promptu bije jego brzmienie"
+date: '2026-04-20'
+category: 'AI'
+tags: ['claude-code', 'context-engineering', 'ai-productivity', 'prompt-engineering', 'developer-tools']
+draft: false
+featured: false
+author: 'Sebastian'
+enSlug: 'context-engineering-claude-code-guide'
+excerpt: "W 2026 modele są już tak dobre, że sposób, w jaki strukturyzujesz kontekst, liczy się bardziej niż to, jak formułujesz prompty. Oto praktyczny playbook context engineeringu."
+---
+
+Przez sześć miesięcy obsesyjnie dopracowywałem brzmienie promptów. Robiłem testy A/B "Please refactor this function" kontra "Refactor this function using the strategy pattern, ensuring..." i mierzyłem, która wersja daje lepszy wynik. Czasem wygrywała dłuższa. Czasem krótsza. Wyglądało to zupełnie losowo.
+
+Potem zmieniłem coś zupełnie innego. Przestałem majstrować przy promptach i zacząłem przebudowywać *to, co Claude już wiedział*, zanim cokolwiek napisałem. Te same prompty, to samo brzmienie — dramatycznie lepsze rezultaty. Moje zadania refaktoryzacyjne przeszły od "blisko, ale wymaga ręcznych poprawek" do "gotowe do commitu za pierwszym razem" w jakichś 60% przypadków.
+
+Wtedy mnie olśniło: **optymalizowałem niewłaściwą rzecz.** Przejście od prompt engineeringu do context engineeringu nie polega na lepszych słowach. Chodzi o lepszą architekturę.
+
+## Zmiana paradygmatu: od brzmienia do struktury
+
+Prompt engineering był dyscypliną lat 2023–2024. Nauczyliśmy się mówić "think step by step", używać system promptów, dawać przykłady few-shot. Te techniki wciąż działają — ale osiągnęły punkt malejących zwrotów.
+
+W 2026 modele są na tyle dobre, że jasna, prosta instrukcja po angielsku daje świetny wynik, *o ile otaczający kontekst jest właściwy*. Wąskie gardło się przesunęło. Nie chodzi już o "Czy model rozumie, czego chcę?". Chodzi o "Czy model ma właściwe informacje, żeby zrobić to, czego chcę?".
+
+Context engineering to praktyka strukturyzowania wszystkiego, co Claude otrzymuje — przed zadaniem, w jego trakcie i po nim — tak, aby model miał dokładnie te informacje, których potrzebuje, ni mniej, ni więcej, w momencie, w którym ich potrzebuje.
+
+Pomyśl o tym tak:
+
+- **Prompt engineering:** "Jak powinienem sformułować to pytanie?"
+- **Context engineering:** "Co Claude powinien już wiedzieć, gdy zadaję to pytanie?"
+
+Różnica ma znaczenie, bo kontekst się kumuluje. Dobrze zaprojektowany system kontekstu poprawia *każdą* interakcję. Dobrze dopracowany prompt poprawia jedną.
+
+## 5 warstw kontekstu
+
+Claude Code nie czyta tylko twojego promptu. Składa kontekst z pięciu odrębnych źródeł, z których każde ładuje się w innym momencie i służy innemu celowi:
+
+| Warstwa | Czym jest | Kiedy się ładuje | Trwałość |
+|-------|-----------|---------------|-------------|
+| **CLAUDE.md** | Instrukcje zachowania, reguły projektu | Start sesji | Trwała (plik) |
+| **Auto memory** | Wyuczone obserwacje Claude'a | Start sesji | Trwała (MEMORY.md) |
+| **Skills** | Wyspecjalizowane zestawy instrukcji | Tylko przy wywołaniu | Trwała (pliki) |
+| **Serwery MCP** | Dane na żywo z zewnętrznych narzędzi | Przy wywołaniu narzędzia | W czasie rzeczywistym |
+| **Historia rozmowy** | Wiadomości bieżącej sesji | Na bieżąco | Tylko sesja |
+
+Te warstwy nie są niezależne. Tworzą stos, a zrozumienie, jak na siebie oddziałują, jest sednem context engineeringu.
+
+Kluczowy wniosek: **warstwy ładowane wcześniej kosztują więcej tokenów**, bo są dołączane do każdego requesta. Warstwy ładowane później są tańsze, ale mniej trwałe. Dobry context engineering umieszcza stabilne, uniwersalne informacje we wczesnych warstwach, a informacje specyficzne dla zadania — w późniejszych.
+
+## Warstwa 1: CLAUDE.md — fundament
+
+CLAUDE.md to najpotężniejsza i najdroższa warstwa kontekstu. Jest czytana na starcie sesji i dołączana do każdego pojedynczego wywołania API przez cały czas jej trwania. To czyni ją idealną dla reguł, które obowiązują wszędzie — i fatalną dla czegokolwiek zależnego od sytuacji.
+
+Napisałem [kompletny przewodnik po architekturze CLAUDE.md](/blog/claude-md-memory-persistent-context-guide), który omawia czterowarstwową hierarchię, techniki optymalizacji oraz strategię cache'owania, która znacząco obniżyła moje koszty. Oto perspektywa context engineeringu:
+
+**Co należy do CLAUDE.md:**
+- Struktura projektu i lokalizacje kluczowych plików
+- Konwencje kodowania (nazewnictwo, wzorce, styl)
+- Dyrektywy zachowania ("nigdy nie modyfikuj plików migracji bez pytania")
+- Komendy build i test
+
+**Co tam nie należy:**
+- Pełne referencje API (użyj skills lub MCP)
+- Wyjaśnienia w stylu tutoriala (Claude już to wie)
+- Rzadko potrzebne procedury (przenieś do skills)
+- Informacje, które często się zmieniają (użyj MCP)
+
+Zasada praktyczna: jeśli linijka w CLAUDE.md nie zmienia zachowania Claude'a w *większości* sesji, marnuje tokeny w każdej sesji.
+
+```markdown
+# Good CLAUDE.md — dense, behavioral
+## Stack
+- Next.js 15 App Router, TypeScript strict, Tailwind 4
+- DB: Postgres via Drizzle ORM (schema in src/db/schema.ts)
+- Auth: Better Auth (src/lib/auth.ts)
+
+## Rules
+- Run `npm run typecheck` before suggesting a task is complete
+- Never modify files in src/db/migrations/ directly
+- Use server actions for mutations, not API routes
+- All components use named exports
+```
+
+Każda linijka to instrukcja. Żadnych opisów, żadnych wyjaśnień, żadnego "miło mieć". To sposób myślenia context engineeringu zastosowany do twojej warstwy fundamentowej.
+
+## Warstwa 2: Auto memory — wyuczony kontekst Claude'a
+
+Gdy Claude odkryje coś na temat twojego projektu — dziwactwo builda, wzorzec, który preferujesz, pułapkę, na którą trafił — może zapisać tę obserwację do MEMORY.md. Ten plik ładuje się razem z CLAUDE.md na starcie sesji.
+
+Perspektywa context engineeringu: auto memory to kontekst *emergentny*. Nie piszesz go ty; pisze go Claude. Twoim zadaniem jest kuratorowanie. Co kilka tygodni przeglądam MEMORY.md i:
+
+1. **Usuwam** obserwacje, które przestały być prawdziwe (biblioteka została zaktualizowana, wzorzec się zmienił)
+2. **Promuję** ważne do CLAUDE.md, jeśli są uniwersalnymi regułami
+3. **Skracam** rozwlekłe wpisy do jednolinijkowców
+
+Nieaktualna pamięć jest gorsza niż jej brak. Jeśli Claude "pamięta", że twój projekt używa React 18, gdy zmigrowałeś już do React 19, ten przeterminowany kontekst aktywnie pogarsza jakość wyników.
+
+## Warstwa 3: Skills — wstrzykiwanie kontekstu na żądanie
+
+Tu context engineering robi się ciekawy. Skills to pliki z instrukcjami, które ładują się *tylko przy wywołaniu* — poprzez składnię `/command` lub gdy Claude uzna je za istotne.
+
+Pełną mechanikę opisałem w moim [przewodniku po skills i wielokrotnie używalnych workflowach](/blog/claude-code-skills-reusable-ai-workflows-guide), ale oto dlaczego mają znaczenie dla context engineeringu: **skills realizują progresywne ujawnianie (progressive disclosure).**
+
+Zamiast upychać każdą procedurę do CLAUDE.md (gdzie kosztuje tokeny w każdej sesji), wydzielasz wyspecjalizowane workflowy do skills, które ładują się tylko wtedy, gdy są potrzebne:
+
+```
+.claude/
+├── CLAUDE.md              # 30 lines, always loaded
+└── skills/
+    ├── review-pr.md       # 80 lines, loaded on /review-pr
+    ├── write-migration.md # 60 lines, loaded on /write-migration
+    ├── deploy.md          # 45 lines, loaded on /deploy
+    └── debug-perf.md      # 70 lines, loaded on /debug-perf
+```
+
+Bez skills te 255 linii żyłoby w całości w CLAUDE.md — ładowane w każdej sesji, opłacane w każdym requeście, rozcieńczające instrukcje, których Claude faktycznie potrzebuje do bieżącego zadania.
+
+Ze skills Claude zaczyna każdą sesję od 30 linii podstawowego kontekstu. Gdy mówię `/review-pr`, ładuje dodatkowe 80 linii instrukcji do przeglądu PR — konkretne kryteria, pozycje z checklisty, format wyjścia. Gdy mówię `/write-migration`, dostaje zamiast tego workflow migracji.
+
+**To jest zasada progresywnego ujawniania:** Claude widzi tylko to, czego potrzebuje do bieżącego zadania. Cała reszta pozostaje na dysku, dopóki jej nie wywołasz.
+
+Nie chodzi tu wyłącznie o koszt tokenów (choć to ma znaczenie — matematyka jest w moim [przewodniku po optymalizacji tokenów](/blog/claude-code-token-optimization-bill-cut-guide)). Chodzi o uwagę. Modele językowe mają skończoną uwagę, a instrukcje konkurują ze sobą. Mniej, ale trafniejszych instrukcji daje lepsze przestrzeganie niż ściana tekstu obejmująca każdy możliwy scenariusz.
+
+## Warstwa 4: Serwery MCP — dostawcy kontekstu w czasie rzeczywistym
+
+Serwery MCP (Model Context Protocol) to najbardziej niedoceniana warstwa kontekstu. Większość deweloperów myśli o MCP jako o "sposobie na danie Claude'owi narzędzi". To prawda, ale ujęcie context engineeringu jest bardziej użyteczne: **serwery MCP to dostawcy kontekstu w czasie rzeczywistym.**
+
+Statyczny kontekst (CLAUDE.md, skills) mówi Claude'owi, *jak* pracować. Serwery MCP mówią Claude'owi, *co dzieje się teraz*:
+
+- Serwer MCP bazy danych dostarcza aktualny schemat i przykładowe dane
+- Serwer MCP monitoringu dostarcza współczynniki błędów i metryki w czasie rzeczywistym
+- Serwer MCP zarządzania projektem dostarcza bieżące tickety sprintu i priorytety
+- Serwer MCP dokumentacji dostarcza aktualne referencje API
+
+Kluczowa przewaga nad statycznym kontekstem: dane MCP są zawsze aktualne. Jeśli umieścisz schemat swojego API w CLAUDE.md, przeterminowuje się za każdym razem, gdy API się zmienia. Jeśli podłączysz serwer MCP, który czyta z twojej specyfikacji OpenAPI, Claude zawsze ma najnowszą wersję — i ładuje ją tylko wtedy, gdy faktycznie jej potrzebuje.
+
+Pisałem o [MCP i tym, jak wypada w porównaniu z innymi protokołami agentowymi](/blog/mcp-vs-a2a-ai-agent-protocols-guide-2026). Dla context engineeringu praktyczny wniosek brzmi: **wszystko, co często się zmienia, powinno być serwowane przez MCP, a nie zaszyte na sztywno w plikach statycznych.**
+
+```json
+// .claude/settings.json
+{
+  "mcpServers": {
+    "postgres": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-postgres"],
+      "env": { "DATABASE_URL": "postgresql://..." }
+    },
+    "linear": {
+      "command": "npx",
+      "args": ["-y", "mcp-linear"],
+      "env": { "LINEAR_API_KEY": "..." }
+    }
+  }
+}
+```
+
+Teraz, gdy mówię "zaimplementuj następny ticket ze sprintu", Claude pobiera faktyczny ticket z Lineara, odczytuje aktualny schemat bazy danych z Postgresa i pisze kod, który pasuje do obu. Żadnego kopiowania opisów ticketów. Żadnych przeterminowanych referencji do schematu.
+
+## Warstwa 5: Zarządzanie rozmową
+
+Najbardziej ulotna warstwa — i ta, którą najwięcej deweloperów zaniedbuje. Twoja historia rozmowy *jest* kontekstem. Każda wiadomość, każdy blok kodu, każdy wypis błędu kumuluje się w context window Claude'a.
+
+Trzy komendy, które mają znaczenie:
+
+**`/clear`** — Resetuje historię rozmowy. Używaj jej przy przełączaniu zadań. Jeśli przez 20 wiadomości debugowałeś problem z CSS, a teraz chcesz zaimplementować nowy endpoint API, te 20 wiadomości kontekstu o CSS to szum. Wyczyść je.
+
+**`/compact`** — Streszcza historię rozmowy do krótszej formy. Używaj jej podczas długich sesji, gdy wciąż pracujesz nad tym samym zadaniem, ale nagromadzona historia robi się duża. Claude zachowuje ważny kontekst i porzuca rozwlekłe przepychanki.
+
+**Grupowanie (batching)** — Zbieraj powiązane zadania w jednej sesji, a niepowiązane w osobnych. "Zrefaktoryzuj moduł auth, potem zaktualizuj jego testy, potem zaktualizuj dokumentację" to jedna sesja. "Napraw ten bug w CSS, potem zaimplementuj webhook płatności" to dwie sesje z `/clear` pomiędzy nimi.
+
+Zasada context engineeringu: **nieaktualny kontekst rozmowy jest jak nieaktualna pamięć — pogarsza wyniki.** Rozmowa złożona z 50 wiadomości o funkcji A sprawia, że Claude jest gorszy w funkcji B — nie dlatego, że model jest zdezorientowany, ale dlatego, że istotny kontekst zostaje odepchnięty dalej od uwagi.
+
+## Zasada progresywnego ujawniania
+
+Gdybym miał sprowadzić context engineering do jednej idei, brzmiałaby ona tak: **Claude powinien widzieć tylko to, czego potrzebuje do bieżącego zadania, załadowane w momencie, w którym staje się to istotne.**
+
+Oto jak warstwy to realizują:
+
+1. **Zawsze ładowane:** CLAUDE.md + auto memory (uniwersalne reguły, ~500 tokenów)
+2. **Ładowane na żądanie:** Skills (instrukcje specyficzne dla zadania, ładowane przez /command)
+3. **Ładowane przy użyciu:** Serwery MCP (dane w czasie rzeczywistym, ładowane, gdy Claude wywoła narzędzie)
+4. **Kumulowane naturalnie:** Historia rozmowy (kontekst bieżącego zadania)
+5. **Nigdy nieładowane:** Pliki objęte .claudeignore (nieistotny kod, katalogi vendor, artefakty builda)
+
+To przeciwieństwo instynktu, który ma większość deweloperów — czyli chęci powiedzenia Claude'owi *wszystkiego* z góry. Więcej kontekstu wydaje się bezpieczniejsze. Ale powyżej pewnego punktu więcej kontekstu oznacza mniej skupienia.
+
+## Antywzorce: co psuje jakość kontekstu
+
+Po pracy z dziesiątkami konfiguracji CLAUDE.md (moimi i cudzymi) oto wzorce, które konsekwentnie pogarszają wyniki:
+
+### 1. Przeciążenie kontekstem
+200-linijkowy CLAUDE.md z pełnymi referencjami API, przewodnikami po stylu, procesami zespołowymi i procedurami wdrożeniowymi. Claude czyta wszystko, źle ustala priorytety i niekonsekwentnie stosuje reguły. **Rozwiązanie:** Wydziel wszystko oprócz podstawowych reguł zachowania do skills.
+
+### 2. Sprzeczne instrukcje
+CLAUDE.md mówi "always use server actions for mutations". Skill mówi "create an API route for this endpoint". Claude się gubi i czasem robi jedno, czasem drugie. **Rozwiązanie:** Ustal jasny priorytet. Skills nadpisują CLAUDE.md w swojej konkretnej domenie. Powiedz to wprost.
+
+### 3. Nieaktualny kontekst
+MEMORY.md wciąż mówi "project uses Pages Router" trzy miesiące po tym, jak zmigrowałeś do App Router. Claude połowę czasu generuje kod Pages Router. **Rozwiązanie:** Przeglądaj MEMORY.md co miesiąc. Kasuj agresywnie.
+
+### 4. Monolityczne sesje
+Pracujesz nad pięcioma niepowiązanymi funkcjami w jednej sesji bez czyszczenia kontekstu. Przy piątej funkcji Claude czerpie z fragmentów funkcji od pierwszej do czwartej. **Rozwiązanie:** `/clear` między niepowiązanymi zadaniami. `/compact` podczas długich zadań.
+
+### 5. Zduplikowany kontekst
+Ta sama informacja pojawia się w CLAUDE.md, w pliku skill i jest powtarzana w twoich promptach. Claude widzi trzy nieco różne wersje i musi je pogodzić. **Rozwiązanie:** Jedno źródło prawdy. Odwołuj się, nie powtarzaj.
+
+## Praktyczny przykład: inżynieria kontekstu dla złożonej refaktoryzacji
+
+Przejdźmy przez to, jak ustawiłbym kontekst dla realnego zadania: refaktoryzacji monolitycznego handlera trasy API do osobnych modułów serwisów.
+
+**Krok 1: Sprawdź, czy CLAUDE.md ma właściwy fundament**
+
+```markdown
+## Architecture
+- Services in src/services/, one file per domain
+- API routes call services, never contain business logic
+- All services export typed interfaces
+```
+
+Te reguły są trwałe. Obowiązują w każdej sesji, nie tylko w tej refaktoryzacji.
+
+**Krok 2: Stwórz skill dla wzorca refaktoryzacji**
+
+```markdown
+# .claude/skills/refactor-to-service.md
+
+## Refactoring: API Route → Service Pattern
+
+When extracting business logic from an API route:
+
+1. Identify all business logic (everything except request parsing and response formatting)
+2. Create src/services/[domain].ts with a typed interface
+3. Move business logic into service functions
+4. Update the API route to import and call the service
+5. Move existing tests to test the service directly
+6. Add a thin integration test for the route itself
+
+## Constraints
+- Services must not import from Next.js (no `NextRequest`, no `cookies()`)
+- Every service function must accept plain typed arguments and return plain typed results
+- Error handling: services throw typed errors, routes catch and format HTTP responses
+```
+
+Ten skill ładuje się tylko wtedy, gdy wywołuję skill refaktoryzacji, dzięki czemu moje ogólne sesje pozostają lekkie.
+
+**Krok 3: Zadbaj, by MCP dostarczał aktualny stan**
+
+Mój serwer MCP Postgresa daje Claude'owi aktualny schemat bazy danych. Mój dostęp do systemu plików daje mu faktyczny kod. Żadnego kopiowania, żadnych przeterminowanych referencji.
+
+**Krok 4: Zacznij czystą sesję**
+
+```
+/clear
+/refactor-to-service
+Refactor src/app/api/orders/route.ts — extract order business logic into src/services/orders.ts
+```
+
+Claude zaczyna od: podstawowych reguł projektu (CLAUDE.md, ~500 tokenów) + instrukcji refaktoryzacji (skill, ~200 tokenów) + danych w czasie rzeczywistym (MCP, ładowane na żądanie) + czystej historii rozmowy. Łączny kontekst statyczny: ~700 tokenów. Porównaj to z 2000-tokenowym CLAUDE.md, który próbuje objąć wszystko.
+
+Rezultat: Claude stosuje dokładnie ten wzorzec, którego chcę, używa aktualnych typów schematu i tworzy czystą refaktoryzację, która przechodzi kontrolę typów za pierwszym razem.
+
+## Mierzenie jakości kontekstu
+
+Skąd wiesz, czy twój context engineering działa? Trzy metryki:
+
+### 1. Współczynnik trafień cache'a promptów (prompt cache hit rate)
+Uruchom `/cost` w Claude Code. Spójrz na procent trafień cache'a. Wysokie trafienia oznaczają, że twój statyczny kontekst (CLAUDE.md, skills) jest stabilny i efektywnie ponownie wykorzystywany. Jeśli twój cache hit rate jest poniżej 40%, twój kontekst prawdopodobnie zbyt mocno zmienia się między requestami — często to oznaka nadmiernie rozwlekłej historii rozmowy lub niedeterministycznego ładowania kontekstu. Pisałem o [strategiach optymalizacji tokenów](/blog/claude-code-token-optimization-bill-cut-guide), które podniosły mój cache rate z 12% do 61%.
+
+### 2. Trafność za pierwszym razem (first-try accuracy)
+Śledź, jak często wynik Claude'a nadaje się do użycia bez modyfikacji. Przed context engineeringiem byłem może na 30% trafności za pierwszym razem dla złożonych zadań. Po przebudowaniu warstw kontekstu jest bliżej 60%. Model nie zmądrzał — po prostu dostał lepsze informacje.
+
+### 3. Efektywność tokenowa (token efficiency)
+Podziel liczbę użytecznych tokenów wyjściowych przez łączną liczbę tokenów wejściowych. Jeśli wysyłasz 50 000 tokenów kontekstu, żeby dostać 500 tokenów użytecznego kodu, twój stosunek to 1:100. Po przejściu z monolitycznego CLAUDE.md na warstwowy system ze skills mój typowy stosunek poprawił się z ~1:80 do ~1:30. Te same rezultaty, jedna trzecia kosztu.
+
+## Zmiana modelu mentalnego
+
+Przestań myśleć o Claude Code jak o chatbocie, który trzeba starannie promptować. Zacznij myśleć o nim jak o systemie, który trzeba poprawnie skonfigurować.
+
+Prompt — to, co faktycznie wpisujesz — jest *najmniej ważną* częścią. Zanim wpiszesz swoją instrukcję, warstwy kontekstu już określiły 80% jakości wyniku. CLAUDE.md ustawił bazową linię zachowania. Skills załadowały istotne procedury. Serwery MCP dostarczyły aktualne dane. Twoja historia rozmowy wyznaczyła granice zadania.
+
+Twój prompt mówi tylko, co zrobić. Kontekst decyduje, jak dobrze to zostanie zrobione.
+
+To właśnie context engineering. Nie lepsze słowa — lepsza architektura.
+
+## Źródła i materiały
+
+### Źródła
+- [Anthropic Claude Code Documentation — Context System](https://docs.anthropic.com/en/docs/claude-code)
+- [Model Context Protocol Specification](https://modelcontextprotocol.io/)
+- [Anthropic Prompt Engineering Guide](https://docs.anthropic.com/en/docs/build-with-claude/prompt-engineering)
+
+### Dalsza lektura
+- [Building Effective Agents — Anthropic Research](https://www.anthropic.com/engineering/building-effective-agents)
+- [MCP Server Registry — Official Listing](https://github.com/modelcontextprotocol/servers)
+- [Claude Code Tips and Tricks — Anthropic Docs](https://docs.anthropic.com/en/docs/claude-code/tips-and-tricks)
+- [Prompt Caching — Anthropic Documentation](https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching)
+
+---
+
+~Seb 👊
