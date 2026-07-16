@@ -1,0 +1,509 @@
+---
+title: 'CLAUDE.md i memory: kompletny przewodnik po trwałym kontekście AI w Claude Code'
+date: '2026-04-20'
+category: 'AI'
+tags: ['claude-code', 'claude-md', 'ai-productivity', 'developer-tools', 'context-engineering']
+draft: false
+featured: false
+author: 'Sebastian'
+enSlug: 'claude-md-memory-persistent-context-guide'
+excerpt: "CLAUDE.md jest wczytywany przy każdym starcie sesji — każda linia kosztuje tokeny na zawsze. Oto jak zaprojektować cały system kontekstu w Claude Code i podnieść cache hit rate."
+---
+
+Mój pierwszy CLAUDE.md miał 400 linii. Zawierał opisy projektu, architektoniczne aspiracje, konwencje zespołowe, których miałem nadzieję kiedyś przestrzegać, oraz pełny opis API biblioteki używanej w trzech plikach. Claude czytał każde słowo na początku każdej sesji. I ignorował mniej więcej połowę tego.
+
+Wtedy zrozumiałem: **CLAUDE.md to nie dokumentacja. To kontrakt na zachowanie.** Każda linia, która nie zmienia zachowania Claude'a, to linia, za którą płacisz — w tokenach, w oknie kontekstu i w rozproszonej uwadze. CLAUDE.md opisuje, jak działa codebase; wymagania per feature należą do [specyfikacji w Spec-Driven Development](/blog/spec-driven-development-spec-kit-claude-code-guide) — to konstytucja kontra ustawy, a nie ten sam artefakt.
+
+Po tym, jak przyciąłem go z 800 tokenów do poniżej 500 i przebudowałem całą architekturę kontekstu, mój prompt cache hit rate wzrósł z 12% do 61%. To znaczy, że dwie trzecie tokenów wejściowych kosztuje jedną dziesiątą tego co wcześniej. Jakość outputu Claude'a wzrosła, a nie spadła.
+
+Ten przewodnik obejmuje cały system — nie tylko CLAUDE.md w izolacji, ale to, jak współpracuje z auto memory, settings.json, .claudeignore i skills jako jedna spójna [architektura kontekstu](/blog/context-engineering-claude-code-guide).
+
+## Architektura kontekstu: 5 plików, które kontrolują wszystko
+
+Większość developerów myśli o CLAUDE.md jako o "pliku, w którym mówię Claude'owi, co ma robić". To jeden element pięcioczęściowego systemu:
+
+| Plik | Cel | Kiedy wczytywany? |
+|------|---------|-------------|
+| `CLAUDE.md` | Instrukcje zachowania | Każdy start sesji |
+| `MEMORY.md` | Wyuczone obserwacje Claude'a | Każdy start sesji |
+| `settings.json` | Uprawnienia, hooki, zmienne środowiskowe | Każdy start sesji |
+| `.claudeignore` | Pliki, których Claude nie powinien czytać | Podczas eksploracji codebase'u |
+| `skills/` | Wyspecjalizowane instrukcje na żądanie | Tylko przy wywołaniu |
+
+To nie są osobne funkcje. To jedna architektura kontekstu. Skonfiguruj je w izolacji, a będziesz się zastanawiać, dlaczego Claude wciąż ignoruje instrukcje, spala tokeny albo zapomina o twoich preferencjach.
+
+## CLAUDE.md od podszewki: 4-warstwowa hierarchia
+
+CLAUDE.md nie jest pojedynczym plikiem — to hierarchia. Bardziej szczegółowe warstwy nadpisują ogólniejsze:
+
+### Warstwa 1: Globalna (`~/.claude/CLAUDE.md`)
+
+Dotyczy **każdego projektu**, nad którym pracujesz. Umieść tu uniwersalne preferencje — swój styl kodowania, preferencje komunikacyjne i narzędzia, których zawsze używasz.
+
+```markdown
+# ~/.claude/CLAUDE.md
+
+## Style
+- Write TypeScript, not JavaScript
+- Use functional components, not class components
+- Prefer named exports over default exports
+
+## Communication
+- Be concise. Skip preambles.
+- Don't explain code I didn't ask about
+- When unsure, ask — don't guess
+```
+
+Utrzymuj to minimalne. Maksymalnie 5–10 reguł. Wszystko tutaj wczytywane jest dla każdego projektu, nawet takich, gdzie część reguł nie ma zastosowania.
+
+### Warstwa 2: Katalog główny projektu (`CLAUDE.md` lub `.claude/CLAUDE.md`)
+
+Główny plik na poziomie projektu. **Trafia do systemu kontroli wersji**, więc cały twój zespół dzieli te same instrukcje.
+
+```markdown
+# CLAUDE.md
+
+## Project
+Next.js 14 app with App Router, TypeScript strict mode, Tailwind CSS 4.
+
+## Commands
+- Build: `npm run build`
+- Test: `npm test`
+- Lint: `npm run lint`
+
+## Architecture
+- App Router: src/app/
+- Components: src/components/ (atomic design)
+- API routes: src/app/api/
+- Content: content/blog/*.mdx
+
+## Rules
+- Always run `npm run lint` before committing
+- Use Zod for all API input validation
+- Server Components by default, 'use client' only when needed
+- No relative imports crossing feature boundaries — use @/ aliases
+```
+
+Tutaj mieszka większość twoich instrukcji. Zauważ wzorzec: **czym jest projekt**, **jak z nim pracować** oraz **reguły, które zmieniają zachowanie**.
+
+### Warstwa 3: Specyficzna dla katalogu (`CLAUDE.md` w podkatalogu)
+
+Wczytywana tylko wtedy, gdy Claude pracuje w danym katalogu. Idealna do reguł specyficznych dla podsystemu, które zaśmiecałyby główny plik.
+
+```markdown
+# src/components/CLAUDE.md
+
+## Component conventions
+- Every component gets its own directory: ComponentName/index.tsx
+- Co-locate tests: ComponentName/ComponentName.test.tsx
+- Co-locate stories: ComponentName/ComponentName.stories.tsx
+- Props interface named ComponentNameProps
+```
+
+```markdown
+# src/app/api/CLAUDE.md
+
+## API conventions
+- Every route validates input with Zod
+- Return consistent error format: { error: string, code: number }
+- Log all errors with structured logging
+- Rate limit all public endpoints
+```
+
+To **lazy loading dla kontekstu**. Claude płaci koszt tokenów dopiero wtedy, gdy faktycznie pracuje w tym katalogu.
+
+### Warstwa 4: Specyficzna dla użytkownika (`.claude/CLAUDE.md`)
+
+Osobiste nadpisania, które nie trafiają do gita. Każdy developer może ustawić własne preferencje.
+
+```markdown
+# .claude/CLAUDE.md (gitignored)
+
+- I prefer verbose git commit messages
+- Always explain your reasoning before making changes
+- Use vim keybindings references when explaining shortcuts
+```
+
+### Jak warstwy się łączą
+
+Gdy Claude uruchamia sesję w `/my-project/src/components/`, wczytuje:
+
+1. `~/.claude/CLAUDE.md` (globalny)
+2. `/my-project/CLAUDE.md` (projekt)
+3. `/my-project/src/components/CLAUDE.md` (katalog — tylko jeśli tam pracuje)
+4. `/my-project/.claude/CLAUDE.md` (specyficzny dla użytkownika)
+
+Późniejsze warstwy mają pierwszeństwo. Jeśli twój globalny plik mówi "używaj tabów", a plik projektu mówi "używaj spacji", Claude użyje spacji.
+
+## Pisanie skutecznego CLAUDE.md: zasada behavior-first
+
+Dla każdej linii w swoim CLAUDE.md zadaj pytanie: **"Czy usunięcie tego spowodowałoby, że Claude popełni błąd?"** Jeśli nie — wytnij.
+
+### Co należy do CLAUDE.md
+
+- Komendy build/test/lint
+- Struktura plików i konwencje nazewnictwa
+- Stack technologiczny z wersjami
+- Reguły zapobiegające konkretnym błędom
+- Ograniczenia architektoniczne
+
+### Co NIE należy
+
+- Opisy projektu (umieść je w README.md)
+- Dokumentacja API (Claude czyta kod)
+- Cele aspiracyjne ("chcemy zmigrować do...")
+- Wyjaśnienia dlaczego (po prostu podaj regułę)
+- Cokolwiek, co Claude może wywnioskować z codebase'u
+
+### Przed i po
+
+Oto prawdziwy przykład z jednego z moich projektów:
+
+**Przed (47 linii, ~800 tokenów):**
+
+```markdown
+# Project Overview
+This is a Next.js blog application built with TypeScript and Tailwind CSS.
+The blog uses MDX for content management and is deployed on Vercel.
+We started this project in 2025 and it has grown to include over 50
+articles covering React, TypeScript, and AI topics.
+
+## Technology Stack
+We use Next.js 14 with the App Router for routing and server-side
+rendering. TypeScript is used throughout the project with strict mode
+enabled. Tailwind CSS handles styling. MDX files are stored in the
+content/blog directory and processed at build time.
+
+## Goals
+We want to maintain high performance scores (90+ on Lighthouse) and
+ensure accessibility compliance. The blog should load fast and work
+well on mobile devices.
+
+## File Structure
+The project follows a standard Next.js structure:
+- src/app/ contains all pages and layouts
+- src/components/ contains reusable React components
+- content/blog/ contains MDX blog posts
+- public/ contains static assets
+
+## Coding Standards
+We follow the Airbnb style guide with some modifications.
+Functions should be well-documented. Use meaningful variable names.
+Avoid any type in TypeScript. Prefer const over let.
+...
+(continues for 20 more lines)
+```
+
+**Po (18 linii, ~350 tokenów):**
+
+```markdown
+# CLAUDE.md
+
+## Stack
+Next.js 14 App Router, TypeScript strict, Tailwind CSS 4, MDX.
+
+## Commands
+- Build: `npm run build`
+- Dev: `npm run dev`
+- Lint: `npm run lint`
+
+## Structure
+- Pages: src/app/
+- Components: src/components/
+- Blog posts: content/blog/*.mdx
+- Static: public/
+
+## Rules
+- Server Components by default, 'use client' only when needed
+- Zod validation on all API inputs
+- Run lint before committing
+- No `any` type — use `unknown` with type guards
+```
+
+Ten sam projekt. Mniej niż połowa tokenów. Jakość outputu Claude'a się poprawiła, bo każda instrukcja jest konkretna i wykonalna.
+
+## Auto memory i MEMORY.md: jak Claude się uczy, choć nic nie piszesz
+
+Auto memory to najbardziej niedoceniana funkcja Claude Code. Jest domyślnie włączona i pozwala Claude'owi gromadzić wiedzę specyficzną dla projektu między sesjami, bez pisania czegokolwiek przez ciebie.
+
+### Jak to działa
+
+Podczas sesji Claude obserwuje:
+- Jak modyfikujesz jego output
+- Preferencje, które wielokrotnie podkreślasz
+- Komendy buildu, które działają
+- Wzorce debugowania, które rozwiązują problemy
+- Nawyki dotyczące workflow
+
+Następnie zapisuje te obserwacje do `~/.claude/projects/<project>/memory/MEMORY.md`.
+
+### Struktura katalogu memory
+
+```
+~/.claude/projects/<project-path>/memory/
+├── MEMORY.md           # Plik indeksu (wczytywany przy starcie)
+├── user_preferences.md # Obserwacje twojego stylu kodowania
+├── feedback_testing.md # Poprawki, które przekazałeś
+├── project_arch.md     # Obserwacje architektury
+└── reference_tools.md  # Odwołania do zewnętrznych narzędzi
+```
+
+`MEMORY.md` to zwięzły indeks — jedna linia na temat, z linkami do szczegółowych plików. Gdy notatki się piętrzą, Claude przenosi je do dedykowanych plików tematycznych, aby utrzymać indeks poniżej 200 linii.
+
+### CLAUDE.md kontra auto memory
+
+Traktuj je jako komplementarne:
+
+| | CLAUDE.md | Auto memory |
+|---|---|---|
+| **Kto to pisze** | Ty | Claude |
+| **Co zawiera** | Twoje wymagania | Obserwacje Claude'a |
+| **Kontrola wersji** | Tak (commitowane do gita) | Nie (lokalne na twojej maszynie) |
+| **Współdzielone z zespołem** | Tak | Nie |
+| **Aktualizacje** | Ręczne | Automatyczne |
+
+CLAUDE.md mówi "używaj Zod do walidacji". Auto memory mówi "ten developer woli inline'owe schematy Zod od osobnych plików ze schematami i zawsze chce, aby komunikaty błędów zawierały nazwę pola".
+
+### Zarządzanie auto memory
+
+```bash
+# Podejrzyj bieżącą pamięć
+/memory
+
+# Wyłącz na jedną sesję
+CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 claude
+
+# Poproś Claude'a, aby coś zapamiętał wprost
+"Remember: always use pnpm, never npm"
+
+# Poproś Claude'a, aby coś zapomniał
+"Forget the note about using yarn"
+```
+
+## settings.json: uprawnienia, hooki i zmienne środowiskowe
+
+O ile CLAUDE.md kontroluje, co Claude wie, o tyle `settings.json` kontroluje, co Claude może **zrobić**.
+
+```json
+// .claude/settings.json (committed to git)
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run *)",
+      "Bash(git *)",
+      "Bash(npx prettier *)",
+      "Read",
+      "Write",
+      "Edit"
+    ],
+    "deny": [
+      "Bash(rm -rf *)",
+      "Bash(git push --force *)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo 'File modified: $TOOL_INPUT_FILE_PATH'"
+          }
+        ]
+      }
+    ]
+  },
+  "env": {
+    "NODE_ENV": "development"
+  }
+}
+```
+
+### Hierarchia ustawień
+
+Ustawienia również mają warstwy, przy czym wygrywają warstwy bardziej restrykcyjne:
+
+1. **Managed** (`~/.claude/managed-settings.json`) — ogólnoorganizacyjne, nie można ich nadpisać
+2. **Enterprise** — polityki organizacji
+3. **Project** (`.claude/settings.json`) — commitowane, współdzielone z zespołem
+4. **User** (`.claude/settings.local.json`) — osobiste, gitignored
+
+Kluczowy wniosek: **settings.json służy do barierek ochronnych, CLAUDE.md do wskazówek.** Ustawienia egzekwują twarde limity. CLAUDE.md daje miękkie ukierunkowanie.
+
+Pełny przewodnik po budowaniu [hooków i custom agentów](/blog/claude-code-hooks-custom-agents-ai-pipelines-guide) na bazie settings.json, w tym bramki bezpieczeństwa i pipeline'y auto-formatowania, omówiłem osobno — opisałem tam cały system hooków.
+
+## .claudeignore: kontrola tego, co Claude widzi
+
+`.claudeignore` działa jak `.gitignore` — mówi Claude'owi, które pliki nie są istotne dla kontekstu. Każdy plik, który Claude czyta, kosztuje tokeny.
+
+```bash
+# .claudeignore
+
+# Build artifacts
+.next/
+dist/
+build/
+out/
+
+# Dependencies
+node_modules/
+
+# Large generated files
+*.min.js
+*.min.css
+*.map
+
+# Data files
+*.csv
+*.sql
+*.sqlite
+
+# Media
+*.png
+*.jpg
+*.mp4
+*.gif
+
+# Logs
+*.log
+logs/
+
+# IDE
+.idea/
+.vscode/settings.json
+```
+
+**Kluczowe rozróżnienie:** `.claudeignore` nie powstrzymuje Claude'a przed czytaniem tych plików, jeśli wprost o to poprosisz. Powstrzymuje go przed czytaniem ich podczas autonomicznej eksploracji. Oszczędność tokenów bierze się z tego, że Claude nie indeksuje całego twojego `node_modules/`, gdy szuka istotnego kodu.
+
+Jeśli nie używasz `.claudeignore`, płacisz za to, żeby Claude czytał pliki, których nigdy nie wykorzysta. W typowym projekcie Next.js samo `.claudeignore` potrafi [istotnie obniżyć koszty tokenów](/blog/claude-code-token-optimization-bill-cut-guide).
+
+## Skills jako kontekst: wyprowadzanie instrukcji z CLAUDE.md
+
+Jeśli twój CLAUDE.md ma sekcje w stylu "Przy review PR-ów przestrzegaj tych 15 reguł..." albo "Przy migracjach bazy danych zawsze...", te instrukcje wczytywane są w każdej sesji — nawet gdy nie robisz review PR-ów ani migracji.
+
+[Skills](/blog/claude-code-skills-reusable-ai-workflows-guide) wczytują się na żądanie. Przenieś tam wyspecjalizowane instrukcje:
+
+```markdown
+# .claude/skills/review-pr.md
+---
+name: review-pr
+description: Review a pull request with security and performance checks
+---
+
+## PR Review Checklist
+1. Check for security vulnerabilities (SQL injection, XSS, prompt injection)
+2. Verify error handling on all async operations
+3. Check for N+1 query patterns
+4. Ensure new API endpoints have rate limiting
+5. Verify test coverage for new code paths
+...
+```
+
+Teraz te 15 reguł wczytuje się tylko wtedy, gdy wywołasz `/review-pr`, a nie w każdej sesji. Przy 10 skillach płacisz w sumie ~1000 tokenów przy starcie, zamiast 50 000+, gdyby wszystko żyło w CLAUDE.md.
+
+## Playbook optymalizacji: od 12% do 61% cache hit rate
+
+Oto, co zmieniłem, i wpływ każdej zmiany:
+
+### 1. Przytnij CLAUDE.md (największy wpływ)
+
+Skróciłem z 800 tokenów do poniżej 500. Usunąłem opisy, aspiracje i wszystko, co Claude mógł wywnioskować z codebase'u. Skup się wyłącznie na regułach zmieniających zachowanie.
+
+### 2. Ustabilizuj CLAUDE.md
+
+Edytowanie CLAUDE.md w środku dnia unieważnia prompt cache. Cały plik jest ponownie hashowany. Teraz edytuję go najwyżej raz w tygodniu — najlepiej ustawić i zapomnieć.
+
+### 3. Dodaj .claudeignore
+
+Uniemożliwiłem Claude'owi indeksowanie artefaktów buildu, obrazów i plików generowanych. Mniej tokenów wydawanych na nieistotny kontekst.
+
+### 4. Przenieś wyspecjalizowane instrukcje do skills
+
+Reguły review PR-ów, checklisty deploymentu i przewodniki migracji przeniosłem z CLAUDE.md do skills. Bazowy kontekst istotnie się zmniejszył.
+
+### 5. Używaj /clear między zadaniami
+
+Nieaktualny kontekst rozmowy marnuje tokeny. Zaczynanie od zera przy przełączaniu między niepowiązanymi zadaniami utrzymuje kontekst szczupłym.
+
+### 6. Używaj plików CLAUDE.md na poziomie katalogów
+
+Konwencje komponentów i API przeniosłem do plików w podkatalogach. Wczytują się tylko wtedy, gdy Claude pracuje w tych katalogach.
+
+**Rezultat:** cache hit rate z 12% do 61%. Sprawdź swój przez `/cost` — jeśli jest poniżej 40%, twoja architektura kontekstu wymaga pracy.
+
+## Gdy Claude ignoruje twoje instrukcje
+
+To najczęstsza skarga. Oto checklista do rozwiązywania problemów:
+
+### 1. Twój CLAUDE.md jest za długi
+
+Powyżej 200 linii Claude zaczyna deprioryzować instrukcje. Rozwiązaniem nie jest pogrubienie ważnych reguł — tylko wycięcie tych nieważnych.
+
+### 2. Instrukcje są sprzeczne
+
+Jeśli twój globalny CLAUDE.md mówi "używaj tabów", a projektowy CLAUDE.md mówi "trzymaj się istniejącego stylu", Claude wybiera bardziej szczegółowy — ale może to nie być to, czego oczekujesz. Przejrzyj wszystkie cztery warstwy pod kątem sprzeczności.
+
+### 3. Instrukcje są mgliste
+
+"Pisz czysty kod" nic nie znaczy. "Żadnych funkcji dłuższych niż 30 linii" jest konkretne. Claude lepiej stosuje konkretne reguły niż ogólne porady. (Jedno zastrzeżenie, które przyszło z rodziną Claude 5: konkretne *ograniczenia* dobrze się starzeją, ale konkretne procedury *krok po kroku* teraz przynoszą efekt odwrotny — [odchudzanie promptów pod Fable 5](/blog/fable-5-prompting-de-prescribing-guide) opisałem osobno).
+
+### 4. Kompakcja kontekstu ją usunęła
+
+W długich sesjach Claude kompaktuje historię rozmowy, aby zwolnić okno kontekstu. Krytyczne instrukcje w CLAUDE.md przetrwają kompakcję — ale instrukcje przekazane w środku rozmowy mogą już nie. Jeśli reguła ma znaczenie, umieść ją w CLAUDE.md, a nie na czacie.
+
+### 5. Instrukcja konkuruje z treningiem
+
+Jeśli każesz Claude'owi zrobić coś, co bezpośrednio przeczy jego treningowi (np. "nigdy nie dodawaj obsługi błędów"), może się opierać. Przeformułuj to jako pozytywną instrukcję: "Pomijaj bloki try/catch — obsługą błędów zarządza globalny error boundary w src/app/error.tsx".
+
+## Kompletna checklista konfiguracji projektu
+
+Użyj tego przy konfigurowaniu Claude Code dla nowego projektu:
+
+```markdown
+## Initial Setup
+- [ ] Run `/init` to generate starter CLAUDE.md
+- [ ] Trim CLAUDE.md to behavior-changing rules only (<200 lines)
+- [ ] Create .claudeignore with build artifacts, deps, media
+- [ ] Set up .claude/settings.json with permissions and hooks
+- [ ] Add .claude/settings.local.json to .gitignore
+
+## Context Architecture
+- [ ] Global rules in ~/.claude/CLAUDE.md (5-10 rules max)
+- [ ] Project rules in ./CLAUDE.md (committed to git)
+- [ ] Directory rules in subdirectories (only where needed)
+- [ ] Personal overrides in .claude/CLAUDE.md (gitignored)
+
+## Optimization
+- [ ] CLAUDE.md under 500 tokens (count with `wc -c CLAUDE.md`)
+- [ ] Specialized instructions moved to .claude/skills/
+- [ ] .claudeignore covers node_modules, build/, dist/, media
+- [ ] Auto memory enabled (default)
+- [ ] Check cache hit rate with /cost (target: 40%+)
+
+## Team
+- [ ] CLAUDE.md and .claude/settings.json committed to git
+- [ ] .claude/settings.local.json in .gitignore
+- [ ] Team agreement on CLAUDE.md update frequency
+```
+
+Twój CLAUDE.md to nie tylko plik konfiguracyjny. To najważniejsza dźwignia, jaką masz nad zachowaniem, kosztem i jakością Claude Code. Traktuj go jak kod produkcyjny — rób jego review, optymalizuj go i nigdy nie pozwól mu rosnąć bez kontroli.
+
+## References
+
+### Źródła
+- [How Claude Remembers Your Project — Official Docs](https://code.claude.com/docs/en/memory) - Oficjalna dokumentacja hierarchii CLAUDE.md i auto memory
+- [Claude Code Settings — Official Docs](https://code.claude.com/docs/en/settings) - Hierarchia ustawień, uprawnienia, hooki i zmienne środowiskowe
+- [Using CLAUDE.md Files — Anthropic Blog](https://claude.com/blog/using-claude-md-files) - Oficjalne dobre praktyki od Anthropic
+- [Writing a Good CLAUDE.md — HumanLayer](https://www.humanlayer.dev/blog/writing-a-good-claude-md) - Praktyczne wskazówki pisania i antywzorce
+- [How to Write a Good CLAUDE.md — Builder.io](https://www.builder.io/blog/claude-md-guide) - Przykłady strukturalne i szablony
+
+### Dalsza lektura
+- [Claude Code Token Optimization: How I Cut My Bill 70%](/blog/claude-code-token-optimization-bill-cut-guide) - Szczegółowe strategie redukcji kosztów, w tym optymalizacja CLAUDE.md
+- [Claude Code Skills: The 98% Token Savings Architecture](/blog/claude-code-skills-reusable-ai-workflows-guide) - Przenoszenie instrukcji z CLAUDE.md do skills na żądanie
+- [Claude Code Hooks & Custom Agents](/blog/claude-code-hooks-custom-agents-ai-pipelines-guide) - Budowanie automatyzacji na bazie hooków settings.json
+- [Claude Code Memory System Explained — Milvus Blog](https://milvus.io/blog/claude-code-memory-memsearch.md) - Dogłębna analiza 4-warstwowej architektury pamięci
+
+---
+
+~Seb 👊
