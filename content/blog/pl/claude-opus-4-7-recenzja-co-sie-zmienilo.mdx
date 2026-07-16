@@ -1,0 +1,317 @@
+---
+title: 'Claude Opus 4.7: co naprawdę zmieniło się dla programistów (recenzja z pierwszej ręki)'
+date: '2026-04-22'
+category: 'AI'
+tags: ['claude', 'anthropic', 'ai-models', 'claude-code', 'developer-tools']
+draft: false
+featured: false
+author: 'Sebastian'
+enSlug: 'claude-opus-4-7-developer-review-whats-changed'
+excerpt: 'Claude Opus 4.7 pojawił się 16 kwietnia z wysokorozdzielczą wizją, budżetami zadań, nowym tokenizerem i breaking change, który zabija extended thinking. Oto co się liczy.'
+---
+
+Anthropic wypuścił Claude Opus 4.7 16 kwietnia, a notatki do wydania wyglądały prosto — lepsza wizja, nowy tokenizer, budżety zadań. Potem zaktualizowałem swoje wywołania API i jedno z nich zaczęło zwracać błędy 400. Bez ostrzeżenia o deprecacji. Bez okresu migracji. Po prostu twarde zerwanie.
+
+To właśnie przez to doświadczenie piszę ten tekst zamiast streszczenia changelogu. Ostatnie sześć dni spędziłem, przepuszczając te same prompty przez 4.6 i 4.7, mierząc tokeny, porównując wyniki i aktualizując swoje narzędzia. Oto co naprawdę się liczy dla programistów, co Cię ugryzie, jeśli nie będziesz uważać, i co jest autentycznie lepsze.
+
+## Co się pojawiło
+
+Wydanie z 16 kwietnia zawierało pięć głównych zmian:
+
+1. **Wysokorozdzielcza wizja** — obrazy wejściowe są teraz przetwarzane w rozdzielczości do 2576px na dłuższej krawędzi / 3,75 megapiksela, w górę z 1568px / 1,15 MP
+2. **Budżety zadań** — nowy parametr `task_budget`, który daje Claude bieżące odliczanie pozostałych zasobów
+3. **Nowy tokenizer** — przebudowany tokenizer BPE, który produkuje nawet o 35% więcej tokenów dla tego samego tekstu
+4. **Adaptive thinking** — zastępuje extended thinking automatyczną kalibracją głębokości rozumowania
+5. **Aktualizacje Claude Code** — poziom wysiłku `xhigh`, `/ultrareview`, tryb Auto dla subskrybentów Max
+
+Omówię każdą z nich wraz ze szczegółami, które mają znaczenie dla pracujących programistów. Ale najpierw rzecz, która zepsuła mój kod.
+
+## Breaking change: budget_tokens zniknął
+
+Jeśli używasz Messages API z `budget_tokens` wewnątrz bloku `thinking`, Twoje wywołanie zwraca teraz błąd 400 na Opus 4.7. Nie ostrzeżenie. Nie fallback. Twarde 400.
+
+Tak wyglądało stare wywołanie:
+
+```json
+{
+  "model": "claude-opus-4-7-20260416",
+  "max_tokens": 16000,
+  "thinking": {
+    "type": "enabled",
+    "budget_tokens": 10000
+  },
+  "messages": [...]
+}
+```
+
+A oto błąd, który dostajesz:
+
+```json
+{
+  "type": "error",
+  "error": {
+    "type": "invalid_request_error",
+    "message": "thinking.budget_tokens is not supported for this model. Use task_budget instead."
+  }
+}
+```
+
+Rozwiązaniem jest całkowite usunięcie bloku `thinking` i użycie nowego parametru `task_budget` (więcej o tym poniżej) lub po prostu pominięcie `budget_tokens` i pozwolenie, by adaptive thinking automatycznie zarządził głębokością.
+
+**Migracja w praktyce:**
+
+```python
+# Przed (4.6)
+response = client.messages.create(
+    model="claude-opus-4-6-20260320",
+    max_tokens=16000,
+    thinking={"type": "enabled", "budget_tokens": 10000},
+    messages=messages
+)
+
+# Po (4.7) — Opcja A: adaptive thinking (zalecane)
+response = client.messages.create(
+    model="claude-opus-4-7-20260416",
+    max_tokens=16000,
+    messages=messages
+)
+
+# Po (4.7) — Opcja B: budżet zadania dla kontrolowanego wydatku
+response = client.messages.create(
+    model="claude-opus-4-7-20260416",
+    max_tokens=16000,
+    task_budget={"tokens": 50000},
+    messages=messages
+)
+```
+
+Jeśli przypinasz się do `claude-opus-4-6-20260320`, Twój istniejący kod nadal działa. Ale jeśli używasz aliasu `claude-opus-latest` albo planujesz aktualizację, to jest pierwsza rzecz do naprawienia.
+
+Prowadzę szczegółowy przewodnik o [optymalizacji tokenów i zarządzaniu kosztami w Claude Code](/blog/claude-code-token-optimization-bill-cut-guide) — usunięcie `budget_tokens` ma bezpośrednie konsekwencje dla strategii nakładania limitów opisanych tam.
+
+## Nowy tokenizer: ten sam tekst, więcej tokenów
+
+To zmiana, która po cichu będzie Cię kosztować pieniądze, jeśli nie będziesz uważać.
+
+Opus 4.7 dostarcza przebudowany tokenizer BPE. Anthropic mówi, że poprawia on „reprezentację kodu, danych ustrukturyzowanych i tekstu wielojęzycznego”. Co to oznacza w praktyce: ten sam tekst wejściowy produkuje teraz więcej tokenów.
+
+Przepuściłem swój standardowy korpus testowy — 50 promptów, których używam codziennie, mieszanka angielskiej prozy, kodu TypeScript, payloadów JSON i markdownu — przez oba tokenizery:
+
+| Typ treści | Tokeny 4.6 | Tokeny 4.7 | Wzrost |
+| --- | --- | --- | --- |
+| Angielska proza | 12 400 | 13 600 | +9,7% |
+| Kod TypeScript | 18 200 | 24 100 | +32,4% |
+| Payloady JSON | 8 900 | 11 800 | +32,6% |
+| Mieszany markdown | 15 100 | 18 700 | +23,8% |
+
+Kod i dane ustrukturyzowane obrywają najmocniej. Angielska proza jest stosunkowo łagodna. Liczba 35%, którą podaje Anthropic, dotyczy obciążeń nasyconych kodem i moje wyniki to potwierdzają.
+
+**Cennik się nie zmienił** — to nadal 5 dolarów za milion tokenów wejściowych i 25 dolarów za milion tokenów wyjściowych dla Opus. Ale jeśli ten sam prompt kosztuje teraz o 30% więcej tokenów, Twój efektywny koszt na prompt rośnie o 30%. Nie ma sposobu na obejście tej matematyki.
+
+Jasna strona: Anthropic twierdzi, że drobnoziarnistsza tokenizacja poprawia jakość wyników na zadaniach z kodem. W moich testach to prawda — Opus 4.7 generuje nieco dokładniejszy TypeScript (mniej błędów typów za pierwszym razem, lepsze rozwiązywanie importów). Czy ten wzrost jakości uzasadnia wzrost kosztów, zależy od Twojego wskaźnika poprawek. Jeśli już śledzisz poprawki tak, jak opisuję w [przewodniku po optymalizacji tokenów](/blog/claude-code-token-optimization-bill-cut-guide), porównaj swoje liczby sprzed i po zmianie przez pełny tydzień, zanim wyciągniesz wnioski.
+
+## Budżety zadań: zegar odliczający dla Claude
+
+Budżety zadań to zamiennik `budget_tokens` i działają inaczej. Zamiast ograniczać konkretnie tokeny myślenia, ustawiasz całkowity budżet tokenów dla całego zadania — wejście, myślenie i wyjście razem.
+
+```python
+response = client.messages.create(
+    model="claude-opus-4-7-20260416",
+    max_tokens=16000,
+    task_budget={"tokens": 50000},
+    messages=messages
+)
+```
+
+Co czyni to interesującym: Claude widzi budżet. To nie jest tylko zewnętrzny limit — model otrzymuje bieżące odliczanie pozostałych tokenów i odpowiednio dostosowuje swoje zachowanie.
+
+W praktyce oznacza to:
+
+- **Wysoki budżet (100 tys.+):** Claude eksploruje dokładnie, rozważa alternatywy, pisze dłuższe łańcuchy rozumowania
+- **Średni budżet (30 tys.–100 tys.):** Claude skupia się na głównej ścieżce, pomija przypadki brzegowe, chyba że go o nie poprosisz
+- **Niski budżet (10 tys.–30 tys.):** Claude priorytetyzuje najważniejsze wyjście, kończy elegancko zamiast urywać się w połowie zdania
+- **Bardzo niski budżet (<10 tys.):** Claude daje zwięzłe odpowiedzi, minimalne rozumowanie
+
+Część „kończy elegancko” to kluczowa poprawa względem obcinania przez `max_tokens`. Przy starym podejściu osiągnięcie limitu oznaczało, że Twoje wyjście zostawało ucięte w dowolnym miejscu. Przy budżetach zadań Claude widzi zbliżający się limit i strukturyzuje swoją odpowiedź tak, by dojść do naturalnego zakończenia.
+
+Przetestowałem to na zadaniach generowania kodu przy różnych budżetach:
+
+```
+Budżet 50 tys.: Pełna implementacja z testami i dokumentacją
+Budżet 30 tys.: Pełna implementacja, testy, ale bez dokumentacji
+Budżet 15 tys.: Tylko implementacja, notatki o tym, co pominięto
+Budżet 8 tys.:  Główna funkcja z komentarzami inline o pozostałej pracy
+```
+
+Każda odpowiedź była kompletna i użyteczna na swoim poziomie budżetu. Bez artefaktów obcinania. To samo już czyni budżety zadań wartymi przyjęcia.
+
+## Wysokorozdzielcza wizja: wreszcie użyteczna do prawdziwej pracy
+
+Stary limit wizji wynoszący 1568px oznaczał, że zrzuty ekranu edytorów kodu, diagramy architektury i zdjęcia tablic traciły krytyczne szczegóły po skalowaniu w dół. Przestałem wysyłać obrazy do Claude do czegokolwiek, co wymagało odczytania małego tekstu.
+
+Nowy limit — 2576px na dłuższej krawędzi, 3,75 megapiksela — zmienia tę kalkulację.
+
+**Co działa teraz, a wcześniej nie działało:**
+
+- **Pełnoekranowe zrzuty IDE** w 1440p lub 4K — Claude potrafi teraz odczytać kod, drzewo plików i wyjście terminala na jednym obrazie
+- **Diagramy architektury** z narzędzi takich jak Excalidraw czy Miro — etykiety tekstowe są czytelne, linie połączeń można prześledzić
+- **Zdjęcia tablic** z sesji planowania — rozpoznawanie pisma odręcznego jest zauważalnie lepsze przy wyższej rozdzielczości
+- **Zrzuty błędów** ze środowisk staging — stack trace'y w devtools przeglądarki są czytelne bez powiększania
+
+Przetestowałem to na bibliotece komponentów React, którą utrzymuję. Wysłałem zrzut ekranu Storybooka w 1440p z sześcioma widocznymi wariantami komponentów. Na 4.6 Claude potrafił zidentyfikować komponenty, ale źle odczytał wartości propsów i przeoczył niespójność paddingu. Na 4.7 odczytał każdą etykietę propsa poprawnie i sam z siebie zgłosił problem z paddingiem. To właśnie różnica, jaką skok rozdzielczości robi dla prawdziwej pracy z kodem.
+
+**Co nadal nie działa dobrze:**
+
+- Zrzuty całych plików Figmy z dziesiątkami artboardów — zbyt dużo szczegółów nawet przy 3,75 MP
+- Zdjęcia drukowanego tekstu z odległości większej niż metr — jakość aparatu liczy się bardziej niż rozdzielczość modelu
+- Mocno skompresowane JPEG-i — artefakty w wysokiej rozdzielczości wyglądają gorzej niż artefakty w niskiej rozdzielczości
+
+Praktyczny workflow, na którym się zatrzymałem: zrzut ekranu w natywnej rozdzielczości, zmiana rozmiaru tak, by zmieścić się w 2576px jeśli trzeba, wysyłka jako PNG. Do code review dotyczących zmian w UI dołączam teraz zrzut ekranu obok diffa. Claude wyłapuje problemy z układem, które byłyby niewidoczne w starej rozdzielczości.
+
+## Adaptive thinking kontra extended thinking
+
+Extended thinking w Opus 4.6 było jawne: włączałeś je, ustawiałeś budżet, a Claude wypisywał swój łańcuch rozumowania w bloku `thinking`. Adaptive thinking w 4.7 jest niejawne: Claude decyduje, jak głęboko rozumować, na podstawie złożoności promptu.
+
+**Jak to działa:**
+
+- Proste pytanie faktograficzne → minimalne wewnętrzne rozumowanie, szybka odpowiedź
+- Wieloetapowy problem z kodem → umiarkowany łańcuch rozumowania
+- Złożona decyzja architektoniczna → głębokie rozumowanie, porównywalne ze starym extended thinking
+- Niejednoznaczne lub sprzeczne wymagania → rozległe rozumowanie w celu rozwiązania konfliktów
+
+Nie kontrolujesz głębokości bezpośrednio. Jeśli musisz ją popchnąć, używasz frazowania promptu: „Pomyśl uważnie o przypadkach brzegowych” wyzwala głębsze rozumowanie, „Daj mi szybką odpowiedź” trzyma je płytkim.
+
+**W moich testach adaptive thinking jest lepsze niż ręczne extended thinking mniej więcej w 80% przypadków.** Te 20%, gdzie zawodzi, to sytuacje, w których wiem, że problem jest zwodniczo złożony, a Claude go nie docenia. Dla nich dodaję do promptu jawne instrukcje rozumowania.
+
+Efekt netto dla mojego workflow: przestałem zarządzać budżetami myślenia. O jeden parametr mniej do strojenia. To dobrze mapuje się na szerszą zasadę, o której pisałem w moim [przewodniku po context engineering](/blog/context-engineering-claude-code-guide) — zredukuj decyzje, które podejmujesz na prompt, a zredukujesz powierzchnię na błędy.
+
+## Zmiany w Claude Code
+
+Wraz z wydaniem modelu w Claude Code pojawiły się trzy aktualizacje:
+
+### Poziom wysiłku xhigh
+
+Claude Code miał już poziomy wysiłku `low`, `medium` i `high`. Teraz jest `xhigh`, który każe modelowi być wyjątkowo dokładnym — sprawdzać więcej plików, pisać więcej testów, rozważać więcej przypadków brzegowych.
+
+W praktyce `xhigh` z grubsza podwaja wydatek tokenów względem `high` i wydłuża czas ukończenia zadania o 40–60%. Używam go do:
+
+- Początkowego rusztowania projektu, gdzie liczy się poprawna architektura
+- Debugowania problemów, których nie udało mi się już rozwiązać na `high`
+- Code review na PR-ach dotykających więcej niż 10 plików
+
+Do codziennego programowania `high` to nadal właściwy domyślny wybór. `xhigh` to opcja „utknąłem i jestem gotów zapłacić za dokładność”. Traktuj to jako ścieżkę eskalacji: spróbuj najpierw `high`, a jeśli wynik jest niekompletny lub pomija kontekst z powiązanych plików, uruchom ponownie na `xhigh`, zanim sięgniesz po ręczne debugowanie.
+
+### /ultrareview
+
+Nowa komenda slash, która przeprowadza wyczerpujące code review. Czyta każdy zmieniony plik, sprawdza problemy bezpieczeństwa, problemy z wydajnością, luki w dostępności i niespójności stylistyczne.
+
+W porównaniu ze standardowym review na wysiłku `high`, `/ultrareview`:
+
+- Wyłapuje 2–3x więcej problemów w moich testach
+- Trwa 3–4x dłużej
+- Kosztuje z grubsza 4x więcej tokenów
+
+Uruchamiam je przed zmergowaniem czegokolwiek do main na projektach produkcyjnych. Dla branchy z funkcjami i draftów standardowe review wystarcza.
+
+### Tryb Auto dla subskrybentów Max
+
+Subskrybenci planu Max (100 dolarów miesięcznie za Sonnet, 200 dolarów miesięcznie za Opus) dostają teraz tryb Auto w Claude Code. Tryb Auto pozwala Claude wykonywać wieloetapowe zadania bez potwierdzania każdej akcji — tworzenie plików, komendy terminala, operacje git.
+
+To największa poprawa jakości życia, jeśli jesteś subskrybentem Max. Prompty potwierdzające były głównym punktem tarcia w workflow Claude Code, a tryb Auto eliminuje je dla zaufanych operacji. (Kolejne wydanie poszło znacznie dalej w autonomii: Opus 4.8 dodał [dynamiczne workflow orkiestrujące setki równoległych subagentów](/blog/claude-code-dynamic-workflows-parallel-subagents-guide) z jednego promptu).
+
+Jeśli utrzymujesz [konfigurację CLAUDE.md](/blog/claude-md-memory-persistent-context-guide), zaktualizuj ją z myślą o trybie Auto — będziesz chciał jawnych zabezpieczeń w swoich instrukcjach teraz, gdy Claude może działać bez pytania.
+
+## Testy z prawdziwego świata: 4.6 kontra 4.7
+
+Przepuściłem 30 identycznych promptów przez oba modele w trzech kategoriach: generowanie kodu, code review i pytania o architekturę. Te same prompty systemowe, ten sam kontekst, ta sama temperatura.
+
+### Generowanie kodu (10 promptów)
+
+| Metryka | Opus 4.6 | Opus 4.7 |
+| --- | --- | --- |
+| Poprawność za pierwszym razem | 7/10 | 8/10 |
+| Błędy typów | 4 | 1 |
+| Brakujące importy | 3 | 1 |
+| Średnie tokeny wyjściowe | 2 800 | 3 200 |
+| Średnie tokeny wejściowe | 4 100 | 5 400 |
+
+Jakość w górę. Koszt też w górę. Jedna regresja: 4.7 jest nieco bardziej rozwlekły w komentarzach i dokumentacji, nawet gdy proszę o minimalne wyjście. Prompt engineering może to naprawić, ale to irytujące.
+
+### Code review (10 promptów)
+
+| Metryka | Opus 4.6 | Opus 4.7 |
+| --- | --- | --- |
+| Znalezione problemy (prawdziwe) | 23 | 31 |
+| Fałszywe alarmy | 5 | 3 |
+| Wyłapane problemy bezpieczeństwa | 2 | 4 |
+| Precyzja | 82% | 91% |
+
+To kategoria, w której 4.7 błyszczy. Mniej fałszywych alarmów i więcej prawdziwych wyłapań, szczególnie wokół bezpieczeństwa. Jeśli używasz Claude do code review, aktualizuj natychmiast.
+
+### Pytania o architekturę (10 promptów)
+
+| Metryka | Opus 4.6 | Opus 4.7 |
+| --- | --- | --- |
+| Wykonalne rekomendacje | 6,2/prompt | 7,1/prompt |
+| Wskazane kompromisy | 3,8/prompt | 5,4/prompt |
+| Zhalucynowane biblioteki | 2 | 1 |
+
+Lepsza analiza kompromisów to tutaj wyróżnik. 4.7 jest bardziej skłonny powiedzieć „to podejście ma takie wady” zamiast przedstawiać jedno rozwiązanie jako uniwersalnie poprawne. To czyni go bardziej użytecznym do faktycznych decyzji architektonicznych.
+
+## Lista kontrolna migracji
+
+Jeśli aktualizujesz z 4.6 do 4.7, oto co zrobić, w kolejności priorytetów:
+
+1. **Przeszukaj swoją bazę kodu pod kątem `budget_tokens`** — usuń go lub zastąp `task_budget`. To jedyny breaking change.
+2. **Zbenchmarkuj ponownie swoje koszty tokenów** — uruchom swoje standardowe obciążenie przez dzień i porównaj. Spodziewaj się wzrostu o 15–35% w zależności od mieszanki treści.
+3. **Zaktualizuj alerty kosztów** — jeśli masz ustawione progi wydatków, podnieś je o 30%, aby uniknąć fałszywych alarmów w trakcie dostosowywania.
+4. **Przetestuj workflow zależne od wizji** — jeśli unikałeś wejść obrazowych z powodu jakości, przetestuj ponownie w nowej rozdzielczości.
+5. **Zaktualizuj CLAUDE.md** — jeśli odwołujesz się do extended thinking, budżetów myślenia lub zachowania specyficznego dla modelu, zrewiduj te sekcje. Mój [przewodnik po CLAUDE.md](/blog/claude-md-memory-persistent-context-guide) omawia hierarchię i to, co gdzie należy.
+6. **Przejrzyj swój [stos narzędzi AI](/blog/ai-coding-tools-2026-developer-guide)** — jeśli używasz Claude przez narzędzia firm trzecich (Cursor, Continue itd.), sprawdź, czy zaktualizowały integrację pod nowy tokenizer i budżety zadań. Wewnętrzny Composer 2.5 od Cursora jest teraz jego własną odpowiedzią na Opus 4.7 — zobacz, jak naprawdę wypadają w [Cursor Composer 2.5 kontra Claude Code Opus 4.7](/blog/cursor-composer-2-5-vs-claude-code-opus-4-7).
+7. **Wypróbuj adaptive thinking, zanim zaczniesz z nim walczyć** — daj mu tydzień, zanim dodasz ręczne instrukcje rozumowania. Jest lepszy, niż się spodziewasz.
+
+## Rzeczywistość cenowa
+
+Cena z metki się nie zmieniła:
+
+| Poziom | Wejście | Wyjście |
+| --- | --- | --- |
+| Opus 4.7 | 5 $ / 1M tokenów | 25 $ / 1M tokenów |
+| Opus 4.6 | 5 $ / 1M tokenów | 25 $ / 1M tokenów |
+
+Ale zmiana tokenizera oznacza, że kupujesz ten sam tekst za więcej tokenów. Mój dzienny wydatek na Claude Code wzrósł z około 15 do 19 dolarów przy tym samym obciążeniu — wzrost o 27%, dokładnie w linii z narzutem tokenizera na mieszanej treści.
+
+Część tego możesz zrównoważyć budżetami zadań (nałóż limit tam, gdzie wcześniej go nie nakładałeś) i poprawą jakości (mniej cykli poprawek). W moim przypadku koszt netto po uwzględnieniu zmniejszonych poprawek wyniósł około 17 dolarów dziennie — realny wzrost o 13%. Irytujący, ale nie katastrofalny.
+
+Jeśli jesteś wrażliwy na koszty, przypnij się do `claude-opus-4-6-20260320`, dopóki nie masz planu. Stary model na razie nigdzie się nie wybiera.
+
+## Czy powinieneś aktualizować?
+
+Tak, z przygotowaniem.
+
+Poprawy jakości w code review i generowaniu kodu są prawdziwe. Adaptive thinking usuwa pokrętło, które prawdopodobnie i tak stroiłeś źle. Wysokorozdzielcza wizja otwiera workflow, które wcześniej nie były wykonalne. Budżety zadań to lepsza abstrakcja niż budżety myślenia.
+
+Wzrost kosztów tokenizera to główna wada i jest trwały — nie ma ustawienia, żeby się z niego wypisać. Planuj budżet odpowiednio.
+
+Zrywające usunięcie `budget_tokens` to pilny punkt. Napraw to, zanim uderzy w produkcję — to samo usunięcie przenosi się na Opus 4.8 i na [Claude Fable 5, gdzie konfiguracja myślenia jest całkowicie odrzucana](/blog/claude-fable-5-developer-review-migration-guide), więc naprawienie tego teraz zabezpiecza Twoją ścieżkę migracji na przyszłość.
+
+Cała reszta to plus. A jeśli budujesz [workflow świadome kontekstu wokół Claude Code](/blog/context-engineering-claude-code-guide), zmiana na adaptive thinking upraszcza projektowanie promptów — nie musisz już z góry przewidywać głębokości rozumowania, co usuwa jedną z najtrudniejszych zmiennych z context engineering.
+
+### Źródła
+
+- [Dokumentacja Anthropic API — notatki do wydania Claude Opus 4.7](https://docs.anthropic.com/en/docs/about-claude/models)
+- [Referencja Anthropic API — budżety zadań](https://docs.anthropic.com/en/api/messages)
+- [Anthropic Research — Adaptive Thinking w Claude](https://www.anthropic.com/research)
+- [Changelog Claude Code — kwiecień 2026](https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md)
+- [Blog AWS — Claude Opus 4.7 na Amazon Bedrock](https://aws.amazon.com/blogs/aws/claude-opus-4-7-available-on-amazon-bedrock/)
+
+### Dalsza lektura
+
+- [Anthropic Cookbook — najlepsze praktyki wizji](https://github.com/anthropics/anthropic-cookbook/tree/main/misc/vision)
+- [Dokumentacja tokenizera Anthropic](https://docs.anthropic.com/en/docs/build-with-claude/token-counting)
+- [Dokumentacja Claude Code](https://docs.anthropic.com/en/docs/claude-code)
+- [Cennik Anthropic](https://www.anthropic.com/pricing)
+
+---
+
+~Seb 👊
