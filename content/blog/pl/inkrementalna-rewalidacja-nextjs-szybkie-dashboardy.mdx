@@ -14,7 +14,7 @@ W zeszłym kwartale zbudowałem dashboard, który ładował się 3,2 sekundy. Da
 
 Dwa dni później ten sam dashboard ładował się w 180ms. Te same dane, te same API, ten sam sprzęt. Różnicą było zrozumienie, jak naprawdę działa cache w Next.js — a konkretnie, jak Incremental Static Regeneration zamienia wolne wywołania API w natychmiastowe odpowiedzi.
 
-Sztuczka jest zwodniczo prosta: serwuj zbuforowaną stronę natychmiast, a cache aktualizuj w tle. Użytkownik widzi TTFB na poziomie 180ms zamiast 3,2 sekundy. Dane mogą być sprzed 60 sekund, ale dla dashboardu pokazującego metryki analityczne jest to całkowicie akceptowalne. A gdy dane naprawdę muszą być świeże — na przykład po akcji użytkownika — rewalidacja on-demand aktualizuje cache natychmiast.
+Sekret jest prosty: serwuj zbuforowaną stronę natychmiast, cache aktualizuj w tle. Użytkownik widzi TTFB na poziomie 180ms zamiast 3,2 sekundy. Dane mogą być sprzed minuty — dla analitycznych dashboardów to w pełni wystarczające. A gdy dane rzeczywiście muszą być świeże — na przykład po akcji użytkownika — rewalidacja on-demand odświeża cache natychmiast.
 
 To właśnie ten wzorzec sprawia, że dashboardy w Next.js wydają się aplikacjami desktopowymi. Pokażę Ci dokładnie, jak to działa.
 
@@ -521,7 +521,7 @@ Oto, co wzorzec stale-while-revalidate osiąga w praktyce:
 | **CPU serwera** | 78% | 12% | **85% redukcji** |
 | **Wskaźnik błędów** | 2,1% (timeouty) | 0,01% | **99,5% redukcji** |
 
-Redukcja wywołań API jest dramatyczna. Zamiast tego, że każdy użytkownik wyzwala wywołania API, tylko jedno żądanie na okres rewalidacji faktycznie trafia do backendu. 100 jednoczesnych użytkowników przy 60-sekundowej rewalidacji oznacza 1 wywołanie API na minutę, a nie 100.
+Redukcja wywołań API jest dramatyczna. Zamiast aby każdy użytkownik wyzwalał żądania API, tylko jedno zapytanie na okres rewalidacji faktycznie trafia do backendu. 100 jednoczesnych użytkowników przy 60-sekundowej rewalidacji oznacza 1 API call na minutę, a nie 100.
 
 ## Pułapki i debugowanie
 

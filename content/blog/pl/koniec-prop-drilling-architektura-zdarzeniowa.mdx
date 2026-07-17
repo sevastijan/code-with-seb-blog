@@ -29,7 +29,7 @@ App
                  └─ ThemeToggle   ← potrzebuje `theme` i `setTheme`
 ```
 
-Naiwne rozwiązanie: umieść stan `theme` w `App`, przekaż go przez `Dashboard → Sidebar → UserSection → UserMenu → ThemeToggle`. Pięć komponentów działających jako bezużyteczni pośrednicy.
+Naiwne rozwiązanie: umieść stan `theme` w `App`, przekazuj go łańcuchem `Dashboard → Sidebar → UserSection → UserMenu → ThemeToggle`. Pięć komponentów, które tylko pośredniczą — żaden ich nie używa.
 
 Prawdziwe pytanie nie brzmi „jak przekazać propsy głębiej?". Brzmi **„dlaczego ten komponent musi wiedzieć o stanie, który żyje tak daleko?"**
 
@@ -81,7 +81,7 @@ function Layout({ children }: { children: React.ReactNode }) {
 }
 ```
 
-Komponując na najwyższym poziomie, przekazujesz komponenty konsumujące dane bezpośrednio — komponenty pośrednie po prostu renderują `children`, nie wiedząc, co jest w środku.
+Komponując na górze, przekazujesz komponenty zużywające dane bezpośrednio — komponenty pośrednie po prostu renderują `children` bez pytań o ich zawartość.
 
 ### Render props i wzorzec slotów
 
@@ -121,7 +121,7 @@ function App() {
 }
 ```
 
-`DashboardLayout` ma zero wiedzy o `user` czy `metrics`. To czysto layoutowy komponent. Dane płyną bezpośrednio z `App` do komponentów, które ich potrzebują.
+`DashboardLayout` w ogóle nie wie o `user` czy `metrics`. To czysto layoutowy komponent. Dane płyną bezpośrednio z `App` do komponentów, które ich faktycznie używają.
 
 ## Rozwiązanie 2: React Context (dla stanu o niskiej częstotliwości)
 
@@ -181,9 +181,9 @@ function ThemeToggle() {
 }
 ```
 
-### Kiedy Context przestaje wystarczać
+### Kiedy Context zaczyna słabować
 
-Context re-renderuje każdego konsumenta, gdy jakakolwiek wartość w kontekście się zmieni. Dla stanu o wysokiej częstotliwości (pozycja kursora, input formularza, dane w czasie rzeczywistym) powoduje to problemy wydajnościowe:
+Context re-renderuje każdego konsumenta, gdy jakakolwiek wartość się zmieni. Dla stanu o wysokiej częstotliwości — pozycja kursora, wartości inputu, dane w czasie rzeczywistym — to powoduje poważne problemy wydajnościowe:
 
 ```typescript
 // ŹLE: każdy komponent używający tego kontekstu re-renderuje się, gdy DOWOLNA wartość się zmieni
@@ -195,7 +195,7 @@ const AppContext = createContext({
 });
 ```
 
-**Zasada praktyczna:** jeśli stan aktualizuje się częściej niż raz na sekundę, nie używaj Context. Rozdziel go przynajmniej na osobne konteksty albo użyj Zustand/Jotai.
+**Reguła do zapamiętania:** stan aktualizujący się częściej niż raz na sekundę to sygnał, by porzucić Context. Rozdziel go na osobne konteksty lub sięgnij po Zustand/Jotai.
 
 ## Rozwiązanie 3: Zustand (pragmatyczny domyślny wybór)
 
@@ -275,7 +275,7 @@ function Sidebar() {
 }
 ```
 
-**Zabójcza funkcja Zustand:** subskrypcje oparte na selektorach. Każdy komponent re-renderuje się tylko wtedy, gdy zmieni się konkretny wycinek stanu, który subskrybuje. To coś, czego Context nie potrafi zrobić „out of the box".
+**Zwycięska funkcja Zustand:** subskrypcje oparte na selektorach. Każdy komponent re-renderuje się tylko, gdy zmieni się konkretny wycinek stanu, który obserwuje — coś, czego Context nie daje od razu.
 
 ## Rozwiązanie 4: Event bus (dla zagadnień przekrojowych)
 
@@ -383,7 +383,7 @@ function ToastContainer() {
 }
 ```
 
-**Siła zdarzeń:** `OrderForm` i `ToastContainer` mają zero wiedzy o sobie nawzajem. Komunikują się przez zdarzenia. Możesz dodać nowego subskrybenta (np. komponent analityczny śledzący zamówienia) bez dotykania `OrderForm` w ogóle.
+**Moc tego podejścia:** `OrderForm` i `ToastContainer` w ogóle się nie znają. Komunikują się wyłącznie przez zdarzenia. Możesz dodać nowego subskrybenta — na przykład komponent śledzący zamówienia — bez zmian w `OrderForm`.
 
 ### Kiedy używać zdarzeń, a kiedy stanu
 
@@ -396,7 +396,7 @@ function ToastContainer() {
 | Efektów ubocznych (logowanie) | Wartości obliczanych / pochodnych |
 | „Coś się wydarzyło" | „Jaka jest aktualna wartość?" |
 
-**Kluczowe rozróżnienie:** zdarzenia są typu fire-and-forget. Stan jest trwały. Jeśli komponent zamontuje się po wyemitowaniu zdarzenia, tego zdarzenia nie zobaczy. Jeśli subskrybuje stan, natychmiast dostaje bieżącą wartość.
+**Kluczowe rozróżnienie:** zdarzenia to fire-and-forget — jednorazowe wiadomości. Stan jest trwały. Jeśli komponent mountuje się po wyemitowaniu zdarzenia, już tego zdarzenia nie zobaczy. Jeśli subskrybuje stan, natychmiast otrzymuje bieżącą wartość.
 
 ## Rozwiązanie 5: Jotai / signals (stan atomowy)
 
@@ -448,7 +448,7 @@ function MetricsChart() {
 }
 ```
 
-**Przewaga Jotai:** fine-grained reactivity. Każdy atom jest niezależnie subskrybowalny. Atomy pochodne automatycznie się przeliczają — jak arkusz kalkulacyjny. Komponenty re-renderują się tylko wtedy, gdy zmienią się ich konkretne atomy. To ten sam model, który [signals wniosły do Svelte, Solid i Angulara](/pl/blog/sygnaly-drobnoziarnista-reaktywnosc-2026) — Jotai to sposób, by dostać go dziś wewnątrz Reacta.
+**Siła Jotai:** fine-grained reactivity — drobnoziarnista reaktywność. Każdy atom subskrybujesz niezależnie. Atomy pochodne przeliczają się automatycznie, jak w arkuszu kalkulacyjnym. Komponenty re-renderują się tylko, gdy zmienią się ich konkretne atomy. To ten sam model, który [signals wniosły do Svelte, Solid i Angulara](/pl/blog/sygnaly-drobnoziarnista-reaktywnosc-2026) — Jotai przenosi tę moc do Reacta już dziś.
 
 ## Framework decyzyjny na 2026
 
@@ -497,7 +497,7 @@ Czy w ogóle potrzebujesz stanu?
 
 Jeśli łączysz te wzorce ze [skalowalną architekturą frontendu w oparciu o Atomic Design i Feature Slices](/pl/blog/od-komponentow-do-systemow-atomic-design), granice komponentów naturalnie redukują prop drilling — każdy feature slice posiada własny stan. A dla type-safe walidacji danych przepływających przez twoje zarządzanie stanem, [Zod](/pl/blog/zod-walidacja-typescript-kompletny-przewodnik) idealnie łączy się ze store'ami Zustand na granicy API.
 
-Celem nie jest wyeliminowanie wszystkich propsów — jest nim wyeliminowanie **niepotrzebnego couplingu**. Gdy komponent przekazuje prop, którego nie używa, to jest coupling. Gdy komponent otrzymuje prop, którego potrzebuje, to jest po prostu przepływ danych. Poznaj różnicę.
+Celem nie jest wyeliminowanie wszystkich propsów — jest nim usunięcie **niepotrzebnego sprzężenia**. Gdy komponent przekazuje prop, którego nie używa, to jest złe sprzężenie. Gdy komponent otrzymuje prop, którego rzeczywiście potrzebuje, to zwykły przepływ danych. Ta różnica jest wszystkim.
 
 ## Bibliografia
 

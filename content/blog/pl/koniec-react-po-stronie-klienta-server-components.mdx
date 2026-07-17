@@ -12,9 +12,9 @@ excerpt: 'React Server Components odmieniają renderowanie w React 19: mniej Jav
 
 ## Czym są Server Components?
 
-React Server Components (RSC) to nowy typ komponentów React, które renderowane są na serwerze _przed_ etapem bundlowania i poza przeglądarką.
+React Server Components (RSC) to nowy typ komponentów React renderowanych na serwerze _przed_ etapem bundlowania, bez udziału przeglądarki.
 
-Innymi słowy, kod takich komponentów **nigdy nie trafia do klienta** - komponent wykonywany jest wyłącznie na serwerze, a do przeglądarki wysyłany jest jedynie wygenerowany rezultat (HTML/JSON). Oznacza to, że po raz pierwszy w historii React komponenty mogą działać w całości na serwerze, zamiast w przeglądarce.
+Innymi słowy, kod takich komponentów **nigdy nie trafia do przeglądarki** — wykonywany jest wyłącznie na serwerze, a klient otrzymuje jedynie wygenerowaną treść (HTML/JSON). Po raz pierwszy w historii React komponenty mogą działać w całości na serwerze zamiast w przeglądarce.
 
 ### Dlaczego React 19 wprowadza nowy model renderowania?
 
@@ -25,9 +25,9 @@ Przez ostatnie kilka lat zespół React szukał sposobów na poprawę wydajnośc
 Nowy model ma na celu rozwiązanie kilku kluczowych problemów spotykanych w tradycyjnych aplikacjach SPA i SSR:
 
 - Server components generują gotową treść na serwerze, więc przeglądarka nie musi otrzymywać ani uruchamiać ich kodu JS. Wyeliminowanie procesu hydration dla tych komponentów oznacza, że klient nie musi odtwarzać stanu aplikacji na podstawie JS po załadowaniu strony. W rezultacie pierwsze renderowanie strony jest szybsze, a czas do interaktywności krótszy.
-- Ponieważ Server Components działają w środowisku serwerowym, mogą bezpośrednio komunikować się z bazami danych, API czy plikami - prosto z wnętrza komponentu. Pozwala to uniknąć dodatkowych warstw (np. zbędnych żądań z przeglądarki do API), upraszczając architekturę. Server component może na przykład wykonać zapytanie do bazy danych **podczas renderowania JSX** i natychmiast zwrócić gotowy rezultat interfejsu.
+- Komponenty serwerowe działają w środowisku serwerowym, dlatego mogą bezpośrednio komunikować się z bazami danych, API czy plikami — wszystko z wnętrza komponentu. Eliminuje to dodatkowe warstwy (np. zbędne żądania z przeglądarki do API) i upraszcza architekturę. Server component może na przykład wykonać zapytanie do bazy danych **podczas renderowania JSX** i natychmiast zwrócić gotowy interfejs.
 - Wrażliwy kod (np. klucze API, logika biznesowa) pozostaje na serwerze, więc nie ma ryzyka jego ujawnienia na frontendzie. Użytkownik końcowy otrzymuje tylko wygenerowany rezultat, bez poufnych fragmentów kodu.
-- Rezultaty renderowania na serwerze można łatwo cache'ować i współdzielić między użytkownikami. W ten sposób koszt wygenerowania widoku ponoszony jest jednorazowo (lub rzadziej), a wielu użytkowników może otrzymać odpowiedź bezpośrednio z cache'u. Takie podejście odciąża klienta i może zredukować obciążenie serwera przy dużym ruchu.
+- Wyniki renderowania na serwerze można łatwo cache'ować i współdzielić między użytkownikami. W ten sposób koszt generowania widoku ponosi się jednorazowo (lub rzadziej), a wielu użytkowników otrzymuje odpowiedź bezpośrednio z cache'u. Takie podejście odciąża klienta i redukuje obciążenie serwera przy dużym ruchu.
 - RSC skutecznie "skomponentyzowały backend" - logika pobierania danych i generowania UI mogą być trzymane bliżej siebie. Pojawiają się opinie, że takie podejście może w przyszłości zmniejszyć potrzebę stosowania oddzielnych warstw API (REST/GraphQL), ponieważ komponent React będzie w stanie samodzielnie obsłużyć cały przepływ danych od bazy do interfejsu.
 
 Podsumowując, Server Components mają połączyć najlepsze cechy SSR i React po stronie klienta, jednocześnie eliminując ich słabości. W kolejnych sekcjach przyjrzymy się technicznym szczegółom nowego modelu, temu jak działa oraz jego wpływowi na wydajność, SEO i podejście do tworzenia aplikacji.
@@ -36,13 +36,13 @@ Podsumowując, Server Components mają połączyć najlepsze cechy SSR i React p
 
 Server Components to po prostu komponenty React uruchamiane w środowisku serwerowym zamiast w przeglądarce. W praktyce są to najczęściej funkcje asynchroniczne lub komponenty funkcyjne, które mogą wykonywać operacje I/O podczas renderowania (np. zapytania do bazy danych, odczyt plików) i zwracać elementy JSX.
 
-Kluczowe jest to, że **server component renderuje się tylko raz - na serwerze - i nigdy nie "ożywa" po stronie klienta**. Rezultat jego renderowania (struktura UI) traktowany jest jako _niezmienny_ (immutable) z chwilą dotarcia do przeglądarki. Oznacza to pewne ograniczenia: w Server Components nie można korzystać ze stanu ani efektów React (Hooków takich jak `useState` czy `useEffect`), ponieważ stan nie miałby gdzie się utrzymać, a efekty nigdy nie zostaną wyzwolone w przeglądarce.
+Server component renderuje się tylko raz — na serwerze — i nigdy się nie inicjalizuje w przeglądarce. Jego wynik (struktura UI) jest _niezmienny_ (immutable) z momentu dotarcia do przeglądarki. Stąd wynika ograniczenie: w Server Components nie można korzystać ze stanu ani efektów React (hooków takich jak `useState` czy `useEffect`), ponieważ stan byłby nigdzie przechowywany, a efekty nigdy nie byłyby wyzwolone na kliencie.
 
 Z drugiej strony brak wielokrotnych renderów daje pewną swobodę - można na przykład wykonywać efekty uboczne bezpośrednio podczas renderowania (np. coś zalogować, odczytać dane), skoro komponent i tak uruchomi się tylko raz.
 
 ### Diagram architektury React Server Components
 
-Poniższy diagram pokazuje drzewo komponentów React podzielone na te renderowane po stronie serwera (kolor niebieski) i po stronie klienta (kolor fioletowy). Server components (niebieskie) działają wyłącznie na serwerze, **ich kod nie jest dołączany** do aplikacji frontendowej.
+Poniższy diagram pokazuje drzewo komponentów React podzielone na te renderowane na serwerze (kolor niebieski) i na kliencie (kolor fioletowy). Server components (niebieskie) działają wyłącznie na serwerze — **ich kod nigdy nie trafia do aplikacji frontendowej**.
 
 Client components (fioletowe) to te tradycyjne komponenty React, które mogą reagować na interakcje - działają w przeglądarce (choć mogą być również wstępnie renderowane na serwerze w ramach SSR).
 
@@ -52,7 +52,7 @@ Dzięki tej architekturze aplikacja może składać się z miksu komponentów - 
 
 ![React Server Components](/static/images/diagram-react-server-components.png)
 
-Nowy model renderowania opiera się na idei, że **wszystkie komponenty są domyślnie server components**, a komponenty wymagające interaktywności muszą być specjalnie oznaczone jako client components. W praktyce robi się to poprzez dodanie deklaracji `'use client'` na początku pliku komponentu. Brak takiej deklaracji mówi bundlerowi i React: "to jest server component - wykonaj go na serwerze i pomiń jego kod w bundle'u frontendowym". Poniżej zobaczmy prosty przykład porównujący server component i client component:
+Nowy model renderowania zakłada, że **wszystkie komponenty są domyślnie server components**, a komponenty wymagające interaktywności muszą być specjalnie oznaczone jako client components. W praktyce robi się to poprzez dodanie dyrektywy `'use client'` na początku pliku. Brak takiej deklaracji mówi bundlerowi i React: "to jest server component - wykonaj go na serwerze i pomiń jego kod w bundle'u frontendowym". Poniżej zobaczmy prosty przykład porównujący server component i client component:
 
 ```jsx
 // Example.jsx - Server component
@@ -81,11 +81,11 @@ export default function Counter() {
 }
 ```
 
-W powyższym przykładzie `ProductsList` to **Server Component** - może korzystać z modułu `db`, aby pobrać dane (co nie byłoby możliwe w przeglądarce) i zwraca listę produktów. Nie używa żadnego stanu ani interakcji użytkownika, więc doskonale nadaje się do uruchomienia na serwerze. Z kolei `Counter` to klasyczny **Client Component** - zawiera `useState` i obsługuje zdarzenie `onClick`, więc musi być wykonany w przeglądarce. Dzięki `'use client'` jego kod zostanie dołączony do bundle'a wysyłanego do klienta, a komponent przejdzie hydration i stanie się interaktywny.
+W powyższym przykładzie `ProductsList` to **Server Component** — może korzystać z modułu `db` do pobrania danych (czego nie byłoby możliwe w przeglądarce) i zwraca listę produktów. Nie używa stanu ani interakcji użytkownika, idealnie nadaje się do uruchomienia na serwerze. `Counter` natomiast to **Client Component** — zawiera `useState` i obsługuje zdarzenie `onClick`, musi być wykonany w przeglądarce. Dzięki `'use client'` jego kod trafi do bundle'a wysyłanego do klienta i komponent przejdzie hydration, stając się interaktywny.
 
 ### Różnice względem klasycznego SSR i CSR
 
-Ważne, by zrozumieć, że React Server Components **nie zastępują** tradycyjnego Server-Side Rendering - raczej go uzupełniają. W standardowym SSR całe HTML strony generowane jest na serwerze przy każdym żądaniu, po czym dołączany jest kod JS aplikacji, który poddaje tę treść hydration po stronie klienta. Dzięki Server Components możemy przenieść część tej logiki do server components, co **pozwala pominąć wysyłanie ich kodu JS do przeglądarki**. W praktyce **obie techniki często stosuje się razem** - np. Next.js generuje stronę za pomocą SSR (dostarczając bazowy HTML), ale wewnętrznie używa RSC do renderowania fragmentów interfejsu. RSC "nadbudowują" nad SSR, pozwalając ominąć hydration dla czysto prezentacyjnych komponentów lub danych, co odciąża przeglądarkę. Co więcej, model RSC wspiera **strumieniowanie HTML (streaming)** - serwer może wysyłać kolejne fragmenty UI do klienta, gdy tylko zostaną wyrenderowane, zamiast czekać na wygenerowanie całej strony. Pozwala to pokazywać treść użytkownikowi stopniowo, poprawiając odczuwaną szybkość aplikacji.
+Ważne, by zrozumieć, że React Server Components **nie zastępują** tradycyjnego Server-Side Rendering - raczej go uzupełniają. W standardowym SSR całe HTML strony generowane jest na serwerze przy każdym żądaniu, po czym dołączany jest kod JS aplikacji, który poddaje tę treść hydration po stronie klienta. Server Components pozwalają przenieść część tej logiki na serwer, co **eliminuje konieczność wysyłania kodu JS do przeglądarki**. W praktyce **obie techniki często pracują razem** — na przykład Next.js generuje stronę za pomocą SSR (dostarczając bazowy HTML), ale wewnętrznie używa RSC do renderowania fragmentów interfejsu. RSC uzupełniają SSR, omijając hydration dla czysto prezentacyjnych komponentów czy danych, co odciąża przeglądarkę. Co więcej, model RSC wspiera **strumieniowanie HTML (streaming)** - serwer może wysyłać kolejne fragmenty UI do klienta, gdy tylko zostaną wyrenderowane, zamiast czekać na wygenerowanie całej strony. Pozwala to pokazywać treść użytkownikowi stopniowo, poprawiając odczuwaną szybkość aplikacji.
 
 ### Nowy przepływ renderowania
 
@@ -109,11 +109,11 @@ Dopiero po załadowaniu i wykonaniu JS użytkownik widzi rzeczywistą treść st
 
 ### Server-Side Rendering (SSR)
 
-Renderowanie po stronie serwera zostało zaadaptowane, aby rozwiązać problemy CSR z początkowym ładowaniem i SEO. W SSR każde żądanie strony trafia do serwera (np. Node/Express albo framework taki jak Next.js), który **generuje kompletny HTML dla tej strony w locie** i odsyła go do przeglądarki.
+Renderowanie po stronie serwera zostało zaadaptowane, aby rozwiązać problemy CSR z początkowym ładowaniem i SEO. W SSR każde żądanie strony trafia do serwera (np. Node/Express albo framework taki jak Next.js), który **generuje kompletny HTML dla danej strony na żądanie** i odsyła go do przeglądarki.
 
 W ten sposób użytkownik od razu dostaje gotową treść w HTML - **time to first contentful paint** jest znacznie lepszy, ponieważ nie trzeba czekać na załadowanie całego JS. Jednak taka strona nie jest interaktywna na starcie - HTML nie ma przypisanej logiki, dopóki nie zostanie dołączony kod React. Po otrzymaniu HTML przeglądarka ładuje w tle bundle JS aplikacji i wykonuje go, poddając **hydration** istniejący markup.
 
-Hydration to proces "dołączania" logiki React do statycznie wyrenderowanego HTML - React odtwarza drzewo komponentów po stronie klienta, dodaje obsługę zdarzeń, stan itd., doprowadzając aplikację do pełnej interaktywności. SSR zapewnia więc **szybsze pierwsze renderowanie i lepsze SEO** (boty dostają treść w HTML), ale kosztem dodatkowej pracy po stronie serwera przy każdym żądaniu i wciąż koniecznością dostarczenia całego JS do klienta. W dużych aplikacjach SSR może obciążać serwer (ciągłe generowanie HTML) i bywa skomplikowane (np. konieczność przenoszenia części kodu do metod pobierania danych, radzenie sobie z różnicami między środowiskiem Node a przeglądarki). Mimo to SSR stało się standardem w wielu scenariuszach wymagających SEO i szybkiego TTFB (Time to First Byte).
+Hydration to proces inicjalizacji React na statycznie wyrenderowanym HTML — React odtwarza drzewo komponentów po stronie klienta, dodaje obsługę zdarzeń, stan itd., doprowadzając aplikację do pełnej interaktywności. SSR zapewnia więc **szybsze pierwsze renderowanie i lepsze SEO** (boty dostają treść w HTML), ale kosztem dodatkowej pracy po stronie serwera przy każdym żądaniu i wciąż koniecznością dostarczenia całego JS do klienta. W dużych aplikacjach SSR może obciążać serwer (ciągłe generowanie HTML) i bywa skomplikowane (np. konieczność przenoszenia części kodu do metod pobierania danych, radzenie sobie z różnicami między środowiskiem Node a przeglądarki). Mimo to SSR stało się standardem w wielu scenariuszach wymagających SEO i szybkiego TTFB (Time to First Byte).
 
 ### Server Components (RSC) vs SSR/CSR
 
@@ -180,7 +180,7 @@ Przejdźmy teraz do praktycznych aspektów korzystania z Server Components w Rea
 
 ### Jak pisać Server Components?
 
-Tworzenie server componentu z perspektywy składni przypomina zwykły komponent funkcyjny React - może zwracać JSX, może przyjmować propsy. Różnica tkwi w środowisku, w którym zostanie wykonany. W praktyce server components najczęściej pisze się jako funkcje asynchroniczne (ponieważ zwykle wykonują wewnątrz asynchroniczne pobieranie danych). Taki komponent można umieścić w dowolnym pliku `.jsx`/`.tsx` bez specjalnych adnotacji - **domyślnie React 19 traktuje każdy komponent jako server component**, dopóki nie oznaczymy go jako client component. Istnieje konwencja (wywodząca się z dem RSC i czasem stosowana dla czytelności), by nazywać pliki server componentów z sufiksem `.server.jsx`, a klienckie `.client.jsx`, ale nie jest to obowiązkowe - bundlery raczej opierają się na `'use client'` niż na nazwie pliku.
+Tworzenie server componentu z perspektywy składni przypomina zwykły komponent funkcyjny React - może zwracać JSX, może przyjmować propsy. Różnica tkwi w środowisku, w którym zostanie wykonany. W praktyce server components najczęściej pisze się jako funkcje asynchroniczne (ponieważ zwykle wykonują wewnątrz asynchroniczne pobieranie danych). Taki komponent można umieścić w dowolnym pliku `.jsx`/`.tsx` bez specjalnych adnotacji - **domyślnie React 19 traktuje każdy komponent jako server component**, dopóki nie oznaczymy go jako client component. Istnieje konwencja (wywodząca się z dem RSC i czasem stosowana dla czytelności), by nazywać pliki server componentów z sufiksem `.server.jsx`, a klienckie `.client.jsx` — jednak nie jest to obowiązkowe. Bundlery opierają się na dyrektywie `'use client'`, nie na nazwie pliku.
 
 Co ważniejsze, **unikaj używania w kodzie Server Componentu rzeczy dostępnych wyłącznie w przeglądarce** - np. `window`, `document`, `localStorage` itd. - ponieważ komponent nie będzie miał do nich dostępu (będzie działał na przykład w Node.js). Jeśli przypadkowo spróbujemy zaimportować moduł przeznaczony dla przeglądarki w server componencie, bundler może zgłosić błąd. Zasadą jest również, że **client component nie może importować server componentu** (ponieważ próbowałby załadować jego kod w przeglądarce). Zależność w drugą stronę jest dozwolona: server component może zaimportować i wyrenderować client component w swoim JSX - wtedy ten kliencki fragment zostanie potraktowany jako granica, do której serwer renderuje, a poza którą pozostawi miejsce na przyszłą hydration client componentu w przeglądarce.
 
@@ -198,7 +198,7 @@ W modelowej aplikacji React 19 zakłada się zatem, że duża część komponent
 
 Załóżmy, że budujemy dashboard z listą użytkowników i przyciskiem odświeżania. Możemy napisać server component `UserList.jsx`, który pobiera listę użytkowników z bazy danych i renderuje `<ul><li>...</li></ul>`. Obok mamy client component `RefreshButton.jsx`, który nasłuchuje kliknięć i wyzwala akcję odświeżenia (o Server Actions za chwilę). Serwerowy `UserList` może zaimportować `RefreshButton` i umieścić go w swojej strukturze JSX.
 
-W rezultacie UI zostanie skomponowany tak, że lista użytkowników renderowana jest na serwerze (z aktualnymi danymi), a przycisk będzie częścią wysłanego HTML, ale zostanie oznaczony do hydration - React na kliencie dołączy do niego logikę po załadowaniu bundle'a z `RefreshButton`. Dla użytkownika wszystko wygląda spójnie - widzi listę i działający przycisk, ale pod maską React podzielił pracę między serwer (lista) i klienta (przycisk).
+W rezultacie UI zostanie skomponowany tak, że lista użytkowników renderowana jest na serwerze (z aktualnymi danymi), a przycisk będzie częścią wysłanego HTML, ale zostanie oznaczony do hydration — React na kliencie dołączy logikę po załadowaniu bundle'a z `RefreshButton`. Dla użytkownika wszystko jest spójne — widzi listę i działający przycisk — ale pod maską React podzielił pracę między serwer (lista) i klienta (przycisk).
 
 ### Dobra praktyka
 
@@ -341,7 +341,7 @@ export async function refreshUsers() {
 
 Next.js 13+ (App Router) natywnie wspiera Server Components. Pisząc aplikację w Next 13, w zasadzie nieświadomie korzystamy z RSC - pliki w folderze `app` są domyślnie traktowane jako server components (nawet jeśli używają hooków Next do pobierania danych jak `fetch` lub bezpośrednio odpytują bazę danych).
 
-Jeśli potrzebujemy interakcji, musimy dodać `'use client'` na górze pliku, co sygnalizuje Next, że ten moduł i wszystkie jego komponenty powinny zostać dołączone do paczki frontendowej. Next.js narzuca pewne reguły - np. pliki stron (`page.jsx`) w `app` **nie mogą** być klienckie (co jest logiczne, bo strona musi być przynajmniej częściowo renderowana na serwerze), ale wewnątrz można dowolnie mieszać client i server components. Next dba o wygenerowanie podczas budowania dwóch osobnych bundle'i: jednego serwerowego (Node.js) zawierającego cały kod wraz z server components, i drugiego frontendowego zawierającego tylko client components. Dzieje się to automatycznie.
+Jeśli potrzebujemy interakcji, musimy dodać `'use client'` na początek pliku — to sygnalizuje Next, że ten moduł i wszystkie jego komponenty powinny zostać dołączone do paczki frontendowej. Next.js narzuca pewne reguły - np. pliki stron (`page.jsx`) w `app` **nie mogą** być klienckie (co jest logiczne, bo strona musi być przynajmniej częściowo renderowana na serwerze), ale wewnątrz można dowolnie mieszać client i server components. Next dba o wygenerowanie podczas budowania dwóch osobnych bundle'i: jednego serwerowego (Node.js) zawierającego cały kod wraz z server components, i drugiego frontendowego zawierającego tylko client components. Dzieje się to automatycznie.
 
 W codziennej pracy z Next oznacza to, że **musimy pilnować dyrektyw 'use client'** - na przykład, jeśli tworzymy komponent formularza i zapomnimy oznaczyć go jako kliencki, Next zgłosi błąd (bo wykryje użycie `useState` w server componencie).
 
@@ -403,7 +403,7 @@ Kolejnym obszarem jest rozwój **Server Actions** i ich powiązanie z RSC. Jeśl
 
 Adopcja RSC prawdopodobnie wymusi aktualizacje w wielu popularnych bibliotekach. Na przykład biblioteki do pobierania danych (React Query, SWR) mogą zaoferować wersje dostosowane do RSC (choć w RSC często po prostu użyjemy zwykłego fetch/axios na serwerze). Frameworki CSS-in-JS mogą potrzebować obsłużyć renderowanie stylów na serwerze w kontekście RSC. Narzędzia do monitorowania będą musiały nauczyć się śledzić również "część React" działającą na serwerze. Wszystko to będzie się działo stopniowo, w miarę jak React 19 będzie zyskiwał na popularności.
 
-Na koniec warto podkreślić, że choć RSC brzmią rewolucyjnie, **programowanie z nimi to wciąż programowanie w React**. Wiele koncepcji pozostaje takich samych - wciąż mamy komponenty, propsy, deklaratywny JSX. React ukrywa przed nami większość skomplikowanej mechaniki (streaming, synchronizacja itd.), więc możemy skupić się na logice aplikacji. Deweloperzy zaczynający nowy projekt na React 19 z użyciem Server Components prawdopodobnie szybko docenią korzyści: mniej kodu spinającego (łączącego front z backiem), mniej troski o wydajność pierwszego renderowania, prostsze zarządzanie danymi.
+Na koniec warto podkreślić, że choć RSC brzmią rewolucyjnie, **programowanie z nimi to wciąż programowanie w React**. Wiele idei pozostaje takich samych — wciąż mamy komponenty, propsy, deklaratywny JSX. React ukrywa przed nami większość skomplikowanej mechaniki (streaming, synchronizacja itd.), więc możemy skupić się na logice aplikacji. Deweloperzy zaczynający nowy projekt na React 19 z użyciem Server Components prawdopodobnie szybko docenią korzyści: mniej kodu spinającego (łączącego front z backiem), mniej troski o wydajność pierwszego renderowania, prostsze zarządzanie danymi.
 
 Czy zatem Server Components są przyszłością renderowania w React? **Bardzo prawdopodobne, że tak.** Wielu ekspertów uważa, że RSC zmienią grę na stałe, analogicznie do tego, jak Hooki zmieniły najlepsze praktyki pisania komponentów. Oczywiście klasyczne SPA nie znikną z dnia na dzień - są przypadki, w których logika w całości po stronie klienta wystarcza. Jednak dla dużych, bogatych aplikacji webowych wymagających zarówno interaktywności, jak i szybkiego ładowania, hybrydowe podejście oferowane przez React 19 staje się niezwykle atrakcyjne.
 

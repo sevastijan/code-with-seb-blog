@@ -317,7 +317,7 @@ npm install --save-dev --save-exact babel-plugin-react-compiler@latest
 
 Pin wersję — zmian między wersjami mogą subtelnie zmienić zachowanie.
 
-### Krok 2: Konfiguracja
+### Krok 2: Config
 
 **Next.js** (next.config.js):
 
@@ -345,7 +345,7 @@ export default defineConfig({
 });
 ```
 
-### Krok 3: Dodaj reguły ESLint
+### Krok 3: ESLint rules
 
 ```javascript
 // eslint.config.js
@@ -353,87 +353,87 @@ import reactHooks from 'eslint-plugin-react-hooks';
 export default [reactHooks.configs['flat/recommended-latest']];
 ```
 
-To wychwytuje naruszenia Rules of React, zanim spowodują ciche porażki kompilacji.
+Łapie naruszenia Rules of React zanim kompilator sie cofa cicho.
 
-### Krok 4: Stopniowe wdrażanie
+### Krok 4: Stopniowo
 
-Nie kompiluj wszystkiego naraz. Zacznij od podzbioru:
+Nie kompiluj all at once. Zacznij od części:
 
 ```javascript
-// konfiguracja babel-plugin-react-compiler
+// babel-plugin-react-compiler config
 {
   compilationMode: 'annotation',
 }
 ```
 
-Następnie dodaj `'use memo'` do komponentów, które chcesz skompilować:
+Potem dodaj `'use memo'` do komponentów które chcesz:
 
 ```javascript
 'use memo';
 function MyComponent() {
-  // Ten komponent zostanie skompilowany
+  // ten komponent będzie skompilowany
 }
 ```
 
-Gdy nabierzesz pewności, przełącz się na pełną kompilację.
+Jak nabierzesz pewności, full compilation mode.
 
-### Krok 5: Mierz
+### Krok 5: Measure
 
-Użyj React DevTools Profiler, by porównać czasy renderowania przed i po. Skup się na opóźnieniu interakcji (INP), a nie tylko na początkowym ładowaniu.
+React DevTools Profiler: porównaj render times before/after. Focus INP, nie tylko initial load.
 
-## Kiedy zachować useMemo i useCallback
+## Kiedy zachować useMemo/useCallback
 
-Mimo kompilatora te hooki nie umarły. Zachowaj je dla:
+Te hooki nie zginęły. Keep them dla:
 
-1. **Zależności efektów** — Gdy zmemoizowana wartość jest używana jako zależność efektu, jawny `useMemo` gwarantuje, że efekt nie odpali się wielokrotnie
+1. **Effect deps** — Jak zmemoizowana wartość jest dep w effect, jawny `useMemo` zapobiega re-run
 
 ```javascript
 const config = useMemo(() => ({ threshold: 0.5, enabled }), [enabled]);
 
 useEffect(() => {
-  initializeSDK(config);  // Uruchamia się ponownie tylko gdy 'enabled' się zmieni
+  initializeSDK(config);  // runs tylko jak 'enabled' zmieni się
 }, [config]);
 ```
 
-2. **Integracji z bibliotekami** — Niektóre biblioteki polegają na stabilności referencyjnej, której kompilator może nie gwarantować między wersjami
+2. **Library integration** — Niektóre libs chcą reference stability, którą kompilator nie gwarantuje między wersjami
 
-3. **Krytycznych wydajnościowo hot paths** — Gdy zmierzyłeś i zidentyfikowałeś konkretne wąskie gardło, którego kompilator nie rozwiązuje w pełni
+3. **Critical hot paths** — Jak zmierzyłeś i znalazłeś bottleneck który kompilator nie rozwiązuje
 
-4. **Stopniowej migracji** — Podczas przyrostowego wdrażania zachowaj istniejącą memoizację, dopóki nie zweryfikujesz, że kompilator radzi sobie z każdym przypadkiem
+4. **Incremental migration** — Jak migrujesz stopniowo, keep existing memo aż nie zweryfikujesz kompilatora
 
-**Zasada kciuka:** Dla nowego kodu nie dodawaj ręcznej memoizacji. Pozwól kompilatorowi się tym zająć. Dla istniejącego kodu nie śpiesz się z jej usuwaniem — najpierw przetestuj.
+**Kciuk:** Nowy kod — nie dodawaj manual memo. Daj kompilatorowi. Stary kod — nie śpiesz się z usuwaniem, test first.
 
-## Werdykt
+## Verdict
 
-React Compiler to najbardziej wpływowy dodatek do ekosystemu Reacta od czasu Hooks — a w połączeniu z [komponentem Activity i useEffectEvent z React 19.2](/pl/blog/react-19-2-przewodnik-po-wydaniu) przekształca sposób, w jaki myślimy o wydajności Reacta. Eliminuje całą kategorię błędów wydajnościowych — tych spowodowanych zapomnieniem o memoizacji, błędnymi tablicami zależności albo łamaniem memoizacji przez inline'owe funkcje strzałkowe.
+To największa rzecz w Reacta od Hooks — razem z [Activity comp i useEffectEvent w React 19.2](/pl/blog/react-19-2-przewodnik-po-wydaniu) zmienia jak myślimy o React performance. Zabija całą kategorię bugów — te z zapomnianych memo, złych deps, inline arrow functions.
 
-Ale to optymalizator, a nie magik. Przyspiesza dobrą architekturę. Nie naprawia złej architektury.
+To optymalizator, nie czary. Przyspiesza dobrą architekturę. Nie naprawi złej.
 
 **Co się zmienia:**
-- Koniec z boilerplate'em `useMemo`/`useCallback` w nowym kodzie
-- Mniej sesji debugowania typu "dlaczego to się re-renderuje?"
-- Więcej skupienia na architekturze, mniej na mikrooptymalizacjach
+- Koniec boilerplate `useMemo`/`useCallback` w nowym kodzie
+- Mniej "czemu to się re-renderuje" sesji
+- Więcej architectury, mniej micro-optimizations
 
 **Co się nie zmienia:**
-- Nadal musisz myśleć o granicach komponentów
-- Nadal musisz obsługiwać referencje z zewnętrznych bibliotek
-- Nadal potrzebujesz wirtualizacji dla dużych list
-- Nadal potrzebujesz code splittingu dla dużych bundle'i — zwłaszcza z [edge runtime i Server Components w Next.js](/pl/blog/nextjs-2026-server-components-edge-runtime)
+- Musisz myśleć o component boundaries
+- Musisz obsługiwać library references
+- Musisz virtualize duże listy
+- Musisz code split duże bundles — szczególnie z [edge runtime i Server Components w Next.js](/pl/blog/nextjs-2026-server-components-edge-runtime)
 
-Włącz go. Zaufaj mu w typowych przypadkach. Ale utrzymuj swoje umiejętności profilowania wydajności w ostrości — kompilator wykonuje 80% pracy, a pozostałe 20% to obszar, w którym Twoja ekspertyza wciąż się liczy.
+Włącz. Ufaj w standard cases. Ale keep performance profiling sharp — kompilator robi 80%, a Twoja ekspertyza robi pozostałe 20%.
 
 ## References
 
-### Źródła
-- [React Compiler v1.0 Release Blog](https://react.dev/blog/2025/10/07/react-compiler-1) - oficjalne notatki wydania z produkcyjnymi danymi Meta i przewodnikiem migracji
-- [React Compiler Introduction](https://react.dev/learn/react-compiler/introduction) - oficjalna dokumentacja o tym, co memoizuje i jak działa
-- [How React Compiler Performs on Real Code](https://www.developerway.com/posts/how-react-compiler-performs-on-real-code) - niezależny benchmark produkcyjny pokazujący 2/9 w pełni naprawionych problemów
-- [React Compiler Silent Failures](https://acusti.ca/blog/2025/12/16/react-compiler-silent-failures-and-how-to-fix-them/) - przewodnik debugowania, gdy kompilator pomija komponenty
+### Sources
+- [React Compiler v1.0 Release Blog](https://react.dev/blog/2025/10/07/react-compiler-1) - release notes z Meta data i migration guide
+- [React Compiler Introduction](https://react.dev/learn/react-compiler/introduction) - official docs co memoizuje, jak
+- [How React Compiler Performs on Real Code](https://www.developerway.com/posts/how-react-compiler-performs-on-real-code) - independent real-world benchmark, 2/9 fully fixed
+- [React Compiler Silent Failures](https://acusti.ca/blog/2025/12/16/react-compiler-silent-failures-and-how-to-fix-them/) - debug guide kiedy kompilator cofa się
 
-### Dalsza lektura
-- [Rules of React](https://react.dev/reference/rules) - zasady, których Twój kod musi przestrzegać, by kompilator optymalizował poprawnie
-- [React Compiler Incremental Adoption](https://react.dev/learn/react-compiler/incremental-adoption) - przewodnik krok po kroku dla istniejących aplikacji
-- [React Compiler Debugging](https://react.dev/learn/react-compiler/debugging) - oficjalny przewodnik rozwiązywania problemów
+### Further reading
+- [Rules of React](https://react.dev/reference/rules) - zasady które kod musi mieć aby kompilator pracował dobrze
+- [React Compiler Incremental Adoption](https://react.dev/learn/react-compiler/incremental-adoption) - step by step guide dla existing apps
+- [React Compiler Debugging](https://react.dev/learn/react-compiler/debugging) - official troubleshooting
 
 ---
 

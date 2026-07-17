@@ -10,24 +10,24 @@ enSlug: 'micro-frontends-nextjs-module-federation-guide'
 excerpt: 'Mikrofrontendy rozwiązują sprzężenie deploymentów w organizacjach 100+ inżynierów. Dla reszty mnożą złożoność przez liczbę zespołów. Kiedy naprawdę mają sens?'
 ---
 
-Widziałem, jak mikrofrontendy ratowały organizacje, i widziałem, jak niszczyły developer experience. Różnica nigdy nie leży w technologii — chodzi o to, czy organizacja rzeczywiście ich potrzebowała.
+Pracowałem z mikrofrontendami, które uratowały organizacje, i tymi, które rujnowały developer experience. Różnica nigdy nie jest techniczna — chodzi o to, czy organizacja naprawdę ich potrzebowała.
 
-Firma fintechowa, dla której konsultowałem, miała 8 zespołów współdzielących jeden monolit Next.js. Deploymenty wymagały koordynacji wszystkich 8 zespołów, jeden zepsuty test blokował wszystkich, a cykl wydań wynosił dwa tygodnie — bo tyle trwał cykl merge-test-deploy. Mikrofrontendy dały każdemu zespołowi niezależny deployment. Kadencja wydań spadła z dwutygodniowej do kilku razy dziennie.
+Konsultowałem firmę fintechową z 8 zespołami pracującymi na tym samym Next.js monolicie. Deployment wymagał koordynacji wszystkich ośmiu — jeden nieudany test zatrzymywał całą linię, a release cycle to były dwa tygodnie merge-test-deploy. Mikrofrontendy dały każdemu zespołowi niezależny deployment. Tempo się zmieniło z raz na dwa tygodnie na kilka razy dziennie.
 
-Startup, który audytowałem, miał 4 deweloperów i wdrożył mikrofrontendy, bo „tak robią duże firmy". Spędzili 3 miesiące, budując infrastrukturę federacji. Mieli więcej YAML-a niż kodu aplikacji. Dwóch z czterech deweloperów większość czasu spędzało na debugowaniu problemów z integracją między mikrofrontendami zamiast na budowaniu funkcji.
+Auditowałem startup z czterema programistami, którzy wdrożyli mikrofrontendy, bo „tak robią duże firmy". Przez 3 miesiące budowali infrastrukturę federacji. Więcej było YAML-a niż rzeczywistego kodu aplikacji. Dwóch z nich spędzało większość czasu na debugowaniu integracji między mikrofrontendami zamiast pisać features.
 
-**Zasada:** Mikrofrontendy rozwiązują problemy **skalowania organizacyjnego**, a nie techniczne. Jeśli wąskim gardłem deploymentu jest koordynacja między zespołami, mikrofrontendy pomogą. Jeśli wąskim gardłem jest cokolwiek innego, pogorszą sprawę.
+**Zasada:** Mikrofrontendy rozwiązują problemy **organizacyjnego skalowania**, nie techniczne. Jeśli wąskim gardłem jest koordynacja deploymentów między zespołami — mikrofrontendy pomagają. Jeśli problem jest gdzie indziej, pogorszą sytuację.
 
 ## Kiedy mikrofrontendy mają sens
 
-### Używaj mikrofrontendów, gdy:
+### Kiedy rzeczywiście mają sens:
 - **5+ niezależnych zespołów** musi wdrażać bez koordynacji
 - **Różne kadencje wydań** — zespół A wydaje codziennie, zespół B kwartalnie
 - **Odrębne domeny produktowe** — checkout, magazyn, analityka, admin to osobne bounded contexts
 - **Autonomia organizacyjna** jest ważniejsza niż prostota techniczna
 - **Próbowałeś już** dobrze zorganizowanego monorepo i trafiłeś na limity koordynacji
 
-### Nie używaj mikrofrontendów, gdy:
+### Kiedy na pewno nie mają sensu:
 - **Masz mniej niż 30 inżynierów** — dobrze zorganizowane monorepo z [Turborepo lub Nx](/pl/blog/monorepo-turborepo-nx-react-nextjs) poradzi sobie lepiej
 - **Zespoły mocno współdzielą UI** — jeśli 80% UI jest współdzielone, mikrofrontendy dodają koszt bez korzyści
 - **Jesteś startupem** — podatek infrastrukturalny cię spowolni
@@ -57,17 +57,17 @@ export default {
 };
 ```
 
-Główna aplikacja przekierowuje żądania do aplikacji poszczególnych stref na podstawie ścieżki URL. Każda strefa jest wdrażana niezależnie.
+Główna aplikacja routuje requesty do odpowiednich stref na podstawie ścieżki URL. Każda strefa deployuje się niezależnie.
 
-**Plusy:** Zero współdzielonego runtime'u, każda strefa to standardowa aplikacja Next.js, trywialna konfiguracja.
+**Plusy:** Brak współdzielonego runtime'u, każda strefa to zwykła aplikacja Next.js, minimalna konfiguracja.
 
-**Minusy:** Pełne przeładowanie strony przy przejściu między strefami, brak współdzielonego stanu runtime, brak współdzielenia komponentów.
+**Minusy:** Full page reload przy przechodzeniu między strefami, brak shared state, brak component sharing.
 
-**Najlepsze do:** Całkowicie niezależnych sekcji produktu (aplikacja główna vs panel admina vs dokumentacja).
+**Idealne gdy:** Sekcje produktu są całkowicie odseparowane (main app vs admin panel vs docs).
 
 ### Podejście 2: Module Federation (najbardziej elastyczne)
 
-Module Federation pozwala mikrofrontendom współdzielić komponenty i zależności w czasie działania — bez przeładowań strony, ze wspólną instancją Reacta i kompozycją na poziomie komponentów:
+Module Federation umożliwia mikrofrontendom współdzielenie komponentów i dependencji w runtime — bez page reloads, z jedną instancją Reacta i component-level composition:
 
 ```javascript
 // host-app/next.config.mjs
@@ -137,15 +137,15 @@ export default function CheckoutPage() {
 }
 ```
 
-**Plusy:** Kompozycja na poziomie komponentów, współdzielone zależności, brak przeładowań strony.
+**Plusy:** Component-level sharing, dependency deduplication, zero page reloads.
 
-**Minusy:** Skomplikowana konfiguracja webpacka, ograniczone wsparcie App Routera, bolesne debugowanie modułów federowanych, niezgodności wersji powodują subtelne bugi.
+**Minusy:** Złożona webpack config, ograniczone wsparcie App Router, trudne debugowanie, version mismatches = subtelne bugs.
 
-**Najlepsze do:** Dużych organizacji, w których zespoły muszą współdzielić komponenty między aplikacjami.
+**Idealne gdy:** Duże organizacje, gdzie zespoły współdzielą komponenty między aplikacjami.
 
 ### Podejście 3: Vercel @vercel/microfrontends (zarządzane)
 
-Zarządzane rozwiązanie mikrofrontendów od Vercela abstrahuje infrastrukturę:
+Zarządzana usługa Vercela abstrakcjonizuje całą infrastrukturę:
 
 ```javascript
 // vercel.json
@@ -160,18 +160,18 @@ Zarządzane rozwiązanie mikrofrontendów od Vercela abstrahuje infrastrukturę:
 }
 ```
 
-**Plusy:** Zero konfiguracji webpacka, automatyczny routing, zarządzana infrastruktura, wsparcie App Routera.
+**Plusy:** Zero webpack config, auto routing, managed infrastructure, App Router support.
 
-**Minusy:** Uzależnienie od Vercela (lock-in), enterprise'owy cennik.
+**Minusy:** Vendor lock-in, enterprise pricing.
 
 ## Komunikacja między mikrofrontendami
 
-Najtrudniejszy problem w architekturze mikrofrontendów: jak niezależnie wdrażane aplikacje mają współdzielić dane?
+Najtrudniejsza część: jak niezależnie deployowane aplikacje mają sobie przekazywać dane?
 
-### Custom events (zalecane)
+### Custom events (najlepsze)
 
 ```typescript
-// Współdzielone typy zdarzeń (publikowane jako paczka npm)
+// Shared event types (publikuj jako npm package)
 interface MicroFrontendEvents {
   'cart:updated': { items: CartItem[]; total: number };
   'user:authenticated': { userId: string; token: string };
@@ -179,7 +179,7 @@ interface MicroFrontendEvents {
   'theme:changed': { theme: 'light' | 'dark' };
 }
 
-// Emiter
+// Emitter
 function emitMFEvent<K extends keyof MicroFrontendEvents>(
   event: K,
   data: MicroFrontendEvents[K]
@@ -187,7 +187,7 @@ function emitMFEvent<K extends keyof MicroFrontendEvents>(
   window.dispatchEvent(new CustomEvent(`mfe:${event}`, { detail: data }));
 }
 
-// Nasłuchiwacz (w dowolnym mikrofrontendzie)
+// Listener (w każdym MFE)
 function useMFEvent<K extends keyof MicroFrontendEvents>(
   event: K,
   handler: (data: MicroFrontendEvents[K]) => void
@@ -200,57 +200,57 @@ function useMFEvent<K extends keyof MicroFrontendEvents>(
 }
 ```
 
-### Współdzielony stan przez URL
+### URL jako współdzielony stan
 
-URL to najbardziej niezawodny mechanizm współdzielenia stanu między mikrofrontendami — przetrwa przeładowanie strony, można go dodać do zakładek i nie wymaga sprzężenia w runtime:
+URL to najbardziej niezawodny kanał komunikacji między MFE — survives page reload, bookmarkable, zero runtime coupling:
 
 ```typescript
-// Mikrofrontend checkout odczytuje koszyk z parametrów URL
+// Checkout MFE reads cart from URL params
 const searchParams = useSearchParams();
 const cartId = searchParams.get('cartId');
-// Pobierz dane koszyka niezależnie, używając cartId
+// Fetch cart data independently using cartId
 ```
 
-## Anty-wzorce, które topią wdrożenia
+## Anty-wzorce, które rujnują wdrożenia
 
 ### 1. Współdzielenie wszystkiego
 
-Jeśli twoje mikrofrontendy współdzielą design system, bibliotekę zarządzania stanem, klienta API, system routingu i pipeline buildu — zbudowałeś rozproszony monolit. Gorszy pod każdym względem od monolitu, przed którym uciekałeś.
+Jeśli twoje MFE współdzielą design system, state management, API client, routing i build pipeline — zbudowałeś rozproszoną monolityczną bajkę. Gorsza niż oryginalny monolit, z którego uciekałeś.
 
-**Zasada:** Współdziel tylko React, react-dom i design system. Wszystko inne jest posiadane niezależnie.
+**Zasada:** Share tylko React, react-dom i design system. Reszta = full ownership.
 
-### 2. Sprzężenie przez współdzielony stan
+### 2. Sprzężenie przez global state
 
 ```typescript
-// ❌ ANTY-WZORZEC: Współdzielony store Redux między mikrofrontendami
+// ❌ ANTY-WZORZEC: Shared Redux store
 const globalStore = createStore(rootReducer);
-// Teraz każdy mikrofrontend jest sprzężony z każdym innym
+// Każdy MFE jest teraz sprzężony z każdym innym
 ```
 
-Każdy mikrofrontend powinien posiadać własny stan. Komunikuj się przez zdarzenia, nie przez współdzielone store'y.
+Każdy MFE powinien mieć własny state. Komunikacja = events, nie shared stores.
 
 ### 3. Brak design systemu
 
-Bez współdzielonej biblioteki komponentów każdy zespół buduje własne przyciski, formularze i layouty. Użytkownik widzi trzy różne style przycisków na jednej stronie. Zainwestuj we wspólny design system, zanim wdrożysz mikrofrontendy.
+Bez shared component library każdy zespół pisze własne buttony, formy, layouty. User widzi 3 różne button styles na jednej stronie. Zainwestuj w design system ZANIM zaczyną się MFE.
 
-### 4. Ignorowanie rozmiaru bundle'a
+### 4. Ignorowanie bundle size
 
-Jeśli każdy mikrofrontend dostarcza własną kopię Reacta, ładujesz Reacta 5 razy. Użyj `singleton: true` w konfiguracji shared Module Federation i monitoruj łączny rozmiar bundle'a wszystkich mikrofrontendów.
+Jeśli każdy MFE ładuje swoją kopię Reacta, ładujesz React 5 razy. Używaj `singleton: true` w shared Module Federation config i monitoruj łączny bundle rozmiar.
 
 ## Praktyczne wnioski
 
-1. **Nie wdrażaj mikrofrontendów, dopóki nie masz 5+ zespołów i bólu koordynacji.** Monorepo są lepsze dla mniejszych organizacji.
-2. **Zacznij od Multi-Zones** — najprostszego podejścia dającego niezależne deploymenty.
-3. **Przejdź na Module Federation**, gdy potrzebujesz współdzielenia na poziomie komponentów między aplikacjami.
-4. **Komunikuj się przez custom events** — typowane, luźno sprzężone, bez współdzielonego stanu.
-5. **Współdziel React jako singleton** — ładowanie Reacta 5 razy to katastrofa wydajnościowa.
-6. **Zainwestuj najpierw w design system** — spójność wizualna to pierwsza ofiara mikrofrontendów.
-7. **Każdy MFE posiada własny stan** — żadnego współdzielonego Reduxa ani globalnych store'ów Zustand między MFE.
-8. **Monitoruj łączny rozmiar bundle'a** — liczy się suma wszystkich mikrofrontendów, a nie każdy z osobna.
-9. **Używaj URL jako współdzielonego stanu** — to najbardziej niezawodny mechanizm komunikacji między MFE.
-10. **Celem jest autonomia zespołów, a nie techniczna elegancja.** Jeśli zespoły nie mogą wdrażać niezależnie, architektura nie działa — niezależnie od tego, jak sprytna jest.
+1. **Nie wdrażaj MFE zanim nie masz 5+ zespołów z bólem koordynacji.** Monorepo są lepsze dla mniejszych organizacji.
+2. **Zacznij od Multi-Zones** — najprostsze podejście do independent deployments.
+3. **Przejdź na Module Federation**, gdy potrzebujesz component-level sharing między appami.
+4. **Komunikuj się custom events** — typed, loosely coupled, brak shared state.
+5. **Share React jako singleton** — ładowanie Reacta 5 razy = performance disaster.
+6. **Zainwestuj w design system FIRST** — visual consistency = pierwsza korzyść MFE.
+7. **Każdy MFE = own state** — zero shared Redux, żaden globalny Zustand między MFE.
+8. **Monitor łączny bundle** — suma wszystkich MFE, a nie każdy osobno.
+9. **URL jako shared state** — najniezawodniejszy kanał komunikacji między MFE.
+10. **Cel = team autonomy, nie techniczna elegancja.** Jeśli zespoły nie mogą deployować niezależnie, architektura nie działa — bez względu na jej geniusz.
 
-Mikrofrontendy to architektura organizacyjna w technicznej masce. Właściwe pytanie brzmi nie „czy powinniśmy użyć Module Federation?", tylko „czy nasze zespoły potrzebują niezależnego deploymentu?". Jeśli tak, wybierz najprostsze podejście, które to zapewnia. Jeśli nie, [dobrze zorganizowane monorepo](/pl/blog/monorepo-turborepo-nx-react-nextjs) zawsze będzie lepszym wyborem.
+Mikrofrontendy to organizacyjna architektura w technicznej masce. Pytanie nie brzmi „czy Module Federation?", tylko „czy nasze zespoły potrzebują independent deploymentu?". Jeśli tak — wybierz najprostsze podejście, które to daje. Jeśli nie — [dobrze zorganizowane monorepo](/pl/blog/monorepo-turborepo-nx-react-nextjs) zawsze wygra.
 
 ## Bibliografia
 

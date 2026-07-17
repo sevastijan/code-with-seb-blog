@@ -10,17 +10,17 @@ enSlug: 'tanstack-query-advanced-caching-rsc-guide'
 excerpt: 'TanStack Query rozwiązuje 90% bólu związanego z pobieraniem danych od ręki. Pozostałe 10% — prefetch z RSC, streaming hydration, optimistic updates — to zaawansowany playbook.'
 ---
 
-Większość programistów Reacta odkrywa TanStack Query (React Query) i od razu czuje ulgę. Koniec z boilerplate'em `useEffect` + `useState` + stany loading/error. Koniec z nieaktualnymi danymi po nawigacji. Koniec z race conditions z porzuconych requestów. Biblioteka ogarnia to wszystko.
+Kiedy programista Reacta poznaje TanStack Query, pojawia się ulga. Żegnaj, boilerplate `useEffect` + `useState`, żegnaj, ręczne zarządzanie stanami loading/error, żegnaj race conditions z porzuconych requestów. Biblioteka obsługuje to elegancko.
 
-Ale potem trafiają na przypadki brzegowe. Dashboard, który przez 5 sekund po mutacji pokazuje nieaktualne dane. Nieskończona lista, która przeładowuje wszystko, gdy zmienia się jeden element. Server Component, który nie potrafi podzielić się swoimi prefetchowanymi danymi z Client Components. Optimistic update, który się cofa i miga.
+Ale potem trafiają na brzegowe scenariusze. Dashboard pokazujący przez 5 sekund nieaktualne dane po mutacji. Nieskończona lista, która odświeża wszystko, gdy zmieni się jeden element. Server Component, który nie mogę poddać swoimi prefetchowanymi danymi z Client Components. Optimistic update, który się wycofuje i miga.
 
-To nie są bugi TanStack Query — to błędy konfiguracji i architektury. Domyślne ustawienia są celowo zachowawcze (staleTime: 0, gcTime: 5 minut), a większość aplikacji musi je świadomie nadpisać.
+Tu nie ma winy biblioteki — to wynik nieprawidłowej konfiguracji i architektury. Domyślne ustawienia są umyślnie konserwatywne (staleTime: 0, gcTime: 5 minut), a większość projektów musi je świadomie przepisać.
 
 Ten przewodnik obejmuje zaawansowane wzorce: prefetching po stronie serwera z RSC i streamingiem, konfigurację czasów cache, strategie invalidacji, optimistic updates, zapytania równoległe i zależne, infinite queries oraz model mentalny, który sprawia, że wszystko wskakuje na swoje miejsce.
 
 ## Model mentalny: staleTime vs gcTime
 
-Te dwie wartości sterują wszystkim w zachowaniu cache TanStack Query, a większość programistów je myli:
+Dwa parametry — `staleTime` i `gcTime` — kontrolują całe zachowanie cache'u w TanStack Query, a zdecydowana większość programistów myli ich role:
 
 ```
 Query fetched
@@ -65,21 +65,21 @@ export function createQueryClient() {
   return new QueryClient({
     defaultOptions: {
       queries: {
-        // Dane są świeże przez 60 sekund — w tym oknie brak refetchu
+        // Dane świeże przez 60 sekund — w tym oknie brak refetchu w tle
         staleTime: 60 * 1000,
 
-        // Trzymaj nieaktywne zapytania w cache przez 10 minut
+        // Nieaktywne zapytania trzymaj w cache 10 minut
         gcTime: 10 * 60 * 1000,
 
-        // Dla większości aplikacji nie refetchuj przy focusie okna
+        // Większość aplikacji: nie refetchuj gdy użytkownik wróci do okna
         refetchOnWindowFocus: false,
 
-        // Ponów nieudane zapytania 2 razy z wykładniczym backoffem
+        // Ponów nieudane zapytania 2 razy z exponential backoffem
         retry: 2,
         retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 30000),
       },
       mutations: {
-        // Ponów mutacje raz (ostrożnie — mutacje nie są idempotentne!)
+        // Ponów mutacje raz (ostrożnie: mutacje nie są idempotentne!)
         retry: 1,
       },
     },
@@ -87,35 +87,35 @@ export function createQueryClient() {
 }
 ```
 
-**Dlaczego zmieniać staleTime z 0?** Domyślne 0ms oznacza, że każdy mount komponentu wyzwala refetch w tle. Dla większości danych (profile użytkowników, listy produktów, metryki dashboardu) to marnotrawstwo. 60 sekund nieaktualności jest akceptowalne i drastycznie redukuje liczbę wywołań API.
+**Dlaczego zmieniać staleTime z 0?** Domyślnie 0ms oznacza, że każde zamontowanie komponentu wyzwala refetch w tle. Dla większości danych (profile użytkowników, listy produktów, metryki dashboardu) to marnotrawstwo zasobów. 60 sekund nieaktualności jest akceptowalne i radykalnie zmniejsza liczbę wywołań API.
 
 ### Nadpisania per-query
 
 Różne dane mają różne wymagania co do świeżości:
 
 ```typescript
-// Dane w czasie rzeczywistym — zawsze świeże
+// Powiadomienia: czas rzeczywisty — zawsze świeże
 const { data: notifications } = useQuery({
   queryKey: ['notifications'],
   queryFn: fetchNotifications,
   staleTime: 0,           // Zawsze refetchuj
-  refetchInterval: 10000, // Odpytuj co 10 sekund
+  refetchInterval: 10000, // Co 10 sekund
 });
 
-// Profil użytkownika — rzadko się zmienia
+// Profil użytkownika: zmienia się rzadko
 const { data: user } = useQuery({
   queryKey: ['user', userId],
   queryFn: () => fetchUser(userId),
   staleTime: 5 * 60 * 1000, // Świeże przez 5 minut
-  gcTime: 30 * 60 * 1000,   // Trzymaj w cache przez 30 minut
+  gcTime: 30 * 60 * 1000,   // W cache przez 30 minut
 });
 
-// Dane statyczne — prawie nigdy się nie zmieniają
+// Kategorie: dane statyczne, niemal nigdy się nie zmieniają
 const { data: categories } = useQuery({
   queryKey: ['categories'],
   queryFn: fetchCategories,
-  staleTime: Infinity,       // Nigdy nieaktualne (tylko ręczna invalidacja)
-  gcTime: 24 * 60 * 60 * 1000, // Trzymaj przez 24 godziny
+  staleTime: Infinity,       // Nigdy nieaktualne (tylko invalidacja ręczna)
+  gcTime: 24 * 60 * 60 * 1000, // W cache przez 24 godziny
 });
 ```
 
@@ -134,7 +134,7 @@ import { createQueryClient } from '@/lib/query-client';
 import { useState } from 'react';
 
 export function Providers({ children }: { children: React.ReactNode }) {
-  // Utwórz QueryClient raz na cykl życia klienta
+  // Instancja QueryClient — raz na session użytkownika
   const [queryClient] = useState(() => createQueryClient());
 
   return (
@@ -170,7 +170,7 @@ import { DashboardContent } from './DashboardContent';
 export default async function DashboardPage() {
   const queryClient = new QueryClient();
 
-  // Prefetchuj dane po stronie serwera
+  // Pobierz wszystkie dane na serwerze — klient dostanie je już w cache
   await Promise.all([
     queryClient.prefetchQuery({
       queryKey: ['metrics'],
@@ -201,7 +201,7 @@ export default async function DashboardPage() {
 import { useQuery } from '@tanstack/react-query';
 
 export function DashboardContent() {
-  // Dane są już w cache z prefetchu serwerowego — BRAK stanu ładowania!
+  // Dane już w cache z prefetchu serwerowego — bez stanu ładowania!
   const { data: metrics } = useQuery({
     queryKey: ['metrics'],
     queryFn: fetchMetrics,
@@ -212,7 +212,7 @@ export function DashboardContent() {
     queryFn: () => fetchOrders({ limit: 20 }),
   });
 
-  // Renderuj natychmiast — dane zostały prefetchowane na serwerze
+  // Render natychmiastowy — dane przygotowane na serwerze
   return (
     <div>
       <MetricsGrid data={metrics!} />
@@ -228,39 +228,39 @@ export function DashboardContent() {
 3. `HydrationBoundary` przekazuje zserializowany cache do klienta
 4. `useQuery` w Client Componencie znajduje dane już w cache → natychmiastowy render
 
-### Streaming Prefetch (bez await)
+### Streaming Prefetch (bez czekania)
 
-Od TanStack Query v5.40 możesz rozpocząć prefetching bez await — dane streamują do klienta w miarę ich rozwiązywania:
+Począwszy od TanStack Query v5.40, możesz prefetchować bez await — dane streamują do klienta w miarę gotowości:
 
 ```typescript
 // app/dashboard/page.tsx
 export default async function DashboardPage() {
   const queryClient = new QueryClient();
 
-  // Bez await — rozpocznij fetch, ale nie blokuj renderowania
+  // Bez await — prefetch startuje, ale serwer nie czeka na rezultat
   queryClient.prefetchQuery({
     queryKey: ['slow-analytics'],
-    queryFn: fetchAnalytics, // Zajmuje 2 sekundy
+    queryFn: fetchAnalytics, // 2 sekundy
   });
 
-  // Szybkie dane — na to poczekaj
+  // Szybkie dane: na te czekaj
   await queryClient.prefetchQuery({
     queryKey: ['metrics'],
-    queryFn: fetchMetrics, // Zajmuje 100ms
+    queryFn: fetchMetrics, // 100ms
   });
 
   return (
     <HydrationBoundary state={dehydrate(queryClient)}>
-      {/* Metryki renderują się od razu, analytics streamuje, gdy będzie gotowe */}
+      {/* Metryki od razu, analytics streamuje w tle */}
       <DashboardContent />
     </HydrationBoundary>
   );
 }
 ```
 
-## Invalidacja cache: najtrudniejsza część
+## Invalidacja cache: najdelikatniejsza część
 
-Invalidacja cache to słynnie jeden z dwóch trudnych problemów w informatyce. TanStack Query daje ci kilka strategii:
+Invalidacja cache — szczególnie decyzja, kiedy to zrobić — to klasycznie jeden z najtrudniejszych problemów w architekturze danych. TanStack Query oferuje kilka sprawdzonych strategii:
 
 ### Strategia 1: Invalidacja po mutacji
 
@@ -270,10 +270,10 @@ Najczęstszy wzorzec — po udanej mutacji invaliduj dotknięte zapytania:
 const createOrder = useMutation({
   mutationFn: (data: CreateOrderInput) => api.orders.create(data),
   onSuccess: () => {
-    // Invaliduj wszystkie zapytania zaczynające się od ['orders']
+    // Unieważnij wszystkie zapytania z klucz em ['orders']
     queryClient.invalidateQueries({ queryKey: ['orders'] });
 
-    // Invaliduj też metryki (zmieniła się liczba zamówień)
+    // Unieważnij metryki — liczba zamówień się zmieniła
     queryClient.invalidateQueries({ queryKey: ['metrics'] });
   },
 });
@@ -284,7 +284,7 @@ const createOrder = useMutation({
 Strukturyzuj swoje query keys hierarchicznie dla chirurgicznej invalidacji:
 
 ```typescript
-// Fabryka query key
+// Fabryka kluczy — hierarchiczna struktura
 export const orderKeys = {
   all: ['orders'] as const,
   lists: () => [...orderKeys.all, 'list'] as const,
@@ -293,13 +293,13 @@ export const orderKeys = {
   detail: (id: string) => [...orderKeys.details(), id] as const,
 };
 
-// Użycie
+// Stosowanie
 useQuery({ queryKey: orderKeys.detail('abc123'), queryFn: ... });
 useQuery({ queryKey: orderKeys.list({ status: 'pending' }), queryFn: ... });
 
-// Invalidacja — chirurgiczna precyzja
+// Invalidacja — precyzja chirurgiczna
 queryClient.invalidateQueries({ queryKey: orderKeys.detail('abc123') }); // Jedno zamówienie
-queryClient.invalidateQueries({ queryKey: orderKeys.lists() });          // Wszystkie listy
+queryClient.invalidateQueries({ queryKey: orderKeys.lists() });          // Tylko listy
 queryClient.invalidateQueries({ queryKey: orderKeys.all });              // Wszystko
 ```
 
@@ -311,13 +311,13 @@ Jeśli mutacja zwraca zaktualizowaną encję, pomiń refetch w całości:
 const updateOrder = useMutation({
   mutationFn: (data: UpdateOrderInput) => api.orders.update(data),
   onSuccess: (updatedOrder) => {
-    // Zaktualizuj konkretne zamówienie w cache bez refetchu
+    // Zaktualizuj konkretne zamówienie w cache — bez refetchu
     queryClient.setQueryData(
       orderKeys.detail(updatedOrder.id),
       updatedOrder
     );
 
-    // Nadal invaliduj listy (kolejność mogła się zmienić)
+    // Listy: invaliduj (kolejność mogła się zmienić)
     queryClient.invalidateQueries({ queryKey: orderKeys.lists() });
   },
 });
@@ -332,31 +332,31 @@ const toggleFavorite = useMutation({
   mutationFn: (productId: string) => api.products.toggleFavorite(productId),
 
   onMutate: async (productId) => {
-    // Anuluj wychodzące refetche, by nie nadpisać optimistic update
+    // Anuluj refetche w locie — nie chcemy, by nadpisały optimistic update
     await queryClient.cancelQueries({ queryKey: ['products', productId] });
 
-    // Zrób snapshot aktualnej wartości
+    // Zrób snapshot przed zmianą
     const previous = queryClient.getQueryData<Product>(['products', productId]);
 
-    // Zaktualizuj optymistycznie
+    // Aktualizuj UI od razu (optymistycznie)
     queryClient.setQueryData<Product>(['products', productId], (old) => {
       if (!old) return old;
       return { ...old, isFavorite: !old.isFavorite };
     });
 
-    // Zwróć snapshot do rollbacku
+    // Zwróć snapshot do wycofania
     return { previous };
   },
 
   onError: (_error, productId, context) => {
-    // Wycofaj do snapshotu
+    // Błąd API: przywróć poprzednią wartość
     if (context?.previous) {
       queryClient.setQueryData(['products', productId], context.previous);
     }
   },
 
   onSettled: (_data, _error, productId) => {
-    // Refetchuj, by zapewnić spójność
+    // Na koniec: refetch dla potwierdzenia spójności
     queryClient.invalidateQueries({ queryKey: ['products', productId] });
   },
 });
@@ -376,7 +376,7 @@ Niezależne zapytania automatycznie działają równolegle:
 
 ```typescript
 function Dashboard() {
-  // Te trzy startują jednocześnie
+  // Wszystkie trzy uruchamiają się równolegle
   const metrics = useQuery({ queryKey: ['metrics'], queryFn: fetchMetrics });
   const orders = useQuery({ queryKey: ['orders'], queryFn: fetchOrders });
   const users = useQuery({ queryKey: ['users'], queryFn: fetchUsers });
@@ -391,12 +391,12 @@ Z Suspense użyj `useSuspenseQueries`, by uniknąć waterfalla:
 
 ```typescript
 function Dashboard() {
-  // ŹLE: Sekwencyjnie — drugie zapytanie czeka, aż pierwsze się rozwiąże
+  // ŹLE: Sekwencyjnie — drugie czeka na pierwsze
   const { data: metrics } = useSuspenseQuery({ queryKey: ['metrics'], queryFn: fetchMetrics });
   const { data: orders } = useSuspenseQuery({ queryKey: ['orders'], queryFn: fetchOrders });
-  // metrics zawiesza się → orders nawet nie startuje, dopóki metrics się nie rozwiąże
+  // metrics zawiesza komponent → orders nawet nie startuje
 
-  // DOBRZE: Równolegle — oba startują jednocześnie
+  // DOBRZE: Równolegle — oba jednocześnie
   const [metricsResult, ordersResult] = useSuspenseQueries({
     queries: [
       { queryKey: ['metrics'], queryFn: fetchMetrics },
@@ -412,17 +412,17 @@ Gdy zapytanie B potrzebuje danych z zapytania A:
 
 ```typescript
 function UserOrders({ userId }: { userId: string }) {
-  // Najpierw: pobierz użytkownika
+  // Krok 1: pobierz użytkownika
   const { data: user } = useQuery({
     queryKey: ['user', userId],
     queryFn: () => fetchUser(userId),
   });
 
-  // Potem: pobierz zamówienia korzystając z danych użytkownika
+  // Krok 2: zamówienia — ale tylko gdy mamy ID klienta
   const { data: orders } = useQuery({
     queryKey: ['orders', { customerId: user?.customerId }],
     queryFn: () => fetchOrders({ customerId: user!.customerId }),
-    enabled: !!user?.customerId, // Uruchamia się tylko, gdy dane użytkownika są dostępne
+    enabled: !!user?.customerId, // Startuje gdy customerId dostępne
   });
 }
 ```
@@ -459,7 +459,7 @@ function OrderList() {
           onClick={() => fetchNextPage()}
           disabled={isFetchingNextPage}
         >
-          {isFetchingNextPage ? 'Loading...' : 'Load More'}
+          {isFetchingNextPage ? 'Ładowanie...' : 'Więcej'}
         </button>
       )}
     </div>
@@ -476,7 +476,7 @@ const updateOrderStatus = useMutation({
   mutationFn: (data: { orderId: string; status: string }) =>
     api.orders.updateStatus(data),
   onSuccess: (updatedOrder) => {
-    // Zaktualizuj zamówienie w obrębie stron infinite query
+    // Wyszukaj element w infinite query i zaktualizuj — nie refetchuj wszystko
     queryClient.setQueryData<InfiniteData<OrderPage>>(
       ['orders', 'infinite'],
       (oldData) => {
@@ -498,7 +498,7 @@ const updateOrderStatus = useMutation({
 
 ## Zapobieganie waterfallom requestów
 
-Waterfalle to cichy zabójca wydajności. Komponent A pobiera dane, a potem Komponent B (dziecko) zaczyna pobierać:
+Waterfalle — sekwencyjne, nieintencjonalne czekania między requestami — są cichym wrogiem wydajności. Komponent A pobiera dane, komponent B (jego dziecko) czeka, by dostać je do użytku:
 
 ```
 Component A fetches    ████████████
@@ -512,7 +512,7 @@ Total:                 ███████████████████
 ### Zapobieganie: prefetch na poziomie route'a
 
 ```typescript
-// app/dashboard/page.tsx — prefetchuj WSZYSTKO, czego route potrzebuje
+// app/dashboard/page.tsx — prefetchuj WSZYSTKIE dane, których strona potrzebuje
 export default async function DashboardPage() {
   const queryClient = new QueryClient();
 
@@ -525,30 +525,30 @@ export default async function DashboardPage() {
 
   return (
     <HydrationBoundary state={dehydrate(queryClient)}>
-      <DashboardContent /> {/* Wszystkie dane już w cache — brak waterfalli */}
+      <DashboardContent /> {/* Wszystkie dane w cache — zero waterfalli */}
     </HydrationBoundary>
   );
 }
 ```
 
-Wszystkie cztery zapytania startują równolegle na serwerze. Zanim Client Components się zamontują, wszystko jest już w cache.
+Cztery zapytania startują równolegle na serwerze. Zanim Client Components się renderują, dane są już dostępne.
 
 ## Praktyczne wnioski
 
-1. **Ustaw `staleTime` na 60s jako domyślną wartość** — 0ms to marnotrawstwo dla większości danych. Nadpisuj per-query dla potrzeb czasu rzeczywistego.
-2. **Prefetchuj w Server Components** — używaj `dehydrate` + `HydrationBoundary`, by wyeliminować stany ładowania przy pierwszym renderze.
-3. **Używaj fabryk query key** — ustrukturyzowane klucze (`orderKeys.list(filters)`) umożliwiają chirurgiczną invalidację cache.
-4. **Optimistic updates dla akcji użytkownika** — przełączanie ulubionych, aktualizacja statusu, usuwanie elementów. Wycofuj przy błędzie.
-5. **`useSuspenseQueries` dla równoległego Suspense** — pojedynczy `useSuspenseQuery` tworzy waterfalle.
-6. **Infinite queries do paginacji** — `useInfiniteQuery` + paginacja oparta na kursorze czysto obsługuje wzorce „load more".
-7. **Aktualizuj cache z odpowiedzi mutacji** — `setQueryData` z odpowiedzią serwera unika zbędnych refetchy.
-8. **Prefetchuj na poziomie route'a** — przenieś całe pobieranie danych do strony Server Component, by zapobiec waterfallom po stronie klienta.
-9. **Nie invaliduj wszystkiego** — używaj hierarchicznych query keys, by invalidować tylko to, co się zmieniło.
-10. **`gcTime` na serwerze to Infinity** — serwerowe QueryClienty są krótkożyjące, więc nie ma zmartwień o GC.
+1. **Zmień domyślny `staleTime` na 60s** — 0ms to marnotrawstwo dla większości danych. Nadpisuj per-query tylko dla scenariuszy czasu rzeczywistego.
+2. **Prefetchuj na poziomie Server Components** — kombinacja `dehydrate` + `HydrationBoundary` eliminuje stany ładowania przy pierwszym renderze.
+3. **Twórz fabryki query key** — ustrukturyzowane klucze (`orderKeys.list(filters)`) umożliwiają precyzyjną invalidację cache.
+4. **Optimistic updates dla akcji użytkownika** — przełączanie ulubionych, zmiana statusu, usunięcia. Zawsze gotuj wycofanie przy błędzie.
+5. **Używaj `useSuspenseQueries` dla równoległego Suspense** — pojedynczy `useSuspenseQuery` automatycznie tworzy waterfalle.
+6. **Dla paginacji zastosuj infinite queries** — `useInfiniteQuery` + paginacja kursorowa elegancko obsługuje „load more".
+7. **Aktualizuj cache z odpowiedzi mutacji** — `setQueryData` z danymi z serwera eliminuje zbędne refetche.
+8. **Prefetchuj na poziomie route'a** — wszystkie dane zbieraj w Server Component, by uniknąć waterfalli po stronie klienta.
+9. **Invaliduj chirurgicznie** — hierarchiczne query keys umożliwiają unieważnienie tylko tego, co faktycznie się zmieniło.
+10. **`gcTime` na serwerze ustawiaj na Infinity** — QueryClienty serwerowe żyją króko, więc garbage collection nie stanowi problemu.
 
-Dla szerszego spojrzenia na ekosystem TanStack poza Query, opisałem Router, Table, Form, Store i więcej w moim [przewodniku po ekosystemie TanStack](/pl/blog/tanstack-ekosystem-kompletny-przewodnik-2026). A jeśli wybierasz między TanStack Query z REST vs tRPC vs GraphQL, moje [porównanie warstw danych API](/pl/blog/graphql-rest-trpc-warstwa-danych) omawia kompromisy.
+Chcesz pełniejszy obraz ekosystemu TanStack? Opisałem Router, Table, Form, Store i resztę w [przewodniku po ekosystemie TanStack](/pl/blog/tanstack-ekosystem-kompletny-przewodnik-2026). A jeśli rozważasz TanStack Query vs REST, tRPC albo GraphQL, moje [porównanie warstw danych API](/pl/blog/graphql-rest-trpc-warstwa-danych) analizuje kompromisy każdego podejścia.
 
-TanStack Query zmienia pobieranie danych ze źródła bugów w źródło pewności. Domyślne ustawienia dowożą cię w 90%. Te wzorce obsługują pozostałe 10% — część, która oddziela szybkie, responsywne aplikacje od tych ociężałych.
+TanStack Query zamienia pobieranie danych z źródła bugów w źródło pewności. Domyślne ustawienia osiągają 90% wydajności. Te zaawansowane wzorce to pozostałe 10% — różnica między aplikacją responsywną a tą, która się opóźnia.
 
 ## Bibliografia
 

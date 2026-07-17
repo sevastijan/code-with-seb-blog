@@ -7,7 +7,7 @@ featured: false
 author: 'Sebastian'
 draft: false
 enSlug: 'deep-dive-into-react-fiber-the-engine-behind-modern-react'
-excerpt: 'React Fiber to silnik renderujący Reacta, który umożliwia przerywalne, priorytetyzowane aktualizacje. Napędza Concurrent Mode, Suspense i streaming SSR.'
+excerpt: 'Fiber to przeprojektowany silnik Reacta — umożliwia przerywalne renderowanie, priorytetyzowane aktualizacje i responsywny interfejs. Bez niego nie byłoby Suspense, Concurrent Mode czy streamingowego SSR.'
 ---
 
 React Fiber to całkowita przebudowa algorytmu reconciliation w rdzeniu Reacta. Jego celem było przezwyciężyć ograniczenia starego „stack reconcilera”, który działał całkowicie synchronicznie. Zanim pojawił się Fiber (React 16), aktualizacje przetwarzane były liniowo — React przechodził całe dotknięte poddrzewo, wyliczał diff, aktualizował DOM i dopiero wtedy oddawał kontrolę. Problem: nie można było przerwać tego procesu ani zmienić priorytetu. Ciężka aktualizacja (np. filtrowanie listy) blokowała główny wątek, co prowadziło do skokowych animacji, zamarzającego UI i braku odpowiedzi na kliknięcia. Pojedynczy, drogi render mógł zatamować cały interfejs. Te bolączki były dokładnie tym, czego Fiber miał rozwiązać: umożliwić przerywalne, priorytetyzowane renderowanie rozłożone na wiele klatek, by UI zawsze reagował na interakcje użytkownika.
@@ -52,7 +52,7 @@ Oto kluczowa różnica: Fiber pozwala na wiele przejść render przed jednym com
 
 # Scheduling, priority lanes i współbieżność
 
-Sercem Fibera jest **system schedulingu**. React nie przetwarzania aktualizacji liniowo, w kolejności ich nadejścia — przypisuje każdej priorytet (zbiór bitów zwany „lane"). Scheduler bierze najistotniejszą pracę najpierw: kliknięcia użytkownika zawsze przed pobieraniem danych w tle. Dawny React miał kilka sztywnych poziomów priorytetów; Fiber używa masek bitowych — każdy bit to jeden lane, dlatego można mieć dokładnie tyle priorytetów, ile bitów w liczbie (31 lanes). Aktualizacja dostaje jeden konkretny lane. Gdy React ma wiele pracy oczekującej, scheduler wybiera lane o najwyższym priorytecie i zaczyna na nim pracę.
+Sercem Fibera jest **system schedulingu**. React nie przetwarza aktualizacji liniowo, w kolejności ich nadejścia — przypisuje każdej priorytet (zbiór bitów zwany „lane"). Scheduler bierze najistotniejszą pracę najpierw: kliknięcia użytkownika zawsze przed pobieraniem danych w tle. Dawny React miał kilka sztywnych poziomów priorytetów; Fiber używa masek bitowych — każdy bit to jeden lane, dlatego można mieć dokładnie tyle priorytetów, ile bitów w liczbie (31 lanes). Aktualizacja dostaje jeden konkretny lane. Gdy React ma wiele pracy oczekującej, scheduler wybiera lane o najwyższym priorytecie i zaczyna na nim pracę.
 
 ## Poziomy priorytetów (lanes)
 
@@ -139,31 +139,31 @@ React może nawet streamować HTML na serwer, wysyłając części strony w miar
 
 W React 17 wiele `setState` poza event handlerami wyzwalało osobne rendery. Teraz scheduler Fibera automatycznie łączy je. Dwa `setState` w `setTimeout`? Jeden render. W `Promise`? Jeden render. Zawsze jeden render, o ile znajdują się w tym samym “zadaniu”. To redukuje niepotrzebną pracę, a jest możliwe bo Fiber grupuje aktualizacje po lanach.
 
-## Renderowanie po stronie serwera (streaming)
+## Streaming SSR — wysyłanie HTML stopniowo
 
-Fiber przeprojektowuje SSR ze wsparciem Suspense. React 18 wprowadza nowe API serwerowe (`renderToPipeableStream`, `renderToReadableStream`) do streamingowego SSR. Działają one ręka w rękę z Suspense. Na serwerze React może zacząć streamować HTML do klienta, gdy tylko niektóre części są gotowe, i wypełnić granice suspense później. Ten model streamingu opiera się pod maską na inkrementalnym renderowaniu Fibera. Zespół Reacta opisuje to jako „streamingowe renderowanie po stronie serwera ze wsparciem Suspense”, umożliwione przez nowy renderer współbieżny. W praktyce nowych API użyłoby się tak:
+Fiber zmienia też całą grę SSR. Zamiast czekać, aż serwer wyrenderuje całą stronę (co może chwilę potrwać, jeśli coś pobiera dane), React 18 wysyła HTML stopniowo — kawałek po kawałku. Granice Suspense na serwerze są obsługiwane automatycznie: strona wyświetla się szybko z fallbackami, a zawartość dołącza się, gdy jest gotowa.
 
 ```jsx
 import { renderToPipeableStream } from 'react-dom/server'
 
 const { pipe } = renderToPipeableStream(<App />, {
   onAllReady() {
-    pipe(response) // streamuj fragmenty HTML do klienta
+    pipe(response) // wysyłaj HTML do klienta jak jest gotowy
   },
 })
 ```
 
-Kontrastuje to ze starym renderToString (który czekał na wszystkie dane) — SSR oparte na Fiberze może wypychać częściową zawartość w miarę rozwiązywania każdej granicy Suspense.
+To zmienia UX dla użytkownika — widzi część treści od razu zamiast czekać na ładowanie całej strony.
 
-Ogólnie rzecz biorąc, Fiber napędza nowoczesne funkcje Reacta. Oficjalny blog Reacta podkreśla: „Wiele funkcji w Reakcie 18 zbudowano na naszym nowym rendererze współbieżnym”, a obejmuje to Suspense, tranzycje i streamingowy SSR. Bez przerywalnego reconciliation Fibera żadna z nich nie byłaby wykonalna.
+---
 
-# Przykłady kodu: Fiber w akcji
+Podsumowując: bez Fibera żadna z tych funkcji nie istniałaby. Concurrent Mode, Suspense, streamingowe SSR, automatyczne batchowanie — wszystko zbudowane na fundamentach architektury Fibera. To nie jest tylko optymalizacja — to zmiana sposobu myślenia o renderowaniu w Reactie.
 
-Poniżej kilka fragmentów kodu ilustrujących wpływ Fibera na renderowanie i scheduling.
+# Fiber w praktyce — przykłady kodu
 
-## Przerywalne aktualizacje
+## Jak startTransition zmienia responsywność
 
-Przerywalne aktualizacje z `startTransition`: bez współbieżności nawet drobne wejście użytkownika może utknąć za ciężką aktualizacją. W tym przykładzie aktualizacja tekstu i synchroniczne wykonanie ciężkiego obliczenia mogą laggować UI:
+Bez Fibera i concurrent rendering, nawet proste kliknięcie mogło być opóźnione długą aktualizacją. Oto problem:
 
 ```jsx
 function App() {
@@ -171,22 +171,21 @@ function App() {
   const [result, setResult] = useState('')
 
   function handleChange(e) {
-    setText(e.target.value) // pilne: aktualizacja tekstu w input
-    // kosztowne obliczenie (symulowane)
-    const out = heavyCalculation(e.target.value)
-    setResult(out) // wolniejsze: aktualizacja listy wyników
+    setText(e.target.value)
+    const out = heavyCalculation(e.target.value) // To blokuje pisanie!
+    setResult(out)
   }
 
-  return (
-    <>
-      <input value={text} onChange={handleChange} />
-      <div>{result}</div>
-    </>
-  )
+  return <>
+    <input value={text} onChange={handleChange} />
+    <div>{result}</div>
+  </>
 }
 ```
 
-Tutaj każde naciśnięcie klawisza wyzwala `heavyCalculation`, które blokuje pisanie. React przetwarza obie aktualizacje naraz (ten sam priorytet). Jeśli zamiast tego oznaczymy wolną aktualizację jako niepilną, UI pozostaje responsywne:
+Problem: każdy `handleChange` robi ciężkie obliczenie. Jeśli trwa 500 ms, użytkownik czeka 500 ms między każdym naciśnięciem. Morderstwo dla UX.
+
+Z `startTransition`:
 
 ```jsx
 import { startTransition } from 'react'
@@ -196,59 +195,48 @@ function App() {
   const [result, setResult] = useState('')
 
   function handleChange(e) {
-    setText(e.target.value) // pilna aktualizacja
+    setText(e.target.value) // natychmiast
     startTransition(() => {
-      // oznacz jako niski priorytet
       const out = heavyCalculation(e.target.value)
-      setResult(out) // aktualizacja nieblokująca
+      setResult(out) // może czekać
     })
   }
 
-  return (
-    <>
-      <input value={text} onChange={handleChange} />
-      <div>{result}</div>
-    </>
-  )
+  return <>
+    <input value={text} onChange={handleChange} />
+    <div>{result}</div>
+  </>
 }
 ```
 
-Z `startTransition` React natychmiast spriorytetyzuje aktualizację inputu (aktualizację `text`). Kosztowna aktualizacja `setResult` jest odroczona; jeśli użytkownik szybko napisze coś ponownie, React może przerwać trwające obliczenie i zrestartować je dla najnowszego wejścia. Działa to, bo scheduler Fibera przypisuje je do różnych lanes i może wstrzymywać/restartować w miarę potrzeb.
+Teraz React priorytetyzuje `setText` (obliczenia są w transition — niższy priorytet). Pola input aktualizuje się od razu, a obliczenie Fibera może wstrzymać jeśli użytkownik znowu coś napisze.
 
-## Automatyczne batchowanie aktualizacji stanu
+## Automatyczne batchowanie wszędzie
 
-Fiber batchuje aktualizacje również automatycznie. Przed Fiberem aktualizacje poza zdarzeniami Reacta nie były batchowane. Na przykład:
+W React 17 wiele `setState` wewnątrz event handlera batchowało się (jeden render). Ale poza handlerami — w `setTimeout`, promise, `fetch` — każdy `setState` wyzwalał osobny render. Frustrujące dla wydajności.
 
-```jsx
-// Przed Reactem 18 (bez automatycznego batchowania):
-function handleClick() {
-  setCount((c) => c + 1)
-  setFlag((f) => !f)
-  // Tylko jeden re-render na końcu tego kliknięcia (zdarzenie React) – zbatchowane!
-}
-setTimeout(() => {
-  setCount((c) => c + 1)
-  setFlag((f) => !f)
-  // Bez Fibera: to wyzwala *dwa* rendery.
-}, 1000)
-```
-
-W Reakcie 17 lub wcześniejszym dwa wywołania setState wewnątrz setTimeout powodują osobne rendery. Z Fiberem/Reactem 18:
+Fiber zmienia to całkowicie. Teraz *zawsze* batchuje:
 
 ```jsx
-// Po Reakcie 18 (automatyczne batchowanie wszędzie):
+// React 17 — dwa osobne rendery
 setTimeout(() => {
-  setCount((c) => c + 1)
-  setFlag((f) => !f)
-  // React *zbatchuje* je i wyrenderuje ponownie tylko raz.
-}, 1000)
+  setCount(c => c + 1)
+  setFlag(f => !f)
+}, 0)
+
+// React 18 z Fiberem — jeden render
+setTimeout(() => {
+  setCount(c => c + 1)
+  setFlag(f => !f)
+  // Fiber: "To w tym samym zadaniu, łączę i robię jeden render"
+}, 0)
 ```
 
-Teraz obie aktualizacje są zgrupowane w tym samym renderze, bo nowy scheduler Fibera traktuje je jako jeden batch. Redukuje to pracę i poprawia wydajność, unikając zdublowanych renderów.
+Scheduler Fibera widzi obie aktualizacje w tym samym "oknie" (tym samym lane) i robi jeden render zamiast dwóch. Nie musisz nic robić — działa domyślnie.
 
-## Streaming serwerowy z Suspense
+## Streaming z serwera na klienta
 
-Użycie nowego API SSR jest tak proste, jak jego wywołanie. Na przykład w serwerze Node:\
+Zamiast czekać aż serwer wyrenderuje stronę 100%, Fiber wysyła ją fragmentami:
 
 ```jsx
 import { renderToPipeableStream } from 'react-dom/server'
@@ -256,12 +244,12 @@ import App from './App'
 
 const { pipe } = renderToPipeableStream(<App />, {
   onAllReady() {
-    pipe(res) // streamuj wyrenderowany HTML do klienta
+    pipe(res) // wysyłaj HTML jak jest gotowy
   },
 })
 ```
 
-Tutaj Fiber będzie streamował HTML `<App />` do klienta kawałek po kawałku, obsługując po drodze wszelkie granice Suspense. Ten inkrementalny streaming jest możliwy tylko dlatego, że Fiber potrafi renderować części drzewa przed innymi i commitować je sekwencyjnie.
+Strona wyświetla się w przeglądarce *zaraz*, a slowData (`<Suspense>` fallback) pojawia się, gdy będzie gotowa. Starego `renderToString` trzeba czekać na wszystko. Fiber wysyła to co ma, a resztę później.
 
 # Źródła
 
