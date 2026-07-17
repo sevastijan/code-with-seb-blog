@@ -7,12 +7,12 @@ featured: false
 author: 'Sebastian'
 draft: false
 enSlug: 'react-19-2-release-guide-activity-useeffectevent-ssr-batching-and-more-explained'
-excerpt: 'React 19.2 wprowadza komponent <Activity />, hook useEffectEvent, API cacheSignal, usprawnienia SSR i batching Suspense. Zobacz, jak podnoszą wydajność i DX.'
+excerpt: 'React 19.2 przynosi komponent <Activity />, hook useEffectEvent, API cacheSignal, wiele ulepszeń SSR i batching Suspense. Poznaj, jak podnoszą wydajność i doświadczenie dewelopera.'
 ---
 
 React 19.2 (wydany w październiku 2025) przynosi wiele nowości: nowych API, optymalizacji wydajności i ulepszeń SSR. To trzecie wydanie z serii React 19 (po 19.1 z połowy 2025 i 19.0 z końca 2024), kontynuujące dynamiczny rytm rozwoju frameworka. W tym artykule przechodzę przez wszystkie nowe funkcje, zmiany i ulepszenia w React 19.2 z perspektywy developera — od zmian w renderowaniu, przez nowe API (komponent i hook), aż po aktualizacje SSR, zmiany w linterze i poprawki.
 
-React 19.2 przynosi kilka znaczących funkcji i usprawnień podnoszczących wydajność i doświadczenie dewelopera. Oto kluczowe dodatki:
+React 19.2 przynosi kilka znaczących funkcji i usprawnień podnoszących wydajność i doświadczenie dewelopera. Oto kluczowe dodatki:
 
 - Komponent `<Activity />`: nowy komponent utrzymujący elementy UI zamontowane, ale ukryte — zachowując ich stan, jednocześnie odmontowując efekty uboczne i odraczając ich aktualizacje.
 - Hook `useEffectEvent`: nowy hook oddzielający logikę „zdarzeniową” od reaktywnych efektów, zapewniający stabilne callbacki widzące zawsze bieżący stan bez ponownego uruchamiania efektu.
@@ -297,68 +297,68 @@ Z punktu widzenia migracji, po aktualizacji do React 19.2 powinieneś uruchomić
 npm install eslint-plugin-react-hooks@^6.0.0 --save-dev
 ```
 
-i zaktualizować rozszerzenia (extends) swojej konfiguracji ESLint. Zapewni to, że kontrole lintera w twoim projekcie uwzględnią nowe zachowanie hooka. Dzięki tym usprawnieniom linting jest bardziej zgrany z runtime Reacta, pomagając ci wcześnie wychwytywać problemy i unikać wzorców mogących powodować błędy lub problemy z wydajnością. Na przykład linter będzie teraz poprawnie egzekwował reguły hooków dla `useEffectEvent` lub ignorował go w zależnościach, jak wspomniano, co utrzymuje twój kod czystym i zgodnym z intencjami Reacta.
+i zaktualizować `extends` konfiguracji ESLint. Linting będzie bardziej zgrany z runtime Reacta, pomagając wychwytywać problemy wcześnie i unikać wzorców powodujących błędy czy wydajnościowe problemy. Na przykład linter będzie poprawnie egzekwować reguły dla `useEffectEvent` czy ignorować go w zależnościach, utrzymując kod czystym i zgodnym z Reactem.
 
-Ogólnie ta aktualizacja pluginu to usprawnienie zza kulis, które wzmacnia dobre praktyki z hookami i daje developerom pewność przy adaptowaniu nowych API.
+Ta aktualizacja to usprawnienie wzmacniające dobre praktyki hooków i dające developerom pewność przy adaptowaniu nowych API.
 
 ---
 
 ## Zaktualizowany domyślny prefiks `useId`
 
-Hook `useId` w Reakcie generuje unikalne ID dla zawartości renderowanej po stronie serwera, by dopasować je do ID generowanych po stronie klienta (pomocne dla spójnej hydracji formularzy, id dostępności itd.). W React 19.0 i 19.1 ID miały domyślnie prefiksy takie jak `":r:"` lub `«r»`. Te prefiksy wybrano, ponieważ zawierały znaki nieprawidłowe w selektorach CSS, zmniejszając ryzyko kolizji z ID definiowanymi przez developera. Jednak w 19.2 zespół Reacta zmienił domyślny prefiks na `_r_`.
+Hook `useId` generuje unikalne ID dla zawartości SSR, dopasowując je do ID klienta (dla spójnej hydracji formularzy, id dostępności itd.). W React 19.0 i 19.1 ID miały domyślnie prefiksy takie jak `":r:"` — zawierały znaki nieprawidłowe w CSS, zmniejszając ryzyko kolizji. W 19.2 zespół zmienił prefiks na `_r_`.
 
-Nowy prefiks `_r_` jest prostszy (tylko alfanumeryczne znaki i podkreślnik), a powodem tej zmiany jest przyszła zgodność: nadchodzące funkcje takie jak View Transitions (pozwalające animować zmiany DOM) oraz pewne standardy webowe wymagają, by ID elementów były prawidłowymi identyfikatorami CSS i nazwami XML. Stary prefiks `:r:` nie był prawidłowym identyfikatorem CSS (z powodu dwukropka na początku), co mogło kolidować z użyciem tych ID w przejściach opartych na CSS lub innych API. Przez przełączenie na `_r_` wszelkie ID generowane przez `useId` są teraz prawidłowe do tych zastosowań.
+Nowy prefiks `_r_` jest prostszy (tylko alfanumeryczne i podkreślnik) dla przyszłej zgodności: View Transitions (animacje DOM) i standardy webowe wymagają ID będących prawidłowymi identyfikatorami CSS i XML. Stary `:r:` nie był prawidłowym CSS ID (z powodu dwukropka), mogło to kolidować z przejściami CSS czy innymi API. `_r_` sprawia, że ID z `useId` są prawidłowe do tych zastosowań.
 
-Ta zmiana jest w większości przezroczysta. Jeśli używasz useId, po prostu zauważysz, że ID wyglądają teraz jak `_r_abcdef` zamiast czegoś w rodzaju `:r:abcdef`. Istnieje niewielka możliwość, że to będzie breaking change, jeśli kod lub testy twojej aplikacji zakładały coś o prefiksie albo jeśli miałeś CSS celujący w stary prefiks (co jest mało prawdopodobne, bo poleganie na nim było odradzane). Ogólnie nie powinno to wymagać zmian kodu dla większości aplikacji, ale to zauważalna poprawka dla tych, którym zależy na przewidywalnych ID. Korzyścią jest poprawiona zgodność z nowymi funkcjami przeglądarek (jak View Transitions) i zgodność ze standardami.
+Zmiana jest przezroczysta. Jeśli używasz `useId`, ID wyglądają teraz jak `_r_abcdef` zamiast `:r:abcdef`. Niewielka możliwość, że to breaking change, jeśli kod czy testy zakładały coś o prefiksie (mało prawdopodobne, poleganie było odradzane). Generalnie nie wymaga zmian dla większości aplikacji, ale to ważna poprawka dla tych, którym zależy na ID. Korzyść: poprawiona zgodność z View Transitions i standardami.
 
 ---
 
 ## Inne godne uwagi poprawki i usprawnienia
 
-React 19.2 zawiera liczne poprawki błędów i drobne usprawnienia, które, choć nie tak przyciągające nagłówki, są ważne dla stabilności i komfortu pracy developera. Kilka przykładów problemów rozwiązanych w 19.2:
+React 19.2 zawiera liczne poprawki błędów i drobne usprawnienia — ważne dla stabilności i komfortu pracy. Kilka przykładów problemów rozwiązanych w 19.2:
 
-- Poprawki `useDeferredValue`: naprawiono błąd nieskończonej pętli związany z `useDeferredValue` przy użyciu ze zdarzeniami popstate historii przeglądarki. Zaadresowano też błąd inicjalizacji `useDeferredValue`. Te poprawki czynią użycie odroczonych wartości (do odraczania aktualizacji) bardziej odpornym.
-- Usprawnienia Suspense: rozwiązano błąd z głęboko zagnieżdżonym `<Suspense>` wewnątrz drzew fallbacku oraz naprawiono problem, w którym zdehydratowane granice Suspense (z SSR) nie ukrywały poprawnie zawartości, jeśli ponownie się zawiesiły. Zapewnia to bardziej niezawodne działanie Suspense w złożonych scenariuszach zagnieżdżania.
-- Poprawka crasha akcji formularza: naprawiono crash, który mógł wystąpić przy wysyłaniu formularzy używających nowych React Server Actions (dawniej znanych jako „Client Actions”).
-- Ostrzeżenia dev i znaki ucieczki: React 19.2 przestaje teraz ostrzegać o prawidłowych atrybutach ARIA 1.3 (renderer DOM został zaktualizowany, by rozpoznawał nowsze atrybuty ARIA). Poprawiono też stack trace komponentów w komunikatach o błędach w kilku przypadkach brzegowych, dla łatwiejszego debugowania.
-- Różne poprawki DOM: na przykład React DOM pozwala teraz na atrybut nonce na wynoszalnych (hoistable) tagach `<style>` (by lepiej wspierać polityki bezpieczeństwa CSP) i ostrzega, jeśli próbujesz wyrenderować węzeł kontrolowany przez Reacta do kontenera, który już zawiera tekst (co może wskazywać na problem z hydracją).
+- Poprawki `useDeferredValue`: naprawiono błąd nieskończonej pętli z `useDeferredValue` przy zdarzeniach popstate. Zaadresowano też błąd inicjalizacji. Te poprawki czynią użycie odroczonych wartości bardziej odpornym.
+- Usprawnienia Suspense: rozwiązano błąd z głębokim zagnieżdżonym `<Suspense>` w fallbackach i problem, gdzie zdehydratowane granice Suspense (SSR) nie ukrywały zawartości, jeśli ponownie się zawiesiły. Zapewnia bardziej niezawodne działanie w złożonych scenariuszach.
+- Poprawka crasha akcji formularza: naprawiono crash przy wysyłaniu formularzy z React Server Actions (dawniej „Client Actions”).
+- Ostrzeżenia i atrybuty: React 19.2 przestaje ostrzegać o prawidłowych atrybutach ARIA 1.3 (renderer DOM rozpoznaje nowsze ARIA). Poprawiono stack trace komponentów w komunikatach błędów, dla łatwiejszego debugowania.
+- Różne poprawki DOM: React DOM pozwala na atrybut `nonce` na wynoszalnych tagach `<style>` (dla CSP) i ostrzega, jeśli wyrenderujesz węzeł Reacta do kontenera zawierającego tekst (może to wskazywać na problem z hydracją).
 
-Te poprawki przyczyniają się do płynniejszego doświadczenia developera i mniejszej liczby pułapek przy aktualizacji. Choć żadna z nich nie jest breaking change, mogą nieco zmienić niektóre zachowania w runtime (zazwyczaj na lepsze, np. brak fałszywych ostrzeżeń czy crashy). Zawsze dobrą praktyką jest przejrzeć oficjalny changelog dla pełnej listy zmian i przetestować swoją aplikację, ale generalnie React 19.2 to wstecznie zgodne wydanie minor z głównie addytywnymi funkcjami i poprawkami błędów.
+Te poprawki przyczyniają się do płynniejszego doświadczenia i mniejszej liczby pułapek. Choć nie są breaking changes, mogą nieco zmienić runtime (zazwyczaj na lepsze, bez fałszywych ostrzeżeń czy crashów). Dobrą praktyką jest przejrzeć changelog i przetestować aplikację, ale generalnie React 19.2 to wstecznie zgodne wydanie minor z głównie nowymi funkcjami i poprawkami.
 
 ---
 
 ## Kwestie migracji i zgodności
 
-Aktualizacja do React 19.2 powinna być względnie prosta dla większości projektów. Nie ma dużych breaking changes w API — istniejące komponenty i hooki działają nadal jak wcześniej. Nowe funkcje (Activity, useEffectEvent itd.) są w całości addytywne. Jednak oto kilka rzeczy, o których warto pamiętać przy migracji:
+Aktualizacja do React 19.2 powinna być prosta dla większości projektów. Nie ma dużych breaking changes — istniejące komponenty i hooki działają nadal. Nowe funkcje (Activity, useEffectEvent itd.) są całkowicie addytywne. Kilka rzeczy warte pamiętania:
 
-- Jeśli planujesz użyć `useEffectEvent`, zaktualizuj plugin ESLint dla hooków do v6, tak by twój linter nie flagował nowego hooka niepoprawnie. Ponadto, jeśli używasz TypeScript, upewnij się, że twoje `@types/react` są aktualne (definicje typów React 19.2 powinny zawierać nowe API).
-- Zmiana prefiksu `useId` oznacza, że generowane ID będą się różnić. W mało prawdopodobnym przypadku, gdy testy lub kod twojej aplikacji polegają na dokładnym formacie tych ID, być może będziesz musiał je zaktualizować. Na przykład testy snapshot, które przechwytują ID DOM, mogą wymagać aktualizacji. Poleganie na tych ID jest generalnie odradzane, więc większość aplikacji nie będzie dotknięta.
-- Jeśli zamierzasz użyć partial pre-rendering, zauważ, że wymaga to zgodnej konfiguracji serwera. Będziesz miał do czynienia ze streamingiem i być może utrwalaniem stanu postponed. Upewnij się, że twoja wersja Node jest wystarczająco nowoczesna (Node 18+ dla Web Streams lub użyj wersji API dla strumieni Node). Ta funkcja może też wiązać się ze zmianami w twoim pipeline'ie wdrożeniowym, jeśli używasz jej do SSG (np. generowania i przechowywania danych prelude/postponed).
-- Jeśli twoja aplikacja intensywnie korzysta ze streamowanego SSR z Suspense, możesz chcieć przetestować, jak działa nowe grupowanie. W większości przypadków powinno ono tylko poprawić sytuację. Bądź jedynie świadomy tej zmiany, jeśli mierzyłeś lub animowałeś pojawianie się zawartości na kliencie — teraz wiele segmentów Suspense może wyskoczyć razem. Zazwyczaj jest to pożądane, ale zweryfikuj, czy nie wpływa to na twoje spinnery ładowania lub założenia UI.
-- Jeśli twój projekt nie potrzebuje nowych API od razu, możesz aktualizować się we własnym tempie. Wiele korzyści z 19.2 (jak performance tracks, poprawki błędów, usprawnienia Suspense) przychodzi „za darmo”, po prostu przez aktualizację. Decyzja może zależeć od tego, czy planujesz użyć Activity lub useEffectEvent. Zawsze dobrym pomysłem jest uruchomienie zestawu testów i może wykonanie odrobiny ręcznego testowania po aktualizacji, zwłaszcza dla złożonych projektów, by wychwycić wszelkie nieprzewidziane problemy (które powinny być rzadkie).
+- Planując użyć `useEffectEvent`, zaktualizuj plugin ESLint dla hooków do v6, by linter nie flagował nowego hooka. Jeśli używasz TypeScript, upewnij się, że `@types/react` są aktualne (powinne zawierać nowe API).
+- Zmiana prefiksu `useId` oznacza, że generowane ID będą się różnić. W mało prawdopodobnym przypadku, gdy testy czy kod polegają na dokładnym formacie ID, będziesz musiał je zaktualizować. Na przykład snapshot tests mogą wymagać aktualizacji. Poleganie na tych ID jest odradzane, więc większość aplikacji nie będzie dotknięta.
+- Planując partial pre-rendering, wymaga to konfiguracji serwera. Będziesz miał streaming i być może utrwalanie stanu `postponed`. Upewnij się, że Node jest wystarczająco nowoczesny (Node 18+ dla Web Streams czy API dla strumieni Node). Funkcja może wymagać zmian w pipeline wdrożeniowym, jeśli używasz jej do SSG (generowanie i przechowywanie prelude/postponed).
+- Jeśli aplikacja intensywnie używa streamowanego SSR z Suspense, chciej przetestować nowe grupowanie. W większości przypadków powinno tylko poprawić. Bądź świadomy tej zmiany, jeśli mierzyłeś lub animowałeś pojawianie się zawartości — teraz wiele segmentów Suspense może wyskoczyć razem. Zazwyczaj pożądane, ale zweryfikuj, czy nie wpływa na spinnery ładowania czy założenia UI.
+- Jeśli projekt nie potrzebuje nowych API natychmiast, możesz aktualizować we własnym tempie. Wiele korzyści (performance tracks, poprawki, usprawnienia Suspense) przychodzi „za darmo”. Decyzja zależy od Activity czy useEffectEvent. Zawsze uruchom testy i wykonaj ręczne testowanie po aktualizacji, zwłaszcza dla złożonych projektów, by wychwycić problemy (powinny być rzadkie).
 
-Aktualizacja jest tak prosta jak uruchomienie:
+Aktualizacja jest prosta:
 
 ```bash
 npm install react@19.2 react-dom@19.2   # lub użyj @latest
 ```
 
-(I podobnie zaktualizuj inne pakiety React, jak react-dom, do 19.2, by wersje były zsynchronizowane.)
+(Zaktualizuj inne pakiety React do 19.2, by wersje były zsynchronizowane.)
 
-Ogólnie React 19.2 to podbicie wersji minor z dużymi zyskami w produktywności i wydajności. Otrzymujesz nowe możliwości bez konieczności przepisywania istniejącego kodu. Zwróć tylko uwagę na kilka zmian w domyślnych ustawieniach (jak prefiks `useId`) i upewnij się, że twoje narzędzia (ESLint, rozszerzenie DevTools itd.) są aktualne, by w pełni wykorzystać usprawnienia.
+React 19.2 to wydanie minor z dużymi zyskami w produktywności i wydajności. Otrzymujesz nowe możliwości bez przepisywania kodu. Zwróć uwagę na zmiany w ustawieniach (jak prefiks `useId`) i upewnij się, że narzędzia (ESLint, DevTools) są aktualne, by wykorzystać usprawnienia.
 
 ---
 
 ## Podsumowanie
 
-React 19.2 pakuje mnóstwo ekscytujących usprawnień jak na wydanie „point-two”. Wprowadza praktyczne nowe prymitywy, które czynią aplikacje React bardziej wydajnymi i łatwiejszymi w tworzeniu:
+React 19.2 pakuje mnóstwo ekscytujących usprawnień. Wprowadza praktyczne nowe prymitywy, które czynią aplikacje bardziej wydajnymi i łatwiejszymi w tworzeniu:
 
-- Komponent `<Activity>` i hook `useEffectEvent` adresują częste wzorce (przenoszenie UI do tła i obsługa zdarzeń efektów) w czysty, deklaratywny sposób, prawdopodobnie upraszczając kod dla modali, kart, subskrypcji sieciowych i nie tylko.
-- Usprawnienia w renderowaniu po stronie serwera — od partial pre-rendering po grupowanie Suspense — przybliżają React do bezszwowych, natychmiast ładujących się aplikacji, bez poświęcania SEO czy doświadczenia użytkownika. Aplikacje React mogą dostarczać zawartość szybciej i płynniej niż wcześniej.
-- Doświadczenie developera zostaje podniesione dzięki lepszym narzędziom profilowania (ścieżki DevTools) i inteligentniejszemu lintingowi. Pomagają one zespołom optymalizować i utrzymywać duże bazy kodu z pewnością.
-- Dziesiątki poprawek i drobnych zmian pod maską oznaczają większą niezawodność i zgodność ze standardami webowymi (jak dopasowanie do View Transitions i nowszych specyfikacji ARIA).
+- `<Activity>` i `useEffectEvent` adresują częste wzorce (UI w tle, obsługa zdarzeń efektów) czysty, deklaratywny sposób, upraszczając kod dla modali, kart, subskrypcji sieciowych.
+- Usprawnienia SSR — od partial pre-rendering po grupowanie Suspense — przybliżają React do bezszwowych, natychmiast ładujących się aplikacji bez poświęcania SEO czy UX. Aplikacje mogą dostarczać zawartość szybciej i płynniej.
+- DX podniesiony dzięki lepszym narzędziom profilowania (ścieżki DevTools) i inteligentniejszemu lintingowi. Pomagają zespołom optymalizować i utrzymywać duże bazy kodu z pewnością.
+- Dziesiątki poprawek i drobnych zmian oznaczają większą niezawodność i zgodność ze standardami (View Transitions, nowsze ARIA).
 
-Podsumowując, nawet jeśli React 19.2 jest oficjalnie wydaniem minor, przynosi znaczące usprawnienia komfortu pracy i funkcje patrzące w przyszłość do ekosystemu React. Frontendowcy i liderzy techniczni docenią, że te zmiany nie tylko rozwiązują bieżące bolączki (jak niezgrabne wzorce efektów czy wolne aktualizacje SSR), ale też kładą fundament pod przyszłość (jak płynniejsze przejścia i bardziej efektywny streaming). Jeśli utrzymujesz aplikację React, warto ocenić, jak te nowe możliwości mogą przynieść korzyści twojemu projektowi. Aktualizacja jest generalnie niskiego tarcia, a zyskasz dostęp do tych potężnych funkcji i optymalizacji, które mogą uczynić twoje UI szybszym, a kod czystszym.
+Podsumowując, React 19.2 przynosi znaczące usprawnienia komfortu pracy i funkcje patrzące w przyszłość. Developerzy docenią, że zmiany nie tylko rozwiązują bieżące problemy (niezgrabne efekty, wolne SSR), ale kładą fundament pod przyszłość (płynne przejścia, efektywny streaming). Jeśli utrzymujesz aplikację React, warto ocenić, jak te możliwości mogą przynieść korzyści. Aktualizacja jest niskiego tarcia, a zyskasz dostęp do potężnych funkcji i optymalizacji, które mogą uczynić UI szybszym, a kod czystszym.
 
 # Źródła i dalsza lektura
 

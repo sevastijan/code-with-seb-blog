@@ -187,46 +187,46 @@ Ponieważ odczyty i zapisy idą do lokalnej repliki, **offline to po prostu brak
 
 Subtelna część: **co się dzieje po reconnect po długim offline**: seria queued mutations, możliwe rejections (offline mutation teraz invalid, bo ktoś inny zmienił świat), resync shapes. Dobry engine to obsługuje; ty obsługujesz UX rare rejection — zwykle cichy toast, nie modal.
 
-## Realne kompromisy — i kiedy NIE iść w local-first
+## Realne trade-offy — kiedy nie iść w local-first
 
-Lubię tę architekturę. Uważam też, że większość aplikacji nie powinna jej przyjmować. Koszty są realne:
+Uwielbiam tę architekturę. Myślę też, że większość app by na niej nie powinna. Koszty są realne:
 
-- **Złożoność.** Dodałeś rozproszoną bazę danych do klienta. Debugowanie „dlaczego ten wiersz jest nieaktualny na urządzeniu B" jest naprawdę trudniejsze niż czytanie logu serwera.
-- **Częściowa replikacja to twój nowy trudny problem.** Ustaw granice synchronizacji źle, a albo nad-synchronizujesz (wolno, drogo, ryzyko prywatności), albo pod-synchronizujesz (brakujące dane, zepsute zapytania).
-- **Limity storage i przeglądarek.** Pułapy IndexedDB, złożoność workera OPFS, dziwactwa Safari, eksmisja storage pod presją.
-- **Auth i uprawnienia kosztują więcej.** Dwuwarstwowa autoryzacja to większa powierzchnia niż endpoint REST ze sprawdzeniem w middleware.
-- **Rozmiar bundle'a.** Build SQLite w WASM i klient synchronizacji nie są darmowe przy pierwszym załadowaniu.
-- **Lock-in modelu danych.** Migrowanie schematów, gdy klienci trzymają stare repliki, to osobna dyscyplina migracyjna.
+- **Złożoność.** Dodałeś distributed db do klienta. Debugowanie „dlaczego ten row jest stary na device B" to naprawdę trudniej niż read server log.
+- **Partial replication to twój nowy hard problem.** Złe granice → albo over-sync (wolno, drogo, privacy risk), albo under-sync (missing data, broken queries).
+- **Storage i browser limits.** IndexedDB caps, OPFS worker complexity, Safari quirks, storage eviction under pressure.
+- **Auth i permissions kosztują więcej.** Dual-layer authz to większa surface niż REST endpoint z middleware check.
+- **Bundle size.** SQLite-WASM i sync client nie są darmowe na initial load.
+- **Data model lock-in.** Migrate schemas gdy klienci trzymają stare replicas — to osobna dyscyplina.
 
-**Nie idź w local-first, jeśli:** twoja aplikacja to głównie treści odczytowe (strona marketingowa, portal dokumentacji, dashboard czytający serwerowe agregaty — [inkrementalna rewalidacja w Next.js](/pl/blog/inkrementalna-rewalidacja-nextjs-szybkie-dashboardy) albo zwykłe RSC obsłużą to lepiej); twoje dane są ogromne na użytkownika i nie da się ich sensownie częściowo replikować; masz twarde wymagania spójności (płatności, księgi rachunkowe), gdzie serwer *musi* być jedynym źródłem prawdy przy każdym odczycie; albo po prostu nie masz potrzeb współpracy ani offline, w którym to przypadku płacisz złożonością za spinner, który mogłeś zabić dobrze umieszczoną optymistyczną aktualizacją.
+**Nie idź w local-first, jeśli:** app to głównie read-only content (marketing site, docs portal, dashboard of server aggregates — [incremental revalidation w Next.js](/pl/blog/inkrementalna-rewalidacja-nextjs-szybkie-dashboardy) lub plain RSC jest lepsze); twoje dane per user gigantyczne i sensownie nie można ich partial replikować; masz hard consistency requirements (payments, ledgers), gdzie serwer *musi* być źródłem przy każdym odczycie; lub po prostu nie masz collaboration/offline, wtedy płacisz złożonością za spinner, który mogłeś kill z decent optimistic update.
 
-**Idź w local-first, jeśli:** budujesz narzędzie do produktywności, edytor do współpracy, tracker zadań, CRM, aplikację terenową, która potrzebuje offline, albo cokolwiek, gdzie opóźnienie interakcji *jest* produktem.
+**Idź w local-first, jeśli:** budujesz productivity tool, collaborative editor, task tracker, CRM, field app needing offline, albo cokolwiek gdzie interaction latency *is* product.
 
-## Ścieżka migracji z REST + React Query
+## Migration ścieżka z REST + React Query
 
-Nie przepisujesz. Migrujesz jeden wycinek. Oto ścieżka, którą obrałbym z typowej aplikacji React Query.
+Nie przepisujesz wszystkiego. Migrujesz jeden slice. Oto co bym zrobił z typowej React Query app.
 
-**1. Wybierz jedną powierzchnię o wysokiej interaktywności.** Nie całą aplikację — tablicę, edytor, skrzynkę odbiorczą. Coś, gdzie responsywność i/lub współpraca wyraźnie ma znaczenie.
+**1. Wybierz jedną high-interaction surface.** Nie całą app — board, editor, inbox. Coś gdzie responsiveness i/lub collaboration jasno się liczą.
 
-**2. Wybierz swoją rodzinę.** Dowolna treść do współpracy → Yjs. Wiersze relacyjne → silnik synchronizacji (Zero dla webowego DX, PowerSync dla offline/mobile, ElectricSQL, jeśli chcesz zostać blisko Postgresa).
+**2. Wybierz rodzinę.** Jakikolwiek collaborative content → Yjs. Relational rows → sync engine (Zero dla web DX, PowerSync dla offline/mobile, ElectricSQL, jeśli chcesz blisko Postgresa).
 
-**3. Zdefiniuj granicę replikacji.** To duży krok projektowy. Dla tej jednej powierzchni: jakich danych potrzebuje klient? Zapisz to jako shape/stream/query. To zastępuje twoje klucze `useQuery` trwałą subskrypcją.
+**3. Definiuj granicę replikacji.** To duży design step. Dla tej jednej surface: jaki data potrzebuje klient? Zapisz jako shape/stream/query. To zastępuje twoje `useQuery` keys persistent subscription.
 
-**4. Najpierw przenieś odczyty.** Podmień odczyty tej powierzchni z `fetch`/React Query na odczyty z lokalnej repliki. UI renderuje się teraz ze stanu lokalnego; silnik utrzymuje go świeżym. Od razu zauważysz, że nawigacja robi się natychmiastowa.
+**4. Najpierw reads.** Zamień reads tej surface z `fetch`/RQ na reads z local replica. UI renderuje się teraz z local state; engine utrzymuje fresh. Natychmiast widzisz instant navigation.
 
-**5. Przenieś zapisy na mutacje optymistyczne.** Zastąp `mutation.mutate()` + ręczne aktualizacje cache mutacjami silnika. Usuń swój ręcznie sklecony kod cofania. Zachowaj walidację po stronie serwera — podłącz ją do ścieżki mutator/reject silnika.
+**5. Zapisy na optimistic mutations.** Zamień `mutation.mutate()` + manual cache updates na engine mutations. Usuń ręczny rollback code. Zachowaj server-side validation — wire do mutator/reject path.
 
-**6. Resztę aplikacji zostaw na REST.** Te dwa światy dobrze współistnieją. Większość aplikacji kończy jako **hybryda**: local-first dla interaktywnego rdzenia, request/response dla stron ustawień, admina, raportów i wszystkiego, co jest głównie odczytowe. To cecha, nie kompromis.
+**6. Resztę na REST.** Dwa światy dobrze się koegzystują. Większość apps kończy jako **hybrid**: local-first dla interactive core, request/response dla settings, admin, reports, wszystkiego read-only. To feature, nie compromise.
 
-Jeśli twoja architektura już opiera się na luźno powiązanych zdarzeniach, a nie na głębokich łańcuchach propsów — coś, co omawiałem w [architekturze frontendu sterowanej zdarzeniami](/pl/blog/koniec-prop-drilling-architektura-zdarzeniowa) — okaże się, że local-first wchodzi naturalnie, bo synchronizowany lokalny store *jest* źródłem zdarzeń, które subskrybuje całe UI.
+Jeśli architektura już opiera się na loose event coupling, nie deep prop chains — coś z [event-driven frontend architecture](/pl/blog/koniec-prop-drilling-architektura-zdarzeniowa) — local-first wchodzi naturalnie, bo synchronized local store *jest* event source, na który słucha cały UI.
 
-Po stronie serwera koordynator synchronizacji musi rozprowadzać zmiany do podłączonych klientów, a jeśli budujesz tę warstwę sam, zamiast ją kupować, log-owy szkielet strumieniowy w rodzaju tego, który opisałem w [przewodniku po Redis Streams](/pl/blog/redis-streams-praktyczny-przewodnik-vs-kafka), jest rozsądnym podłożem dla change feedu.
+Po stronie serwera sync coordinator musi rozprowadzać changes do connected clients, a jeśli budujesz tę warstwę sam, log-based streaming backbone, jak opisałem w [Redis Streams guide](/pl/blog/redis-streams-praktyczny-przewodnik-vs-kafka), to rozsądna base dla change feed.
 
 ## Gdzie nas to zostawia
 
-Local-first to największa zmiana architektoniczna dla frontendu od czasu React Server Components i — podobnie jak RSC — nie jest srebrną kulą, którą spryskujesz każdą aplikację. To celowana odpowiedź na konkretny ból: **opóźnienie i współpraca w aplikacjach nasyconych interakcją.** Narzędzia roku 2026 — Yjs i Automerge dla dokumentów, Zero i PowerSync oraz ElectricSQL dla danych relacyjnych, OPFS i SQLite-WASM dla storage — wreszcie uczyniły trudne części zależnością, a nie projektem badawczym.
+Local-first to największa architektoniczna zmiana dla frontendu od RSC — i jak RSC, nie jest uniwersalnym remedium na wszystko. To targeted odpowiedź na konkretny problem: **latency i collaboration w interaction-dense apps.** Narzędzia 2026 — Yjs i Automerge dla docs, Zero i PowerSync i ElectricSQL dla relational data, OPFS i SQLite-WASM dla storage — wreszcie uczyniły trudne części commodities, nie research projects.
 
-Moja rada: nie przyjmuj tego ideologicznie. Znajdź tę jedną powierzchnię w swoim produkcie, gdzie użytkownicy czują sieć, i przenieś tylko tę powierzchnię w local-first. Zabij tego spinnera. Potem zdecyduj, czy reszta na to zasługuje.
+Moja rada: nie przyjmuj tego ideologicznie. Znajdź tę jedną surface w twoim produkcie, gdzie users czują sieć, i tylko to przenieś w local-first. Kill spinner. Potem się zdecyduj, czy reszta na to zasługuje.
 
 ## Źródła i lektura
 

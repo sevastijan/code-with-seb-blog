@@ -10,13 +10,13 @@ enSlug: 'nextjs-16-migration-guide-breaking-changes'
 excerpt: 'Next.js 16 zmienia middleware w proxy, robi z Turbopacka domyślny bundler, usuwa synchroniczne API żądań i wprowadza Cache Components. Kompletny przewodnik migracji.'
 ---
 
-W zeszłym tygodniu zaktualizowałem produkcyjną aplikację z Next.js 15 do Next.js 16. Zajęło mi to 47 minut przy bazie kodu liczącej 120 tys. linii. Tydzień wcześniej patrzyłem, jak kolega spędza dwa pełne dni nad tą samą aktualizacją — nie dlatego, że jest trudna, tylko dlatego, że nie wiedział, które zmiany faktycznie coś psują, a które są tylko szumem.
+Niedawno zaktualizowałem aplikację produkcyjną z Next.js 15 na 16 — zajęło mi zaledwie 47 minut przy kodzie liczącym 120 tys. linii. Tydzień wcześniej obserwowałem kolegę, który na tej samej migracji spędzał dwa pełne dni. Nie dlatego, że jest trudna, tylko dlatego, że nie potrafił oddzielić zmian naprawdę przełomowych od szumu informacyjnego.
 
-Next.js 16 to najważniejsze wydanie major od czasu, gdy pojawił się App Router w wersji 13. Middleware to teraz "proxy". Turbopack zastąpił webpacka jako domyślny bundler. Synchroniczne API żądań całkowicie zniknęły. A zupełnie nowy prymityw cachowania — Cache Components z dyrektywą `'use cache'` — zastępuje niejawne zachowanie cachowania, które dezorientowało połowę ekosystemu.
+Next.js 16 to najważniejsze wydanie od czasów App Routera w wersji 13. Middleware zmienia się na proxy. Turbopack wypiera webpacka z funkcji domyślnego bundlera. Synchroniczne API żądań znikają całkowicie. A pojawia się zupełnie nowy prymityw cachowania — Cache Components z dyrektywą `'use cache'` — który zastępuje niejawne cachowanie, źródło nieskończonego zamieszania w całym ekosystemie.
 
-Dobra wiadomość: każdy breaking change ma jasną ścieżkę migracji, a Vercel dostarczył codemody do większości z nich. Zła wiadomość: jeśli pominiesz lekturę przewodnika migracji, natkniesz się na tajemnicze błędy, które zjedzą ci godziny.
+Dobra wiadomość: do każdego breaking change'a prowadzi jasna ścieżka migracji, a Vercel udostępnił codemody dla większości z nich. Zła wiadomość: jeśli przeoczyć przewodnik migracji, czekają cię tajemnicze błędy, które pochłoną ci wiele godzin debugowania.
 
-Oto kompletny przewodnik. Każdy breaking change, każda poprawka, każdy haczyk, na który natrafiłem podczas pięciu produkcyjnych migracji.
+Oto kompletny przewodnik. Każdy breaking change, każda pułapka, każdy haczyk, na który natknąłem się podczas pięciu produkcyjnych migracji.
 
 ## Co nowego w Next.js 16 (wersja skrócona)
 
@@ -35,15 +35,15 @@ Przejdźmy przez każdy breaking change z kodem przed i po.
 
 ## Breaking change 1: middleware.ts staje się proxy.ts
 
-To najbardziej widoczna zmiana i ta, która zepsuje każdą istniejącą aplikację Next.js przy aktualizacji.
+To zmiana najbardziej widoczna i ta, która zaraz po aktualizacji zepsuje każdą istniejącą aplikację.
 
 ### Co się zmieniło
 
-Plik `middleware.ts` (lub `middleware.js`) w korzeniu projektu to teraz `proxy.ts`. Ale sama zmiana nazwy jest tą łatwą częścią — runtime i powierzchnia API zmieniły się znacząco:
+Plik `middleware.ts` (lub `middleware.js`) w korzeniu projektu to teraz `proxy.ts`. Ale samo przejście nazwy to drobiazg — zmienił się runtime i cała powierzchnia API:
 
-- **Domyślny runtime przełączony z Edge na Node.js.** Proxy działa w pełnym runtime'ie Node.js, dając ci dostęp do całego API Node'a, sterowników baz danych, systemu plików — wszystkiego, czego Edge nie potrafił.
+- **Runtime domyślnie przechodzi z Edge na Node.js.** Proxy działa w pełnym runtime'ie Node.js, dając ci dostęp do całego API Node'a, sterowników baz danych, systemu plików — wszystkiego, co Edge potrafiło blokować.
 - **Nowe typy `ProxyRequest` i `ProxyResponse`** zastępują stare typy middleware'owe `NextRequest`/`NextResponse`.
-- **Dopasowywanie tras przeniesione do konfiguracji.** Konfiguracja `matcher` jest teraz wymagana (koniec z catch-all middleware przechwytującym każde żądanie).
+- **Dopasowywanie tras przenieśliśmy do konfiguracji.** Teraz `matcher` jest obowiązkowy — koniec z wszystko łapiącym middleware bez ograniczeń.
 
 ### Przed (Next.js 15)
 
@@ -131,11 +131,11 @@ Dla większości aplikacji domyślny Node.js to jednak czysty zysk. Dostajesz pe
 
 ## Breaking change 2: synchroniczne API żądań całkowicie usunięte
 
-Next.js 15 uznał za przestarzały synchroniczny dostęp do `cookies()`, `headers()`, `params` i `searchParams`. Next.js 16 usuwa je całkowicie. Jeśli twój kod wciąż korzysta z dostępu synchronicznego, rzuci błąd w czasie wykonania.
+Next.js 15 oznaczył synchroniczny dostęp do `cookies()`, `headers()`, `params` i `searchParams` jako przestarzały. Next.js 16 usuwa to całkowicie. Kod, który wciąż go używa, zgłosi błąd w runtime'ie.
 
 ### Co się zmieniło
 
-Wszystkie API o zasięgu żądania są teraz wyłącznie `async`. Oznacza to, że:
+Każde API przypisane do żądania jest teraz wyłącznie asynchroniczne. To oznacza:
 
 - `cookies()` zwraca `Promise` — musisz go `await`ować
 - `headers()` zwraca `Promise` — musisz go `await`ować
@@ -213,13 +213,13 @@ async function getTheme() {
 
 ### Problem kaskady async
 
-Największy ból głowy przy migracji: gdy funkcja staje się `async`, każdy wywołujący musi obsłużyć Promise. To kaskaduje przez całe drzewo komponentów. Pojedyncze wywołanie `cookies()` w funkcji narzędziowej może zmusić 15 komponentów do stania się asynchronicznymi.
+Tutaj pojawia się jednak pułapka: gdy funkcja staje się `async`, każdy, kto ją wywołuje, musi obsłużyć Promise. To szybko rozprzestrzenia się po całym drzewie komponentów — jedno wywołanie `cookies()` w funkcji pomocniczej może zmusić do asynchronizacji nawet 15 komponentów.
 
 Moja rada: wyodrębnij wszystkie odczyty z API żądań do dedykowanych funkcji asynchronicznych na poziomie strony/layoutu. Nie rozsiewaj wywołań `cookies()` i `headers()` po całym drzewie komponentów. Pobierz wszystko, czego potrzebujesz, na samej górze i przekaż to w dół jako właściwości.
 
 ## Breaking change 3: Turbopack jako domyślny bundler
 
-Turbopack nie jest już eksperymentalny. To domyślny bundler zarówno dla `next dev`, jak i `next build` w Next.js 16.
+Turbopack opuszcza etap eksperymentu. Jest teraz domyślnym bundlerem zarówno dla `next dev`, jak i `next build`.
 
 ### Co się zmieniło
 
@@ -273,7 +273,7 @@ const config: NextConfig = {
 
 ### Dlaczego nie warto rezygnować
 
-Liczby przekonują. Na aplikacji 120 tys. linii, którą migrowałem:
+Liczby mówią same za siebie. W aplikacji 120 tys. linii, którą migrował em (w razie czego, z wielkim bólem):
 
 | Metryka | webpack (Next.js 15) | Turbopack (Next.js 16) | Poprawa |
 |--------|---------------------|----------------------|-------------|
@@ -282,7 +282,7 @@ Liczby przekonują. Na aplikacji 120 tys. linii, którą migrowałem:
 | HMR (zmiana CSS) | 180 ms | 12 ms | 15x szybciej |
 | Build produkcyjny | 94 s | 41 s | 2,3x szybciej |
 
-Jedyny ważny powód, aby używać `--webpack`, to zależność od wtyczki webpacka, która nie ma jeszcze odpowiednika w Turbopacku. Według stanu na kwiecień 2026 ekosystem w dużej mierze nadgonił — nawet `@sentry/nextjs` i `@next/bundle-analyzer` wspierają Turbopack.
+Jedyny istotny powód, by sięgnąć po `--webpack`, to zależność od wtyczki webpacka, dla której nie ma jeszcze Turbopackowego odpowiednika. Według stanu na kwiecień 2026 ekosystem w dużej mierze nadgonił — nawet `@sentry/nextjs` i `@next/bundle-analyzer` wspierają Turbopack.
 
 Jeśli twój projekt polega na [budżetach wydajności egzekwowanych w CI](/pl/blog/budzety-wydajnosci-frontend), pokochasz szybsze czasy budowania — twój pipeline CI właśnie przyspieszył 2x bez zmiany choćby jednej linii konfiguracji.
 
@@ -296,7 +296,7 @@ Jeśli masz własne loadery webpacka, nie zadziałają one z Turbopackiem. Musis
 
 ## Breaking change 4: Cache Components i 'use cache'
 
-To najbardziej znacząca architektonicznie zmiana. Next.js 16 usuwa niejawne cachowanie fetchy, które było źródłem niekończącego się zamieszania, i zastępuje je jawnym cachowaniem na poziomie komponentu przez dyrektywę `'use cache'`.
+To zmiana o największym wpływie na architekturę. Next.js 16 robi porządek z niejawnym cachowaniem fetchy — źródłem niekończących się nieporozumień — i zastępuje je jawnym cachowaniem na poziomie komponentu przez dyrektywę `'use cache'`.
 
 ### Co się zmieniło
 
@@ -394,7 +394,7 @@ export async function POST(request: Request) {
 
 Jeśli pracowałeś z [wzorcami ISR i rewalidacji](/pl/blog/inkrementalna-rewalidacja-nextjs-szybkie-dashboardy) w Next.js 15, model oparty na tagach wyda ci się znajomy — tyle że teraz rozciąga się na dowolną cachowaną funkcję lub komponent, nie tylko na strony.
 
-Dyrektywa `'use cache'` jest cachującym odpowiednikiem `'use client'` i `'use server'`. Sprawia, że cachowanie staje się jawną, audytowalną decyzją, a nie ukrytym domyślem. Uważam, że to najlepsza decyzja projektowa dotycząca API w całym Next.js 16.
+Dyrektywa `'use cache'` to cachujący odpowiednik `'use client'` i `'use server'`. Czyni cachowanie jawną, audytowalną decyzją, a nie ukrytym domyślnym zachowaniem. To najlepsze uchwalenie projektowe dotyczące API w całym Next.js 16.
 
 ### Profile Cache Life
 
@@ -428,7 +428,7 @@ Aby głębiej przyjrzeć się temu, jak różne strategie cachowania i renderowa
 
 ## React 19.2 i stabilny React Compiler 1.0
 
-Next.js 16 jest dostarczany z React 19.2 i domyślnie włącza React Compiler 1.0. Jeśli jeszcze nie włączyłeś kompilatora, to jest twój moment.
+Next.js 16 pochodzi z React 19.2 na pokładzie i włącza React Compiler 1.0 domyślnie. Jeśli jeszcze go nie uruchamiałeś, to jest twoja szansa.
 
 ### Co jest w React 19.2
 
@@ -446,11 +446,11 @@ const config: NextConfig = {
 };
 ```
 
-Kompilator eliminuje potrzebę ręcznego `useMemo`, `useCallback` i `React.memo` w większości przypadków. Opisałem to obszernie w moim [głębokim nurkowaniu w React Compiler](/pl/blog/react-compiler-automatyczna-memoizacja) — w skrócie: obsługuje 80% memoizacji automatycznie, ale wciąż musisz rozumieć, kiedy nie potrafi pomóc.
+Kompilator uwalnia cię od konieczności ręcznego pisania `useMemo`, `useCallback` i `React.memo` w większości przypadków. Rozpisałem się na ten temat w [szczegółowej analizie React Compilera](/pl/blog/react-compiler-automatyczna-memoizacja) — krótko mówiąc: sam zaopiekuje się 80% memoizacji, ale musisz wiedzieć, kiedy zawodzi.
 
 ## Przewodnik migracji krok po kroku
 
-Oto dokładna sekwencja, którą stosuję przy każdej migracji z Next.js 15 do 16:
+Oto dokładny plan migracji, którego używam przy każdej aktualizacji z Next.js 15 na 16:
 
 ### Krok 1: Aktualizacja zależności
 
@@ -523,7 +523,7 @@ next build  # Pełny build produkcyjny
 
 ### Krok 7: Weryfikacja zachowania cachowania
 
-To krok, który większość ludzi pomija, i to on powoduje problemy produkcyjne. Wraz ze zniknięciem niejawnego cachowania fetchy każda strona, która na nim polegała, będzie teraz wykonywać świeże żądania przy każdym załadowaniu.
+To krok, którego większość pomija, a potem płaci za to błędami w produkcji. Kiedy zniknie niejawne cachowanie, każda strona, która się na nim opierała, będzie teraz wysyłać świeże żądania przy każdym załadowaniu.
 
 Zrób audyt pobierania danych:
 
@@ -544,13 +544,13 @@ Oto co zmierzyłem podczas pięciu produkcyjnych migracji (uśrednione):
 | TTFB (strona cachowana) | 85 ms | 62 ms | 48 ms |
 | LCP (mediana) | 1,8 s | 1,2 s | 0,9 s |
 
-Usprawnienia z 16.2 są szczególnie zauważalne dla dużych baz kodu. Poprawę startu serwera deweloperskiego deweloperzy odczuwają najmocniej — przejście od "zrób sobie kawę, zanim wystartuje" do "już działa" zmienia sposób, w jaki pracujesz.
+Ulepszenia w 16.2 są szczególnie odczuwalne dla dużych baz kodu. Deweloperzy czują najmocniej przyspieszenie startu serwera — przejście od "zaparzy sobie kawę, póki się bootuje" do "już gotowe" zmienia jakość życia przy kodowaniu.
 
 Tego rodzaju usprawnienia renderowania mają bezpośredni wpływ biznesowy. Jeśli śledzisz [budżety wydajności](/pl/blog/budzety-wydajnosci-frontend), 50-procentowa poprawa LCP to rodzaj wygranej, która porusza metryki na poziomie organizacyjnym.
 
 ## Typowe pułapki migracji
 
-Po pięciu migracjach wciąż widuję te same problemy. Oszczędź sobie czasu na debugowanie:
+Po pięciu migracjach wciąż widać te same błędy. Oszczędź sobie frustracji i czasu na szukanie:
 
 ### 1. Zapominanie o await przy params w generateMetadata
 
@@ -569,7 +569,7 @@ export async function generateMetadata({ params }: Props) {
 
 ### 2. Zewnętrzne pakiety middleware
 
-Jeśli używasz `next-intl`, `next-auth` lub innych pakietów eksportujących middleware, potrzebują one zaktualizowanych wersji, które eksportują funkcje `proxy`. Sprawdź kompatybilność przed aktualizacją:
+Pakiety jak `next-intl`, `next-auth` i inne, które eksportują middleware, wymagają zaktualizowania do wersji wspierających funkcje `proxy`. Sprawdź kompatybilność zanim zaczniesz:
 
 - `next-intl` v4.2+ wspiera proxy
 - `next-auth` v5.1+ wspiera proxy
@@ -587,44 +587,44 @@ next build
 next build --webpack  # Tylko dla konkretnych kroków zależnych od webpacka
 ```
 
-### 4. Usunięcie niejawnego cachowania psuje API
+### 4. Brak niejawnego cachowania łamie istniejące API
 
-To najsubtelniejszy problem. Jeśli twoje trasy API polegały na cachowaniu fetchy, aby nie zasypywać usług upstream, te żądania są teraz niecachowane. Zobaczysz zwiększone opóźnienia i potencjalnie rate limiting ze strony API upstream.
+To najmniej oczywisty problem. Jeśli twoje trasy API polegały na automatycznym cachowaniu, aby nie spławiać upstream'u żądaniami, teraz będą niecachowane. Czeka cię większe opóźnienie i potencjalnie rate limiting ze strony serwisu upstream.
 
 Poprawka: opakuj funkcje pobierania danych w `'use cache'`.
 
 ### 5. Nazwa eksportu w proxy.ts
 
-Funkcja eksportowana z `proxy.ts` musi nazywać się `proxy`, nie `default` i nie `middleware`. Codemod to obsługuje, ale migracje ręczne czasem to przeoczają.
+Eksport z `proxy.ts` musi być funkcją nazwaną `proxy`, nie `default` i nie `middleware`. Codemod to załatwia, ale w migracjach ręcznych łatwo przeoczyć.
 
 ## Czy migrować już teraz?
 
-Oto mój framework decyzyjny:
+Oto moja matryca decyzji:
 
 **Migruj teraz, jeśli:**
-- Zaczynasz nowy projekt (oczywiste — startuj na 16)
-- Twój zespół czuje się swobodnie z App Routerem i Server Components
-- Blokują cię ograniczenia Edge Runtime w middleware
-- Czasy budowania są bolączką (Turbopack to zmiana reguł gry)
-- Potrzebujesz jawnej kontroli cachowania (model `'use cache'` jest znacznie jaśniejszy)
+- Zakładasz nowy projekt (jasne — zacznij od 16)
+- Twój zespół zna dobrze App Router i Server Components
+- Ograniczenia Edge Runtime w middleware cię hamują
+- Czasy buildowania to wąskie gardło (Turbopack zmienia zasady gry)
+- Chcesz jawnie kontrolować cache (model `'use cache'` jest znacznie przejrzystszy)
 
-**Poczekaj 4-8 tygodni, jeśli:**
-- Mocno polegasz na zewnętrznych pakietach middleware, które jeszcze się nie zaktualizowały
-- Masz złożone własne konfiguracje webpacka bez odpowiedników w Turbopacku
-- Jesteś w środku sprintu nad krytyczną funkcją — nie mieszaj migracji z pracą nad funkcjonalnościami
+**Czekaj 4-8 tygodni, jeśli:**
+- Dużo polegasz na zewnętrznych middleware, które jeszcze się nie uaktualnili
+- Masz skomplikowane własne konfiguracje webpacka, których brakuje w Turbopacku
+- Jesteś w środku sprintu nad czymś krytycznym — nie łącz migracji z funkcjami w pracy
 
-**Poczekaj dłużej, jeśli:**
-- Wciąż jesteś na Pages Router (najpierw zmigruj do App Routera, potem aktualizuj do 16)
-- Twoja aplikacja intensywnie używa `unstable_cache` w 50+ plikach (codemod pomaga, ale potrzebny jest ręczny przegląd)
-- Twój zespół jeszcze nie przyjął TypeScriptu (zmiany na asynchroniczne API są znacznie trudniejsze do wychwycenia bez typów)
+**Czekaj dłużej, jeśli:**
+- Pracujesz jeszcze na Pages Routerze (najpierw przejdź na App Router, potem na 16)
+- Kod intensywnie używa `unstable_cache` w 50+ plikach (codemod pomoże, ale będziesz musiał wszystko przejrzeć ręcznie)
+- Twój zespół nie ma jeszcze TypeScriptu (asynchroniczne API trudniej złapać bez typów)
 
-Dla większości produkcyjnych aplikacji na Next.js 15 z App Routerem powiedziałbym: **migruj teraz**. Codemody obsługują 90% pracy, zyski wydajności są natychmiastowe, a nowy model cachowania eliminuje całą kategorię błędów.
+Dla większości aplikacji produkcyjnych na Next.js 15 z App Routerem moja rada to: **migruj teraz**. Codemody załatwiają 90% roboty, wydajność skacze na raz, a nowy model cachowania usuwa całą kategorię błędów.
 
-Ta 47-minutowa migracja, o której wspomniałem na początku? Większość tego czasu to czekanie na build. Faktyczne zmiany w kodzie zajęły około 15 minut — z czego 12 to działanie codemoda, a 3 to naprawa dwóch przypadków brzegowych, które codemod przeoczył.
+Ta 47-minutowa migracja, którą opisałem na wstępie? Większość czasu to czekanie na build. Rzeczywiste zmiany kodu zajęły mi około 15 minut — z czego 12 to codemod, a 3 to fix dwóch edge case'ów, które przeoczył.
 
-Next.js 16 to wydanie, w którym wizja App Routera w pełni się dopina. Server Components, jawne cachowanie, pełne proxy na Node.js, wydajność Turbopacka — wszystko wreszcie tu jest i wszystko wreszcie jest stabilne.
+Next.js 16 to wydanie, w którym wizja App Routera ostatecznie się realizuje. Server Components, jawne cachowanie, pełne proxy na Node.js, moc Turbopacka — wszystko jest wreszcie tutaj i wszystko jest wreszcie stabilne.
 
-Idź, zaktualizuj. Twój serwer deweloperski ci podziękuje.
+Śmiało, aktualizuj. Twój development server będzie ci wdzięczny.
 
 ## Źródła i dalsza lektura
 

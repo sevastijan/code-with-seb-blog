@@ -12,10 +12,10 @@ excerpt: 'Opanuj React Suspense — od lazy loadingu komponentów i data fetchin
 
 ## Czym jest Suspense
 
-`<Suspense>` to komponent Reacta, który „wyświetla fallback, dopóki jego dzieci nie zakończą ładowania”. Innymi słowy, każdy komponent potomny, który się zawiesza (suspend) — z powodu kodu ładowanego leniwie albo oczekujących danych — sprawia, że React wstrzymuje renderowanie tego poddrzewa i pokazuje w zamian UI fallbacku. Umożliwia to wzorce async renderingu bez ręcznego zarządzania stanem ładowania. Pod maską React 18+ działa w trybie concurrent, dzięki czemu może opóźnić (zawiesić) renderowanie części drzewa komponentów.
+`<Suspense>` to komponent Reacta, który „wyświetla fallback, dopóki jego dzieci nie zakończą ładowania”. Innymi słowy, każdy komponent, który się zawiesza (suspend) — z powodu kodu ładowanego leniwie albo oczekujących danych — powoduje wstrzymanie renderowania tego poddrzewa i wyświetlenie UI fallbacku. Umożliwia to wzorce async renderingu bez ręcznego zarządzania stanem ładowania. Pod maską React 18+ działa w trybie concurrent, dzięki czemu może opóźnić renderowanie części drzewa komponentów.
 
-- Fallback UI: lekki placeholder (spinner, skeleton itp.) pokazywany, gdy dzieci się zawieszają. Źródła obsługujące Suspense: tylko operacje zintegrowane z Suspense wyzwalają ten mechanizm.
-- Przykłady obejmują code-splitting (`React.lazy`), frameworki do danych (Relay, SWR, Next.js) albo nowy hook `use()` dla Promise. Pobieranie danych wewnątrz `useEffect` lub w event handlerze nie wyzwoli Suspense.
+- Fallback UI: lekki placeholder (spinner, skeleton itp.) pokazywany, gdy komponenty się zawieszają. Suspense obsługuje wyłącznie operacje, które je obsługują.
+- Przykłady: code-splitting (`React.lazy`), biblioteki do zarządzania danymi (Relay, SWR, Next.js) oraz nowy hook `use()` dla Promise. Pobieranie danych wewnątrz `useEffect` lub w event handlerze Suspense'a nie wyzwoli.
 
 ```tsx
 import React, { Suspense } from 'react'
@@ -58,7 +58,7 @@ function App() {
 }
 ```
 
-W tym przykładzie `HeavyComponent` nie jest częścią początkowego bundle'a. Załaduje się dopiero wtedy, gdy React wyrenderuje go wewnątrz `<Suspense>`. Zmniejsza to początkowy rozmiar ładowania i poprawia wydajność — a w połączeniu z [automatyczną memoizacją React Compilera](/pl/blog/react-compiler-automatyczna-memoizacja) wydajność ponownych renderów tych leniwie ładowanych komponentów jest optymalizowana automatycznie. Pamiętaj, aby zawsze dołączać `fallback`; bez niego leniwie ładowany komponent rzuciłby błędem. Lazy loading można zastosować do dowolnego komponentu (nie tylko tras), ale najczęściej dotyczy stron albo rzadko używanych fragmentów aplikacji.
+W tym przykładzie `HeavyComponent` nie jest częścią początkowego bundla. Załaduje się dopiero w momencie, gdy React go wyrenderuje wewnątrz `<Suspense>`. Zmniejsza to początkowy rozmiar pobierania i poprawia wydajność — a w połączeniu z [automatyczną memoizacją React Compilera](/pl/blog/react-compiler-automatyczna-memoizacja) ponowne renderowanie tych leniwie ładowanych komponentów jest optymalizowane automatycznie. Zawsze dodawaj `fallback`; bez niego komponent ładowany leniwie wyrzuci błąd. Lazy loading możesz zastosować do każdego komponentu, ale zwyczajnie dotyczy to stron lub rzadko używanych części aplikacji.
 
 ## Przykład: lazy loading z React Router
 
@@ -84,7 +84,7 @@ function App() {
 }
 ```
 
-Tutaj każdy komponent trasy (`Home` i `About`) ładuje się dopiero wtedy, gdy użytkownik przejdzie pod daną ścieżkę. Jak zauważa Partha Roy: „React Router dobrze współpracuje z lazy i suspense. Możesz używać ich razem, aby ładować komponenty na podstawie tras”. Fallback `<p>Loading page...</p>` jest pokazywany, dopóki leniwie ładowany komponent trasy nie zakończy pobierania. Takie podejście utrzymuje początkowy bundle JS mały i ładuje strony na żądanie.
+Każdy komponent trasy (`Home` i `About`) ładuje się wyłącznie, gdy użytkownik wejdzie na daną ścieżkę. Fallback `<p>Loading page...</p>` jest wyświetlany w trakcie pobierania. To podejście utrzymuje początkowy bundel JavaScript mały i minimalizuje początkowy rozmiar aplikacji.
 
 ## Data fetching z Suspense
 
@@ -115,18 +115,17 @@ function Todo({ titlePromise }: { titlePromise: Promise<{ title: string }> }) {
 }
 ```
 
-W tym wzorcu `<Todo>` zawiesza się na `titlePromise`. Dopóki jest ono w toku, React pokazuje fallback ładowania. Po rozwiązaniu `use()` zwraca dane i renderowany jest `<h1>`. Jeśli Promise zostanie odrzucone, najbliższy Error Boundary je przechwyci (zobacz następną sekcję).
+Tutaj `<Todo>` zawiesza się na `titlePromise`. Podczas rozpatrywania Promise'a React wyświetla fallback ładowania. Gdy `use()` wydobędzie dane, wyrenderowana zostaje `<h1>`. Jeśli Promise zostanie odrzucone, najbliższy Error Boundary je przechwyci (zobacz następną sekcję).
 
 ### Kluczowe punkty
 
-Nie twórz Promise wewnątrz ciała komponentu przy każdym renderze. Na przykład nie pisz `const data = use(fetchTodo(id));` bezpośrednio w `Todo`, ponieważ tworzy to nowe Promise przy każdym renderze i powoduje nieskończone pętle. Zawsze twórz Promise jednorazowo (np. w komponencie nadrzędnym albo przed renderem) i przekazuj je dalej. Dzięki temu Promise jest stabilne i zapobiega niepotrzebnym ponownym renderom.
+Nie twórz Promise'a w ciele komponentu przy każdym renderowaniu. Nie pisz na przykład `const data = use(fetchTodo(id));` bezpośrednio w `Todo` — to tworzy nowe Promise'a przy każdym renderowaniu i powoduje nieskończone pętle. Zamiast tego stwórz Promise raz (w komponencie nadrzędnym albo wcześniej) i przekaż go dalej. Dzięki temu Promise pozostaje stabilny i unikasz zbędnych ponownych renderów.
 
-Korzystanie z `use()` ma kilka zastrzeżeń:
+Hook `use()` ma kilka ograniczeń:
 
-- Musi być wywoływane w komponencie Reacta lub hooku (nie w event handlerach ani metodach klas)
-- W przeciwieństwie do innych hooków `use()` może znajdować się w pętlach lub instrukcjach warunkowych wewnątrz komponentu
-  react.dev
-- W Server Components (np. w Next.js) często wolisz `async/await` zamiast `use()`, albo tworzysz Promise na serwerze i przekazujesz je do komponentu klienckiego z `'use client'` (aby ponowne rendery nie tworzyły Promise od nowa).
+- Możesz go wywoływać wyłącznie w ciele komponentu Reacta lub własnego hooka (nie w obsługiwaczach zdarzeń ani metodach)
+- W przeciwieństwie do innych hooków `use()` może się pojawić w pętlach lub warunkach wewnątrz komponentu
+- W Server Components (np. w Next.js) zwykle wolisz `async/await` zamiast `use()`, albo tworzysz Promise na serwerze i transmitujesz go do komponentu klienckiego z `'use client'`
 
 ## Przykład: use() kontra useEffect
 
@@ -157,7 +156,7 @@ Podejście z `use()` wymaga mniej boilerplate'u: bez stanu i bez efektu. Kompone
 
 ## Error Boundaries
 
-Skoro Suspense obsługuje stany ładowania, wciąż potrzebujesz Error Boundaries do obsługi błędów (odrzuconych Promise lub innych rzuconych wyjątków). W Reakcie Error Boundary to komponent, który przechwytuje błędy w swoim poddrzewie i renderuje UI fallbacku. Dla Suspense i `use()` odrzucone Promise traktowane jest jak błąd: przepłynie w górę do najbliższego Error Boundary.
+Suspense obsługuje stany ładowania, ale nadal musisz wyłapywać błędy za pomocą Error Boundaries (odrzucone Promise'y lub wyjątki). Error Boundary to komponent, który wyłapuje błędy z poddrzewa i wyświetla UI fallbacku. Dla Suspense i `use()` odrzucony Promise traktowany jest jak błąd — przepływa w górę do najbliższego Error Boundary.
 
 **Dobra praktyka: owiń swoje granice Suspense w Error Boundary. Na przykład:**
 
@@ -182,29 +181,29 @@ function Message({ messagePromise }: { messagePromise: Promise<string> }) {
 }
 ```
 
-W tym fragmencie, jeśli messagePromise zostanie odrzucone, `<ErrorBoundary>` wyświetli swój fallback. Dokumentacja Reacta pokazuje dokładnie ten wzorzec: Error Boundary owija granicę `<Suspense>`, aby obsłużyć odrzucenie Promise. Bez Error Boundary nieobsłużone odrzucenie przepłynęłoby w górę i wywaliło aplikację. Możesz też przechwytywać błędy ręcznie na Promise (np. `fetch().then().catch()`), aby zamienić je na wartości domyślne, ale użycie Error Boundary jest zwykle czystsze.
+Jeśli messagePromise zostanie odrzucone, `<ErrorBoundary>` wyświetli swój fallback. Error Boundary owija `<Suspense>`, aby obsłużyć odrzucenia. Bez niego nieobsługiwane odrzucenie spowoduje błąd w aplikacji. Możesz też dodać obsługę błędów bezpośrednio na Promise (np. `fetch().then().catch()`), ale Error Boundary jest zazwyczaj czystszym rozwiązaniem.
 
 ## Integracja z React Router i data routers
 
-Nowoczesne biblioteki routingowe mają wbudowane wsparcie dla Suspense przy ładowaniu danych i komponentów. W React Router v7 (a nawet v6+) zwykle używasz Suspense do leniwego ładowania komponentów (jak pokazano wyżej). Dodatkowo data API React Routera mogą współpracować z Suspense poprzez rzucanie Promise w funkcjach loaderów, ale jest to specyficzne dla frameworka. Ogólna rada brzmi: do code splittingu z React Router owijaj leniwie ładowane komponenty tras w Suspense (patrz przykład wyżej). Dzięki temu każda trasa ładuje swój bundle na żądanie.
+Nowoczesne biblioteki routingowe mają wbudowane wsparcie dla Suspense. W React Router v6+ możesz używać Suspense do leniwego ładowania komponentów tras (jak pokazano wyżej). Data API React Routera mogą też współpracować z Suspense, ale to zależy od implementacji. Podstawowa zasada: owijaj leniwie ładowane komponenty tras w Suspense, aby każda ścieżka pobierała swój kod na żądanie.
 
-Na przykład owinięcie tras na najwyższym poziomie:
+Przykład:
 
 ```tsx
 <Suspense fallback={<p>Loading page...</p>}>
   <Routes>
-    <Route path="/" element={<Home />} />
-    <Route path="/about" element={<About />} />
+    <Route path=”/” element={<Home />} />
+    <Route path=”/about” element={<About />} />
     {/* ... */}
   </Routes>
 </Suspense>
 ```
 
-W ten sposób przejście pod każdą trasę leniwie ładuje wyłącznie jej kod. Jak zauważono: „Każda trasa ładuje się dopiero wtedy, gdy użytkownik pod nią przejdzie”, co czyni to podejście czystym i wydajnym.
+Dzięki temu każda trasa ładuje kod dopiero, gdy użytkownik na nią wejdzie — to sprawia, że aplikacja jest szybka i efektywna.
 
 ## Integracja z Server Components w Next.js
 
-Next.js (v13/14/15 z App Routerem) w pełni wykorzystuje Suspense i `use()` do streamingu danych z serwera. Typowy wzorzec to pobranie danych w Server Component, bez await, i przekazanie nierozwiązanego Promise do Client Component owiniętego w `<Suspense>`. Client Component (oznaczony `'use client'`) wywołuje następnie `use(promise)`, aby zawiesić się do momentu nadejścia danych. Na przykład:
+Next.js (v13+) w pełni wykorzystuje Suspense i `use()` do streamingu danych z serwera. Typowy wzorzec: pobierasz dane w Server Component bez await, następnie przekazujesz nierozwiązany Promise do Client Component owiniętego w `<Suspense>`. Client Component (z `'use client'`) wywołuje `use(promise)`, aby zawiesić się aż do nadejścia danych:
 
 ```tsx
 // app/post/page.tsx (Server Component)
@@ -225,7 +224,7 @@ export default function Page() {
 import { use } from 'react'
 
 export default function PostList({ postsPromise }: { postsPromise: Promise<Post[]> }) {
-  const posts = use(postsPromise) // Zawiesza się tutaj, dopóki postsPromise się nie rozwiąże
+  const posts = use(postsPromise) // Zawiesza się tutaj do nadejścia danych
   return (
     <ul>
       {posts.map((post) => (
@@ -236,27 +235,26 @@ export default function PostList({ postsPromise }: { postsPromise: Promise<Post[
 }
 ```
 
-Dokumentacja Next.js pokazuje ten wzorzec: Server Component inicjuje `const posts = getPosts()` bez await, a granica Suspense `<Posts posts={posts}/>` pokazywana jest z indykatorem ładowania do momentu gotowości. Client Component wykonuje następnie `const allPosts = use(posts)`, aby odczytać dane. Ważne: Client Component musi mieć `'use client'` na górze, aby móc użyć hooka `use()`.
+Server Component inicjuje Promise bez await, a Suspense wyświetla fallback do czasu gotowości. Client Component następnie wydobywa dane hokiem `use()`. Ważne: Client Component wymaga `'use client'` na górze.
 
-Poza ręcznym Suspense Next.js oferuje też pliki `loading.js` dla segmentów tras oraz wbudowany streaming. Ale pod maską i tak używany jest Suspense. W praktyce użycie `use()` w Client Component jak wyżej zapewnia efektywny streaming danych z serwera do klienta.
+Poza ręcznym Suspense Next.js oferuje też pliki `loading.js` dla segmentów tras. W praktyce użycie `use()` zapewnia efektywne streamowanie danych z serwera do klienta.
 
 ## Częste błędy i pułapki
 
-- Brakujący `fallback`: zawsze podawaj UI fallbacku w `<Suspense>`. Bez niego leniwie ładowany komponent lub zawieszony data fetch rzuci błędem. Fallback powinien być lekki (spinner albo skeleton).
-- Tworzenie Promise w renderze: nie twórz nowego Promise przy każdym renderze. Na przykład unikaj `use(fetchData())` wewnątrz komponentu. Tworzy to Promise od nowa przy każdym renderze i powoduje nieskończoną pętlę renderów. Zamiast tego twórz Promise na zewnątrz (albo w komponencie nadrzędnym), aby było stabilne między renderami.
-- Nieprawidłowe użycie hooka `use()`: hook `use()` musi być wywoływany w ciele komponentu Reacta lub własnego hooka. Nie wywołuj go w event handlerach, efektach ani poza przepływem renderowania Reacta. Pamiętaj też, że `use()` działa tylko z Promise lub Context; nie „wyczaruje” await dla czegokolwiek innego.
-- Brak Error Boundaries: jeśli pominiesz Error Boundary wokół Suspense, każde odrzucenie data fetcha wywali aplikację. Owijaj granice Suspense tak, aby błędy renderowały UI fallbacku.
-- Przedwczesny lub błędny data fetching: Suspense nie wykrywa danych ładowanych w `useEffect` ani w callbackach. Jeśli pobierasz tam dane, Suspense ci nie pomoże — potrzebujesz ręcznych stanów ładowania. Aby użyć Suspense do danych, upewnij się, że Promise jest rzucane (przez `use()` lub bibliotekę) podczas renderu.
+- Brakujący `fallback`: zawsze dodawaj UI fallbacku w `<Suspense>`. Bez niego komponent ładowany leniwie lub zawieszony na danych wyrzuci błąd. Fallback powinien być lekki — spinner albo skeleton.
+- Promise tworzony w renderze: nie twórz nowego Promise'a przy każdym renderowaniu. Unikaj `use(fetchData())` wewnątrz komponentu — tworzy to nowe Promise'a przy każdym renderze i powoduje nieskończoną pętlę. Stwórz Promise poza komponentem (lub w komponencie nadrzędnym), aby był stabilny.
+- Niepoprawne użycie `use()`: hook `use()` możesz wywoływać wyłącznie w ciele komponentu Reacta lub własnego hooka. Nie używaj go w obsługiwaczach zdarzeń, efektach ani poza Reactem. `use()` działa z Promise'ami i Contextami — nic więcej.
+- Brak Error Boundaries: bez Error Boundary wokół Suspense każde odrzucenie Promise spowoduje błąd aplikacji. Zawsze owijaj granice Suspense Error Boundary'mi.
+- Data fetching w `useEffect`: Suspense nie wykrywa danych pobieranych w `useEffect` ani w callbackach. Jeśli pobierasz tam dane, Suspense nie zadziała — potrzebujesz ręcznych stanów ładowania. Aby Suspense obsługiwał dane, Promise musi być zgłoszony (przez `use()` lub bibliotekę) podczas renderowania.
+- Zbyt granularne granice Suspense: nie otaczaj Suspense każdego małego komponentu — wyświetlisz mnóstwo izolowanych spinnerów. Zamiast tego grupuj komponenty, które powinny ładować się razem. Możesz też zagnieżdżać granice Suspense dla progresywnego ładowania. Dobierz to do Twojego interfejsu: zdecyduj, które części pojawiają się razem, a które mogą ładować się niezależnie.
 
-- Zakres granic Suspense: nie rób granic bardziej granularnych, niż to konieczne. Jeśli otoczysz Suspense każdy drobny komponent, pokażesz mnóstwo izolowanych spinnerów. Zamiast tego grupuj komponenty, które powinny ładować się razem, w jednej granicy. I odwrotnie — możesz zagnieżdżać granice Suspense dla progresywnych sekwencji ładowania. Dopasuj to do projektu UI: zdecyduj, które części powinny pojawiać się razem, a które mogą ładować się niezależnie.
-
-Stosując te dobre praktyki — zawsze dołączaj `fallback`, wynoś tworzenie Promise poza render i używaj Error Boundaries — unikniesz większości pułapek. Zwróć też uwagę na wersję Reacta: `use()` i Suspense do danych są oficjalne w React 19 i Next.js; w czystym React 18 polegałbyś na bibliotekach takich jak React Query albo na starszym wzorcu „throw-promise”.
+Stosując te dobre praktyki — zawsze dodawaj `fallback`, twórz Promise'a poza renderem i używaj Error Boundaries — unikniesz większości pułapek. Zwróć też uwagę na wersję Reacta: `use()` i Suspense do danych są oficjalne w React 19; w React 18 korzystasz z bibliotek takich jak React Query albo starszego podejścia ze zgłaszaniem Promise'ów.
 
 ## Podsumowanie
 
-React Suspense to potężna funkcja współbieżności dla async renderingu. Upraszcza lazy loading i data fetching, automatycznie zarządzając stanami ładowania. Dzięki React.lazy możesz dzielić aplikację na chunki, tak że komponenty ładują się na żądanie. Dzięki nowemu hookowi `use()` z React 19 możesz zawieszać się na Promise w komponentach, integrując data fetching z cyklem renderowania. W połączeniu z Error Boundaries Suspense zapewnia czysty wzorzec: placeholdery ładowania, gdy zasoby lub dane się ładują, oraz fallbacki błędów przy niepowodzeniach.
+React Suspense to potężna funkcja dla async renderingu. Upraszcza lazy loading i data fetching — automatycznie zarządza stanami ładowania. Dzięki `React.lazy` dzielisz aplikację na chunki, komponenty ładują się na żądanie. Nowy hook `use()` z React 19 pozwala zawiesić się na Promise'ach podczas renderowania. W połączeniu z Error Boundaries Suspense zapewnia czysty wzorzec: fallbacki ładowania dla zasobów i danych, fallbacki błędów dla niepowodzeń.
 
-W praktyce użycie Suspense i `use()` prowadzi do bardziej utrzymywalnego kodu. Unikasz żonglowania `useEffect` i useState dla każdego przypadku async — zamiast tego piszesz UI tak, jakby dane były synchroniczne. Duże frameworki korzystają z tego: streaming w Next.js i przyszłe data API React Routera zależą od Suspense. W miarę jak funkcje concurrent w Reakcie dojrzewają, Suspense będzie coraz bardziej centralny. Opanowując Suspense (i uważając na częste błędy) będziesz gotów pisać szybkie, odporne aplikacje React z płynniejszym zachowaniem asynchronicznym.
+W praktyce Suspense i `use()` prowadzą do czystszego kodu. Unikasz zarządzania `useEffect` i `useState` dla każdego async — zamiast tego piszesz UI, jakby dane były synchroniczne. Duże frameworki polegają na tym: streaming w Next.js, przyszłe data API React Routera — wszystko zależy od Suspense. W miarę dojrzewania funkcji concurrent w Reakcie, Suspense będzie coraz bardziej centralny. Opanowując Suspense i pilnując typowych błędów, będziesz pisać szybkie, odporne aplikacje React.
 
 ## Źródła
 

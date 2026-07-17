@@ -10,7 +10,7 @@ enSlug: 'react-concurrent-mode-practical-guide'
 excerpt: 'Renderowanie współbieżne w Reakcie utrzymuje responsywny interfejs podczas ciężkich obliczeń — ale źle użyte podwaja liczbę re-renderów. Oto praktyczny przewodnik.'
 ---
 
-Widziałem, jak senior spędził cały dzień, dodając debounce do komponentu wyszukiwania. Wyszukiwarka filtrowała 10 000 produktów w tabeli — każde naciśnięcie klawisza wywoływało re-render wszystkich 10 000 wierszy, zamrażając pole tekstowe na 200 ms. Debounce „naprawił" to, opóźniając filtrowanie o 300 ms. Pole tekstowe wydawało się responsywne, ale wyniki wyszukiwania spóźniały się o pół sekundy.
+Widziałem, jak senior spędził cały dzień, dodając debounce do komponentu wyszukiwania. Wyszukiwarka filtrowała 10 000 produktów w tabeli — każde naciśnięcie klawisza wywoływało re-render wszystkich 10 000 wierszy, zamrażając pole tekstowe na 200 ms. Debounce maskował problem — opóźniając filtrowanie o 300 ms, pole tekstowe wydawało się responsywne, ale użytkownik czekał pół sekundy na wyniki.
 
 Potem zastąpiłem debounce hookiem `useTransition`. Jeden hook, trzy linie kodu. Pole tekstowe pozostało responsywne, **a jednocześnie** wyniki pojawiały się tak szybko, jak procesor był w stanie je wyrenderować — bez sztucznego opóźnienia. Na szybkiej maszynie wyniki były natychmiastowe. Na wolnej maszynie pole tekstowe nadal nigdy się nie zamrażało.
 
@@ -33,11 +33,11 @@ PILNE (synchroniczne):              NIEPILNE (przerywalne):
 
 Bez renderowania współbieżnego wszystkie aktualizacje są synchroniczne — blokują wątek do zakończenia. 200-milisekundowy re-render 10 000 elementów listy blokuje pole tekstowe na 200 ms.
 
-Z renderowaniem współbieżnym React zaczyna renderować listę, ale jeśli użytkownik ponownie zacznie pisać, React **porzuca** trwający render i najpierw obsługuje naciśnięcie klawisza. Re-render listy startuje od nowa z nowym terminem wyszukiwania. Pole tekstowe nigdy się nie zamraża.
+Z renderowaniem współbieżnym React zaczyna renderować listę, ale jeśli użytkownik ponownie zacznie pisać, React **porzuca** trwający render i najpierw obsługuje naciśnięcie klawisza. Renderowanie listy restartuje się z nowym zapytaniem. Pole tekstowe nigdy się nie zamraża.
 
 ## useTransition: kontrolujesz funkcję aktualizującą
 
-`useTransition` opakowuje aktualizację stanu, aby oznaczyć ją jako niepilną (jako „transition"):
+`useTransition` pozwala owinąć aktualizację stanu w transition — mówi Reactowi, że może ją przerwać na rzecz pilnych interakcji:
 
 ```typescript
 import { useState, useTransition } from 'react';
@@ -295,7 +295,7 @@ Dla prostych aktualizacji stanu jest to wolniejsze niż pojedynczy render. Używ
 
 ## Integracja z Server Components
 
-Transitions świetnie współgrają z [Server Components i strumieniowaniem](/pl/blog/ssr-ssg-isr-rsc-strategie-nextjs):
+Transitions doskonale integrują się z [Server Components i strumieniowaniem](/pl/blog/ssr-ssg-isr-rsc-strategie-nextjs):
 
 ```typescript
 // app/products/page.tsx — Server Component
@@ -353,7 +353,7 @@ export function SearchInput({ defaultValue }: { defaultValue?: string }) {
 
 ## Mierzenie wpływu
 
-Użyj React DevTools Profiler, aby zweryfikować, czy funkcje współbieżne rzeczywiście pomagają:
+Użyj React DevTools Profiler, aby sprawdzić, czy funkcje współbieżne rzeczywiście pomagają:
 
 1. Otwórz React DevTools → zakładka Profiler
 2. Kliknij „Record"
@@ -382,13 +382,13 @@ Użyj React DevTools Profiler, aby zweryfikować, czy funkcje współbieżne rze
 3. **Używaj `useDeferredValue`, gdy otrzymujesz wartości jako propsy** — nie możesz kontrolować, kiedy się zmieniają.
 4. **Asynchroniczne Actions z React 19** eliminują ręczne zarządzanie stanem ładowania — `isPending` masz za darmo.
 5. **`useOptimistic` dla natychmiastowego feedbacku** — pokaż wynik mutacji, zanim serwer go potwierdzi.
-6. **Nie używaj transitions do prostych aktualizacji** — podwójny re-render czyni je wolniejszymi przy trywialnych zmianach stanu.
+6. **Nie używaj transitions do prostych aktualizacji** — podwójny re-render czyni je wolniejszymi przy drobnych zmianach stanu.
 7. **Zawsze łącz z `useMemo`** — transitions re-renderują komponent; memoizacja zapobiega ponownemu przeliczaniu niezmienionych części.
 8. **`startTransition` + `router.push`** dla płynnych przejść nawigacyjnych w Next.js.
 9. **Profiluj przed i po** — React DevTools Profiler pokazuje, czy transitions rzeczywiście pomogły.
 10. **Zrozum, że [React Fiber](/pl/blog/react-fiber-silnik-nowoczesnego-reacta) to wszystko umożliwia** — renderowanie współbieżne jest zbudowane na przerywalnej architekturze Fibera.
 
-Renderowanie współbieżne nie jest funkcją, którą po prostu się włącza. To zestaw narzędzi do konkretnych problemów wydajnościowych. Użyte poprawnie — do kosztownych renderów przy pilnych interakcjach użytkownika — eliminuje ścinanie się bez sztucznych opóźnień. Użyte niepoprawnie — do każdej aktualizacji stanu — podwaja liczbę renderów bez żadnej korzyści.
+Renderowanie współbieżne to nie funkcja do włączenia i zapomnienia. To zestaw narzędzi do konkretnych problemów wydajnościowych. Użyte poprawnie — do kosztownych renderów przy pilnych interakcjach użytkownika — eliminuje ścinanie się bez sztucznych opóźnień. Użyte niepoprawnie — do każdej aktualizacji stanu — podwaja liczbę renderów bez żadnej korzyści.
 
 ## Źródła
 

@@ -1,5 +1,5 @@
 ---
-title: 'React Compiler od podszewki: jak naprawdę działa automatyczna memoizacja'
+title: 'React Compiler pod maską: co naprawdę może zrobić w buildzie'
 date: '2026-03-26'
 category: 'Development'
 tags: ['react', 'react-compiler', 'performance', 'memoization', 'javascript']
@@ -7,20 +7,20 @@ draft: false
 featured: false
 author: 'Sebastian'
 enSlug: 'react-compiler-deep-dive-automatic-memoization-guide'
-excerpt: 'React Compiler 1.0 jest stabilny i działa w Meta. Ale "po prostu usuń useMemo" to groźne uproszczenie. Oto co robi w czasie buildu i czego nie naprawi.'
+excerpt: 'Kompilator jest stabilny i działa w Instagrama. Ale "wyłącz useMemo" to życzeniowe myślenie. Oto czym naprawdę jest, co robi i gdzie zawodzi.'
 ---
 
-"Po prostu włącz React Compiler i usuń wszystkie wywołania useMemo." Słyszałem tę radę co najmniej kilkanaście razy od premiery wersji 1.0. I za każdym razem się wzdragam — bo jest prawdziwa tylko w połowie, a druga połowa potrafi położyć Twoją wydajność.
+"Po prostu włącz React Compiler i wyrzuć wszystkie `useMemo`". Słyszałem to co najmniej kilka razy od premiery 1.0. I za każdym razem się wstrzymuję — bo to tylko połowa prawdy, a druga część potrafi zrujnować Ci wydajność.
 
-React Compiler 1.0 pojawił się w październiku 2025. Jest stabilny, sprawdzony bojowo w Meta (Instagram, Quest Store), a teraz domyślnie włączony w Expo SDK 54. Nagłówek jest prawdziwy: automatycznie memoizuje Twoje komponenty i hooki, bez pisania choćby jednego `useMemo` czy `useCallback`.
+Pojawił się w październiku 2025 w wersji 1.0. Jest stabilny, produkowany już w Instagrama i Quest Store, i domyślnie włączony w Expo SDK 54. To wszystko prawda: automatycznie memoizuje komponenty i hooki bez pisania ręcznie `useMemo` czy `useCallback`.
 
-Ale oto czego nagłówki nie mówią: w prawdziwej produkcyjnej aplikacji liczącej 15 000 linii kodu kompilator z powodzeniem skompilował 361 z 363 komponentów — a mimo to w pełni naprawił tylko 2 z 9 zidentyfikowanych problemów z wydajnością. Pozostałych 7 wymagało ręcznej interwencji.
+Ale jest haczyk. W rzeczywistej produkcyjnej aplikacji 15 000 linii kodu kompilator poprawnie skompilował 361 z 363 komponentów — a jednocześnie w pełni rozwiązał tylko 2 z 9 problemów wydajnościowych. Pozostałych 7 wymagało ręcznej naprawy.
 
-Kompilator jest naprawdę przełomowy. Nie jest też magią. Pokażę Ci, co dokładnie dzieje się pod maską.
+Kompilator zmienia grę. Nie jest magią. Pokażę Ci dokładnie co się tam dzieje.
 
 ## Czym React Compiler naprawdę jest (a czym nie)
 
-React Compiler to **optymalizujący kompilator działający w czasie buildu**, który przekształca Twój kod React na etapie bundlowania. To nie jest biblioteka runtime'owa. Nie wysyła do przeglądarki dodatkowego JavaScriptu. Przepisuje Twoje komponenty w czasie kompilacji, dodając memoizację, którą inaczej musiałbyś napisać ręcznie.
+To **kompilator optymalizacyjny w fazie builda**, który przepisuje kod Reacta podczas bundlowania. Nie jest to biblioteka runtime'owa — nie wysyła do przeglądarki dodatkowego JS-a. Przetwarza komponenty w buildzie i automatycznie dodaje memoizację, którą inaczej musiałbyś kodować ręcznie.
 
 Co zastępuje:
 - `useMemo` do kosztownych obliczeń
@@ -33,19 +33,19 @@ Czego **nie** zastępuje:
 - Optymalizacji sieciowej (lazy loading, code splitting)
 - Wydajności na poziomie DOM (wirtualizacja, CSS containment)
 
-Traktuj go jako optymalizator, a nie naprawiacz. Przyspiesza dobrze ustrukturyzowany kod. Nie naprawi kodu źle zaprojektowanego. Zrozumienie [jak React Fiber obsługuje rekoncyliację](/pl/blog/react-fiber-silnik-nowoczesnego-reacta) pomoże Ci dokładnie zobaczyć, gdzie w cyklu renderowania wkracza memoizacja kompilatora.
+Patrz na niego jako na optymalizator, nie na czarownika. Przyspiesza kod dobrze zaprojektowany. Nie naprawi architektury, która jest źle pomyślana. Jeśli chcesz wiedzieć, gdzie dokładnie w cyklu renderowania kompilator wstawia memoizację, przeczytaj o [tym jak React Fiber robi rekoncyliację](/pl/blog/react-fiber-silnik-nowoczesnego-reacta).
 
 ## Jak to działa: pipeline kompilacji
 
-Pod maską React Compiler realizuje coś zaskakująco wyrafinowanego jak na narzędzie JavaScriptowe: prawdziwy pipeline kompilatora z reprezentacjami pośrednimi, analizą przepływu danych i wieloma przebiegami optymalizacyjnymi.
+Pod spodem robi coś zaskakująco zaawansowanego jak na tool JavaScriptowy: prawdziwy pipeline kompilatora z reprezentacjami pośrednimi, analizą przepływu danych i kilkoma przebiegami optymalizacyjnymi.
 
 ### Krok 1: Parsowanie do AST
 
-Kompilator startuje jako plugin Babela (ze wsparciem swc nadchodzącym w Next.js 15.3.1+). Bierze kod źródłowy Twojego komponentu i zamienia go w drzewo składniowe abstrakcyjne (Abstract Syntax Tree).
+Zaczyna się jako plugin Babela (ze wsparciem SWC w Next.js 15.3.1+). Bierze Twój kod źródłowy i zamienia go na drzewo składni (Abstract Syntax Tree).
 
 ### Krok 2: Budowa grafu przepływu sterowania (CFG)
 
-Tu robi się ciekawie. Kompilator buduje **graf przepływu sterowania** (Control Flow Graph) — tę samą strukturę danych, której używają optymalizujące kompilatory takie jak LLVM czy GCC. CFG mapuje każdą możliwą ścieżkę wykonania Twojego komponentu.
+Tu robi się interesująco. Kompilator buduje **graf przepływu sterowania** (Control Flow Graph) — taką samą strukturę której używają LLVM czy GCC. CFG mapuje każdą możliwą ścieżkę, którą komponent może podjąć.
 
 ```
 // Twój komponent:
@@ -62,13 +62,13 @@ function Product({ item, onAdd }) {
 
 ### Krok 3: Analiza z użyciem High-Level Intermediate Representation (HIR)
 
-CFG zasila **High-Level IR**, gdzie kompilator przeprowadza analizę przepływu danych. Śledzi:
+CFG trafia do **High-Level IR**, gdzie kompilator robi analizę przepływu danych. Śledzi:
 
-- **Które wartości zależą od których wejść** (props, state, context)
+- **Które wartości zależą od jakich inputów** (props, state, context)
 - **Które operacje są czyste** (bez efektów ubocznych)
-- **Co można bezpiecznie zbuforować** między renderami
+- **Co można bezpiecznie zachować między renderami**
 
-To właśnie tutaj React Compiler robi coś, czego ręczna memoizacja nie potrafi: memoizuje **w poprzek gałęzi warunkowych**. Rozważ:
+I tutaj robi coś czego ręczna memoizacja nie potrzebuje: memoizuje **przez gałęzie warunkowe**. Przykład:
 
 ```javascript
 function ThemeProvider(props) {
@@ -76,8 +76,8 @@ function ThemeProvider(props) {
     return null;  // wczesny return
   }
 
-  // Ręczny useMemo NIE MOŻE być tu umieszczony (Rules of Hooks)
-  // Ale React Compiler MOŻE zmemoizować to obliczenie
+  // useMemo ręczne NIE może być tu (Rules of Hooks mówią nie)
+  // ale React Compiler potrafi zmemoizować to obliczenie
   const theme = mergeTheme(props.theme, use(ThemeContext));
 
   return (
@@ -88,19 +88,19 @@ function ThemeProvider(props) {
 }
 ```
 
-Z `useMemo` musiałbyś przebudować ten komponent, żeby uniknąć wywoływania hooków po warunkowym returnie. Kompilator radzi sobie z tym automatycznie, bo operuje na poziomie CFG, a nie na poziomie składni.
+Z `useMemo` musiałbyś przepisać ten komponent aby uniknąć hooków po warunkowym returnie. Kompilator robi to samo automatycznie, bo patrzy na CFG, nie na składnię.
 
 ### Krok 4: Wstawianie memoizacji
 
-Na podstawie analizy kompilator wstawia memoizację z granularnością pojedynczych wartości i elementów JSX. Nie owija po prostu całego komponentu w `React.memo` — ustala dokładnie, które fragmenty można zbuforować, a które muszą się przeliczyć od nowa.
+Na podstawie analizy kompilator dodaje memoizację na poziomie pojedynczych wartości i elementy JSX. Nie owija całego komponentu w `React.memo` — ustala dokładnie co można zachować, a co trzeba przeliczać.
 
 ### Krok 5: Generowanie kodu
 
-Przekształcony kod trafia do przeglądarki. Wciąż jest to zwykły React — żaden specjalny runtime nie jest potrzebny. Memoizacja jest wyrażona za pomocą istniejących prymitywów Reacta, tyle że wstawianych automatycznie.
+Kod trafia do przeglądarki. To normalna React, bez specjalnego runtime'u. Memoizacja używa zwykłych prymitywów Reacta, tylko że wstawianej automatycznie.
 
-## Przed i po: jak wygląda skompilowany kod
+## Przed i po: jak zmienia się kod
 
-Oto praktyczna różnica. Przed React Compilerem napisałbyś:
+Praktyczna różnica. Bez kompilatora pisałbyś:
 
 ```javascript
 import { useMemo, useCallback, memo } from 'react';
@@ -130,7 +130,7 @@ const ExpensiveList = memo(function ExpensiveList({ items, onSelect }) {
 });
 ```
 
-Po włączeniu React Compilera ta sama logika staje się:
+Z kompilerem ta sama logika to:
 
 ```javascript
 function ExpensiveList({ items, onSelect }) {
@@ -152,28 +152,28 @@ function ExpensiveList({ items, onSelect }) {
 }
 ```
 
-To samo zachowanie. Ta sama wydajność. Zero boilerplate'u memoizacji. Kompilator sam ustala, co wymaga buforowania, i zajmuje się tym w czasie buildu.
+To samo zachowanie, ta sama wydajność, zero boilerplate'u. Kompilator sam ustala co trzeba zachować i robi to w buildzie.
 
-**Ale zwróć uwagę, co się zmieniło:** nie widzisz już `memo()`, `useMemo()` ani `useCallback()`. Kod jest czystszy i łatwiejszy do zrozumienia. Optymalizacja wydajności jest niewidoczna — i o to właśnie chodzi.
+**Co się zmieniło:** zniknęły `memo()`, `useMemo()` i `useCallback()`. Kod jest czystszy, łatwiejszy do czytania. Optymalizacja jest transparentna — i to jest sens.
 
-## Rules of React: dlaczego teraz liczą się bardziej niż kiedykolwiek
+## Rules of React: dlaczego liczą się teraz bardziej
 
-React Compiler polega na **Rules of React**, by przeprowadzać swoją analizę. Jeśli Twój kod łamie te zasady, kompilator albo pomija optymalizację (cicha porażka), albo generuje niepoprawne zachowanie.
+Kompilator zależy od **Rules of React** by robić analizę. Jak je łamiesz, kompilator albo cofa optymalizację (cicho), albo generuje błędy.
 
 Trzy zasady, które liczą się najbardziej:
 
 ### Zasada 1: Komponenty muszą być czyste
 
-Te same wejścia → to samo wyjście. Żadnych efektów ubocznych podczas renderowania. Kompilator zakłada to, by ustalić, co można zbuforować.
+To samo na wejściu = to samo na wyjściu. Bez efektów ubocznych w renderze. Kompilator na tym polega żeby wiedzieć co można zachować.
 
 ```javascript
-// ❌ Łamie założenia kompilatora
+// ❌ Łamie to
 function BadComponent({ items }) {
-  analytics.track('render');  // Efekt uboczny w renderze!
+  analytics.track('render');  // efekt uboczny w renderze!
   return <List items={items} />;
 }
 
-// ✅ Kompilator może to zoptymalizować
+// ✅ Kompilator optymalizuje to
 function GoodComponent({ items }) {
   useEffect(() => {
     analytics.track('render');
@@ -182,22 +182,22 @@ function GoodComponent({ items }) {
 }
 ```
 
-### Zasada 2: Props i state są niemutowalne
+### Zasada 2: Props i state to immutable
 
-Nigdy nie mutuj propsów ani state'u bezpośrednio. Kompilator opiera się na tożsamości referencji, by ustalić, czy wartości się zmieniły.
+Nie mutuj propsów ani state'u. Kompilator polega na tożsamości referencji aby wiedzieć co się zmieniło.
 
 ```javascript
-// ❌ Mutowanie state'u — kompilator nie może tego wyśledzić
+// ❌ mutacja — kompilator nie widzi zmian
 function BadForm() {
   const [user, setUser] = useState({ name: '', email: '' });
 
   const handleName = (e) => {
-    user.name = e.target.value;  // Bezpośrednia mutacja!
-    setUser(user);  // Ta sama referencja — kompilator myśli, że nic się nie zmieniło
+    user.name = e.target.value;  // bezpośrednia mutacja!
+    setUser(user);  // ta sama referencja — kompilator myśli że nic się nie zmieniło
   };
 }
 
-// ✅ Niemutowalna aktualizacja — kompilator może zoptymalizować
+// ✅ immutable update — kompilator optymalizuje
 function GoodForm() {
   const [user, setUser] = useState({ name: '', email: '' });
 
@@ -207,117 +207,115 @@ function GoodForm() {
 }
 ```
 
-### Zasada 3: Hooki muszą być wywoływane bezwarunkowo
+### Zasada 3: Hooki zawsze bezwarunkowo
 
-Statyczna analiza kompilatora zależy od tego, że hooki są wywoływane w tej samej kolejności przy każdym renderze. Jeśli potrzebujesz odświeżyć wiedzę o zasadach hooków i zaawansowanych wzorcach, zajrzyj do mojego [dogłębnego przewodnika po najlepszych praktykach React hooks](/pl/blog/zaawansowane-hooki-react-najlepsze-praktyki).
+Statyczna analiza kompilatora potrzebuje hooków w tej samej kolejności każdy render. Chcesz się ulepszć? Zajrzyj do [przewodnika po React hooks](/pl/blog/zaawansowane-hooki-react-najlepsze-praktyki).
 
-Dobra wiadomość: **React Compiler dostarczany jest z regułami ESLint**, które wychwytują te naruszenia. Zainstaluj `eslint-plugin-react-hooks` z presetem `recommended-latest`, a otrzymasz ostrzeżenia, zanim kompilator po cichu pominie Twoje komponenty.
+Dobra wiadomość: **Kompilator ma ESLint reguły** które łapią naruszenia. Zainstaluj `eslint-plugin-react-hooks` z presetem `recommended-latest` i dostajesz ostrzeżenia zanim kompilator pominie coś cicho.
 
-## 5 wzorców, których kompilator nie naprawi
+## 5 wzorców które kompilator nie rozwiąże
 
-To sekcja, którą pomija każdy artykuł typu "React Compiler jest niesamowity". Oto wzorce wydajnościowe, które nadal wymagają Twojej uwagi:
+Sekcja którą pomija każdy "React Compiler jest cudowny" artykuł. To izdajnościowe problemy na które musisz uważać:
 
-### 1. Nie-prymitywne propsy z zewnętrznych bibliotek
+### 1. Obiekty z bibliotek jako propsy
 
-Najczęstszy problem na produkcji. Gdy biblioteki takie jak React Query zwracają nowe referencje obiektów przy każdym renderze, kompilator nie może zapobiec re-renderom w dół drzewa:
+Najczęstsza produkcyjna bolączka. React Query i inne zwracają nowe obiekty każdy render — kompilator nie może zatrzymać re-rendera poniżej:
 
 ```javascript
-// React Query zwraca nową referencję obiektu 'data' przy każdym renderze
+// React Query zwraca nowy obiekt 'data' co render
 const { data } = useQuery({ queryKey: ['users'], queryFn: fetchUsers });
 
-// Kompilator memoizuje UserList, ale 'data' to nowa referencja
-// za każdym razem — więc UserList i tak się re-renderuje
+// Kompilator memo UserList ale 'data' to nowy obiekt zawsze
+// więc UserList się i tak re-renderuje
 return <UserList users={data} />;
 ```
 
-**Rozwiązanie:** Zdestrukturyzuj do prymitywów lub użyj `select`, by wyodrębnić stabilne wartości:
+**Opcja:** Zdestrukturyzuj do scalars albo użyj `select` do stabilnych wartości:
 
 ```javascript
 const { data } = useQuery({
   queryKey: ['users'],
   queryFn: fetchUsers,
-  select: (data) => data.map(u => u.id)  // Stabilna tablica prymitywów
+  select: (data) => data.map(u => u.id)  // tablica scalars, stabilna
 });
 ```
 
-### 2. Efekty uboczne w fazie renderowania
+### 2. Efekty uboczne w renderze
 
-Kompilator pomija komponenty z efektami ubocznymi podczas renderowania. Jeśli Twój komponent czyta z globalnego store'a, modyfikuje ref albo woła zewnętrzne API podczas renderu, nie zostanie skompilowany.
+Kompilator nie kompiluje komponentów z efektami w renderze. Jeśli czytasz z globalnego store'a, mutujesz ref'y albo woołasz API w renderze — brak optymalizacji.
 
-### 3. Dynamiczni konsumenci kontekstu
+### 3. Context — wszyscy słuchacze re-renderują
 
-Gdy wartość kontekstu się zmienia, **wszyscy konsumenci re-renderują się** — niezależnie od tego, czy używają zmienionej części. Kompilator nie potrafi rozdzielić odczytów kontekstu.
+Jak context się zmienia, **wszyscy konsumenci re-renderują** — nawet jeśli używają tylko jednej części. Kompilator nie potrafi rozdzielić czytania.
 
 ```javascript
-// Każdy komponent konsumujący AppContext re-renderuje się,
-// gdy JAKAKOLWIEK część kontekstu się zmienia
+// każdy komponent czytający AppContext re-renderuje
+// gdy JAKAŚ część kontekstu się zmieni
 const { theme, user, locale } = useContext(AppContext);
 ```
 
-**Rozwiązanie:** Rozdziel konteksty według częstotliwości zmian albo użyj bibliotek takich jak `use-context-selector`.
+**Opcja:** Podziel contextsy po częstości zmian albo użyj `use-context-selector`.
 
-### 4. Duże drzewa komponentów montowane przy interakcji
+### 4. Duże drzewa montowane na click
 
-Kompilator optymalizuje *re-rendery*, a nie *początkowe montowania*. Jeśli kliknięcie przycisku montuje drzewo 500 komponentów, kompilator nie pomoże — to problem architektoniczny. Warto też pamiętać, że kompilator jest świadomą alternatywą Reacta wobec [drobnoziarnistej reaktywności opartej na sygnałach](/pl/blog/sygnaly-drobnoziarnista-reaktywnosc-2026), którą przyjął każdy inny większy framework — ten sam cel minimalizacji marnowanej pracy, zupełnie inny zakład na to, jak go osiągnąć.
+Kompilator optymalizuje *re-rendery*, nie *initial mount*. Jeśli klik montuje 500 komponentów — brak pomocy, to architektura. Warto wiedzieć że kompilator to Reactowy odwet na [granular reactivity i signals](/pl/blog/sygnaly-drobnoziarnista-reaktywnosc-2026) które wszystkie inne frameworki już mają — ten sam cel (nie marnować pracy), inna strategia.
 
-**Rozwiązanie:** Lazy loading, wirtualizacja, progresywne ujawnianie. Wzorce te omówiłem szczegółowo w moim [tutorialu o React Suspense](/pl/blog/react-suspense-poradnik-lazy-loading-async).
+**Opcja:** Lazy loading, virtualization, progressive reveal. Szczegółowo w [React Suspense przewodniku](/pl/blog/react-suspense-poradnik-lazy-loading-async).
 
-### 5. Kosztowne operacje poza komponentami
+### 5. Obliczenia poza komponentami
 
-Kompilator memoizuje wyłącznie komponenty i hooki Reacta. Funkcje pomocnicze, metody klas i obliczenia na poziomie modułu pozostają nietknięte.
+Kompilator memoizuje tylko React komponenty i hooki. Helpery, klasy, module-level obliczenia — bez zmian.
 
 ```javascript
-// To NIE jest memoizowane przez kompilator
+// to NIE jest memoizowane
 const processedData = heavyTransform(rawData);
 
 function Dashboard() {
-  // Tutaj wewnątrz kompilator może memoizować
+  // kompilator tu memoizuje
   return <Chart data={processedData} />;
 }
 ```
 
-**Rozwiązanie:** Przenieś ciężkie obliczenia do wnętrza komponentów (gdzie kompilator może do nich dotrzeć) albo zmemoizuj je ręcznie na poziomie modułu.
+**Opcja:** Przenieś ciężkie obliczenia do wnętrza komponentu (gdzie kompilator dosięga) albo zmemoizuj ręcznie na module level.
 
-## Prawdziwe wyniki produkcyjne: uczciwe liczby
+## Rzeczywiste wyniki: liczby bez PR
 
-Spójrzmy na rzeczywiste dane, a nie slajdy marketingowe:
-
-### Wewnętrzne wyniki Meta
+### Meta wewnątrz
 
 | Metryka | Poprawa |
 |--------|-------------|
-| Początkowe ładowania i nawigacja | Do 12% szybciej |
-| Niektóre interakcje | 2,5× szybciej |
-| Zużycie pamięci | Neutralne |
+| Initial load i nawigacja | Do 12% szybciej |
+| Interakcje | 2,5x szybciej |
+| Pamięć | Neutralne |
 
-### Niezależne wyniki produkcyjne
+### Rzeczywistość w produkcji
 
-**Sanity Studio** (aplikacja z 15 000 linii):
-- 1 231 z 1 411 komponentów skompilowanych pomyślnie
-- 20-30% ogólnej redukcji czasu renderowania
-- Największe zyski w głęboko zagnieżdżonych wzorcach aktualizacji
+**Sanity Studio** (15K LOC):
+- 1 231 z 1 411 komponentów skompilowanych
+- 20-30% ogólnie szybsze rendery
+- Największe zyski w deeply nested prop chains
 
 **Wakelet:**
-- LCP poprawiony o 10%
-- INP poprawiony o ~15% (30% dla czystych elementów React)
+- LCP +10%
+- INP +~15% (30% pure React)
 
-**Audyt z prawdziwego świata** (developerway.com):
+**Real audit** (developerway.com):
 - 361 z 363 komponentów skompilowanych
-- Total blocking time na jednej stronie: 280 ms → 0 ms
-- Inna strona: poprawa jedynie ze 130 ms do 90 ms
-- **2 z 9 problemów wydajnościowych w pełni naprawionych** przez sam kompilator
+- Jedna strona: 280ms TBT → 0ms
+- Druga: 130ms → 90ms
+- **2 z 9 wydajnościowych problemów rozwiązane** tylko kompilator
 
-Wzorzec jest jasny: kompilator daje realne zyski, ale nie jest srebrną kulą. Największe wygrane pochodzą z komponentów o głębokich łańcuchach propsów i częstych re-renderach. Najmniejsze wygrane (albo ich brak) dotyczą problemów zakorzenionych w architekturze lub zewnętrznych bibliotekach.
+Obraz jasny: kompilator daje wyniki, ale to nie silver bullet. Duże wygrane z głębokich prop chainów i częstych re-renderów. Małe (albo żadne) jeśli problem jest w architekturze albo bibliotekach.
 
-## Przewodnik migracji: dodawanie React Compilera do projektu
+## Setup: dodaj do projektu
 
-### Krok 1: Instalacja
+### Krok 1: Install
 
 ```bash
 npm install --save-dev --save-exact babel-plugin-react-compiler@latest
 ```
 
-Przypnij dokładną wersję — zmiany w memoizacji między wersjami mogą subtelnie wpłynąć na zachowanie.
+Pin wersję — zmian między wersjami mogą subtelnie zmienić zachowanie.
 
 ### Krok 2: Konfiguracja
 
