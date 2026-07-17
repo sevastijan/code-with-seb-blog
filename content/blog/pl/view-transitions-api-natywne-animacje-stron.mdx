@@ -10,24 +10,24 @@ enSlug: 'view-transitions-api-native-page-animations-guide'
 excerpt: 'View Transitions API działa już cross-document w Chrome i Safari. Dlaczego zespoły kasują Framer Motion, jak to działa i o jakich pułapkach nikt nie ostrzega.'
 ---
 
-W zeszłym miesiącu usunąłem z projektu klienta 14 kB kodu animacji (po gzipie), a przejścia między stronami stały się *lepsze*. Żadnego `AnimatePresence`, żadnych hacków na layout-shift, żadnego `motion.div` opakowującego każdą trasę. Tylko dwie reguły CSS i kilka deklaracji `view-transition-name`.
+W zeszłym miesiącu usunąłem z projektu klienta 14 kB kodu animacji (po gzipie), a przejścia między stronami stały się *lepsze*. Żadnego `AnimatePresence`, żadnych hacków na layout-shift, żadnego `motion.div` opakowującego każdy widok. Tylko dwie reguły CSS i kilka deklaracji `view-transition-name`.
 
-To jest właśnie obietnica **View Transitions API** i w 2026 roku wreszcie ją spełnia. Wariant single-page nadawał się do produkcji w Chromium już od jakiegoś czasu, ale prawdziwym przełomem są **cross-document view transitions**: płynne, morfujące animacje przy pełnych nawigacjach między stronami w zwykłej aplikacji multi-page, bez żadnego routera po stronie klienta. Chrome dowiózł to w wersji 126, Safari dołączyło w 18.2, a zespoły po cichu wyrywają ciężkie biblioteki do animacji ze swoich bundle'i.
+To jest właśnie obietnica **View Transitions API** i w 2026 roku wreszcie ją spełnia. Wariant single-page nadawał się do produkcji w Chromium już od jakiegoś czasu, ale prawdziwym przełomem są **cross-document view transitions**: płynne, morfujące animacje podczas prawdziwych nawigacji między stronami w aplikacji multi-page, bez żadnego routera po stronie klienta. Chrome to dowiózł w wersji 126, Safari dołączyło w 18.2, a zespoły cicho usuwają ciężkie biblioteki animacji z bundli.
 
-Spędziłem z tym API wystarczająco dużo czasu — łącznie z fragmentami, które kazały mi przeklinać na monitor — żeby napisać przewodnik, którego sam bym potrzebował. Przejdźmy przez to, czym to naprawdę jest, przez obie powierzchnie API, jak dostosować animacje, jak wygląda historia z frameworkami oraz przez pułapki, które cię ugryzą, jeśli nikt cię nie ostrzeże.
+Spędziłem z tym API wystarczająco dużo czasu — łącznie z fragmentami, które testowały moją cierpliwość — żeby napisać przewodnik, którego sam bym potrzebował. Przejdźmy przez to, czym to naprawdę jest, przez obie powierzchnie API, jak dostosować animacje, jak to wygląda w praktyce z frameworkami oraz przez pułapki, które cię zaskoczą, jeśli nikt cię nie ostrzeże.
 
 ## Co View Transitions API właściwie robi
 
-Oto model mentalny, dzięki któremu wszystko mi wskoczyło na miejsce. Gdy uruchamiasz przejście, przeglądarka robi cztery rzeczy:
+Oto model mentalny, który mi wyjaśnił ideę. Kiedy uruchomisz przejście, przeglądarka wykonuje cztery kroki:
 
-1. **Przechwytuje** bieżący stan wizualny strony (lub konkretnych elementów) jako migawki (snapshots) — w zasadzie zrzuty ekranu.
+1. **Przechwytuje** bieżący stan wizualny strony (lub konkretnych elementów) jako snapshot — zasadniczo zrzut ekranu.
 2. **Pozwala ci zmienić DOM** do nowego stanu.
-3. **Przechwytuje** nowy stan jako drugi zestaw migawek.
-4. **Animuje** przejście między starymi a nowymi migawkami, po czym oddaje kontrolę żywemu DOM-owi.
+3. **Przechwytuje** nowy stan jako drugi snapshot.
+4. **Animuje** przejście między starymi a nowymi snapshotami, a następnie zwraca kontrolę żywemu DOM-owi.
 
-Genialny jest krok 4. Podczas animacji nie animujesz żywych węzłów DOM — przenikasz i transformujesz statyczne obrazy wygenerowane przez przeglądarkę. Dlatego jest to tanie, dlatego nie szarpie layoutem i dlatego domyślny efekt już wygląda przyzwoicie. Cała choreografia dzieje się na kompozytorze.
+Genialna jest czwarta część. Podczas animacji nie animujesz živych węzłów DOM — przenikasz i transformujesz statyczne obrazy wygenerowane przez przeglądarkę. Dlatego jest to tanie, dlatego nie powoduje zmian w layoutzie i dlatego domyślny efekt już wygląda porządnie. Całe działanie zachodzi na poziomie kompozytor przeglądarki.
 
-Są dwa sposoby, żeby to uruchomić: **same-document API** (wywołujesz funkcję JavaScript po zmianie DOM) oraz **cross-document API** (przeglądarka uruchamia je automatycznie przy nawigacji w tym samym originie). Ta sama idea, dwa punkty wejścia.
+Są dwa sposoby, żeby to uruchomić: **same-document API** (wywołujesz funkcję JavaScript po zmianie DOM) oraz **cross-document API** (przeglądarka uruchamia to automatycznie podczas nawigacji w obrębie tego samego origina). Ta sama idea, dwa punkty wejścia.
 
 ## Przejścia same-document: API JavaScript
 
@@ -50,15 +50,15 @@ function updateView(newContent) {
 }
 ```
 
-To cała ścieżka „szczęśliwego przypadku". Bez ani jednej dodatkowej reguły CSS dostajesz już **domyślne przenikanie (cross-fade)** całej strony, bo przeglądarka niejawnie przypisuje `view-transition-name: root` elementowi dokumentu.
+To całe podejście „happy path". Bez żadnej dodatkowej reguły CSS otrzymujesz już **domyślne przenikanie** całej strony, bo przeglądarka niejawnie przypisuje `view-transition-name: root` elementowi dokumentu.
 
-`startViewTransition()` zwraca **obiekt `ViewTransition`** z trzema promise'ami i furtką awaryjną. Mają one większe znaczenie, niż sugeruje dokumentacja:
+`startViewTransition()` zwraca **obiekt `ViewTransition`** z trzema promise'ami i możliwością przerwania. Są ważniejsze, niż sugeruje dokumentacja:
 
 ```js
 const transition = document.startViewTransition(() => applyDOMUpdate(newContent));
 
-// Rozwiązuje się, gdy callback DOM się zakończył ORAZ migawki są gotowe —
-// to moment, żeby podpiąć własne animacje przez Web Animations API.
+// Rozwiązuje się, gdy callback DOM się zakończył i snapshoty są gotowe —
+// moment, aby dodać własne animacje przez Web Animations API.
 transition.ready.then(() => {
   // np. animuj pseudo-element ręcznie
 });
@@ -70,12 +70,12 @@ transition.updateCallbackDone.then(() => {});
 // Rozwiązuje się, gdy animacja jest całkowicie zakończona i widoczny jest żywy DOM.
 await transition.finished;
 
-// Przerwij animację, ale zachowaj aktualizację DOM. Świetne przy
+// Przerwij animację, ale zachowaj aktualizację DOM. Przydatne przy
 // prefers-reduced-motion lub gdy użytkownik nawiguje ponownie w trakcie przejścia.
 transition.skipTransition();
 ```
 
-Jeśli twoja aktualizacja jest asynchroniczna — powiedzmy, że pobierasz dane przed renderowaniem — przekaż asynchroniczny callback. Przeglądarka trzyma migawkę „przed" zamrożoną, gdy czekasz na `await`, co jest potężne, a zarazem stanowi pułapkę, do której jeszcze wrócę.
+Jeśli twoja aktualizacja jest asynchroniczna — na przykład pobierasz dane przed renderowaniem — przekaż asynchroniczny callback. Przeglądarka trzyma snapshot „przed" zamrożony, gdy czekasz na `await`, co jest zarazem potężne i pułapką, do której jeszcze wrócę.
 
 ### Forma z opcjami i typy przejść
 
@@ -93,7 +93,7 @@ Typy pozwalają jednej stronie mieć kilka odrębnych animacji — nawigacja do 
 
 ## view-transition-name i morfowanie shared elements
 
-Przenikanie jest w porządku. Magia to **shared element transitions** — miniatura, która płynnie rozrasta się w obraz hero, karta, która przechodzi w panel szczegółów. Uzyskujesz to, nadając „temu samemu" elementowi w obu stanach identyczny `view-transition-name`:
+Przenikanie jest OK. Magią są **shared element transitions** — miniatura, która płynnie rozrasta się w duży obraz, karta przechodzaca w panel szczegółów. Uzyskujesz to, nadając temu samemu elementowi w obu stanach identyczną wartość `view-transition-name`:
 
 ```css
 /* Na stronie z listą */
@@ -107,13 +107,13 @@ Przenikanie jest w porządku. Magia to **shared element transitions** — miniat
 }
 ```
 
-Gdy nazwa istnieje zarówno w starej, jak i nowej migawce, przeglądarka przestaje ją przenikać, a zamiast tego **animuje jej pozycję, rozmiar i kształt** ze starego do nowego. Interpoluje `width`, `height`, `transform`, a nawet `border-radius`. To ten morph, do którego ludzie kiedyś ściągali całą bibliotekę fizyki.
+Gdy nazwa istnieje zarówno w starym, jak i nowym snapshotu, przeglądarka przestaje go przenikać i zamiast tego **animuje pozycję, rozmiar i kształt** ze starego do nowego. Interpoluje `width`, `height`, `transform`, a nawet `border-radius`. To efekt, do którego wcześniej trzeba było sięgać po biblioteki animacji.
 
-**Jedna reguła, która cię ugryzie:** każdy `view-transition-name` musi być *unikalny w obrębie dokumentu w momencie przechwytywania*. Dwa elementy z `view-transition-name: product-hero` widoczne w tym samym czasie rzucają błąd i pomijają całe przejście. Więc na liście 20 produktów nie możesz statycznie nazwać ich wszystkich `product-hero` — generujesz unikalne nazwy (`product-hero-42`) i przypisujesz współdzieloną nazwę tylko *tej jednej* karcie, którą użytkownik faktycznie kliknął, zwykle przez handler zdarzenia w JS tuż przed rozpoczęciem przejścia.
+**Reguła, która cię zaskoczy:** każdy `view-transition-name` musi być *unikalny w obrębie dokumentu w momencie przechwytywania*. Dwa elementy z `view-transition-name: product-hero` widoczne jednocześnie powodują błąd i całe przejście się pomija. Na liście 20 produktów nie możesz wszystkim statycznie przypisać `product-hero` — generujesz unikalne nazwy (`product-hero-42`) i przypisujesz współdzieloną nazwę tylko *tej jednej* karcie, którą użytkownik kliknął, zwykle przez event handler w JS tuż przed uruchomieniem przejścia.
 
 ### Drzewo pseudo-elementów
 
-Gdy przejście się uruchamia, przeglądarka buduje drzewo pseudo-elementów `::view-transition` nałożone na wszystko. Zrozumienie go oddziela „wkleiłem snippet" od „potrafię zbudować dowolną animację, jaką chcę":
+Kiedy przejście się uruchamia, przeglądarka buduje hierarchię pseudo-elementów `::view-transition` nałożoną na całą zawartość. Zrozumienie jej oddziela „skopiowałem kod" od „rozumiem, jak zbudować dowolną animację":
 
 ```
 ::view-transition                          (nakładka root, pokrywa viewport)
@@ -123,7 +123,7 @@ Gdy przejście się uruchamia, przeglądarka buduje drzewo pseudo-elementów `::
       └─ ::view-transition-new(name)       (migawka nowego stanu)
 ```
 
-`-group` obsługuje morfowanie rozmiaru/pozycji. `-old` i `-new` to faktyczne migawki przenikane wewnątrz `-image-pair`. Aby dostosować animację, celujesz w te pseudo-elementy zwykłymi `@keyframes` w CSS:
+`-group` obsługuje morfowanie rozmiaru/pozycji. `-old` i `-new` to rzeczywiste snapshoty przenikane wewnątrz `-image-pair`. Aby dostosować animację, celujesz w te pseudo-elementy zwykłymi `@keyframes` w CSS:
 
 ```css
 /* Wsuń całą zawartość strony z prawej zamiast przenikania */
@@ -153,7 +153,7 @@ html:active-view-transition-type(slide-forward)::view-transition-old(root) {
 
 ## Przejścia cross-document: zero JavaScriptu dla MPA
 
-To jest sztandarowa funkcja 2026 roku i powód, dla którego piszę ten tekst teraz. Dla **aplikacji multi-page** — stron renderowanych na serwerze, stron statycznych, aplikacji w Astro, Rails czy zwykłym HTML — możesz uzyskać dokładnie te same przejścia przy prawdziwych nawigacjach, *bez ani grama JavaScriptu*. Zarówno strona, którą opuszczasz, jak i ta, na której lądujesz, włączają się jedną regułą at-rule CSS:
+To jest funkcja, którą czekaliśmy w 2026 roku. Dla **aplikacji multi-page** — stron renderowanych na serwerze, stron statycznych, aplikacji w Astro, Rails czy zwykłym HTML — możesz uzyskać dokładnie te same przejścia podczas rzeczywistych nawigacji, *bez żadnego JavaScriptu*. Zarówno strona, którą opuszczasz, jak i ta, na której lądujesz, wymagają tylko jednej reguły CSS at-rule:
 
 ```css
 /* Umieść to w globalnym arkuszu stylów ładowanym na każdej stronie */
@@ -162,13 +162,13 @@ To jest sztandarowa funkcja 2026 roku i powód, dla którego piszę ten tekst te
 }
 ```
 
-I tyle. Dwie strony z tego samego originu, obie niosące tę regułę, i każde kliknięcie linku czy naciśnięcie przycisku Wstecz przenika między nimi. **Nie ma żadnej funkcji do wywołania** — przeglądarka jest właścicielem triggera. Przechwytuje stary dokument, ładuje nowy, czeka, aż stanie się renderowalny, i animuje. Shared elements morfują przez nawigację używając tego samego mechanizmu `view-transition-name`, więc pasek nawigacji czy obraz hero istniejący na obu stronach zostaje na miejscu i płynnie wślizguje się w nową pozycję.
+I tyle. Dwie strony z tego samego origina, obie zawierające tę regułę, a każde kliknięcie linku czy naciśnięcie przycisku Wstecz przenika między nimi. **Bez żadnych wywołań funkcji** — przeglądarka steruje tym automatycznie. Przechwytuje stary dokument, ładuje nowy, czeka, aż będzie renderowalny, i animuje. Shared elements morfują przez nawigację, używając tego samego mechanizmu `view-transition-name`, więc pasek nawigacji czy obraz hero obecny na obu stronach pozostaje na miejscu i płynnie przechodzi w nową pozycję.
 
-To naprawdę duża sprawa. Architektury multi-page — które wracają do łask z dobrych [powodów renderingowych](/pl/blog/ssr-ssg-isr-rsc-strategie-nextjs) — nie muszą już wybierać między „płynnością SPA" a „brakiem routera po stronie klienta". Zachowujesz prostotę MPA i dostajesz szlif SPA.
+To naprawdę znaczące osiągnięcie. Architektury multi-page — które powracają do łask z dobrych [powodów wydajnościowych](/pl/blog/ssr-ssg-isr-rsc-strategie-nextjs) — nie muszą już wybierać między „płynnością SPA" a „brakiem routera po stronie klienta". Zachowujesz prostotę MPA i zyskujesz doświadczenie SPA.
 
 ### Dostosowywanie per-nawigacja z pageswap i pagereveal
 
-Goła reguła `@view-transition` przenika. Aby robić kierunkowe lub kontekstowe animacje między dokumentami, podpinasz dwa zdarzenia. **`pageswap`** odpala się na stronie *wychodzącej* tuż przed jej zrzuceniem do migawki; **`pagereveal`** odpala się na stronie *przychodzącej* przed jej pierwszym renderem. Oba udostępniają obiekt `viewTransition` (gdy przejście faktycznie się dzieje) oraz `activation` nawigacji z adresami URL from/to:
+Goła reguła `@view-transition` przenika całą stronę. Aby tworzyć kierunkowe lub kontekstowe animacje między dokumentami, dodajesz obsługę dwóch zdarzeń. **`pageswap`** jest wyzwalane na stronie *wychodzącej* tuż przed przechwyceniem jej jako snapshot; **`pagereveal`** jest wyzwalane na stronie *przychodzącej* przed jej pierwszym renderem. Oba udostępniają obiekt `viewTransition` (gdy przejście faktycznie zachodzi) i `activation` z adresami URL source/destination:
 
 ```js
 // Strona wychodząca — zdecyduj o kierunku i otaguj przejście
@@ -193,15 +193,15 @@ window.addEventListener('pagereveal', (event) => {
 });
 ```
 
-Typowy wzorzec: na indeksie bloga w `pageswap` ustawiasz `view-transition-name: article-hero` na konkretnej karcie linkującej do celu, a w `pagereveal` na stronie artykułu ustawiasz tę samą nazwę na jego obrazie nagłówkowym. Przeglądarka je dopasowuje i morfuje. Posprzątaj nazwy potem (w `finished`), aby nie kolidowały przy następnej nawigacji.
+Typowy wzorzec: na stronie indeksu bloga w `pageswap` przypisujesz `view-transition-name: article-hero` konkretnej karcie, którą użytkownik kliknął, a w `pagereveal` na stronie artykułu przypisujesz tę samą nazwę jego obrazowi nagłówkowemu. Przeglądarka je dopasowuje i morfuje. Wyczyść nazwy potem (w `finished`), aby nie kolidowały podczas kolejnej nawigacji.
 
 ## Historia z frameworkami: React, Next.js i Astro
 
-Nie potrzebujesz frameworka do niczego z tego — o to właśnie chodzi. Ale ergonomia ręcznego nazywania elementów i żonglowania `pageswap` w SPA jest kiepska, więc frameworki to opakowują.
+Nie potrzebujesz frameworka do żadnego z powyższych — o to właśnie chodzi. Ale ergonomia ręcznego nazewnictwa elementów i obsługi `pageswap` w SPA jest uciążliwa, więc frameworki opakowują te procesy.
 
 ### React i Next.js
 
-React dowozi eksperymentalny komponent **`<ViewTransition>`** (React Canary / 19.x experimental w chwili pisania — jeszcze nie stabilny, więc traktuj go tak samo). Deklaratywnie oznacza poddrzewo, które ma się animować, gdy wchodzi, wychodzi lub aktualizuje się wewnątrz `startTransition`:
+React oferuje eksperymentalny komponent **`<ViewTransition>`** (React Canary / 19.x experimental w chwili pisania — jeszcze niestabilny, traktuj go odpowiednio). Deklaratywnie zaznacza poddrzewo, które powinno się animować, gdy się pojawia, znika lub aktualizuje wewnątrz `startTransition`:
 
 ```jsx
 import { unstable_ViewTransition as ViewTransition } from 'react';
@@ -215,7 +215,7 @@ function Page({ children }) {
 }
 ```
 
-Ponieważ React steruje aktualizacjami DOM przez własny scheduler, podpina komponent do `document.startViewTransition()` za ciebie i animuje tylko wtedy, gdy aktualizacja pochodzi z tranzycji — co ładnie łączy się z modelem współbieżnego renderowania, który omówiłem w [przewodniku po React concurrent mode](/pl/blog/react-concurrent-mode-praktyczny-przewodnik). Przyczynę animacji wybierasz przez **`addTransitionType`**:
+Ponieważ React steruje aktualizacjami DOM za pośrednictwem własnego schedulera, podłącza komponent do `document.startViewTransition()` za ciebie i animuje tylko, gdy aktualizacja pochodzi z tranzycji — co elegancko integruje się z modelem współbieżnego renderowania opisanym w [przewodniku po React concurrent mode](/pl/blog/react-concurrent-mode-praktyczny-przewodnik). Typ animacji wybierasz za pomocą **`addTransitionType`**:
 
 ```jsx
 import { startTransition, addTransitionType } from 'react';
@@ -228,7 +228,7 @@ function navigate(url) {
 }
 ```
 
-**Next.js** udostępnia to za flagą. Włącz w konfiguracji, opakuj swoją zawartość i nawigacje między trasami stają się przejściami automatycznie:
+**Next.js** udostępnia to za flagą konfiguracyjną. Włącz ją w konfiguracji, opakuj swoją zawartość, a nawigacje między trasami automatycznie się animują:
 
 ```js
 // next.config.js
@@ -239,11 +239,11 @@ module.exports = {
 };
 ```
 
-Od Next.js 16.2 komponent `<Link>` przyjmuje prop `transitionTypes` — tablicę przekazywaną prosto do `addTransitionType` — więc możesz sterować kierunkowymi animacjami z samego linku. Jeśli jesteś już na ścieżce aktualizacji, wpasowuje się to obok innych zmian w [przewodniku migracji do Next.js 16](/pl/blog/nextjs-16-przewodnik-migracji).
+Od Next.js 16.2 komponent `<Link>` przyjmuje prop `transitionTypes` — tablicę bezpośrednio przesyłaną do `addTransitionType` — dzięki czemu sterować możesz kierunkowymi animacjami wprost z linku. Jeśli już aktualizujesz projekt, integruje się to naturalnie z innymi zmianami opisanymi w [przewodniku migracji do Next.js 16](/pl/blog/nextjs-16-przewodnik-migracji).
 
 ### Astro
 
-Astro było tu wcześnie i teraz oferuje oba podejścia. Jego komponent `<ClientRouter />` przechwytuje nawigacje, zamienia twoje MPA w soft-SPA i dodaje funkcje, których natywnemu API wciąż brakuje (utrzymywanie stanu między nawigacjami, drobniejsze dyrektywy). Nazywasz shared elements dyrektywą `transition:name`, a animacje wybierasz przez `transition:animate`:
+Astro było tu wcześnie i teraz oferuje obie opcje. Komponent `<ClientRouter />` przechwytuje nawigacje, zamienia twoją MPA w quasi-SPA i dodaje funkcje, których natywnemu API wciąż brakuje (utrzymywanie stanu między nawigacjami, bardziej granularne dyrektywy). Shared elements oznaczasz dyrektywą `transition:name`, a animacje wybierasz za pośrednictwem `transition:animate`:
 
 ```astro
 ---
@@ -257,11 +257,11 @@ import { ClientRouter } from 'astro:transitions';
 </body>
 ```
 
-Ciekawy ruch 2026 roku polega na tym, że wiele stron w Astro **porzuca `ClientRouter` na rzecz natywnej reguły `@view-transition`**. Tracisz kilka frameworkowych udogodnień, ale kasujesz cały JavaScript routera i opierasz się na webowym standardzie. Dla stron z treścią, gdzie przejście jest czystą dekoracją, to często właściwy kompromis.
+Interesujące zjawisko 2026 roku to to, że wiele projektów w Astro **przechodzi z `ClientRouter` na natywną regułę `@view-transition`**. Tracisz kilka frameworkowych wygód, ale eliminujesz cały JavaScript routera i opierasz się na webowym standardzie. Dla witryn z treścią, gdzie przejście jest czystym upiększeniem, to często dobry kompromis.
 
 ## Dostępność: uszanuj prefers-reduced-motion
 
-To nie jest opcjonalne. Zaburzenia przedsionkowe wywoływane ruchem są realne, a slajd na całą stronę może kogoś fizycznie przyprawić o mdłości. Dobra wiadomość jest taka, że zabijasz *każdą* animację view transition jednym media query — to [fundament dostępności, który każdy frontend jest winien użytkownikom w 2026](/pl/blog/dostepnosc-web-2026-eaa-ada-wcag):
+To jest obowiązkowe, nie opcjonalne. Zaburzenia przedsionkowe wywoływane ruchem są realne, a animacja przejścia na całą stronę może kogoś fizycznie przyprawić o mdłości. Dobrą wiadomością jest, że wyłączasz *każdą* animację view transition za pomocą jednego media query — to [fundamentalne podejście do dostępności, które każdy frontend powinien wdrożyć w 2026](/pl/blog/dostepnosc-web-2026-eaa-ada-wcag):
 
 ```css
 @media (prefers-reduced-motion: reduce) {
@@ -273,47 +273,47 @@ To nie jest opcjonalne. Zaburzenia przedsionkowe wywoływane ruchem są realne, 
 }
 ```
 
-Ustawienie `animation: none` *nie* psuje przejścia — DOM wciąż się aktualizuje, nowy stan wciąż się pokazuje. Pomijasz jedynie ruch, czyli dokładnie to, o co użytkownik poprosił. Dla przejść same-document możesz też rozgałęzić się w JS i wywołać `skipTransition()`, ale podejście CSS pokrywa cross-document za darmo, więc od niego zaczynam.
+Ustawienie `animation: none` *nie* psuje przejścia — DOM wciąż się aktualizuje, nowy stan wciąż się wyświetla. Eliminujesz jedynie ruch, czyli dokładnie to, o co użytkownik prosił. Dla przejść same-document możesz też rozgałęzić się w JS i wywołać `skipTransition()`, ale podejście CSS pokrywa cross-document bezpłatnie, więc zaczynam od niego.
 
-Jeszcze jedno: pseudo-elementy są `aria-hidden` i inert podczas animacji, a to żywy DOM widzą czytniki ekranu. To poprawne zachowanie, ale oznacza, że zbyt długie przejścia opóźniają moment, w którym technologia asystująca dociera do prawdziwej treści. Trzymaj czasy trwania krótkie (200–300 ms) także z tego powodu.
+Jeszcze jedno: pseudo-elementy mają `aria-hidden` i są inertem podczas animacji, ale żywy DOM widzą czytniki ekranu. To poprawne zachowanie, ale oznacza, że zbyt długie przejścia opóźniają moment, w którym technologia asystująca dociera do rzeczywistej treści. Utrzymuj czasy trwania krótkie (200–300 ms) także z tego powodu.
 
 ## Wydajność i pułapki, o których nikt nie wspomina
 
-API jest z założenia szybkie — animujesz przyjazne kompozytorowi migawki — ale nie jest darmowe, a ma ostre krawędzie.
+API jest z założenia szybkie — animujesz snapshoty optymalizowane dla kompozytora — ale nie jest bezkosztowe, i ma ostre krawędzie.
 
-**Koszt migawki skaluje się z malowanym obszarem.** Każdy nazwany element staje się teksturą. Nazwanie dziesiątek elementów albo nazwanie czegoś ogromnego oznacza, że przeglądarka alokuje wielkie migawki, a krok przechwytywania może się zacinać na obciążonej klatce. Nazywaj tylko to, co musi morfować. To rzecz warta pilnowania względem twoich [budżetów wydajnościowych](/pl/blog/budzety-wydajnosci-frontend) — przejście, które wygląda maślanie na twoim laptopie z serii M, może gubić klatki na średniopółkowym Androidzie.
+**Koszt snapshotu skaluje się z obszarem do renderowania.** Każdy nazwany element zostaje teksturą. Nazwanie dziesiątek elementów lub czegoś ogromnego oznacza, że przeglądarka alokuje duże snapshoty, a krok przechwytywania może się zacinać na obciążonej klatce. Nazwij tylko to, co musi się morfować. To kwestia godna uwagi względem twoich [budżetów wydajności](/pl/blog/budzety-wydajnosci-frontend) — przejście wyglądające płynnie na MacBooku Pro może tracić klatki na średniopółkowym Androidzie.
 
-**Nazwane elementy są wyciągane z flow podczas przechwytywania.** `view-transition-name` promuje element do jego własnej warstwy migawki. Jeśli żyje wewnątrz kontenera z `overflow: hidden`, `clip-path` lub kontekstem stackingu, na którym polegałeś, obraz może uciec ze swojego przycięcia w trakcie animacji. Testuj faktyczne przejście, nie tylko stany końcowe.
+**Nazwane elementy są wyciągane z layout flow podczas przechwytywania.** `view-transition-name` promuje element do jego własnej warstwy snapshotu. Jeśli żyje wewnątrz kontenera z `overflow: hidden`, `clip-path` lub kontekstem stackingu, na którym polegałeś, obraz może wydostać się z przycięcia podczas animacji. Testuj faktyczne przejście, nie tylko stany końcowe.
 
-**Cross-document i 4-sekundowy timeout.** Dla przejść MPA, jeśli strona przychodząca nie osiągnie stanu renderowalnego w ciągu **4 sekund** od rozpoczęcia nawigacji, przeglądarka porzuca przejście i po prostu pokazuje stronę. Wolna odpowiedź serwera lub zasób blokujący render po cichu zabija twoją animację. Przejścia cross-document są tak płynne, jak twój TTFB i krytyczna ścieżka renderowania — kolejny powód, żeby trzymać strony lekkie.
+**Cross-document i 4-sekundowy timeout.** Dla przejść MPA, jeśli strona przychodząca nie osiągnie stanu renderowalnego w ciągu **4 sekund** od rozpoczęcia nawigacji, przeglądarka porzuca przejście i zwyczajnie wyświetla stronę. Powolna odpowiedź serwera lub blokujący render zasób dyskretnie zabija twoją animację. Przejścia cross-document są tak płynne, jak twój TTFB i krytyczna ścieżka renderowania — kolejny powód, aby utrzymywać strony lekkie.
 
-**Asynchroniczne callbacki zamrażają starą stronę.** W przejściach same-document, jeśli robisz `await` na wolnym fetchu wewnątrz callbacku aktualizacji, użytkownik gapi się na zamrożoną migawkę „przed" przez cały ten czas. Pobierz dane *najpierw*, a potem uruchom przejście z danymi już w garści. Nie opakowuj żądania sieciowego w `startViewTransition`.
+**Asynchroniczne callbacki zamrażają stary dokument.** W przejściach same-document, jeśli robisz `await` na wolnym pobieraniu wewnątrz callbacku aktualizacji, użytkownik patrzy na zamrożony snapshot „przed" przez całkowity czas oczekiwania. Pobierz dane *najpierw*, a potem uruchom przejście z danymi już dostępnymi. Nie zawijaj żądań sieciowych w `startViewTransition`.
 
-**Pozycja scrolla i `position: fixed`.** Elementy fixed i sticky są przechwytywane względem migawki, nie viewportu, więc stały nagłówek może wyglądać, jakby dryfował podczas przejścia, chyba że nadasz mu własny `view-transition-name` i pozwolisz traktować go jak stabilny shared element. To zaskakuje każdego za pierwszym razem.
+**Pozycja scrolla i `position: fixed`.** Elementy fixed i sticky są przechwytywane względem snapshotu, nie viewportu, więc stały nagłówek może wyglądać, jakby dryfował podczas przejścia, chyba że przypisujesz mu własny `view-transition-name` i traktujesz go jako stabilny shared element. To zaskakuje każdego za pierwszym razem.
 
-**Przerywanie przejść.** Użytkownicy klikają szybko. Jeśli nowe przejście startuje, gdy jedno wciąż trwa, przeglądarka pomija to w locie. Zabezpiecz stan w JS, aby na wpół zaaplikowana aktualizacja DOM z pominiętego przejścia nie zostawiła UI w niespójnym stanie — rozwiązuj na `finished`, nie na `updateCallbackDone`.
+**Przerywanie przejść.** Użytkownicy klikają szybko. Jeśli nowe przejście startuje, gdy jedno wciąż trwa, przeglądarka je pomija. Zabezpiecz stan w JS, aby częściowo zastosowana aktualizacja DOM z pominiętego przejścia nie pozostawiła UI w niespójnym stanie — rozwiązuj problemy na `finished`, nie na `updateCallbackDone`.
 
 ## Wsparcie przeglądarek i fallbacki w 2026
 
-Oto uczciwa macierz na moment pisania:
+Oto uczciwy obraz na moment pisania:
 
-- **Same-document** view transitions są **Baseline Newly available** (Chrome, Edge, Safari oraz Firefox od rolloutu w 2025). Bezpieczne do szerokiego użycia.
-- **Cross-document** (MPA) transitions dowożą w **Chromium 126+ i Safari 18.2+**. **Firefox wciąż blokuje regułę at-rule `@view-transition`** — parsuje ją, ale nie animuje, więc ci użytkownicy dostają natychmiastową, nieanimowaną nawigację.
+- **Same-document** view transitions są **Baseline Newly available** (Chrome, Edge, Safari i Firefox od rolloutu w 2025). Bezpieczne do powszechnego użycia.
+- **Cross-document** (MPA) transitions dostępne w **Chromium 126+ i Safari 18.2+**. **Firefox wciąż nie wspiera reguły at-rule `@view-transition`** — parsuje ją, ale nie animuje, więc ci użytkownicy otrzymują natychmiastową, nieanimowaną nawigację.
 
-Ten ostatni punkt to piękna część: **fallbackiem jest nierobienie niczego**. Przeglądarka, która nie wspiera `@view-transition`, ignoruje regułę i nawiguje normalnie. Przeglądarka, której brakuje `document.startViewTransition`, trafia w twoją gałąź wykrywania funkcji i aplikuje aktualizację DOM natychmiast. Nikt nie widzi zepsutej strony; widzą po prostu zwykłe cięcie zamiast przenikania. To progressive enhancement w najczystszej postaci — dodajesz szlif, nie zależność, więc nigdy nie potrzebujesz polyfilla.
+To ostatni punkt to piękna strona: **fallbackiem jest brak działania**. Przeglądarka, która nie wspiera `@view-transition`, ignoruje regułę i nawiguje normalnie. Przeglądarka bez `document.startViewTransition` trafia w twój kod detekcji funkcji i aplikuje aktualizację DOM natychmiast. Nikt nie widzi broken strony; widzi po prostu cięcie zamiast przenikania. To progressive enhancement w czystej postaci — dodajesz ulepszenie, nie zależność, więc nigdy nie potrzebujesz polyfilla.
 
 ## Kiedy tego NIE używać
 
-Jestem entuzjastą, ale to nie młotek na każdy gwóźdź:
+Jestem entuzjastą, ale to nie rozwiązanie do wszystkiego:
 
-- **Złożone animacje oparte na fizyce i sterowane gestami** — drag-to-dismiss dla arkuszy, interpolacja sprężynowa, skoordynowana choreografia wielu elementów z przerwaniem w locie. To wciąż teren Framer Motion / GSAP. View Transitions animują *między dwoma stanami*; to nie jest uniwersalny silnik animacji.
-- **Ciągła lub zapętlona animacja.** Loadery, otoczkowy ruch, cokolwiek niepowiązanego ze zmianą stanu. Złe narzędzie.
-- **Mikrointerakcje wewnątrz komponentu** — naciśnięcie przycisku, przełącznik. Zwykłe przejście CSS jest prostsze i nie ponosi narzutu migawek.
-- **Gdy musisz animować żywy, interaktywny DOM** podczas przejścia. Migawki to statyczne obrazy; nie wpiszesz w nie tekstu.
+- **Złożone animacje oparte na fizyce i sterowane gestami** — drag-to-dismiss dla arkuszy, interpolacja sprężynowa, skoordynowana choreografia wielu elementów z przerwaniem w locie. To wciąż teren Framer Motion i GSAP. View Transitions animują *między dwoma stanami*; to nie jest uniwersalny silnik animacji.
+- **Ciągła lub zapętlona animacja.** Loadery, ruch rotacyjny, cokolwiek niezwiązanego ze zmianą stanu. Złe narzędzie.
+- **Mikrointerakcje wewnątrz komponentu** — naciśnięcie przycisku, przełącznik. Zwykłe przejście CSS jest prostsze i nie ponosi narzutu snapshotów.
+- **Gdy musisz animować żywy, interaktywny DOM** podczas przejścia. Snapshoty to statyczne obrazy; nie wpiszesz w nie tekstu czy interaktywnych elementów.
 
-Słodki punkt to dokładnie to, co zabiło biblioteki: **zmiany tras i widoków** — strona-do-strony, lista-do-szczegółów, przełączanie zakładek, rozwijanie/zwijanie dużych regionów. Do tego natywne API jest mniejsze, szybsze i bardziej niezawodne niż cokolwiek, co dowieziesz samodzielnie.
+Idealne zastosowanie to dokładnie to, co zabiło biblioteki: **zmiany tras i widoków** — strona-do-strony, lista-do-szczegółów, przełączanie zakładek, rozwijanie/zwijanie dużych sekcji. Native API jest mniejsze, szybsze i bardziej niezawodne niż wszystko, co samodzielnie budujesz.
 
-Wdrożyłem to już na trzech produkcyjnych projektach. Bundle stał się lżejszy, animacje płynniejsze, a kod krótszy. W 2026 roku sięganie po ciężką zależność do animacji tylko po to, żeby przenikać między stronami, to nawyk warty porzucenia.
+Wdrożyłem to na trzech projektach produkcyjnych. Bundle stał się lżejszy, animacje płynniejsze, a kod krótszy. W 2026 roku sięganie po ciężką bibliotekę animacji tylko po to, aby przenikać między stronami, to nawyk godny porzucenia.
 
 ## Bibliografia
 

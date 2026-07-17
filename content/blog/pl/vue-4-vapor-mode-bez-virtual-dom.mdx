@@ -1,5 +1,5 @@
 ---
-title: 'Vue 4 Vapor mode: virtual DOM jest teraz opcjonalny'
+title: 'Vue 4: Vapor mode i praktyczne wdrażanie fine-grained reactivity'
 date: '2026-07-06'
 category: 'Development'
 tags: ['vue', 'reactivity', 'performance', 'frontend', 'signals']
@@ -7,28 +7,28 @@ featured: false
 author: 'Sebastian'
 draft: false
 enSlug: 'vue-4-vapor-mode-no-virtual-dom-guide'
-excerpt: 'Vue 4 Vapor mode kompiluje komponenty do bezpośrednich operacji na DOM — bez virtual DOM. Jak to działa, jak wypada obok Solid i Svelte i czy warto.'
+excerpt: 'Vapor mode kompiluje komponenty bezpośrednio do DOM bez pośrednika virtual DOM. Poznaj architekturę, scenariusze adopcji i różnice względem Solid oraz Svelte.'
 ---
 
-Przez jakieś dekadę godziłem się na cichy podatek płacony w każdej aplikacji Vue, którą wypuściłem. Każda zmiana stanu alokowała świeże drzewo obiektów JavaScript, przechodziła dwa drzewa, żeby je porównać, wyliczała różnicę i dopiero potem dotykała prawdziwego DOM. Ta praca — **virtual DOM** — działała na telefonach moich użytkowników, na ich CPU, na ich baterii. To była cena za developer experience, które uwielbiałem.
+Przez wiele lat każda aplikacja Vue, którą wdrażałem, ponosiła niewidoczny koszt. Przy każdej zmianie stanu Vue musiało alokować nowe obiekty JavaScript, przejść dwa drzewa, porównać je i dopiero wtedy zmienić DOM. Tę pracę — **virtual DOM** — wykonywała bateria telefonu użytkownika, jego procesor. To była cena za elegancki developer experience, który uwielbiałem.
 
-Vue 4 daje mi sposób, żeby przestać go płacić. **Vapor mode** kompiluje komponent wprost do bezpośrednich operacji na DOM. Żadnego drzewa virtual DOM, żadnego diffu, żadnej rekoncyliacji. Ten sam `ref` i `computed`, które pisałem od lat, ale wynikiem są chirurgiczne aktualizacje DOM, które stawiają Vue w benchmarkach tuż obok Solid i Svelte.
+Vue 4 oferuje sposób na wyeliminowanie tego kosztu. **Vapor mode** kompiluje komponenty bezpośrednio do operacji na DOM, omijając pośrednika. Bez virtual DOM, bez diffowania, bez reconciliacji. Utrzymujesz znany `ref` i `computed`, ale wynikiem są precyzyjne aktualizacje DOM, które stawiają Vue na równi z SolidJS i Svelte w testach wydajnościowych.
 
-Najlepsze jest to, czego mode *nie* wymaga ode mnie. Nie uczę się nowego modelu reactivity. Nie przepisuję komponentów w nowym dialekcie. Dodaję jedno słowo do tagu `<script setup>` i kompilator robi resztę. Przejdźmy przez to, co faktycznie się dzieje, dlaczego to istotne i czy to już należy do twojego codebase'u.
+Kluczowa różnica: **nie wymaga zmian w sposobie pisania kodu**. Nie poznajemy nowego modelu reactivity. Nie przepisujemy komponentów w nowej składni. Dodajemy jeden atrybut do `<script setup>` i kompilator zajmuje się resztą. Przejdźmy przez to, jak to działa pod maską, dlaczego ma znaczenie i w jakich scenariuszach warto to wdrożyć.
 
 ## Dlaczego virtual DOM był kompromisem od samego początku
 
-Virtual DOM nigdy nie był szybki. Był *wygodny*. Kiedy React go spopularyzował, a Vue 2 przejęło ten wzorzec, obietnica była prosta: opisujesz, jak UI ma wyglądać dla danego stanu, a framework wylicza minimalny zestaw mutacji DOM potrzebnych, żeby tam dotrzeć. Przestajesz ręcznie pisać imperatywny kod DOM i przestajesz martwić się, który węzeł się zmienił.
+Virtual DOM nigdy nie stanowił najszybszego rozwiązania. Był wygodny — to była jego rzeczywista wartość. Gdy React go spopularyzował, a Vue 2 przejęło ten paradygmat, obietnica brzmiała: opisujesz pożądany stan UI, a framework wyznacza minimalny zestaw mutacji DOM niezbędnych do jego osiągnięcia. Znikała konieczność ręcznego manipulowania DOM i śledzenia, który element się zmienił.
 
-Mechanizmem jest funkcja renderująca. Przy każdej aktualizacji komponent uruchamia swoją funkcję renderującą, żeby wyprodukować drzewo zwykłych obiektów JavaScript — vnode'ów — opisujących pożądane wyjście. Framework zachowuje poprzednie drzewo, **diffuje** oba i aplikuje różnice do prawdziwego DOM. Prawdziwe mutacje DOM są kosztowne, więc batchowanie ich za diffem było realną wygraną w porównaniu z naiwnym ponownym renderowaniem.
+Mechanizmem jest funkcja renderująca. Przy każdej zmianie stanu komponent uruchamia swoją funkcję renderującą, tworząc nowe drzewo zwykłych obiektów JavaScript — vnode'ów — reprezentujących żądany UI. Framework porównuje je z poprzednim drzewem, **diffuje**, a potem aplikuje różnice do rzeczywistego DOM. Ponieważ bezpośrednie mutacje DOM są kosztowne, batchowanie zmian przez diff stanowiło znaczną poprawę wobec naiwnego ponownego renderowania.
 
-Ale spójrz, gdzie leży koszt. To diffowanie dzieje się **przy każdej zmianie stanu, w przeglądarce, w runtime**. Żeby zaktualizować jeden węzeł tekstowy, Vue i tak alokuje vnode'y dla otaczającej struktury, przechodzi drzewo i porównuje. Vue 3 sprytnie sobie z tym poradziło dzięki podpowiedziom z etapu kompilacji — patch flagom, które oznaczają, które części szablonu są dynamiczne, oraz static hoistingowi, który pomija niezmienne węzły. Te optymalizacje zmniejszyły diff, ale nigdy go nie usunęły. Framework wciąż musiał *zdecydować*, co się zmieniło, w runtime.
+Problem leży w tym, gdzie ten proces się odbywa. Diffowanie wykonuje się **przy każdej zmianie stanu, dynamicznie w przeglądarce**. Zaktualizowanie pojedynczego węzła tekstowego wymaga alokacji vnode'ów dla całej otaczającej struktury, przechodzenia drzewa i porównania. Vue 3 zoptymalizowało to, dodając wskazówki na etapie kompilacji — patch flagi określające dynamiczne części szablonu i static hoisting, który pomija niezmieniające się węzły. Te optymalizacje zmniejszyły pracę diffu, ale jej nie wyeliminowały. Framework wciąż musiał *obliczyć* w runtime, co się zmieniło.
 
-Solid i Svelte zadały ostrzejsze pytanie: skoro kompilator już zna twój szablon w czasie build, to po co w ogóle odkładać decyzję "co się zmieniło" na przeglądarkę? Czemu nie podłączyć każdej reaktywnej wartości bezpośrednio do dokładnie tego węzła DOM, który kontroluje, tak żeby zmiana aktualizowała ten węzeł i nic więcej? To jest fine-grained reactivity i to właśnie ideę, którą Vapor mode wnosi do Vue.
+SolidJS i Svelte postawili to pytanie inaczej: skoro kompilator ma dostęp do szablonu na etapie kompilacji, dlaczego odsuwać decyzję "co się zmieniło" na czas runtime? Zamiast tego można bezpośrednio połączyć każdą reaktywną wartość z konkretnym węzłem DOM, który nią steruje — zmiana wartości aktualizuje wyłącznie ten węzeł, nic więcej. To jest fine-grained reactivity, i to właśnie podejście wprowadza Vapor mode do Vue.
 
-## Czym Vapor mode właściwie jest
+## Czym jest Vapor mode
 
-**Vapor mode to alternatywna strategia kompilacji.** Ta sama składnia szablonów, to samo Composition API, zupełnie inne wyjście. Zamiast kompilować twój komponent do funkcji renderującej produkującej vnode'y, kompilator Vapor emituje kod, który tworzy prawdziwe węzły DOM raz, a następnie wiąże twój reaktywny stan bezpośrednio z konkretnymi węzłami, które od niego zależą.
+**Vapor mode to alternatywna strategia kompilacji.** Syntax szablonów i Composition API pozostają identyczne, ale kompilator produkuje zupełnie inny kod. Zamiast generować funkcję renderującą produkującą vnode'y, kompilator Vapor emituje kod, który tworzy prawdziwe węzły DOM jednorazowo, a następnie łączy reaktywny stan bezpośrednio z konkretnymi węzłami, które go wykorzystują.
 
 Weźmy najnudniejszy komponent świata:
 
@@ -44,7 +44,7 @@ const count = ref(0)
 </template>
 ```
 
-W klasycznym Vue kliknięcie tego przycisku ponownie uruchamia funkcję renderującą, produkuje nowy vnode dla przycisku, diffuje go ze starym, zauważa, że dziecko tekstowe się zmieniło, i patchuje je. W Vapor mode kompilator już w czasie build ustalił, że `count` kontroluje dokładnie jeden węzeł tekstowy wewnątrz tego przycisku. Z grubsza emituje coś takiego (uproszczone — nigdy tego nie piszesz ani nie widzisz):
+W klasycznym Vue kliknięcie przycisku ponownie uruchamia funkcję renderującą, generuje nowy vnode, porównuje go ze starym, wykrywa zmianę w tekście i aktualizuje go. W Vapor mode kompilator ustala na etapie budowania, że `count` wpływa dokładnie na jeden węzeł tekstowy wewnątrz przycisku. W przybliżeniu emituje kod podobny do poniższego (uproszczony — nigdy tego nie napiszesz ani nie zobaczysz):
 
 ```js
 // Wyjście koncepcyjne — Vapor wiąże reaktywną wartość z jednym węzłem
@@ -65,23 +65,23 @@ function render() {
 }
 ```
 
-Nie ma tu **żadnego drzewa vnode'ów ani diffu**. Gdy `count` się zmienia, efekt się odpala i zapisuje do jednego węzła tekstowego. Nic nie przechodzi drzewa. Nic nie jest porównywane. Zmiana stanu wyzwala precyzyjny, celowany zapis do DOM — framework już w czasie kompilacji wiedział, który węzeł dotknąć.
+Brak drzewa vnode'ów, brak diffowania. Gdy zmieni się `count`, efekt uruchamia się i aktualizuje pojedynczy węzeł tekstowy. Nie przychodzi do przechodzenia drzewa, nie ma porównywania. Zmiana stanu bezpośrednio prowadzi do precyzyjnej aktualizacji DOM — kompilator już wiedział w momencie budowania, który węzeł trzeba zmienić.
 
-To "już wiedział" jest sednem całej gry. Klasyczne Vue odkrywa, co się zmieniło, w runtime przez diffowanie. Vapor Vue ustala to w czasie kompilacji i zaszywa to połączenie na sztywno.
+W tym leży sedno: **klasyczne Vue odkrywa dynamicznie, co się zmieniło** — przez diff w runtime. **Vapor Vue rozpoznaje to statycznie** — na etapie kompilacji — i koduje połączenia na sztywno.
 
-## Jak napędza to reactivity Vue
+## Reactivity jako fundament
 
-Tu jest część elegancka i powód, dla którego Vue mogło to osiągnąć bez rozszczepiania się na dwa frameworki: **Vapor mode ponownie wykorzystuje istniejący system reactivity Vue.** Oparty na signals rdzeń, który zawsze napędzał `ref`, `reactive`, `computed` i `watchEffect`, jest dokładnie tym mechanizmem, który steruje fine-grained aktualizacjami DOM.
+To jest elegancka część rozwiązania i wyjaśnia, dlaczego Vue mogło wdrożyć Vapor bez podziału na dwa niezależne frameworki: **Vapor mode ponownie wykorzystuje istniejący system reactivity Vue.** Fundament oparty na signals, który napędza `ref`, `reactive`, `computed` i `watchEffect`, jest dokładnie tym mechanizmem, który steruje precyzyjnymi aktualizacjami DOM.
 
-Jeśli kiedykolwiek zastanawiałeś się, skąd `computed` wie, że ma przeliczyć się tylko wtedy, gdy zmienią się jego zależności, to już rozumiesz Vapor. Reactivity Vue działa przez śledzenie zależności: gdy efekt się uruchamia i czyta `count.value`, Vue zapisuje, że ten efekt zależy od `count`. Gdy `count` jest zapisywane, Vue powiadamia dokładnie te efekty, które go czytały. To ten sam prymityw, który stoi za nowoczesnymi signals w całym ekosystemie — model rozkładam na czynniki pierwsze w moim przewodniku po [fine-grained reactivity](/pl/blog/sygnaly-drobnoziarnista-reaktywnosc-2026) i warto go przeczytać obok tego tekstu, bo Vapor to właśnie ten model zastosowany do DOM.
+Znasz już to, jeśli pytałeś się kiedyś, jak `computed` wie, kiedy trzeba się przeliczyć. System reactivity Vue pracuje na zasadzie dependency tracking: gdy efekt uruchamia się i odczytuje `count.value`, Vue rejestruje, że efekt zależy od `count`. Gdy `count` jest aktualizowany, Vue powiadamia dokładnie te efekty, które go czytały. To ten sam prymityw, który stanowi podstawę nowoczesnych signals we wszystkich frameworkach — szczegółowo opisuję go w przewodniku [fine-grained reactivity](/pl/blog/sygnaly-drobnoziarnista-reaktywnosc-2026), wart przeczytania razem z tym artykułem, bo Vapor to właśnie ten model zastosowany bezpośrednio do DOM.
 
-W klasycznym Vue reaktywnym efektem, który jest śledzony, jest *cała funkcja renderująca komponentu*. Zmień dowolną zależność, a cały render uruchamia się ponownie (a potem diff vnode'ów ogranicza faktyczne szkody w DOM). W Vapor mode kompilator tworzy **osobny, mały efekt dla każdego dynamicznego wiązania**. Interpolacja tekstu dostaje własny efekt. Wiązanie `:class` dostaje własny efekt. `v-if` dostaje własny efekt. Każdy efekt zależy tylko od konkretnych reaktywnych wartości, które czyta, i gdy jedna z nich się zmienia, ponownie uruchamia się tylko ten jeden efekt i dotyka tylko swojego węzła.
+W tradycyjnym Vue śledzoną jednostką reactivity jest *cała funkcja renderująca komponentu*. Zmiana jakiejkolwiek zależności wyzwala pełny re-render (a diff vnode'ów zmniejsza następnie rzeczywiste zmiany w DOM). Vapor mode zmienia to fundamentalnie: kompilator tworzy **osobny, minimalny efekt dla każdego dynamicznego wiązania**. Interpolacja tekstowa ma własny efekt. Binding `:class` ma własny. Dyrektywa `v-if` ma własny. Każdy efekt zależy wyłącznie od reaktywnych wartości, które czyta, więc zmiana pojedynczej wartości uruchamia tylko odpowiedni efekt i zmienia wyłącznie powiązany węzeł.
 
-Na potrzeby Vue 4 zespół przepisał rdzeń reactivity na bazie **alien-signals**, implementacji śledzenia zależności zaprojektowanej pod minimalny narzut — szybsze powiadamianie subskrybentów, bardziej agresywne batchowanie i mniej alokacji przy sprzątaniu przestarzałych zależności. Twoje wywołania `ref()` i `computed()` są identyczne, ale maszyneria pod spodem stała się zauważalnie lżejsza, co ma dużo większe znaczenie, gdy tysiące malutkich efektów wykonują pracę, którą kiedyś wykonywał jeden wielki efekt renderujący.
+Dla Vue 4 zespół całkowicie przepisał rdzeń reactivity przy użyciu **alien-signals** — implementacji dependency tracking'u zoptymalizowanej pod minimalny overhead: szybsze powiadamianie obserwatorów, bardziej agresywne batching zmian, mniej alokacji pamięci przy czyszczeniu starych zależności. Twoje wywołania `ref()` i `computed()` działają identycznie, ale podstawowa architektura jest znacznie lżejsza. Robi to dużą różnicę, gdy tysiące małych efektów wykonują pracę, którą wcześniej wykonywał jeden duży efekt renderujący.
 
-## Jak się włączasz — i jak mieszać Vapor z nie-Vapor
+## Adoptacja i współistnienie z klasycznym Vue
 
-Vapor mode jest **opt-in na poziomie komponentu**, a przełącznik jest celowo mały. Dodajesz atrybut `vapor` do `<script setup>`:
+Vapor mode jest **opcjonalny na poziomie poszczególnych komponentów** — przełącznik jest celowo prosty. Wystarczy dodać atrybut `vapor` do `<script setup>`:
 
 ```vue
 <script setup vapor>
@@ -97,60 +97,59 @@ const total = computed(() => items.value.length)
 </template>
 ```
 
-To cała powierzchnia migracji pojedynczego komponentu. **Composition API jest niezmienione** — `ref`, `reactive`, `computed`, `watch`, `watchEffect` zachowują się dokładnie jak wcześniej. Nie ma nowej składni do nauki wewnątrz ciała komponentu; różnica leży wyłącznie w tym, co emituje kompilator. (Zweryfikuj dokładny atrybut z aktualną dokumentacją Vue dla swojej wersji — atrybut `vapor` na `<script setup>` to składnia, która utrzymała się przez bety 3.6 aż do Vue 4, ale Vapor spędził długi czas jako eksperymentalne API i drobne szczegóły ustaliły się późno.)
+To cała zmiana wymagana na poziomie kodu komponentu. **Composition API pozostaje niezmieniony** — `ref`, `reactive`, `computed`, `watch`, `watchEffect` działają dokładnie jak zawsze. Brak nowej składni do nauczenia się; jedyna różnica to wyjście kompilatora. (Potwierdź dokładną składnię w dokumentacji Vue dla Twojej wersji — atrybut `vapor` na `<script setup>` utrzymał się przez beta 3.6 aż do Vue 4, ale Vapor był długo eksperymentalnym API i ostateczne szczegóły ustaliły się stosunkowo niedawno.)
 
-Ponieważ jest to per-komponent, nie migrujesz aplikacji w jednym heroicznym pull requeście. Konwertujesz komponenty krytyczne dla wydajności — gigantyczną tabelę, wykres na żywo, wirtualizowany feed — a resztę zostawiasz na klasycznej ścieżce. Ta stopniowość to cała historia adopcji i działa tylko dlatego, że komponenty Vapor i VDOM **współpracują**:
+Ponieważ adopcja jest na poziomie komponentu, można migrować stopniowo. Konwertujesz komponenty wrażliwe na wydajność — duże tabele, wykresy aktualizujące się w czasie rzeczywistym, wirtualizowane listy — a pozostałą część pozostawiasz w klasycznym modelu. Ta przyrostowość jest kluczowa dla strategii adopcji i jest możliwa, ponieważ komponenty Vapor i VDOM **mogą współistnieć**:
 
-- Komponent Vapor może renderować klasyczne komponenty VDOM jako dzieci i odwrotnie. Vue mostkuje oba modele renderowania na granicy.
-- Mieszanie obsługiwane jest przez **plugin interop Vapor** (`vaporInteropPlugin`), który pozwala istniejącym bibliotekom komponentów VDOM — Element Plus, Ant Design Vue i spółce — działać wewnątrz drzewa Vapor.
-- Jeśli pójdziesz na całość i *każdy* komponent w twojej aplikacji jest Vapor, możesz zbootstrapować ją przez **`createVaporApp`** zamiast `createApp` i całkowicie usunąć runtime virtual DOM ze swojego bundle'a. Stamtąd bierze się największa oszczędność na rozmiarze bundle'a.
+- Komponenty Vapor mogą zawierać komponenty VDOM jako dzieci i vice versa. Vue automatycznie mostkuje oba modele na granicy komponentów.
+- Interop obsługiwany jest przez **plugin `vaporInteropPlugin`**, umożliwiający istniejącym bibliotekom komponentów VDOM takim jak Element Plus czy Ant Design Vue pracować wewnątrz drzewa Vapor.
+- W pełni Vaporowa aplikacja (każdy komponent to Vapor) może użyć **`createVaporApp`** zamiast `createApp`, całkowicie usuwając runtime virtual DOM z bundle'a. To daje największe oszczędności na rozmiarze kodu.
 
-Są więc realnie dwa poziomy adopcji. Rozsyp `vapor` po gorących komponentach i zachowaj runtime VDOM na potrzeby interopu, albo przejdź w pełni na Vapor i wypuść aplikację bez ani kawałka kodu virtual DOM.
+Istnieją faktycznie dwa poziomy adopcji: (1) Dodaj Vapor do kluczowych komponentów, utrzymując runtime VDOM dla interopu z istniejącymi bibliotekami. (2) Przejdź całkowicie na Vapor i wyeliminuj z bundle'a cały kod virtual DOM.
 
-## Wpływ na wydajność i rozmiar bundle'a
+## Wydajność i rozmiar bundle'a
 
-To liczby są powodem, dla którego ktokolwiek zwraca na to uwagę. We własnych benchmarkach zespołu Vue build Vapor montuje rzędu **100 000 komponentów w około 100 ms**, co stawia go na równi z SolidJS — frameworkiem, który od lat trzyma szczyt rankingów fine-grained reactivity. Największe zyski widać w scenariuszach z dużą liczbą aktualizacji, bo dokładnie tam kumulował się dawny koszt diffu: skrajne przypadki raportują rendery szybsze nawet o około **97%** względem odpowiadającej ścieżki VDOM.
+Wpływ na liczbę to główny powód zainteresowania tym podejściem. Testy wydajności zespołu Vue pokazują, że Vapor **renderuje 100 000 komponentów w około 100 ms** — wynik porównywalny z SolidJS, frameworkiem, który dominuje benchmarkami fine-grained reactivity. Największe zyski widoczne są w scenariuszach z dużą ilością aktualizacji, gdzie kumuluje się koszt diffowania — w ekstremalnych przypadkach obserwuje się **97% szybsze renderowanie** w porównaniu z odpowiadającą ścieżką VDOM.
 
-Napędzają to dwie rzeczy. Po pierwsze, eliminacja diffu usuwa alokacje i przechodzenie drzewa przy każdej aktualizacji — przeglądarka przestaje wykonywać księgową robotę przy każdej zmianie stanu. Po drugie, spada presja na pamięć, bo nie wybijasz już drzew vnode'ów przy każdym renderze, co oznacza mniej garbage collection, co oznacza mniej tych drobnych zacięć frame-time'u, które pojawiają się na urządzeniach Android ze średniej półki.
+Źródła tych zysków to dwie rzeczy: (1) Wyeliminowanie diffu zmniejsza alokacje pamięci i przechodzenie drzewa przy każdej zmianie — przeglądarka nie musi już porównywać drzew w każdym cyklu. (2) Zmniejsza się presja na pamięć, bo nie generujesz drzew vnode'ów przy każdym renderze — mniej pracy dla garbage collector, mniej mikrozacięć frame-time'u, które są szczególnie widoczne na średnio-zasilonych urządzeniach z Androidem.
 
-Rozmiar bundle'a też idzie w dobrym kierunku. Komponenty tylko-Vapor mogą być **o 20–50% mniejsze** niż ich odpowiedniki VDOM, bo skompilowane wyjście jest lżejsze i pociąga za sobą mniej runtime'u. A w pełni Vaporowa aplikacja zbudowana przez `createVaporApp` zrzuca cały runtime VDOM. To rodzaj wygranej, która faktycznie widać w [performance budgecie](/pl/blog/budzety-wydajnosci-frontend) — nie mikrooptymalizacja, którą trzeba mrużyć oczy, żeby zmierzyć, ale dziesiątki kilobajtów runtime'u i mierzalnie szybsza ścieżka interakcji. Jeśli ważysz też swój toolchain, zwróć uwagę, że Vue 4 łączy to z kompilatorem przepisanym w Rust, który dramatycznie skraca czasy HMR w dużych aplikacjach; wybór runtime'u ma tu znaczenie, a opcje porównałem w moim [zestawieniu Node vs Bun vs Deno](/pl/blog/nodejs-bun-deno-2026-porownanie-runtime).
+Na rozmiar bundle'a wpływ jest znaczący. Komponenty wyłącznie Vapor mogą być **20–50% mniejsze** od ich odpowiedników VDOM, bo skompilowany kod jest lżejszy i wymaga mniej runtime'u. Pełna aplikacja Vapor (z `createVaporApp`) całkowicie eliminuje runtime VDOM. To nie jest mikro-optymalizacja — to mierzalne zmniejszenie bundle'a o dziesiątki kilobajtów i zauważalnie szybsza ścieżka interakcji, którą można zaobserwować w [performance budgecie](/pl/blog/budzety-wydajnosci-frontend). Dodaj do tego, że Vue 4 ma kompilator przepisany w Rust, który znacznie skraca czasy HMR w dużych projektach — szczegóły porównuję w artykule [Node vs Bun vs Deno](/pl/blog/nodejs-bun-deno-2026-porownanie-runtime).
 
-Uczciwe zastrzeżenie: rzeczywiste aplikacje to nie JS Framework Benchmark. Większość komponentów nie renderuje 100 000 wierszy, a dla typowego formularza czy strony ustawień różnica między Vapor a klasycznym Vue jest niezauważalna. Zyski koncentrują się w komponentach, które renderują dużo i aktualizują się często. Zmierz swoje faktyczne gorące ścieżki, zanim założysz globalną wygraną.
+Ważne wyjaśnienie: benchmarki to nie rzeczywiste aplikacje. Większość komponentów nie renderuje 100 000 elementów, a dla typowego formularza czy panelu ustawień różnica między Vapor a klasycznym Vue jest prawie niezauważalna. Zyski dotyczą komponentów, które mają dużo elementów i aktualizują się częstą. Profiluj swoje rzeczywiste wąskie gardła przed podjęciem decyzji o globalnej migracji.
 
-## Gdzie to stoi obok Solid i Svelte 5
+## Porównanie z SolidJS i Svelte 5
 
-Vapor mode to wejście Vue w konwergencję, która budowała się od lat. **Solid** wypuścił się bez virtual DOM od pierwszego dnia, zbudowany w całości na signals i skompilowany do fine-grained aktualizacji DOM. **Svelte 5** przepisał swój reactivity wokół runes i śledzenia w czasie kompilacji, również bez VDOM. React poszedł w inną stronę — zachował VDOM i zamiast tego zautomatyzował memoizację, która kiedyś była ręczna, o czym pisałem w [pogłębionej analizie React Compilera](/pl/blog/react-compiler-automatyczna-memoizacja). I oczywiście React mocno zainwestował w swój runtime'owy scheduler; jeśli chcesz zobaczyć, ile maszynerii stoi za utrzymywaniem VDOM przy życiu, moja [pogłębiona analiza React Fiber](/pl/blog/react-fiber-silnik-nowoczesnego-reacta) przez to przechodzi.
+Vapor mode reprezentuje konwergencję, nad którą frameworki pracowały przez wiele lat. **SolidJS** nigdy nie miał virtual DOM — od początku zbudowany na signals z fine-grained aktualizacjami DOM. **Svelte 5** przeprojektował reactivity wokół runes i śledzenia na etapie kompilacji, również bez VDOM. React wybrał inną ścieżkę — utrzymał VDOM i zautomatyzował memoization (niegdyś ręczna), co omawiamy w [analizie React Compilera](/pl/blog/react-compiler-automatyczna-memoizacja). React również znacząco zainwestował w runtime scheduler; jeśli chcesz zobaczyć, jak dużą ilość kodu trzeba, aby utrzymać VDOM, przeczytaj moją [analizę React Fiber](/pl/blog/react-fiber-silnik-nowoczesnego-reacta).
 
-Frameworki lądują na tym samym wniosku z różnych punktów startowych: **kompilator powinien wykonywać pracę, którą kiedyś wykonywał runtime.** Solid i Svelte były zaprojektowane wokół tej idei. Vue dokłada ją do dojrzałego frameworka z ogromnym istniejącym ekosystemem — co jest trudniejsze i zarazem cenniejsze, bo Vue nie każe ci porzucać istniejących komponentów, żeby to dostać.
+Wszystkie frameworki dochodzą do tego samego wniosku z różnych początkowych założeń: **kompilator powinien przejmować pracę, którą wcześniej wykonywał runtime.** SolidJS i Svelte 5 zostały zbudowane na tej idei od samego początku. Vue implementuje to w dojrzałym frameworku z wielkiego istniejącą bazą kodu — jest to trudniejsze, ale i bardziej wartościowe, bo Vue nie zmusza do porzucenia istniejących komponenty, aby to uzyskać.
 
-Tym, co naprawdę wyróżnia podejście Vue, jest **ciągłość doświadczenia pisania kodu**. W Solid signals kształtują to, jak piszesz wszystko — wywołujesz funkcje, żeby odczytać wartości, i internalizujesz reguły śledzenia. Svelte 5 wprowadza runes jako nowy dialekt. Vapor Vue zachowuje `ref` i `computed` oraz single-file components dokładnie takimi, jakie są. Dostajesz wyjście klasy Solid z kodu, który czyta się jak Vue, które już piszesz. To realna przewaga dla zespołów, które cenią fine-grained wydajność, ale nie chcą przeszkalać wszystkich ani utrzymywać drugiego modelu mentalnego.
+Kluczowa różnica Vue polega na **ciągłości doświadczenia programistycznego**. W SolidJS signals definiują sposób pisania kodu — musisz pamiętać o wywoływaniu funkcji, aby czytać wartości i respektowaniu reguł dependency tracking. Svelte 5 wprowadza runes jako nowy dialekt, wymagający nowego sposobu myślenia. Vapor Vue zachowuje znane `ref`, `computed` i single-file components bez zmian. Dostajesz wydajność klasy Solid z kodem, który wygląda jak zwykłe Vue. To realna przewaga dla zespołów, które chcą fine-grained reactivity, ale nie chcą zmienić modelu mentalnego ani przeznaczać całego zespołu na ponowne szkolenie.
 
-## Ograniczenia i pułapki
+## Ograniczenia i kwestie praktyczne
 
-To wciąż młoda funkcja i wyświadczyłbym ci niedźwiedzią przysługę, udając inaczej. Ostre krawędzie są realne:
+Vapor mode to wciąż stosunkowo nowa funkcja i ważne jest wymienić rzeczywiste wyzwania. Oto kilka faktycznych ograniczeń:
 
-- **Tylko Composition API.** Vapor wymaga `<script setup>`. Nie ma wsparcia dla Options API — żadnego `data()`, żadnych `methods` w komponencie Vapor. Jeśli twój codebase wciąż siedzi na Options API, to prerekwizyt migracji, a nie kwestia na później.
-- **Brak ręcznej funkcji `setup()`.** Działa konkretnie z lukrem `<script setup>`, a nie ze stylem jawnego `setup()` zwracającego funkcję renderującą.
-- **Hooki lifecycle per-element nie działają.** Wygodne dodatki specyficzne dla VDOM, jak `@vue:mounted` na elemencie, nie istnieją w modelu Vapor.
-- **Granice interopu mają przypadki brzegowe.** Komponent Vapor *może* renderować dziecko VDOM i odwrotnie, ale pewne wzorce reactivity propsów i scenariusze slotów zachowują się inaczej, gdy dane przekraczają granicę. Głęboko zagnieżdżone biblioteki komponentów VDOM wewnątrz drzewa Vapor wciąż mogą produkować błędy runtime'u — są otwarte zgłoszenia dotyczące dokładnie tego przy zestawach UI.
-- **Ekosystem nie nadgonił.** Rdzeniowi towarzysze — Pinia, VueUse, Nuxt — działają, ale wiele zewnętrznych bibliotek komponentów i customowych dyrektyw robi założenia, które trzymają się tylko pod VDOM. Część tych założeń pęka w Vapor, a nadgonienie zajmie ekosystemowi trochę czasu.
-- **SSR, `Transition` i `KeepAlive` wymagają uwagi.** To były ostatnie elementy, które osiągnęły pełnię funkcjonalności na ścieżce Vapor. Zweryfikuj wsparcie dla konkretnej wersji, którą celujesz, zamiast zakładać parytet z klasycznym Vue.
+- **Wyłącznie Composition API z `<script setup>`.** Vapor nie wspiera Options API — brak `data()`, `methods` czy tradycyjnego `setup()`. Jeśli codebase używa głównie Options API, to wymaga najpierw migracji do Composition API.
+- **Brak hoków lifecycle per-element.** Atrybuty specyficzne dla VDOM, jak `@vue:mounted` na elemencie, nie istnieją w Vapor.
+- **Interop ma ograniczenia.** Komponenty Vapor mogą zawierać komponenty VDOM i vice versa, ale niektóre zaawansowane scenariusze reactivity z props i slots mogą się zachowywać inaczej na granicy. Głębokie zagnieżdżanie bibliotek VDOM wewnątrz drzewa Vapor czasami prowadzi do błędów runtime — są otwarte issue dotyczące tego z bibliotekami UI.
+- **Ekosystem się dopiero dostosowuje.** Core biblioteki — Pinia, VueUse, Nuxt — działają, ale wiele komponentów i custom dyrektyw trzecich firm robi założenia specyficzne dla VDOM. Te założenia pękają w Vapor, a pełne wsparcie ekosystemu zajmie jeszcze czas.
+- **SSR, `Transition` i `KeepAlive` wymagają weryfikacji.** To były ostatnie elementy, które osiągnęły pełnię funkcjonalności w Vapor. Sprawdź dokumentację dla konkretnej wersji Vue zamiast zakładać parytet z klasycznym modelem.
 
-Żadne z tych nie jest dealbreakerem dla właściwego zastosowania. Wszystkie są powodami, żeby nie przełączać całej aplikacji na Vapor w piątkowe popołudnie.
+Żaden z tych problemów nie dyskwalifikuje Vapor dla zmyślnych scenariuszy. Wszystkie stanowią powody, by nie migrować całej aplikacji na Vapor bez dokładnego planowania i testowania.
 
-## Czy powinieneś to przyjąć?
+## Czy wdrożyć Vapor mode?
 
-Oto moja szczera ocena.
+Oto moja praktyczna ocena:
 
-**Przyjmij to teraz, selektywnie, jeśli** masz konkretny problem wydajnościowy w konkretnym miejscu — data grid, dashboard aktualizujący się na żywo, listę komponentów sąsiadującą z canvasem, wirtualizowany feed, który zacina się na telefonach ze średniej półki. To dokładnie chirurgiczny scenariusz, pod który Vapor został zbudowany. Skonwertuj te komponenty, zmierz i zostaw resztę na klasycznej ścieżce. Opt-in per-komponent oznacza, że promień rażenia jest mały i możesz cofnąć pojedynczy plik.
+**Adoptuj selektywnie, jeśli** masz konkretny wąski problem wydajnościowy — duża tabela z danymi, dashboard aktualizujący się w czasie rzeczywistym, wirtualizowana lista, która zacina się na średnich urządzeniach. To jest dokładnie scenariusz, do którego Vapor został zaprojektowany. Konwertuj tylko te komponenty, zmierz poprawę i zostaw resztę w klasycznym modelu. Granularność per-komponent oznacza niskie ryzyko — zawsze możesz cofnąć zmianę w jednym pliku.
 
-**Poczekaj, jeśli** budujesz świeżą aplikację mocno opartą na zewnętrznych bibliotekach komponentów VDOM albo twój zespół wciąż w dużej mierze siedzi na Options API. Historia interopu jest dobra, ale nie bezszwowa, a ekosystem jest w połowie migracji. Natrafisz na chropowatości, które kosztują więcej niż wydajność, którą zyskasz.
+**Poczekaj, jeśli** budujesz nową aplikację opartą głównie na bibliotekach UI (Element Plus, Ant Design Vue) albo twój zespół używa głównie Options API. Interop jest możliwy, ale nie całkowicie transparentny, a ekosystem wciąż się dopasowuje. Problemy interopu mogą pochłonąć więcej czasu niż oszczędzisz na wydajności.
 
-**Nie przechodź jeszcze w pełni na Vapor z `createVaporApp`**, chyba że kontrolujesz całe swoje drzewo komponentów i przetestowałeś każdą zależność. Wygrana na bundle'u jest realna, ale wymóg "każdy komponent musi być Vapor" to silne ograniczenie wobec większości dzisiejszych rzeczywistych grafów zależności.
+**Nie migruj całej aplikacji do `createVaporApp`** chyba że kontrolujesz wszystkie komponenty i masz pełną kontrolę nad zależnościami. Oszczędność na bundle'u jest realna, ale wymóg "każdy komponent musi być Vapor" nakłada silne ograniczenia.
 
-Do migracji podejdź jak do projektu przyrostowego. Najpierw przejdź na Composition API i `<script setup>` — to prawdziwy prerekwizyt i jest wartościowy niezależnie od Vapor. Potem sprofiluj, żeby znaleźć swoje autentyczne gorące ścieżki, i konwertuj te komponenty po jednym, dodając plugin interop, żeby reszta aplikacji dalej działała. Zachowaj runtime VDOM, dopóki nie możesz uczciwie powiedzieć, że każdy komponent jest Vapor. Powstrzymaj pokusę konwertowania komponentów, które nie są wrażliwe na wydajność; zysk jest zerowy, a dziedziczysz ograniczenia za nic.
+**Strategia przyrostowa:** (1) Najpierw migrate na Composition API i `<script setup>` — to prerekwizyt i wartościowy sam w sobie. (2) Profiluj aplikację, aby znaleźć rzeczywiste wąskie gardła. (3) Konwertuj te komponenty jedno po drugim, używając interopu. (4) Utrzymuj runtime VDOM dopóki możesz uczynić wszystkie komponenty Vaporowymi. (5) Nie konwertuj komponentów, które nie mają problemów wydajnościowych — zysk byłby zerowy, a ograniczenia rzeczywiste.
 
-Nagłówek nie brzmi, że virtual DOM jest martwy. Brzmi, że w Vue 4 virtual DOM jest wreszcie **opcjonalny** — wyborem, którego dokonujesz per komponent, z tym samym reactivity i tym samym modelem pisania kodu, który już znasz. Po dekadzie płacenia podatku od diffowania domyślnie możliwość rezygnacji tam, gdzie to naprawdę ma znaczenie, jest dokładnie właściwym kształtem tej funkcji. Używaj jej tam, gdzie się liczy, ignoruj tam, gdzie się nie liczy, i pozwól kompilatorowi zapracować na swoje utrzymanie.
+**Podsumowanie:** Nagłówek nie mówi, że virtual DOM jest martwy. Mówi, że w Vue 4 jest **opcjonalny** — decyzja na poziomie komponentu, z takim samym reactivity i modelem kodowania. Po latach płacenia kosztu diffowania możliwość jego eliminacji tam, gdzie ma to znaczenie, jest idealnym rozwiązaniem. Używaj tam, gdzie liczy się wydajność, ignoruj tam, gdzie się nie liczy, i pozwól kompilatorowi pracować.
 
 ## References
 

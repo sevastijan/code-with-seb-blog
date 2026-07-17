@@ -7,14 +7,14 @@ featured: false
 author: 'Sebastian'
 draft: false
 enSlug: 'inp-interaction-to-next-paint-core-web-vital-guide'
-excerpt: 'Interaction to Next Paint (INP) zastąpił FID wśród Core Web Vitals, a większość aplikacji React po cichu go nie zalicza. Oto co mierzy INP i jak go naprawić.'
+excerpt: 'Interaction to Next Paint (INP) zastąpił FID, a większość aplikacji React nie zalicza tego metryki. Dowiedz się, co mierzy INP i jak poprawić wyniki.'
 ---
 
 Klient wdrożył dashboard, który uzyskał idealne 100 punktów w First Input Delay. Zielono na całej linii w Search Console. Potem, w marcu 2024, Google zamienił FID na **Interaction to Next Paint (INP)** i z dnia na dzień ten sam dashboard przeszedł z „good" do „needs improvement". Nic w kodzie się nie zmieniło. Zmieniła się metryka.
 
-Ta historia nie jest niczym wyjątkowym. Kiedy INP zastąpił FID, wskaźnik zaliczania Core Web Vitals na urządzeniach mobilnych spadł w całej sieci o mniej więcej pięć punktów procentowych. Miliony stron, które wyglądały na szybkie, nagle takie nie były. Powód jest prosty i lekko niewygodny: FID mierzył łatwą część, a INP mierzy tę część, w której Twoja aplikacja React jest naprawdę słaba.
+Ta historia nie jest niczym wyjątkowym. Kiedy INP zastąpił FID, wskaźnik zaliczania Core Web Vitals na urządzeniach mobilnych spadł w całej sieci o mniej więcej pięć punktów procentowych. Miliony stron, które wyglądały na szybkie, nagle takie nie były. Powód jest prosty, choć nieco niewygodny: FID mierzył łatwą część, a INP mierzy tę, w której Twoja aplikacja React jest naprawdę słaba.
 
-Jeśli budujesz w React, ma to większe znaczenie, niż myślisz. Model re-renderów tego frameworka jest niemal idealnie zaprojektowany tak, by zawyżać dokładnie tę liczbę, na której Google teraz opiera ranking. Pokażę Ci, co INP naprawdę mierzy, dlaczego Twoja aplikacja go nie zalicza i jak to realnie naprawić.
+Jeśli budujesz w React, ma to większe znaczenie, niż myślisz. Model re-renderów tego frameworka jest niemal idealnie zaprojektowany tak, by zawyżać dokładnie liczbę, na której Google obecnie opiera ranking. Pokażę Ci, co INP naprawdę mierzy, dlaczego Twoja aplikacja go nie zalicza i jak to realnie naprawić.
 
 ## Co INP właściwie mierzy
 
@@ -34,11 +34,11 @@ Ta ostatnia statystyka zaskakuje. **Presentation delay to zwykle największy kaw
 
 First Input Delay miał dwie krytyczne wady.
 
-Po pierwsze, mierzył tylko **pierwszą** interakcję na stronie. Jeśli pierwsze kliknięcie użytkownika trafiło w tani przycisk, gdy aplikacja wciąż się rozgrzewała, FID raportował świetny wynik — nawet jeśli każda kolejna interakcja się zacinała. Użytkownicy nie przestają wchodzić w interakcje po pierwszym kliknięciu. FID przestawał mierzyć.
+Po pierwsze, mierzył jedynie **pierwszą** interakcję na stronie. Jeśli pierwsze kliknięcie użytkownika trafiło na element bez obciążenia, gdy aplikacja jeszcze się inicjalizowała, FID wykazywał świetny wynik — nawet jeśli wszystkie kolejne interakcje się zacinały. Użytkownicy nie ograniczają się do jednej interakcji. FID przestawał mierzyć po pierwszej.
 
-Po drugie, FID przechwytywał tylko **input delay** — fazę pierwszą. Mierzył, ile czasu zajęło przeglądarce *rozpoczęcie* obsługi zdarzenia, a potem ogłaszał zwycięstwo. Nigdy nie przyglądał się temu, ile faktycznie działał Twój handler ani jak długo trwał wynikowy paint. Strona mogła mieć FID na poziomie 5 ms i rzeczywiste opóźnienie interakcji 900 ms, a FID z radością nazwałby to dobrym wynikiem.
+Po drugie, FID rejestrował jedynie fazę **input delay**. Mierzył, ile czasu zajęło przeglądarce *podjęcie* obsługi zdarzenia, i na tym koniec. Nigdy nie sprawdzał, jak długo faktycznie działał Twój handler ani ile czasu zajął wynikowy paint. Strona mogła mieć FID na poziomie 5 ms i rzeczywiste opóźnienie interakcji 900 ms, a FID zaliczałby to za dobry rezultat.
 
-INP naprawia oba te problemy. Obserwuje **każdą** interakcję i mierzy **wszystkie trzy fazy** od początku do końca. Oto szczere porównanie:
+INP rozwiązuje obie te wady. Obserwuje **każdą** interakcję i mierzy **wszystkie trzy fazy** od początku do końca. Oto szczere porównanie:
 
 | | FID | INP |
 | --- | --- | --- |
@@ -85,7 +85,7 @@ Nie naprawisz tego, czego nie widzisz, a INP jest zwodniczy, bo **narzędzia lab
 
 **CrUX** (Chrome User Experience Report) to to, na czym Google faktycznie opiera ranking. To prawdziwi użytkownicy Chrome, zagregowani z 28 dni. Haczyk: obejmuje tylko originy z odpowiednim ruchem i jest wskaźnikiem opóźnionym — szkody widzisz tygodnie później.
 
-Po dane z pola w czasie rzeczywistym, z atrybucją, użyj oficjalnej biblioteki **`web-vitals`**. To najbardziej użyteczna rzecz, którą możesz dodać już dziś:
+Dla danych z pola w czasie rzeczywistym, z atrybucją, użyj oficjalnej biblioteki **`web-vitals`**. To najbardziej użyteczna rzecz, którą możesz dodać już dziś:
 
 ```javascript
 // Raportuj INP z atrybucją, żeby wiedzieć, KTÓRY element i KTÓRA
@@ -152,9 +152,9 @@ async function processLargeDataset(items) {
 }
 ```
 
-Uwaga na temat `isInputPending()`: Google **nie zaleca już bramkowania yieldów tym wywołaniem**. Może ono błędnie zwracać `false`, nawet gdy użytkownik wszedł w interakcję, więc obecna rekomendacja to po prostu okresowe oddawanie kontroli, niezależnie od wszystkiego. Powyższy przykład pokazuje je dla kompletności, ale w produkcji oddawaj kontrolę według budżetu czasowego (powiedzmy co 50 ms pracy), zamiast ufać `isInputPending()`.
+Uwaga na temat `isInputPending()`: Google **nie zaleca już warunkowania yieldów tym wywołaniem**. Może ono błędnie zwracać `false`, nawet gdy użytkownik wszedł w interakcję, więc obecna rekomendacja to po prostu okresowe oddawanie kontroli, niezależnie od wszystkiego. Powyższy przykład pokazuje je dla kompletności, ale w produkcji oddawaj kontrolę według budżetu czasowego (powiedzmy co 50 ms pracy), zamiast ufać `isInputPending()`.
 
-Dlaczego `scheduler.yield()` zamiast starej sztuczki `setTimeout(fn, 0)`? `setTimeout` przesuwa Twoją kontynuację na **koniec** kolejki tasków, gdzie konkuruje ze wszystkim innym. `scheduler.yield()` wznawia z **przodu**, zaraz po tym, jak oczyści się oczekująca praca o wysokim priorytecie — więc pozostajesz responsywny bez utraty miejsca w kolejce. Głęboka opowieść o tym, jak silnik planuje i wykonuje tę pracę, to osobna królicza nora, którą omawiam w [przewodniku po wnętrznościach silnika V8](/pl/blog/v8-silnik-wnetrznosci-javascript).
+Dlaczego `scheduler.yield()` zamiast starej sztuczki `setTimeout(fn, 0)`? `setTimeout` przesuwa Twoją kontynuację na **koniec** kolejki tasków, gdzie konkuruje ze wszystkim innym. `scheduler.yield()` wznawia z **przodu**, zaraz po tym, jak oczyści się oczekująca praca o wysokim priorytecie — więc pozostajesz responsywny bez utraty miejsca w kolejce. Głęboka analiza tego, jak silnik planuje i wykonuje tę pracę, to osobne studium, którą omawiam szczegółowo w [przewodniku po wnętrznościach silnika V8](/pl/blog/v8-silnik-wnetrznosci-javascript).
 
 ### 2. Pozwól Reactowi zdeprioryzować ciężki render
 
@@ -213,7 +213,7 @@ Problem w tym, że ręcznie pisane `useMemo`/`useCallback`/`memo` są żmudne i 
 
 ### 4. Debounce i throttle handlerów inputu
 
-Jeśli handler odpala się przy każdym naciśnięciu klawisza lub każdym ruchu wskaźnika, **zdebounce'uj** kosztowną część. Aktualizuj widoczny input synchronicznie, ale odrocz kosztowne wyszukiwanie/filtrowanie/wywołanie sieciowe:
+Jeśli handler się uruchamia przy każdym naciśnięciu klawisza lub każdym ruchu wskaźnika, **zastosuj debouncing** do kosztownej części. Aktualizuj widoczny input natychmiast, ale opóźnij kosztowne wyszukiwanie/filtrowanie/wywołania sieciowe:
 
 ```javascript
 // Zaktualizuj controlled input natychmiast; uruchom kosztowny
@@ -228,7 +228,7 @@ Debouncing zmniejsza *liczbę* kosztownych interakcji; yielding i transitions zm
 
 ### 5. Pozwól przeglądarce pominąć paint poza ekranem
 
-Presentation delay to największa faza, a spory jej kawałek to układanie i renderowanie przez przeglądarkę DOM, którego użytkownik nawet nie widzi. Właściwość CSS **`content-visibility`** mówi przeglądarce, by pominęła pracę renderowania treści poza ekranem, dopóki nie przewinie się blisko:
+Presentation delay to największa faza, a znaczna jej część to układanie i renderowanie DOM-u poza widokiem, którego użytkownik nawet nie widzi. Właściwość CSS **`content-visibility`** mówi przeglądarce, by pominęła pracę renderowania treści poza ekranem, dopóki nie przewinie się blisko:
 
 ```css
 /* Pomiń layout i paint dla kart poza ekranem, dopóki nie zbliżą się do viewportu.
@@ -243,23 +243,23 @@ Na długich listach i dashboardach może to dramatycznie zredukować koszt fazy 
 
 ### 6. Odchudź i odrocz sam JavaScript
 
-Mniej JavaScriptu na main thread oznacza mniej input delay i krótsze taski. Agresywnie stosuj code-splitting, odraczaj niekrytyczne skrypty third-party i trzymaj się budżetu bundla — taktyki z mojego [przewodnika po optymalizacji bundla poniżej 200 kB](/pl/blog/dynamiczna-optymalizacja-bundle-ponizej-200kb) redukują surową ilość pracy, którą main thread musi przeżuć, zanim zdoła zareagować na kliknięcie.
+Mniej JavaScriptu na main thread oznacza mniej input delay i krótsze taski. Agresywnie stosuj code-splitting, odraczaj niekrytyczne skrypty third-party i trzymaj się budżetu bundla — taktyki z mojego [przewodnika po optymalizacji bundla poniżej 200 kB](/pl/blog/dynamiczna-optymalizacja-bundle-ponizej-200kb) zmniejszają ilość pracy, którą main thread musi wykonać, zanim zdoła zareagować na kliknięcie.
 
 ## Workflow debugowania, który działa
 
-Gdy odpali alert INP, nie zaczynaj losowo memoizować rzeczy. Podążaj tropem:
+Gdy pojawi się problem z INP, nie zaczynaj od razu memoizować rzeczy. Podążaj tropem:
 
 1. **Znajdź winowajcę z danych z pola.** Sprawdź swoje raporty atrybucji `web-vitals`. `interactionTarget` mówi Ci dokładny element; rozbicie na fazy (`inputDelay` / `processingDuration` / `presentationDelay`) mówi Ci, *która* faza jest wolna.
-2. **Odtwórz w DevTools.** Otwórz panel Performance, włącz throttling CPU 4x, nagraj i wykonaj tę konkretną interakcję.
+2. **Odtwórz w DevTools.** Otwórz panel Performance, włącz symulację CPU 4x, nagraj i wykonaj tę konkretną interakcję.
 3. **Odczytaj fazę.** Jeśli dominuje **input delay**, szukaj long tasków blokujących *przed* Twoim handlerem — hydration, skrypty third-party lub zajęty start. Jeśli dominuje **processing**, to Twój handler i jego kaskada re-renderów. Jeśli dominuje **presentation**, to layout i paint — sięgnij po `content-visibility` i redukcję rozmiaru DOM.
 4. **Zastosuj pasującą poprawkę.** Input delay → rozbij long taski za pomocą `scheduler.yield()` i odrocz third parties. Processing → `useTransition` / `useDeferredValue` / React Compiler / debouncing. Presentation → `content-visibility`, mniejszy DOM, mniej layout thrash.
-5. **Zweryfikuj w polu.** Laboratorium potwierdza poprawkę lokalnie; tylko CrUX i Twój RUM potwierdzają ją dla prawdziwych użytkowników na 75. percentylu. Obserwuj liczby przez kilka tygodni.
+5. **Zweryfikuj w polu.** Laboratorium potwierdza poprawkę lokalnie; tylko CrUX i Twój RUM potwierdzają ją dla rzeczywistych użytkowników na 75. percentylu. Monitoruj wyniki przez kilka tygodni.
 
 ## Wnioski
 
 INP nie jest trudniejszą wersją FID — to *inna* metryka, która wreszcie mierzy to, co czują użytkownicy: czy aplikacja reaguje, gdy jej dotkną, za każdym razem, a nie tylko raz. Aplikacje React nie zaliczają go nie dlatego, że wolno się ładują, ale dlatego, że synchroniczny model re-renderów nawala pracę na main thread dokładnie w najgorszym momencie.
 
-Poprawki nie są egzotyczne. **Oddawaj kontrolę main threadowi. Uczyń ciężkie rendery przerywalnymi. Zatrzymaj re-rendery, których nie potrzebujesz. Pozwól przeglądarce pominąć pracę, której nie musi wykonywać.** Instrumentuj z buildem atrybucji `web-vitals`, żeby naprawiać prawdziwe interakcje zamiast zgadywać, i pozwól rozbiciu na trzy fazy wskazywać Ci właściwą dźwignię za każdym razem.
+Poprawki nie są egzotyczne. **Oddawaj kontrolę main threadowi. Uczyń ciężkie rendery przerywalnymi. Zatrzymaj re-rendery, których nie potrzebujesz. Pozwól przeglądarce pominąć pracę, której nie musi wykonywać.** Instrumentuj z buildem atrybucji `web-vitals`, żeby naprawiać rzeczywiste interakcje zamiast domyślać się, i pozwól rozbiciu na trzy fazy wskazać Ci właściwą dźwignię za każdym razem.
 
 Przestań optymalizować liczbę, którą Google wycofał. Optymalizuj tę, na której faktycznie opiera ranking.
 

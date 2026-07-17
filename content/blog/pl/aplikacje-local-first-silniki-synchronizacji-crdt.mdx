@@ -10,15 +10,15 @@ enSlug: 'local-first-web-apps-sync-engines-crdt-guide'
 excerpt: 'Aplikacje local-first raz na zawsze zabijają spinnery. Oto jak działają silniki synchronizacji, CRDT, Yjs i ElectricSQL, realne kompromisy i jak taką aplikację zbudować.'
 ---
 
-Spędziłem w tym roku popołudnie, patrząc, jak aktualizuje się tablica w Linear. Nie ładuje. Aktualizuje. Przeciągnąłem zadanie między kolumnami i po prostu *tam było* — żadnego spinnera, żadnego migotania optymistyczne-a-potem-uzgodnij, żadnego toastu „zapisywanie...". Potem wyłączyłem Wi-Fi, pracowałem dalej przez dziesięć minut, ponownie się połączyłem — i wszystko, co zrobiłem, było już scalone z tym, co w międzyczasie zrobił mój kolega. Żadnego okna z konfliktem. Żadnych utraconych zmian.
+Niedawno siedziałem przez popołudnie, obserwując, jak aktualizuje się tablica w Linear. Bez czekania. Bez ładowania. Przeciągnąłem zadanie między kolumnami i było — punkt. Brak spinnera, brak podwójnego renderowania, brak toastu „zapisywanie...". Wyłączyłem Wi-Fi, pracowałem dalej dziesięć minut, ponownie się podłączyłem — i wszystko, co zrobiłem, było już scalone z tym, co mój kolega wykonał w międzyczasie. Żaden dialog konfliktowy. Żadnych utracionych zmian.
 
-To doświadczenie nie jest kwestią dopieszczenia UX. To inna architektura. Model request/response, który większość z nas dostarczała przez piętnaście lat — klik, `POST`, spinner, ponowny fetch, render — jest w pewnej klasie aplikacji zastępowany przez coś, co nazywa się **local-first**, a 2026 to rok, w którym narzędzia wreszcie stały się na tyle dobre, że nie musisz budować tych trudnych części samodzielnie.
+To nie kosmetyka interfejsu — to inny model całej architektury. Model request/response, którym posługiwaliśmy się przez piętnaście lat — klik, `POST`, spinner, ponowny fetch, render — w pewnej klasie aplikacji ustępuje miejsca czemuś zwanego **local-first**. A 2026 to rok, w którym narzędzia wreszcie dojrzały do punktu, gdzie te trudne części są zależnościami, a nie projektami badawczymi.
 
-Wdrożyłem już dwie funkcje local-first na produkcję i rozebrałem na części większość silników synchronizacji, które obiecują, że będzie łatwo. Oto uczciwa mapa: co local-first naprawdę oznacza, jak CRDT i silniki synchronizacji działają pod maską, jakie kompromisy nikt nie umieszcza na landing page'u oraz jak zmigrowałbyś zwykłą aplikację REST + React Query w tę stronę bez przepisywania od zera.
+Wdrożyłem dwie produkcyjne powierzchnie local-first i badając kod większości silników synchronizacji, nauczyłem się, że obietnica „będzie łatwo" to wymyślina. Tutaj: uczciwa ocena — co local-first naprawdę to jest, jak pracują CRDT i silniki synchronizacji w praktyce, jakie trade-offy marketing przemilcza, i jak przenieść REST + React Query na tę architekturę bez przepisywania od zera.
 
 ## Co „local-first" naprawdę oznacza
 
-Termin pochodzi z eseju z 2019 roku autorstwa Martina Kleppmanna i zespołu **Ink & Switch**. Ich teza była reakcją na czyste aplikacje chmurowe, w których twoje dane żyją na cudzym serwerze, a UI jest cienką, uzależnioną od sieci marionetką. Wyłożyli **siedem ideałów**:
+Termin pochodzi z eseju z 2019 roku od Martina Kleppmanna i **Ink & Switch**. Była to odpowiedź na model czystej chmury, gdzie dane żyją na cudzym serwerze, a UI to cienka marionetka uwzględniona od sieci. Zaproponowali **siedem zasad**:
 
 1. **Żadnych spinnerów** — praca dzieje się z prędkością twojego urządzenia, nie twojej sieci.
 2. **Wielourządzeniowość** — twoje dane podążają za tobą między laptopem, telefonem i tabletem.
@@ -28,76 +28,76 @@ Termin pochodzi z eseju z 2019 roku autorstwa Martina Kleppmanna i zespołu **In
 6. **Bezpieczeństwo i prywatność domyślnie.**
 7. **Własność użytkownika** — to ty kontrolujesz swoje dane.
 
-Większości zespołów nie zależy na wszystkich siedmiu. W praktyce dwa, które napędzają adopcję, to **brak spinnerów** i **współpraca bez konfliktów**. Przewrót mentalny wygląda tak: zamiast serwera będącego źródłem prawdy, które klient odpytuje, **klient trzyma pełną lokalną replikę danych, na których mu zależy**, odczyty i zapisy odbywają się natychmiast na tej lokalnej kopii, a **silnik synchronizacji** w tle uzgadnia twoją replikę z serwerem (i wszystkimi innymi).
+Większości zespołów dwa z nich są kluczowe: **brak spinnerów** i **współpraca bez konfliktów**. Zmiana myślenia sprowadza się do tego: zamiast serwera jako źródła prawdy, które odpytujesz, **klient trzyma pełną lokalną replikę swoich danych**, odczyty i zapisy dzieją się natychmiast na tej kopii, a **silnik synchronizacji** w tle uzgadnia replikę z serwerem (i innymi klientami).
 
-Serwer przestaje być bazą danych, z którą rozmawiasz po HTTP, i staje się koordynatorem synchronizacji. Twoje UI nigdy na niego nie czeka.
+Serwer przechodzi z roli bazy danych, którą odpytujesz, na rolę koordynatora synchronizacji. Twoje UI nigdy na niego nie czeka.
 
 ### Dlaczego teraz?
 
-Zbiegły się trzy rzeczy. Po pierwsze, **CRDT dojrzały** z badawczych ciekawostek do szybkich, nudnych bibliotek. Po drugie, przeglądarki dostały **prawdziwy storage** — OPFS i SQLite-w-WASM oznaczają, że możesz trzymać lokalnie gigabajty, a nie te kilkaset megabajtów, które toleruje IndexedDB. Po trzecie, fala **silników synchronizacji** wypuściła w latach 2025–2026 wydania 1.0, które ogarniają replikację, częściową synchronizację i hydraulikę konfliktów, dzięki czemu piszesz kod aplikacji, a nie kod systemów rozproszonych.
+Zaszło jednocześnie kilka rzeczy. Po pierwsze, **CRDT wyjechały** ze świata badań w praktyczne, stabilne biblioteki. Po drugie, przeglądarki dostały **prawdziwy storage** — OPFS i SQLite skompilowany do WASM oznaczają, że możesz przechowywać gigabajty lokalnie, a nie kilkaset megabajtów, które toleruje IndexedDB. Po trzecie, seria **silników synchronizacji** wydała w 2025–2026 wersje 1.0, które obsługują replikację, częściową synhronizację i rozwiązywanie konfliktów, dzięki czemu piszesz kod aplikacji, a nie hydraulikę systemów rozproszonych.
 
 ## Dwie rodziny synchronizacji
 
-Najbardziej użyteczne rozróżnienie, jakie mogę ci przekazać: **są tu dwa fundamentalnie różne problemy, a narzędzia dzielą się czysto wzdłuż tej linii.**
+Najważniejsze rozróżnienie, jakie mogę ci dać: **to dwa fundamentalnie różne problemy, a narzędzia rozkładają się czysto wzdłuż tej linii.**
 
 **Rodzina pierwsza: dokumenty do współpracy.** Rich text, tablice, współdzielone kanwy, zagnieżdżone bloby JSON, gdzie dwie osoby piszą w tym samym akapicie jednocześnie. To terytorium CRDT — **Yjs**, **Automerge**, **Loro**.
 
 **Rodzina druga: relacyjne dane aplikacyjne.** Zadania, faktury, taski, użytkownicy — wiersze w tabelach z kluczami obcymi, gdzie chcesz, żeby lokalna kopia zachowywała się jak prawdziwa baza danych, którą można odpytywać. To terytorium silników synchronizacji — **ElectricSQL**, **Zero** (Rocicorp), **PowerSync**, **Convex**, **Jazz**, **Triplit**.
 
-Ludzie nieustannie mylą te dwie rzeczy, a potem wybierają złe narzędzie. Jeśli budujesz Figmę, chcesz CRDT. Jeśli budujesz Linear, chcesz relacyjny silnik synchronizacji. Weźmy je po kolei.
+Ludzie nieustannie mieszają te dwie rzeczy, a potem wybierają złe narzędzie. Jeśli budujesz Figmę, chcesz CRDT. Jeśli budujesz Linear, chcesz silnik synchronizacji relacyjny. Weźmy je po kolei.
 
 ## CRDT wyjaśnione pragmatycznie
 
-**CRDT** — Conflict-free Replicated Data Type — to struktura danych zaprojektowana tak, że gdy dwie repliki są edytowane niezależnie i później scalane, scalenie jest **deterministyczne i nigdy nie gubi danych**, bez żadnego centralnego koordynatora rozstrzygającego, kto wygrywa.
+**CRDT** — Conflict-free Replicated Data Type — to struktura danych, która zapewnia, że gdy dwie repliki są edytowane niezależnie i później scalone, scalenie jest **deterministyczne i nigdy nic nie utraci**, bez żadnego centralnego koordynatora rozstrzygającego, kto wygrywa.
 
-Klasyczną alternatywą jest **Operational Transformation (OT)**, algorytm stojący za Google Docs. OT działa, ale wymaga centralnego serwera, który przekształca i porządkuje każdą operację, co czyni go fatalnym dla trybu offline i peer-to-peer. CRDT wpychają logikę scalania do samej struktury danych, więc dowolne dwie repliki, które widziały ten sam zestaw operacji, zbiegają się do tego samego stanu niezależnie od kolejności, w jakiej operacje dotarły. Ta właściwość — **zbieżność bez koordynacji** — to cała gra.
+Klasyczną alternatywą jest **Operational Transformation (OT)**, algorytm, na którym pracuje Google Docs. OT działa, ale wymaga centralnego serwera, który transformuje i porządkuje każdą operację — to go dyskwalifikuje dla offline i peer-to-peer. CRDT wbudowuje logikę scalania w samą strukturę danych, dzięki czemu dowolne dwie repliki, które widziały ten sam zestaw operacji, zbiegają się do tego samego stanu niezależnie od kolejności przybycia. Ta właściwość — **zbieżność bez centralnego koordynatora** — to jest całe zagadnienie.
 
-Pragmatyczna wersja, którą trzeba mieć w głowie: każda zmiana to **operacja** oznaczona unikalnym ID (zwykle ID klienta plus zegar logiczny). Operacje są przemienne — zastosuj je w dowolnej kolejności, dostaniesz ten sam wynik. Dla tekstu znaki dostają stabilne tożsamości, więc „wstaw 'x' po znaku #7" wciąż ma sens nawet po tym, jak twój współpracownik usunął znak #3. Usunięcia stają się **tombstone'ami** (oznaczone jako martwe, nie usunięte), żeby współbieżna edycja nie mogła ich wskrzesić ani uszkodzić.
+Praktycznie: każda zmiana to **operacja** oznaczona unikalnym ID (zazwyczaj ID klienta plus zegar logiczny). Operacje są przemienne — zastosuj je w dowolnej kolejności, dostaniesz ten sam wynik. Dla tekstu znaki otrzymują stabilne identyfikatory, więc „wstaw 'x' po znaku #7" ma sens nawet po tym, jak partner usunął znak #3. Usunięcia stają się **tombstone'ami** (oznaczone jako usunięte, ale obecne), żeby współbieżna edycja nie mogła ich przywrócić ani uszkodzić.
 
-Oto jak to wygląda z **Yjs**, który jest produkcyjnym domyślnym wyborem — największy ekosystem, najszybszy dla tekstu, bindingi do każdego edytora:
+Oto jak to wygląda w **Yjs** — domyślnym wyborze do produkcji: największy ekosystem, najszybszy dla tekstu, bindingi do wszystkich edytorów:
 
 ```js
 import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
 
-// Y.Doc to kontener CRDT. Wszystko żyje w jego wnętrzu.
+// Y.Doc to kontener CRDT. Wszystko żyje w nim.
 const doc = new Y.Doc()
 
-// Typy współdzielone: text, arrays, maps. Scalają się automatycznie.
+// Współdzielone typy: text, arrays, maps. Scalają się automatycznie.
 const ytext = doc.getText('content')
 const ymeta = doc.getMap('meta')
 
-// Provider obsługuje transport + trwałość. Podmień go na
-// WebRTC albo lokalny provider IndexedDB dla trybu offline.
+// Provider obsługuje transport i trwałość. Zastąp go
+// WebRTC albo lokalnym provider IndexedDB dla offline.
 const provider = new WebsocketProvider('wss://sync.example.com', 'doc-42', doc)
 
-// Lokalne zmiany są natychmiastowe — to mutuje lokalną replikę już teraz.
+// Lokalne zmiany są natychmiastowe — mutuje lokalną replikę teraz.
 ytext.insert(0, 'Hello ')
 ymeta.set('title', 'Draft')
 
-// Reaguj na zmiany zdalne (i lokalne). Bez refetch, bez diffowania.
+// Obserwuj zmiany zdalne (i lokalne). Bez refetch, bez diffowania.
 ytext.observe(() => {
   render(ytext.toString())
 })
 ```
 
-Zauważ, czego *brakuje*: żadnego `await`, żadnego stanu ładowania, żadnego wywołania HTTP w twoim handlerze. Mutujesz lokalny `Y.Doc`, UI renderuje się ponownie synchronicznie, a provider wysyła zakodowaną aktualizację do peerów, kiedy tylko sieć jest dostępna. Dwie osoby piszące w tym samym zdaniu scalają się znak po znaku.
+Patrz, czego *brakuje*: nie ma `await`, nie ma loading state'u, nie ma HTTP w handlerze. Mutujesz lokalny `Y.Doc`, UI renderuje się synchronicznie, a provider wysyła zakodowaną aktualizację do innych replik, kiedy jest sieć. Dwie osoby piszące w tym samym zdaniu scalają się znak po znaku.
 
-**Automerge** pokrywa ten sam obszar z bardziej gitopodobną filozofią — trzyma pełną historię zmian i daje ci niezmienne API w kształcie JSON — kosztem części szybkości i rozmiaru bundle'a. **Loro** to nowsza, mocno oparta na WASM opcja, która wygrywa surowe benchmarki. Moja zasada: **wybierz Yjs, chyba że konkretnie potrzebujesz modelu historii z Automerge albo liczb z Loro.** Dla 99% edytorów do współpracy Yjs jest wystarczająco szybki i ma ekosystem.
+**Automerge** zajmuje ten sam obszar z bardziej gitową filozofią — przechowuje pełną historię zmian i dostarcza niezmienne API w formacie JSON — kosztem części szybkości i rozmiaru bundle'a. **Loro** to nowsza, mocno oparta na WASM opcja, która wygrywa w surowych benchmarkach. W praktyce: **wybierz Yjs, chyba że konkretnie potrzebujesz modelu historii z Automerge albo wydajności liczb z Loro.** Dla 99% edytorów kolaboratywnych Yjs jest wystarczająco szybki i ma ekosystem.
 
-Haczyk z dokumentowymi CRDT: to *dokumenty*. Nie da się efektywnie zapytać „daj mi wszystkie zadania przypisane do mnie, posortowane po terminie". Od tego jest druga rodzina.
+Pułapka dokumentowych CRDT: to *dokumenty*. Nie da się efektywnie zapytać „daj mi wszystkie zadania przypisane do mnie, posortowane po terminie". Do tego służy druga rodzina.
 
 ## Silniki synchronizacji dla danych relacyjnych
 
-To tutaj dzieje się ciekawa akcja roku 2026. Te narzędzia dają ci **lokalną bazę danych** — zwykle SQLite przez WASM, czasem magazyn in-memory nad IndexedDB — która pozostaje zsynchronizowana z serwerowym Postgresem (albo Mongo, MySQL). Odpytujesz lokalnie, zapisujesz lokalnie, a silnik obsługuje replikację w obie strony. Oto uczciwy krajobraz.
+Tu dzieje się ciekawa akcja 2026. Te narzędzia dają ci **lokalną bazę danych** — zwykle SQLite przez WASM, czasem magazyn w pamięci nad IndexedDB — która się synchronizuje z serwerowym Postgresem (lub Mongo, MySQL). Odpytujesz lokalnie, zapisujesz lokalnie, a silnik obsługuje replikację w obie strony. Uczciwy przegląd.
 
-**ElectricSQL** synchronizuje Postgresa do klienckiego SQLite przy użyciu **shapes** — deklaratywnych subskrypcji, które opisują wycinek danych potrzebny klientowi (pomyśl: klauzula `WHERE`, którą wysyłasz do warstwy synchronizacji). Po „czystej przebudowie" (linia `electric-next`) jest szczuplejszy i skupiony na ścieżce odczytu: doskonale radzi sobie z reaktywnym ściąganiem danych serwerowych *w dół* do klienta, a zapisy obsługujesz przez własne API. To najprostsze wejście, jeśli już żyjesz w Postgresie.
+**ElectricSQL** synchronizuje Postgresa z klienckim SQLite przy użyciu **shapes** — deklaratywnych subskrypcji, które opisują potrzebny wycinek (pomyśl: klauzula `WHERE`, którą wysyłasz do sync layer'a). Po ostatniej przebudowie (linia `electric-next`) jest smuklejszy i skupiony na odczytach: doskonale obsługuje reaktywne pobieranie danych do klienta, a zapisy traktujesz przez własne API. Łatwe wejście, jeśli już jesteś w Postgresie.
 
-**Zero** (od Rocicorp, ekipy od Replicache) osiągnął **1.0 w połowie 2026** i to on kazał mi się wyprostować. Jego kluczowa sztuczka to **zapytania jako prymityw**: piszesz zapytania ZQL bezpośrednio w kodzie klienta, uruchamiają się one na lokalnej replice dla natychmiastowych wyników, a Zero synchronizuje dokładnie te wiersze, których zapytania dotykają. W połączeniu z drobnoziarnistą reaktywnością i wbudowanymi mutacjami optymistycznymi ma najbardziej responsywną odczuwaną wydajność z całej stawki. Lokalnie używa IndexedDB, co ogranicza cię do setek MB, a nie gigabajtów.
+**Zero** (od Rocicorp, ekipy z Replicache) osiągnęło **1.0 w połowie 2026** i właśnie to mnie zainteresowało. Jego kluczowy wkład to **queries jako prymityw**: piszesz ZQL bezpośrednio w kodzie, uruchomiają się na lokalnej replice dla natychmiastowych wyników, a Zero synchronizuje dokładnie te wiersze, których to dotyczy. W połączeniu z fine-grained reaktywnością i wbudowanymi optymistycznymi zapisami ma najlepszy odczuwan responsywny performance. Lokalnie używa IndexedDB, co daje ci setki MB, nie gigabajty.
 
-**PowerSync** to dojrzały, sprawdzony w boju wybór — pełne SQLite lokalnie, naprawdę zdolny do pracy offline, wspiera Postgres/Mongo/MySQL/SQL Server, a ty deklaratywnie definiujesz **Sync Streams** dla tego, co ma się replikować. Jeśli dostarczasz mobilkę albo potrzebujesz prawdziwej trwałości offline, to bezpieczny wybór.
+**PowerSync** to dojrzały, sprawdzony w boju wybór — pełne SQLite lokalnie, w pełni gotowy do offline, wspiera Postgres/Mongo/MySQL/SQL Server, a ty definiujesz **Sync Streams** dla tego, co ma się replikować. Jeśli budujesz mobilkę albo potrzebujesz offline, to bezpieczny wybór.
 
-**Convex** obiera podejście object-sync-engine: reaktywny backend-as-a-service, gdzie cały graf obiektów synchronizuje się do klientów. **Jazz** pakuje synchronizację, auth, uprawnienia i szyfrowanie end-to-end wokół rdzenia CRDT (CoJSON) — najbardziej „z bateriami w zestawie", jeśli chcesz własności danych i kryptografii E2E. **Triplit** jest solidny, ale został acqui-hire'owany do Supabase w 2025 i jest teraz utrzymywany przez społeczność, więc jego momentum wyważyłbym ostrożnie.
+**Convex** to object-sync-engine: reaktywny backend-as-a-service, gdzie cały graf obiektów synchronizuje się do klientów. **Jazz** pakuje synchro, auth, uprawnienia i E2E encryption wokół rdzenia CRDT (CoJSON) — najbardziej kompletny, jeśli chcesz własności i kryptografii. **Triplit** jest solidny, ale acqui-hire'owany do Supabase w 2025, teraz community-maintained — momentum słabe.
 
 Koncepcyjnie praca z silnikiem sterowanym zapytaniami, takim jak Zero, wygląda tak:
 
@@ -118,8 +118,8 @@ const schema = createSchema({
   },
 })
 
-// Odczyty: zapytanie uruchamia się na LOKALNEJ replice i pozostaje żywe.
-// Bez await, bez fetch — wyniki są tu teraz i aktualizują się reaktywnie.
+// Odczyty: zapytanie uruchamia się na LOKALNEJ replice i zostaje żywe.
+// Bez await, bez fetch — wyniki są tu i teraz, reaktywne aktualizacje.
 const { data: myIssues } = useQuery(
   z.query.issue
     .where('assigneeId', myUserId)
@@ -127,65 +127,65 @@ const { data: myIssues } = useQuery(
     .orderBy('updatedAt', 'desc')
 )
 
-// Zapisy: mutacja optymistyczna. Stan lokalny aktualizuje się natychmiast;
-// silnik uzgadnia z serwerem i cofa zmianę przy odrzuceniu.
+// Zapisy: optymistyczne mutacje. Stan lokalny aktualizuje się natychmiast;
+// silnik uzgadnia z serwerem i cofa zmianę, jeśli serwer ją odrzuci.
 function closeIssue(id: string) {
   z.mutate.issue.update({ id, status: 'done', updatedAt: Date.now() })
 }
 ```
 
-Powyższe `useQuery` nigdy nie pokazuje spinnera po pierwszej synchronizacji, bo potrzebne dane już żyją na urządzeniu. O to właśnie chodzi w całości.
+Powyższy `useQuery` nigdy nie pokazuje spinnera po tej pierwszej synchro, bo dane już żyją na urządzeniu. To właśnie tutaj siedzi cała magia.
 
 ## Rozwiązywanie konfliktów: co naprawdę się dzieje
 
 Dwie rodziny, dwie strategie.
 
-Dla **CRDT** rozwiązywanie konfliktów jest *automatyczne i semantyczne* — struktura danych gwarantuje zbieżność. Współbieżne wstawienia w tekście przeplatają się deterministycznie; współbieżne zapisy do mapy rozstrzygają się regułą last-writer-wins opartą na zegarach logicznych. Rzadko o tym myślisz.
+Dla **CRDT** konflikt rozwiązuje się *automatycznie i semantycznie* — struktura gwarantuje zbieżność. Równoczesne wstawienia w tekście przeplatają się deterministycznie; równoczesne zapisy do mapy rozstrzygają się last-writer-wins na podstawie zegarów logicznych. Nie myślisz o tym.
 
-Dla **relacyjnych silników synchronizacji** większość domyślnie stosuje **last-write-wins (LWW) na wiersz lub na kolumnę**, z rozstrzyganiem remisów po znaczniku czasu lub zegarze Lamporta. To w porządku dla „przypisz zadanie" albo „zmień status" — naprawdę współbieżne edycje *tego samego pola* są rzadkie, a LWW jest akceptowalne. To **nie** jest w porządku dla czegokolwiek, co potrzebuje niezmienników: sald kont, stanów magazynowych, „tylko jedna osoba może zająć ten slot". Dla tych zostawiasz **autorytatywne sprawdzenie po stronie serwera** w ścieżce zapisu, albo modelujesz operację jako licznik CRDT, albo akceptujesz, że serwer może odrzucić mutację, a klient cofa zmianę. Silniki, które wystawiają własne mutatory (Zero, w stylu Replicache), pozwalają uruchomić walidację po stronie serwera i odrzucić — optymistyczny zapis klienta po prostu się cofa.
+Dla **relacyjnych silników synchronizacji** większość domyślnie ustawia **last-write-wins (LWW) na wiersz lub kolumnę**, z rozstrzyganiem remisów po timestampie lub Lamport clocku. To jest ok dla „przypisz zadanie" czy „zmień status" — rzeczywiste równoczesne edycje *tego samego pola* są rzadkie, LWW zapamiętuje. To **nie** jest ok dla czegoś z niezmiennikami: saldo konta, stan magazynu, „jeden slot na osobę". Tu zostawiasz **autoryzacyjne sprawdzenie na serwerze** w ścieżce zapisu, albo modelujesz operację jako CRDT counter, albo akceptujesz, że serwer odrzuci, a klient cofa. Silniki z własnymi mutatorami (Zero, Replicache style) dają ti uruchomić walidację na serwerze i odrzucić — optymistyczny zapis klienta się po prostu cofa.
 
-Zasada, którą się kieruję: **używaj automatycznego scalania dla danych do współpracy i addytywnych; trzymaj serwerowego sędziego dla wszystkiego z twardym ograniczeniem.** Local-first nie uchyla potrzeby autorytatywnej walidacji — po prostu przenosi szczęśliwą ścieżkę poza sieć.
+Moja praktyka: **use auto-merge dla danych kolaboratywnych i addytywnych; trzymaj sędziego serwera dla czego, co ma twarde ograniczenia.** Local-first nie neguje potrzeby autorytatywnej walidacji — po prostu happy path idzie bez sieci.
 
 ## Storage: gdzie żyje replika
 
-Lokalna replika musi gdzieś żyć trwale. Twoje opcje w 2026:
+Lokalna replika musi być persystentna. Opcje w 2026:
 
-- **IndexedDB** — uniwersalny, ale wolny dla dużych zbiorów danych i niewygodny do zapytań relacyjnych. Praktyczny pułap to około kilkuset MB. Zero i wiele providerów trwałości CRDT go używa.
-- **OPFS (Origin Private File System)** — nowsze API dające losowy dostęp do plików prywatnych dla origin, z prędkością bliską natywnej. To właśnie ono czyni prawdziwe bazy danych w przeglądarce wykonalnymi.
-- **SQLite skompilowany do WASM, oparty o OPFS** — złoty standard dla rodziny relacyjnej. Dostajesz pełny silnik SQL lokalnie, gigabajty pojemności i realną wydajność zapytań. PowerSync i ElectricSQL opierają się na tym.
+- **IndexedDB** — uniwersalny, ale wolny na dużych zbiorach i trudny do zapytań relacyjnych. Praktyczny limit to kilkaset MB. Zero i większość providerów trwałości CRDT go używa.
+- **OPFS (Origin Private File System)** — nowsze API z losowym dostępem do plików per-origin, z prędkością bliską natywnej. To właśnie to umożliwia prawdziwe bazy w przeglądarce.
+- **SQLite-to-WASM na OPFS** — złoty standard dla rodziny relacyjnej. Pełny SQL engine lokalnie, gigabajty pojemności, realna wydajność zapytań. PowerSync i ElectricSQL na tym się opierają.
 
-Haczyk: szybka, synchroniczna ścieżka OPFS (`createSyncAccessHandle`) działa tylko **wewnątrz Web Workera**, co dodaje realną złożoność architektoniczną — twoja baza działa w workerze, a ty wymieniasz z nim wiadomości. Chrome i Edge mają pełne wsparcie OPFS, Firefox nadrabia, a Safari wciąż odstaje, więc testuj swoje docelowe przeglądarki. Jeśli wybierasz silnik, jest to w większości zabstrahowane, ale to dlatego „SQLite w przeglądarce" było trudne do niedawna i dlatego pojemność tak bardzo różni się między silnikami.
+Ale: szybka synchroniczna ścieżka OPFS (`createSyncAccessHandle`) działa tylko **w Web Workerze**, co dodaje architektonicznej złożoności — baza w workerze, ty wysyłasz do niej wiadomości. Chrome i Edge mają pełne wsparcie OPFS, Firefox dogania, Safari się opóźnia — testuj. Jeśli będziesz używać gotowego silnika, to jest abstrakcyjne, ale to dlatego „SQLite w przeglądarce" było arcytrudne i dlaczego pojemność tak się między nimi różni.
 
 ## Auth, częściowa replikacja i uprawnienia
 
-To ta część, która oddziela demo od produktu, i ta część, którą strony marketingowe przemilczają.
+To separuje demo od produktu — to, co marketing zjada.
 
-**Częściowa replikacja** jest nie do pominięcia przy skali. Nie da się synchronizować całej firmowej bazy danych do każdego klienta. Każdy poważny silnik ma na to odpowiedź: *shapes* w ElectricSQL, *sync streams* w PowerSync, *query-scoped sync* w Zero. Definiujesz wycinek — „zadania tego użytkownika plus projekty, których jest członkiem" — i tylko to się replikuje. Dobre trafienie z tymi definicjami to właściwa praca projektowa aplikacji local-first; to twoja warstwa pobierania danych, przemyślana na nowo jako granica subskrypcji. Jeśli mocowałeś się z nadmiernym pobieraniem w [warstwie danych GraphQL vs REST vs tRPC](/pl/blog/graphql-rest-trpc-warstwa-danych), będzie to znajome — rysujesz te same granice, tyle że trwale.
+**Partial replication** nie do obejścia przy skali. Nie synchronizujesz całej firmy do każdego klienta. Każdy poważny engine ma na to rozwiązanie: *shapes* w ElectricSQL, *sync streams* w PowerSync, *query-scoped sync* w Zero. Definiujesz slice — „moje zadania plus projekty, w których jestem" — i tylko to się replikuje. Prawidłowe zdefiniowanie tego to rzeczywista praca projektowa aplikacji local-first; to twoja warstwa fetchu, myślana na nowo jako granica subskrypcji. Jeśli zmagałeś się z over-fetching w [warstwie danych GraphQL vs REST vs tRPC](/pl/blog/graphql-rest-trpc-warstwa-danych), będzie to znajome — rysuj te same granice, ale trwale.
 
-**Uprawnienia** są trudniejsze niż w request/response, bo klient trzyma dane lokalnie, a klientowi nie można ufać. Liczą się dwie warstwy:
+**Permissions** są trudniejsze niż request/response, bo klient trzyma dane, a klientowi się nie ufa. Dwie warstwy:
 
-1. **Autoryzacja odczytu** na granicy synchronizacji — serwer decyduje, które wiersze klient ma prawo replikować. To musi być egzekwowane po stronie serwera; definicja shape/stream jest filtrowana przez uwierzytelnionego użytkownika.
-2. **Autoryzacja zapisu** — mimo że zapisy są optymistyczne i lokalne, serwer waliduje każdą mutację, zanim stanie się trwała. Złośliwy klient może *spróbować* czegokolwiek; serwer odrzuca, a stan optymistyczny się cofa.
+1. **Read authz** na granicy sync — serwer decyduje, które wiersze klient ma prawo replikować. Musi być enforced na serwerze; shape/stream definition filtrowana przez auth'd user.
+2. **Write authz** — choć zapisy są optymistyczne, serwer validuje każdą mutację zanim stanie się persistent. Zły klient może *spróbować* czego; serwer odrzuca, optymistyczny state się cofa.
 
-**Auth** zwykle jedzie na JWT, który przekazujesz silnikowi synchronizacji, a serwer używa go do zakresowania odczytów i autoryzowania zapisów. Jazz idzie dalej, z uprawnieniami opartymi na capabilities i szyfrowaniem E2E wbudowanym w warstwę CRDT, co jest przekonujące, jeśli własność danych jest argumentem sprzedażowym twojego produktu.
+**Auth** to zwykle JWT, który dajesz engine'owi, a serwer używa do scoping readów i authz writów. Jazz idzie dalej: capability-based permissions i E2E encryption w warstwie CRDT — cool, jeśli data ownership to selling point.
 
-Traktuj granicę synchronizacji jako swoją nową granicę zaufania. Wszystko, co klient może replikować, zakładaj, że użytkownik może odczytać; wszystko, co klient może mutować, waliduj na serwerze.
+Traktuj sync boundary jako twoją trust boundary. Wszystko, co klient może replikować, użytkownik może odczytać; wszystko, co klient może mutować, validuj na serwerze.
 
 ## Optymistyczne UI i śmierć spinnera
 
-Powód, dla którego local-first *sprawia wrażenie* magii, to **optymistyczne UI**, i warto być precyzyjnym co do tego, jak działa, bo większość zespołów robi już jego okaleczoną wersję.
+Powód, dla którego local-first *czuje* się magicznie, to **optimistic UI** — warto być precyzyjnym, bo większość zespołów robi już jego połamane wersje.
 
-W zwykłej aplikacji React Query mógłbyś zrobić optymistyczną aktualizację: zmutować cache, wystrzelić żądanie, cofnąć w `onError`. To dobre — sporo pisałem o [optymistycznych aktualizacjach w TanStack Query](/pl/blog/tanstack-query-zaawansowane-cache-rsc) — ale to jest per-mutacja, ręcznie sklecone i szybko robi się kruche, gdy mutacje zależą od siebie nawzajem albo jesteś offline.
+W zwykłym React Query robisz optimistic update: mutujesz cache, wystrzelasz request, cofasz w `onError`. Dobre — sporo o [optimistic updates w TanStack Query](/pl/blog/tanstack-query-zaawansowane-cache-rsc) — ale to per-mutation, ręcznie, i kruche, gdy mutacje się zależą albo jesteś offline.
 
-Local-first to uogólnia. **Każdy zapis jest optymistyczny z założenia konstrukcyjnego.** Mutujesz lokalną replikę; UI odzwierciedla to natychmiast, bo UI czyta z tej repliki; silnik kolejkuje mutację i synchronizuje ją, kiedy może; jeśli serwer odrzuci, silnik cofa zmianę, a twoje reaktywne zapytanie renderuje się ponownie. Nie piszesz logiki cofania per mutacja — silnik jest właścicielem uzgadniania. To różnica między „dodaliśmy optymistyczne aktualizacje do kilku przycisków" a „aplikacja nie ma spinnerów".
+Local-first to uogólnia. **Każdy zapis jest optymistyczny by design.** Mutujesz lokalną replikę; UI pokazuje to natychmiast, bo UI czyta z tej repliki; engine kolejkuje mutację i synchronizuje, kiedy może; jeśli serwer odrzuci, engine cofa, a reaktywne zapytanie się renderuje. Nie piszesz logiki rollback per mutacja — engine to ma. To różnica między „dodaliśmy optimistic updates do kilku buttons" a „aplikacja zero spinnerów".
 
-W cyklu życia mutacji kryje się prawdziwe myślenie o maszynach stanów — `local → pending → confirmed | rejected → rolled-back` — a jeśli modelujesz to jawnie, zamiast opierać się na silniku, wzorce z [maszyn stanów z XState](/pl/blog/maszyny-stanow-react-xstate) mapują się na to czysto.
+W mutation lifecycle siedzi state machine thinking — `local → pending → confirmed | rejected → rolled-back` — i jeśli modelujesz to jawnie zamiast na engine, vzory z [state machines z XState](/pl/blog/maszyny-stanow-react-xstate) mapują się czysty.
 
 ## Zachowanie offline
 
-Ponieważ odczyty i zapisy trafiają do lokalnej repliki, **offline to po prostu niedostępna sieć** — aplikacja tego nie zauważa ani się nie przejmuje. Mutacje kolejkują się w trwałym lokalnym logu; gdy łączność wraca, silnik opróżnia kolejkę i scala. Doświadczenie użytkownika przy przejściu w offline polega na tym, że *nic nie dzieje się inaczej*, co jest dokładnie celem.
+Ponieważ odczyty i zapisy idą do lokalnej repliki, **offline to po prostu brak sieci** — aplikacja tego nie czuje. Mutacje kolejkują się w persist log; jak sieć wraca, engine opróżnia i scala. User experience przy offline to że *nic* się inaczej nie dzieje — to cały cel.
 
-Subtelna część to **co dzieje się po ponownym połączeniu po długim offline'ie**: seria zakolejkowanych mutacji, możliwe odrzucenia (mutacja zrobiona offline jest teraz nieważna, bo ktoś inny zmienił świat) i ponowna synchronizacja shapes, które mogły się przesunąć. Dobre silniki obsługują porządkowanie i rebasing; ty obsługujesz UX rzadkiego odrzucenia — zwykle cichy toast, a nie modal.
+Subtelna część: **co się dzieje po reconnect po długim offline**: seria queued mutations, możliwe rejections (offline mutation teraz invalid, bo ktoś inny zmienił świat), resync shapes. Dobry engine to obsługuje; ty obsługujesz UX rare rejection — zwykle cichy toast, nie modal.
 
 ## Realne kompromisy — i kiedy NIE iść w local-first
 
