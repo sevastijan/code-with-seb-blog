@@ -7,24 +7,24 @@ featured: false
 author: 'Sebastian'
 draft: false
 enSlug: 'signals-fine-grained-reactivity-2026-guide'
-excerpt: 'Svelte 5, SolidJS, Angular i Vue przebudowały się na sygnałach — a TC39 chce je wprowadzić do samego języka. React świadomie odpuścił. Oto czym naprawdę jest drobnoziarnista reaktywność, jak wygląda składnia w różnych frameworkach i co to oznacza, jeśli piszesz w React na co dzień.'
+excerpt: 'Svelte 5, SolidJS, Angular i Vue przeszły na sygnały. TC39 chce je wbudować w JavaScript. React celowo powiedział nie. Czym jest fine-grained reactivity, jak się pisze w każdym frameworku i co to zmienia dla Reacta.'
 ---
 
-Otwórz propozycję TC39 Signals i przeczytaj podziękowania: Angular, Solid, Vue, Svelte, Preact, Qwik, MobX. A teraz zauważ, kogo brakuje. React — framework, po który większość programistów sięga domyślnie — jest jedyną dużą nazwą, której nie ma w grupie próbującej ustandaryzować reaktywność w samym JavaScripcie.
+Czytając podziękowania w propozycji TC39 Signals — Angular, Solid, Vue, Svelte, Preact, Qwik, MobX — szybko zauważysz, że brakuje tam jednej wielkiej nazwy. React, framework, do którego większość programistów sięga odruchowo, jest jedynym dużym graczem nieobecnym w grupie, która próbuje ustandaryzować reaktywność w samym JavaScripcie.
 
-To nie przypadek i nie przeoczenie. To zakład. Każdy inny framework spędził ostatnie dwa lata, zbiegając się w kierunku **drobnoziarnistej reaktywności** zbudowanej na sygnałach, podczas gdy React postawił podwójną stawkę na kompilator i swój model „przerenderuj wszystko, potem porównaj". W 2026 ten podział to najważniejsza linia podziału architektonicznego we frontendzie, a większość programistów Reacta, z którymi rozmawiam, nadal nie potrafi wyjaśnić, czym właściwie jest sygnał.
+To nie zbieg okoliczności. To świadoma decyzja. Przez ostatnie dwa lata niemal każdy inny framework zmierzył się z **fine-grained reactivity** opartą na sygnałach, a React postawił na kompilator — na „przerenderuj wszystko, potem porównaj". W 2026 to największy podział architektoniczny we frontendzie. I tu jest problem: większość developerów Reacta, z którymi rozmawiam, nie potrafi wyjaśnić, co to w ogóle jest sygnał.
 
-Naprawmy to. To praktyczna wersja: czym jest drobnoziarnista reaktywność, jak wygląda składnia w Svelte 5, SolidJS, Angularze i Vue, dlaczego React powiedział „nie" — i, o czym nikt nie pisze uczciwie, co właściwie powinieneś z tym *zrobić*, jeśli to React płaci Twoje rachunki.
+Naprawmy to. Praktyczną rzecz ujmując: czym naprawdę jest fine-grained reactivity, jak się pisze w Svelte 5, SolidJS, Angularze i Vue, dlaczego React powiedział „nie" — i co naprawdę powinieneś z tym zrobić, jeśli Reactem zarabiasz chleb.
 
 ## Co naprawdę oznacza „drobnoziarnista reaktywność"
 
-Cała idea w jednym zdaniu: **sygnał śledzi, które konkretne wartości się zmieniły, i aktualizuje tylko te węzły DOM, które od nich zależą — zamiast przerenderowywać całe drzewo komponentów i porównywać wynik.**
+Najprostsza forma: **sygnał śledzi, które konkretne wartości się zmieniły, i aktualizuje tylko te fragmenty DOM-u, które od nich zależą — bez przerenderowania całego drzewa komponentów i bez porównywania.**
 
-Model Reacta jest gruboziarnisty. Gdy stan się zmienia, React ponownie uruchamia funkcję Twojego komponentu, buduje nowe drzewo virtual DOM i uzgadnia je ze starym, żeby ustalić, co dotknąć. To model „pull" — React pyta „jak teraz wygląda UI?" i pracuje wstecz. Jest genialny, przewidywalny i wykonuje mnóstwo pracy, której nigdy nie widzisz.
+Model Reacta działa inaczej. Gdy stan się zmienia, React znovuprzebiegnie przez funkcję Twojego komponentu, buduje nowe virtual DOM i uzgadnia go ze starym, aby dowiedzieć się, co zmienić. To model „pull" — React pyta „jak wyglądać powinien teraz UI?" i cofając się, wylicza zmiany. To eleganckie, przewidywalne, i robi dużo niepotrzebnej pracy, którą nigdy nie widzisz.
 
-Sygnały to odwracają. Budują graf zależności w czasie działania. Zapisywalny sygnał trzyma wartość; sygnały computed z niej pochodzą; efekty się do niej subskrybują. Gdy wartość się zmienia, środowisko wykonawcze *już wie* dokładnie, które computed i efekty są w dół grafu, więc uruchamia ponownie tylko je. Nic się nie przerenderowuje. Nie ma porównywania. Funkcja komponentu, która stworzyła sygnał, zwykonuje się zwykle **raz**, na zawsze.
+Sygnały idą odwrotnym kierunkiem. Budują graf zależności w trakcie działania. Sygnał `state` przechowuje wartość; sygnały `computed` z niej czerpią; efekty się do niej łączą. Gdy wartość się zmienia, runtime już wie dokładnie, które computed i efekty jej zależą, więc odświeża tylko je. Nic się nie przerenderowuje. Nic się nie porównuje. Funkcja komponentu, która utworzyła sygnał, uruchamia się zazwyczaj **jeden raz**, i tyle.
 
-To jest ta „drobnoziarnista" część — granularnością aktualizacji jest pojedyncze powiązanie wartości, a nie komponent. A różnica w benchmarkach nie jest subtelna: Solid i Svelte 5 siedzą na szczycie JS Framework Benchmark, a dystans między nimi a frameworkami z virtual DOM jest znacznie większy niż dystans między nimi dwoma.
+To właśnie to — granularnością jest zmiana wartości, a nie komponent. Benchmarki nie kłamią: Solid i Svelte 5 rządzą na JS Framework Benchmark, a różnica między nimi a virtual DOM to przepaść — znacznie większa niż między nimi dwiema.
 
 ## Składnia, obok siebie
 
@@ -59,7 +59,7 @@ Adaptacja mentalna dla programisty Reacta: `count` to nie wartość, to getter. 
 
 ### Svelte 5 — ten sam model, ukryty przez kompilator
 
-Runes w Svelte 5 to dokładnie ten sam model sygnałów, ale kompilator pozwala pisać zwykle wyglądające zmienne. Nie ma wywołania gettera — `$state` zwraca wartość, którą mutujesz bezpośrednio.
+Runes w Svelte 5 to dokładnie ten sam schemat, ale kompilator pozwala pisać je jak zwyczajne zmienne. Bez getterów — `$state` daje Ci wartość, którą mutujesz na miejscu.
 
 ```svelte
 <script>
@@ -76,11 +76,11 @@ Runes w Svelte 5 to dokładnie ten sam model sygnałów, ale kompilator pozwala 
 </button>
 ```
 
-Runes w Svelte 5 były bezpośrednio zainspirowane modelem sygnałów Solida — różnica jest powierzchowna. Solid używa wywołań funkcji (`count()`), Svelte używa transformacji kompilatora, dzięki czemu piszesz `count` i `count++` wprost. Co ważne, runes działają też w plikach `.svelte.js` poza komponentami, więc Twój stan reaktywny nie jest uwięziony w warstwie widoku.
+Runes to bezpośrednia inspiracja modelem sygnałów Solida — różnica jest czysto syntaktyczna. Solid wymaga wywołania (`count()`), Svelte — dzięki kompilatorowi — pozwala pisać `count` i `count++` bezpośrednio. Ważne: runes działają w plikach `.svelte.js` poza komponentami, więc stan reaktywny nie jest przywiązany do warstwy widoku.
 
-### Angular — sygnały jako prymityw pierwszej klasy
+### Angular — sygnały jako obywatele pierwszej klasy
 
-Angular przyjął sygnały, żeby uciec od Zone.js i jego wykrywania zmian typu „sprawdź wszystko przy każdym zdarzeniu". W Angularze 20 są natywnym, bezzonowym (zoneless) domyślnym rozwiązaniem.
+Angular przebrnął na sygnały, żeby porzucić Zone.js i jego „sprawdź wszystko przy każdym zdarzeniu". W Angularze 20 to natywne, bezzonowe (zoneless) domyślne rozwiązanie.
 
 ```typescript
 import { Component, signal, computed, effect } from '@angular/core';
@@ -105,11 +105,11 @@ export class CounterComponent {
 }
 ```
 
-Te same trzy prymitywy, ta sama konwencja odczytu-przez-wywołanie co w Solidzie. Zysk dla Angulara jest ogromny: drobnoziarniste aktualizacje oznaczają, że może całkowicie porzucić Zone.js i przestać sprawdzać całe drzewo komponentów przy każdym kliknięciu.
+Te same trzy prymitywy, ten sam model czytania-przez-wywołanie. Dla Angulara to przełom: fine-grained aktualizacje pozwalają całkowicie porzucić Zone.js i detektywkę drzewa przy każdym zdarzeniu.
 
 ### Vue — framework, który był już w połowie drogi
 
-Vue dostarcza `ref` i `computed` od Vue 3 w 2020 roku, zanim „sygnały" były w ogóle branżowym słowem na to. W przeglądarce odczytujesz ref przez `.value`; w szablonach Vue rozpakowuje go za Ciebie.
+Vue miał `ref` i `computed` od Vue 3 w 2020, zanim „sygnały" stały się branżowym terminem. W kodzie czytasz ref przez `.value`, w szablonach Vue rozpakuje go sam.
 
 ```javascript
 import { ref, computed, watchEffect } from 'vue';
@@ -119,18 +119,18 @@ const doubled = computed(() => count.value * 2);
 
 watchEffect(() => console.log('count wynosi teraz', count.value));
 
-count.value++; // uruchamia tylko computed i efekt w dół grafu
+count.value++; // aktualizuje tylko computed i efekty
 ```
 
-Vue 4 idzie dalej z trybem Vapor, który kompiluje komponenty do bezpośrednich operacji na DOM i całkowicie porzuca virtual DOM dla wybranych drzew — zamykając większość pozostałego dystansu do Solida.
+Vue 4 posunęło się dalej z trybem Vapor — komponenty kompiluje do bezpośrednich operacji na DOM, bez virtual DOM dla wybranych drzew — zamykając przepaść między Vue a Solid.
 
 Spójrz na te cztery fragmenty razem, a zbieżność jest oczywista. Różne słowa kluczowe, jedna idea.
 
-## Propozycja, która może uczynić z tego funkcję języka
+## Propozycja, która może wbudować to w język
 
-Powód, dla którego rok 2026 wydaje się punktem zwrotnym, nie leży w żadnym pojedynczym frameworku — chodzi o to, że TC39 próbuje przenieść sygnały *do samego JavaScriptu*. Propozycja [Signals](https://github.com/tc39/proposal-signals) osiągnęła Stage 1 w kwietniu 2024, z udziałem projektowym maintainerów niemal każdego frameworka wymienionego na początku tego artykułu.
+2026 to punkt zwrotny nie dlatego, że pojedynczy framework wygrał, ale dlatego, że TC39 próbuje wbudować sygnały *w sam JavaScript*. Propozycja [Signals](https://github.com/tc39/proposal-signals) pięła się do Stage 1 w kwietniu 2024, przy udziale prawie każdego frameworka wymienionego wyżej.
 
-Rdzeń API jest celowo minimalny — dwa typy, których faktycznie byś użył, plus niskopoziomowa maszyneria dla autorów frameworków:
+API jest celowo minimalne — dwa typy, które faktycznie będziesz używać, plus niskopoziomowe API dla autorów frameworków:
 
 ```javascript
 import { Signal } from "signal-polyfill";
@@ -140,80 +140,80 @@ const doubled = new Signal.Computed(() => count.get() * 2);
 
 count.get();     // 0
 count.set(5);
-doubled.get();   // 10 — przeliczane leniwie, potem cache'owane
+doubled.get();   // 10 — liczane leniwko, potem bufforowane
 ```
 
-`Signal.State` jest zapisywalny, `Signal.Computed` jest pochodny i leniwie cache'owany, a niższopoziomowe API `Signal.subtle.Watcher` to to, czego frameworki używają do budowania efektów. Argumentacja jest taka sama jak ta, która doprowadziła do standaryzacji Promises po latach konkurujących implementacji w userland: ujednolić prymityw, żeby biblioteki były interoperacyjne, a przeglądarka mogła go natywnie optymalizować.
+`Signal.State` to value, `Signal.Computed` pochodzi z niego, a `Signal.subtle.Watcher` to to, na czym budują efekty. Logika: jak Promises — ustandaryzować prymityw, żeby biblioteki były kompatybilne, a runtime mogły go nativnie zoptymalizować.
 
-Bądź jednak realistą co do terminów. Propozycja tkwi w Stage 1 od ponad dwóch lat, bez pchania do Stage 2 — celowo. Autorzy postanowili udowodnić słuszność rozwiązania produkcyjnymi polyfillami, zanim poproszą o awans. Więc nie czekaj. Traktuj to jako potwierdzenie, że branża zgadza się co do kształtu odpowiedzi, a nie jako coś, co trafi do Twoich użytkowników w tym roku.
+Ale realismu — propozycja siedzi w Stage 1 od ponad dwóch lat, bez ruchu do Stage 2. Zamierzone. Autorzy najpierw chcą dowieść sensowności polyfillami, dopiero potem szukać promocji. Nie czekaj. Traktuj to jako potwierdzenie kierunku branży, nie datę wydania.
 
 ## Dlaczego React powiedział „nie"
 
-Oto część, która ginie w gorących opiniach „React jest z tyłu": nieobecność Reacta to **przemyślane stanowisko filozoficzne**, publicznie argumentowane przez zespół.
+To, co ginie w emocjonalnych dyskusjach: React to **świadoma decyzja filozoficzna**, która ma merytoryczne uzasadnienie.
 
-Pogląd Reacta, w ujęciu Dana Abramova, brzmi mniej więcej tak: *„React był naprawą problemu, którym są sygnały."* Przed Reactem drobnoziarnista reaktywność (pomyśl o Knockout, wczesnym Angularze) oznaczała ręczne łączenie tego, co od czego zależy — a błędy mieszkały w tym okablowaniu. Propozycja Reacta brzmiała: przestań myśleć o zależnościach, po prostu opisz UI jako funkcję stanu, a framework wyliczy aktualizacje. W React **wszystko jest domyślnie reaktywne** — uczynienie czegoś „computed" to optymalizacja, którą możesz dodać, a nie wymóg, wokół którego musisz pisać.
+Dana Abramov streszcza to mniej więcej tak: *„React był rozwiązaniem problemu, którym są sygnały."* Przed Reactem fine-grained reactivity (Knockout, wczesny Angular) oznaczała ręczne tworzenie zależności — a co za tym idzie, miejsca na błędy. Pomysł Reacta: przestań myśleć o zależnościach. Opisz interfejs jako funkcję stanu, framework wylicza resztę. W React **wszystko jest reaktywne domyślnie** — computed to opcjonalna optymalizacja, nie wymóg.
 
-Sygnały to odwracają. Musisz z góry zdecydować, co jest stanem, co pochodną, a co efektem — i musisz strukturować kod od środka na zewnątrz, żeby utrzymać graf w całości. Kontrargument Reacta jest taki, że to ponownie wprowadza dokładnie ten narzut poznawczy, który React chciał usunąć, a semantyka robi się mętna na brzegach (co w ogóle *znaczy* sygnał zadeklarowany wewnątrz `if` między renderami?).
+Sygnały to się odwraca. Musisz z góry zdefiniować stan, computed i efekty — i strukturować kod wokół tego grafu. Kontrargument Reacta: to przywraca dokładnie tę kognitywną złożoność, którą React usuwał. A na brzegach semantyka się rozpada (co znaczy sygnał deklarowany wewnątrz `if`, między renderami?).
 
-Więc zamiast sygnałów, React postawił na **kompilator**. Jeśli prawdziwym kosztem modelu gruboziarnistego są zbędne przerenderowania, React Compiler automatycznie memoizuje komponenty i hooki, tak byś dostał wydajność zbliżoną do sygnałów bez zmiany modelu mentalnego. Ten sam cel — minimum zmarnowanej pracy — inna droga. Jeśli chcesz głębszej mechaniki tego podejścia, rozłożyłem je na czynniki pierwsze w [głębokim nurkowaniu w React Compiler](/pl/blog/react-compiler-automatyczna-memoizacja), a leżące u podstaw uzgadnianie, które on optymalizuje, opisałem w [artykule o wnętrznościach React Fiber](/pl/blog/react-fiber-silnik-nowoczesnego-reacta).
+Dlatego React postawił na **kompilator**. Jeśli problem to zbędne przerenderowania, React Compiler memoizuje komponenty i hooki automatycznie — dostajesz wydajność bliską sygnałom bez zmiany myślenia. Cel ten sam (minimalna praca), droga inna. Jeśli chcesz zagłębić się w mechanikę, mam [Deep Dive w React Compiler](/pl/blog/react-compiler-automatyczna-memoizacja) i [artykuł o React Fiber](/pl/blog/react-fiber-silnik-nowoczesnego-reacta).
 
-Czy ten zakład się opłaci, to otwarte pytanie najbliższych dwóch lat. Nawet wewnątrz zespołu Reacta drzwi nie są całkiem zamknięte — niektórzy członkowie są otwarci na sygnały jako *szczegół implementacyjny kompilatora optymalizującego*, tylko nie jako API, do którego piszesz.
+Czy ten zakład wyjdzie, czekamy i zobaczymy. Nawet w samym Reaccie nie wszystkie drzwi są zamknięte — niektórzy rozważają sygnały jako *implementacyjny szczegół kompilatora*, ale nie jako publiczne API.
 
-## Czy możesz używać sygnałów w React już dziś? (Tak, w pewnym sensie)
+## Czy możesz używać sygnałów w React już dziś? (Tak, na swój sposób)
 
-Nie musisz opuszczać Reacta, żeby tego posmakować. Kilka uczciwych opcji:
+Nie musisz opuszczać Reacta. Kilka dróg:
 
-**Preact Signals dla Reacta.** Pakiet `@preact/signals-react` wprowadza prawdziwe sygnały do aplikacji React. Odczyt `.value` wewnątrz komponentu subskrybuje ten komponent do sygnału, i tylko komponenty odczytujące zmieniony sygnał się przerenderowują — naprawdę drobnoziarniściej niż surowy `useState`.
+**Preact Signals dla Reacta.** `@preact/signals-react` wstrzykuje prawdziwe sygnały do Reacta. Czytając `.value`, rejestrujesz komponent jako słuchacza — i tylko komponenty, które go czytają, renderują się na nowo. Faktycznie granularnie, nie jak surowy `useState`.
 
 ```jsx
 import { signal } from "@preact/signals-react";
 
-const count = signal(0); // żyje poza komponentem — remount go nie resetuje
+const count = signal(0); // żyje poza komponentem — nie resetuje się przy remouncie
 
 function Counter() {
-  // odczyt .value subskrybuje TEN komponent; rodzeństwo, które go nie czyta, się nie przerenderuje
+  // .value łączy TEN komponent z sygnałem; siostrzane komponenty się nie renderują
   return <button onClick={() => count.value++}>{count.value}</button>;
 }
 ```
 
-**Biblioteki stanu w stylu sygnałów.** Jotai, Valtio i Zustand opierają się na tej samej idei — subskrybuj wycinki stanu, żeby niepowiązane komponenty się nie przerenderowywały. To nie jest prymityw TC39, ale rozwiązują ten sam praktyczny problem wewnątrz modelu Reacta i współpracują z `useSyncExternalStore`, oficjalnym hookiem Reacta do subskrybowania zewnętrznych store'ów.
+**Store'y w stylu sygnałów.** Jotai, Valtio, Zustand opierają się na tej samej idei — subskrybuj fragmenty stanu, żeby niepowiązane komponenty się nie rysowały. Nie są to prymitywy TC39, ale rozwiązują ten sam problem wewnątrz Reacta i łączą się z `useSyncExternalStore`.
 
-**Po prostu sięgnij po `useSyncExternalStore`.** Jeśli budujesz bibliotekę i chcesz reaktywności zewnętrznej w stylu sygnałów bez zależności, to jest usankcjonowana furtka. To na niej budują biblioteki stanu.
+**Albo po prostu `useSyncExternalStore`.** Jeśli piszesz bibliotekę i chcesz reaktywności na sygnałach bez bałaganu, to hook jest dla Ciebie. Inne biblioteki stanu na nim się opierają.
 
-Moja szczera opinia: nie doczepiaj Preact Signals do dużej istniejącej bazy Reacta tylko po to, by gonić trend. Wartość jest realna, gdy konkretna gorąca ścieżka — pozycja kursora o wysokiej częstotliwości, wykres na żywo, płótno narzędzia projektowego — tonie w przerenderowaniach. Do tego sięgnij po celowany store albo bibliotekę sygnałów. Do wszystkiego innego React Compiler to rampa, którą już masz.
+Szczera rada: nie doklejaj Preact Signals do starych bazodanowych aplikacji Reacta dla trendu. Sensowne tylko wtedy, gdy konkretne gorące miejsce — pozycja kursora, live chart, canvas narzędzia — się zawieszą. Wtedy sięgnij po store. Do reszty masz React Compiler.
 
-## Gdzie to naprawdę ma znaczenie: opóźnienie interakcji
+## Gdzie to naprawdę się liczy: opóźnienie interakcji
 
-Drobnoziarnista reaktywność to nie akademicka wygrana. Ujawnia się bezpośrednio w **Interaction to Next Paint (INP)**, wskaźniku Core Web Vital, który zastąpił First Input Delay. INP mierzy, jak długo UI zajmuje wizualna reakcja po interakcji użytkownika — a gruboziarnisty cykl „przerenderuj drzewo, porównaj, zatwierdź" to dokładnie ten rodzaj pracy na głównym wątku, który go napcompełnia pod obciążeniem.
+Fine-grained reactivity to nie teoretyczna piękność. Pokazuje się w **Interaction to Next Paint (INP)**, metryce Core Web Vitals, która zastąpiła First Input Delay. INP to czas od akcji użytkownika do wizualnej odpowiedzi — a cykl „przerenderuj, porównaj, zatwierdź" to dokładnie ten rodzaj pracy na głównym wątku, która ją spowalnia.
 
-Na dashboardzie z tysiącami wierszy na żywo framework sygnałowy aktualizuje trzy komórki, które się zmieniły, i nic więcej. Framework z virtual DOM uzgadnia drzewo i opiera się na memoizacji, żeby *uniknąć* pracy, którą inaczej by wykonał. Oba mogą osiągnąć dobre INP — ale sygnały docierają tam przez strukturalny domyślny stan, podczas gdy React dochodzi tam pracą optymalizacyjną (Twoją albo kompilatora). Jeśli zależy Ci na opóźnieniu interakcji przy skali, to jest konkretny powód, dla którego debata nie jest tylko estetyką — i łączy się bezpośrednio z dyscypliną, którą opisałem w [budżetach wydajności dla inżynierów frontendu](/pl/blog/budzety-wydajnosci-frontend).
+Na dashboardzie z tysiącami wierszy sygnałowy framework aktualizuje trzy komórki i koniec. Virtual DOM uzgadnia drzewo, opiera się na memoizacji, żeby nie robić niepotrzebnej pracy. Oba mogą mieć dobry INP — ale sygnały osiągają go strukturalnie (domyślnie), React musi pracować (Ty lub kompilator). Jeśli INP przy skali Cię obchodzi, to nie jest czysto estetyczna dyskusja — to łączy się z [budżetami wydajności](/pl/blog/budzety-wydajnosci-frontend).
 
-## Pułapki, przed którymi nikt nie ostrzega
+## Pułapki, o których nikt nie opowiada
 
-Jeśli przeniesiesz mózg Reacta w sygnały, to są pułapki:
+Gdy przechodzisz z mentalnością Reacta na sygnały:
 
-- **Odczyt za wcześnie łamie reaktywność.** W Solidzie przekazanie `count()` zamiast `count` oddaje martwą migawkę. W Vue destrukturyzacja obiektu reaktywnego gubi śledzenie. Graf zależności działa tylko, jeśli czytasz *wewnątrz* zakresu reaktywnego.
-- **Efekty to nie `useEffect`.** Sygnałowy `effect` nie ma tablicy zależności — śledzi automatycznie przez odczyt sygnałów. To mniej boilerplate'u, ale inny tryb awarii: odczytaj sygnał, którego nie chciałeś śledzić, a Twój efekt odpali się częściej, niż oczekujesz.
-- **Nieaktualne domknięcia się przenoszą, nie znikają.** Sygnały zabijają klasyczny bug nieaktualnego domknięcia w React (wartość jest zawsze aktualna), ale wprowadzają odwrotność — zapomnij zrobić z czegoś sygnał, a to po cichu nigdy się nie zaktualizuje.
-- **Model „komponent uruchamia się raz" zaskakuje każdego.** Console logi, lokalne `let` i kod setupu wykonują się jeden raz w Solidzie i Svelte. Programiści Reacta instynktownie oczekują, że ciało się powtórzy; tak się nie dzieje.
-- **Asystenci AI są tu zawodni.** Modele trenowane na latach przykładów Reacta i Svelte 3/4 nadal halucynują starą składnię — sugerując store'y tam, gdzie chcesz runes, albo instrukcje reaktywne `$:`, które Svelte 5 zastąpił. Weryfikuj wygenerowany kod sygnałów z aktualną dokumentacją.
+- **Czytanie za wcześnie psuje reaktywność.** W Solidzie `count()` zamiast `count` to snapshot. W Vue destrukturyzacja traci śledzenie. Zależności działają tylko jeśli czytasz *w środku* scope'a reaktywnego.
+- **Effect nie to co `useEffect`.** Sygnałowy `effect` nie ma tablicy zależności — śledzi automatycznie. Mniej kodu, ale pułapka: odczytaj sygnał, którego nie chciałeś, a effect będzie się palić zbyt często.
+- **Stare domknięcia mają bliźnię.** Sygnały zabijają bug nieaktualnych domknięć w React (zawsze masz nową wartość), ale wprowadzają przeciwnie — zapomnij sygnałować coś, a to nigdy się nie zmieni.
+- **Komponent uruchamia się raz, nie wielokrotnie.** Console.log, lokalne zmienne, setup — wszystko jeden raz. Devowie Reacta spodziewają się przebiegu ciała; się nie dzieje.
+- **LLM'y tutaj zawdzięczają.** ChatGPT i inne były uczone na latach Reacta i Svelte 3/4 — wciąż hallucynują starą składnię. Store'y zamiast runes, `$:` zamiast `$effect`. Sprawdzaj w dokumentacji.
 
 ## Testowanie i debugowanie
 
-Testowanie sygnałów jest odświeżająco bezpośrednie: ponieważ stan żyje poza cyklem renderowania, możesz stworzyć sygnał, zmutować go i asertować wartość computed w zwykłym teście jednostkowym — bez harnessu renderowania, bez `act()`, bez fałszywych timerów. W Solidzie `createRoot` daje Ci jednorazowy zakres reaktywny do testów; w Svelte moduły `.svelte.js` są testowalne jak zwykłe funkcje.
+Testy sygnałów to odśwież: stan żyje poza renderowaniem, tworzysz sygnał, mutojesz, sprawdzasz wartość computed — bez render harnesu, bez `act()`, bez fake timerów. Solid daje `createRoot` na scope reaktywny; Svelte `.svelte.js` testuje się jak normalne funkcje.
 
-Debugowanie przesuwa się z „dlaczego to się przerenderowało?" na „dlaczego to się (nie) zaktualizowało?". Devtoolsy Solida wizualizują graf zależności; Svelte 5 udostępnia `$inspect`, by śledzić, kiedy rune się zmienia i co to wywołało. Pytania są inne, ale jest ich mniej — gonisz pojedynczą krawędź w grafie, a nie kaskadę renderów.
+Debugging zmienia się z „czemu to się renderowało?" na „czemu to się (nie) zaktualizowało?". Solid devtools rysują graf; Svelte 5 ma `$inspect` do śledzenia zmian rune'a. Pytania są inne, ale mniej ich — gonisz jedną krawędź grafu, nie kaskadę renderów.
 
-## Więc co właściwie powinieneś zrobić?
+## Więc co teraz?
 
-Framework decyzyjny, nie manifest:
+Praktycznie:
 
-- **Nowa aplikacja od zera, wydajność jest cechą nagłówkową?** SolidJS albo Svelte 5 są naprawdę świetne, a model reaktywności to prawdziwa przewaga. Wybierz na podstawie ekosystemu i rekrutacji, nie benchmarków — oba są wystarczająco szybkie.
-- **Już głęboko w React?** Nie przepisuj. Przyjmij [React Compiler](/pl/blog/react-compiler-automatyczna-memoizacja) i sięgnij po store w stylu sygnałów (Jotai/Valtio/Zustand) tylko na konkretnych gorących ścieżkach, które tego potrzebują. Tu bym wyznaczył granicę między przesadą a pragmatyzmem — ten sam instynkt stosuję w [unikaniu przedwczesnej abstrakcji](/pl/blog/wet-aha-przedwczesna-abstrakcja-frontend).
-- **Na Angularze albo Vue?** Jesteś już na ścieżce sygnałów — oprzyj się na `signal()`/`ref`, a na Angularze przejdź na zoneless.
-- **Stawiasz na sam język?** Obserwuj propozycję TC39, ale buduj pod dziś. Stage 1 to sygnał konsensusu, a nie data wydania.
+- **Nowy projekt, wydajność ma znaczenie?** Solid albo Svelte 5 to świetne wybory — model reaktywności faktycznie pomaga. Wybieraj po ekosystemie i dostępnych devach, nie benchmarkach — oba są wystarczające.
+- **Głęboki React?** Nie przepisuj. Włącz [React Compiler](/pl/blog/react-compiler-automatyczna-memoizacja), sięgnij po store na sygnały (Jotai/Valtio/Zustand) tylko gdzie trzeba — gorące miejsca. Tu trzymam się pragmatyzmu — tak jak w [unikaniu przedwczesnej abstrakcji](/pl/blog/wet-aha-przedwczesna-abstrakcja-frontend).
+- **Angular lub Vue?** Już jesteś na ścieżce sygnałów — `signal()`/`ref` i (w Angularze) brak Zone.js.
+- **Język, nie framework?** Obserwuj TC39, ale pisz na dziś. Stage 1 to konsensus, nie data.
 
-Nagłówek „sygnały wygrały" jest w połowie prawdziwy. Sygnały wygrały argument o *model reaktywności* niemal wszędzie — a React robi kontrariański zakład, że wystarczająco dobry kompilator czyni z całej debaty szczegół implementacyjny. W 2026 nie musisz wybierać strony, żeby być silnym inżynierem frontendu. Ale musisz rozumieć oba modele, bo framework, po który sięgniesz następnym razem, jest coraz częściej definiowany przez to, który z nich wybrał.
+„Sygnały wygrały" — w połowie. Wygrały *debatę o modelu reaktywności* wszędzie oprócz Reacta, gdzie stawia się na kompilator, czyniąc całą dyskusję szczegółem implementacyjnym. W 2026 nie musisz wybierać strony, żeby być dobrym frontend devem. Ale musisz rozumieć oba, bo framework, po który sięgniesz, to definiuje.
 
 ## Źródła
 
