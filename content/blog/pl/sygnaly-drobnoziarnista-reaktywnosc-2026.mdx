@@ -20,9 +20,9 @@ Naprawmy to. Praktyczną rzecz ujmując: czym naprawdę jest fine-grained reacti
 
 Najprostsza forma: **sygnał śledzi, które konkretne wartości się zmieniły, i aktualizuje tylko te fragmenty DOM-u, które od nich zależą — bez przerenderowania całego drzewa komponentów i bez porównywania.**
 
-Model Reacta działa inaczej. Gdy stan się zmienia, React znovuprzebiegnie przez funkcję Twojego komponentu, buduje nowe virtual DOM i uzgadnia go ze starym, aby dowiedzieć się, co zmienić. To model „pull" — React pyta „jak wyglądać powinien teraz UI?" i cofając się, wylicza zmiany. To eleganckie, przewidywalne, i robi dużo niepotrzebnej pracy, którą nigdy nie widzisz.
+Model Reacta działa inaczej. Gdy stan się zmienia, React ponownie uruchamia funkcję Twojego komponentu, buduje nowe virtual DOM i uzgadnia go ze starym, aby dowiedzieć się, co zmienić. To model „pull" — React pyta „jak wyglądać powinien teraz UI?" i cofając się, wylicza zmiany. To eleganckie, przewidywalne, i robi dużo niepotrzebnej pracy, którą nigdy nie widzisz.
 
-Sygnały idą odwrotnym kierunkiem. Budują graf zależności w trakcie działania. Sygnał `state` przechowuje wartość; sygnały `computed` z niej czerpią; efekty się do niej łączą. Gdy wartość się zmienia, runtime już wie dokładnie, które computed i efekty jej zależą, więc odświeża tylko je. Nic się nie przerenderowuje. Nic się nie porównuje. Funkcja komponentu, która utworzyła sygnał, uruchamia się zazwyczaj **jeden raz**, i tyle.
+Sygnały idą odwrotnym kierunkiem. Budują graf zależności w trakcie działania. Sygnał `state` przechowuje wartość; sygnały `computed` z niej czerpią; efekty się do niej łączą. Gdy wartość się zmienia, runtime już wie dokładnie, od których zależą computed i efekty, więc odświeża tylko je. Nic się nie przerenderowuje. Nic się nie porównuje. Funkcja komponentu, która utworzyła sygnał, uruchamia się zazwyczaj **jeden raz**, i tyle.
 
 To właśnie to — granularnością jest zmiana wartości, a nie komponent. Benchmarki nie kłamią: Solid i Svelte 5 rządzą na JS Framework Benchmark, a różnica między nimi a virtual DOM to przepaść — znacznie większa niż między nimi dwiema.
 
@@ -105,7 +105,7 @@ export class CounterComponent {
 }
 ```
 
-Te same trzy prymitywy, ten sam model czytania-przez-wywołanie. Dla Angulara to przełom: fine-grained aktualizacje pozwalają całkowicie porzucić Zone.js i detektywkę drzewa przy każdym zdarzeniu.
+Te same trzy prymitywy, ten sam model czytania-przez-wywołanie. Dla Angulara to przełom: fine-grained aktualizacje pozwalają całkowicie porzucić Zone.js i sprawdzanie całego drzewa przy każdym zdarzeniu.
 
 ### Vue — framework, który był już w połowie drogi
 
@@ -140,10 +140,10 @@ const doubled = new Signal.Computed(() => count.get() * 2);
 
 count.get();     // 0
 count.set(5);
-doubled.get();   // 10 — liczane leniwko, potem bufforowane
+doubled.get();   // 10 — liczane leniwie, potem buforowane
 ```
 
-`Signal.State` to value, `Signal.Computed` pochodzi z niego, a `Signal.subtle.Watcher` to to, na czym budują efekty. Logika: jak Promises — ustandaryzować prymityw, żeby biblioteki były kompatybilne, a runtime mogły go nativnie zoptymalizować.
+`Signal.State` to zapisywalna wartość, `Signal.Computed` pochodzi z niego, a `Signal.subtle.Watcher` to to, na czym budują efekty. Logika: jak Promises — ustandaryzować prymityw, żeby biblioteki były kompatybilne, a runtime mogły go natywnie zoptymalizować.
 
 Ale realismu — propozycja siedzi w Stage 1 od ponad dwóch lat, bez ruchu do Stage 2. Zamierzone. Autorzy najpierw chcą dowieść sensowności polyfillami, dopiero potem szukać promocji. Nie czekaj. Traktuj to jako potwierdzenie kierunku branży, nie datę wydania.
 
