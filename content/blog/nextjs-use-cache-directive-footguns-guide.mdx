@@ -1,0 +1,218 @@
+---
+title: 'Next.js use cache: The Footguns the Docs Skip'
+date: '2026-07-23'
+category: 'Development'
+tags: ['nextjs', 'caching', 'use-cache', 'performance', 'react']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: 'The use cache directive is elegant until your cache returns the wrong user’s data. The trap is the cache key: it is derived from serialized arguments and compiler-captured closures, with three silent exceptions nobody documents. Here is the model that keeps you out of trouble.'
+---
+
+The `use cache` directive is the best thing to happen to Next.js caching, and it's also how I served one customer's dashboard data to a different customer in staging. Both statements are true, and the gap between them is a mental model the docs mostly leave implicit.
+
+Next.js 16 threw out the black-box implicit caching that made Next.js 15 so maddening — I've [written about why the new explicit model is a genuine improvement](/blog/react-cache-components-nextjs-16-caching-guide). This article is the other half: the **Next.js use cache directive** is simpler than what came before *and* easier to get subtly, silently wrong, because everything hinges on one thing the elegant syntax hides — how the cache key is computed. Get that right and it's a joy. Get it wrong and you get stale data, shared data, or a build error that doesn't explain itself. Let's map all three.
+
+## The One Rule: Nothing Is Cached Until You Say So
+
+Start from the reset. In Next.js 16 with Cache Components enabled, the default is: **nothing is cached.** You opt in by putting the `use cache` string at the top of a function, a component, or an entire file:
+
+```typescript
+// next.config.ts
+const nextConfig = {
+  cacheComponents: true,
+}
+```
+
+```typescript
+async function getProducts(category: string) {
+  'use cache'
+  const res = await fetch(`https://api.example.com/products/${category}`)
+  return res.json()
+}
+```
+
+That's the whole surface, and it reads like magic. The magic is a compiler pass that rewrites this function so its results are memoized across requests. The question that decides whether it works is: **memoized under what key?** Everything below is that question.
+
+## How the Cache Key Is Actually Computed
+
+Here's the model to hold in your head. The cache key for a `use cache` function is derived from **its serialized arguments plus every variable it closes over from an outer scope.** The compiler is doing something clever: closed-over variables are captured and bound as if they were extra arguments, so they become part of the key too.
+
+```typescript
+async function getUserPosts(userId: string) {
+  'use cache'
+  // userId is an argument -> part of the key. Different users, different cache. Correct.
+  return db.post.findMany({ where: { authorId: userId } })
+}
+
+function Feed({ region }: { region: string }) {
+  async function getTrending() {
+    'use cache'
+    // `region` is closed over from Feed's scope.
+    // The compiler captures it and folds it INTO the key. Different regions cache separately.
+    return fetchTrending(region)
+  }
+  // ...
+}
+```
+
+This is a real advantage over the old `unstable_cache`/`cache()` runtime helpers, where you had to hand-assemble the key string and forgetting a dependency meant a stale-data bug. The compiler sees your closures and handles them. Mostly. The three footguns are the three places where "mostly" hides.
+
+## Footgun 1: Non-Serializable Arguments Silently Drop From the Key
+
+Arguments and return values must be serializable. Next.js uses React's serialization, which is broader than JSON — it handles primitives, plain objects, arrays, `Date`, `Map`, `Set`, promises, and even circular structures. Generous. But not infinite.
+
+When you pass something that *isn't* serializable — a class instance, a function, a database client, a React element with event handlers — it does **not** become part of the cache key. Instead Next.js passes it through as an opaque server reference. Read that again, because it's the trap: the argument still flows into your function and works, but it is **invisible to the key.**
+
+```typescript
+async function getReport(client: DatabaseClient, reportId: string) {
+  'use cache'
+  // reportId -> serializable -> part of the key ✓
+  // client   -> NOT serializable -> NOT part of the key ✗
+  return client.fetchReport(reportId)
+}
+```
+
+If two requests use different `client` objects but the same `reportId`, they collide on the same cache entry. In a dashboard where the "client" carries the tenant connection, that's exactly how you serve tenant A's report to tenant B. The fix is to never route identity-bearing data through a non-serializable argument: pass the `reportId` and the `tenantId` as plain strings, and construct the client *inside* the function.
+
+The rule that keeps you safe: **everything that should distinguish one cache entry from another must be serializable and must be an argument (or a closed-over serializable value).**
+
+## Footgun 2: Module-Scope Values Bypass the Key Entirely
+
+This is the one that isn't documented anywhere, and it's tracked in a long-standing Next.js issue ([#74498](https://github.com/vercel/next.js/issues/74498)). It bit me and it will bite you.
+
+Because the compiler hoists your cached function to the module scope, values **defined or imported at module scope bypass the serializability check** — they're just directly available to the hoisted function. The consequence: a module-scope value your cached function reads is **not part of the cache key at all.**
+
+```typescript
+import { getConfig } from './config'
+
+// Module-scope value
+let currentPromotion = getConfig().activePromo
+
+async function getPricing(productId: string) {
+  'use cache'
+  // productId -> part of the key ✓
+  // currentPromotion -> module scope -> INVISIBLE to the key ✗
+  return applyPromo(await fetchPrice(productId), currentPromotion)
+}
+```
+
+Your intuition says "if the promotion changes, the cache should bust." It won't. `currentPromotion` isn't an argument and isn't a closure over a *local* scope — it's module scope, so the compiler treats it as ambient and never folds it into the key. You'll cache the price computed under the old promotion and serve it long after the promo ends.
+
+The fix is to make the dependency explicit — pull module-scope values into the function's arguments or a local closure so the compiler captures them:
+
+```typescript
+async function getPricing(productId: string, promo: string) {
+  'use cache'
+  return applyPromo(await fetchPrice(productId), promo) // promo is now in the key ✓
+}
+```
+
+The discipline this teaches: **inside a `use cache` function, distrust anything you didn't receive as an argument.** If it came from module scope, it's a constant as far as the cache is concerned — even when it isn't.
+
+## Footgun 3: Per-Request APIs Are Forbidden Inside a Cache
+
+The last one at least fails loudly, which is a mercy. A cached scope **cannot read per-request APIs** — `cookies()`, `headers()`, `searchParams`. It makes sense once you say it: a cache entry is shared across requests, and those APIs are request-specific, so reading them inside a cached function is a category error. Next.js stops you.
+
+```typescript
+// ❌ Build/runtime error: can't read cookies() inside 'use cache'
+async function getDashboard() {
+  'use cache'
+  const session = cookies().get('session')
+  return fetchDashboard(session)
+}
+
+// ✅ Read per-request data OUTSIDE, pass the serializable value IN
+async function getDashboard(userId: string) {
+  'use cache'
+  return fetchDashboard(userId) // userId is in the key, so per-user caching is correct
+}
+
+// caller (not cached):
+const userId = await getUserIdFromSession() // reads cookies() here
+const data = await getDashboard(userId)
+```
+
+This error is secretly a teacher. The reason you *must* pass `userId` in is the same reason caching works at all: the thing that makes the result different per request has to be an argument, so it can be part of the key. Footgun 3 forces you into the correct pattern that Footguns 1 and 2 let you skip silently. If you internalize "read request state outside, pass serializable values in," you've solved most of the way to safe caching.
+
+## cacheLife and cacheTag: Lifetime and Invalidation
+
+Once the key is right, the two knobs are time and tags.
+
+**`cacheLife`** sets how long an entry stays fresh. It ships with named profiles, and `max` gives you stale-while-revalidate semantics — serve the stale value instantly, refresh in the background:
+
+```typescript
+import { unstable_cacheLife as cacheLife } from 'next/cache'
+
+async function getHomepage() {
+  'use cache'
+  cacheLife('hours') // or 'minutes', 'days', 'max', or a custom profile
+  return fetchHomepageContent()
+}
+```
+
+**`cacheTag`** labels an entry so you can purge it on demand from a server action, with `revalidateTag` — also stale-while-revalidate:
+
+```typescript
+async function getProduct(id: string) {
+  'use cache'
+  cacheTag(`product-${id}`)
+  return db.product.findUnique({ where: { id } })
+}
+
+// In a server action after an edit:
+'use server'
+import { revalidateTag } from 'next/cache'
+
+export async function updateProduct(id: string, data: unknown) {
+  await db.product.update({ where: { id }, data: validate(data) })
+  revalidateTag(`product-${id}`) // stale served instantly, fresh loads in background
+}
+```
+
+Tag-based invalidation is where the model pays off: your write path knows exactly which cache entries it invalidates, instead of the Next.js 15 guessing game of which implicit cache layer held the stale copy. Pair it with the same [server-action hardening](/blog/nextjs-server-actions-security) you'd apply anyway — the mutation that calls `revalidateTag` is still a public endpoint.
+
+## Debugging a Wrong-Key Cache
+
+When a cached function returns something wrong — stale, or belonging to the wrong user — the answer is almost always the key. Walk it in this order:
+
+1. **List what makes this result unique.** User? Tenant? Locale? Promotion? Every one of those must reach the function as a serializable argument.
+2. **Check each for the three footguns.** Is any of them a non-serializable object (Footgun 1)? Read from module scope (Footgun 2)? Pulled from `cookies()`/`headers()` — and if so, is it read *outside* and passed in (Footgun 3)?
+3. **Log the arguments at the call site**, not inside the function. If two logically-different calls show identical serializable arguments, they *will* share a cache entry — that's not a bug, that's the key doing its job on incomplete inputs.
+4. **Temporarily disable the directive** and confirm the data is correct without caching. That isolates "wrong data" (a key problem) from "wrong query" (a data problem).
+
+Ninety percent of `use cache` bugs are "something that should distinguish entries isn't in the key." The debugging loop is just finding which something.
+
+## Checklist
+
+Before you ship a `use cache` function:
+
+1. Every value that should produce a *different* cached result is a **serializable argument** (or a closed-over local serializable value).
+2. No identity-bearing data rides in on a **non-serializable** argument — it won't be in the key.
+3. No dependency is read from **module scope** expecting it to bust the cache — it won't.
+4. Per-request APIs (`cookies`, `headers`, `searchParams`) are read **outside** and passed in as plain values.
+5. `cacheLife` matches how stale the data may acceptably get.
+6. `cacheTag` + `revalidateTag` wired into the write path for anything mutable.
+7. You've logged the call-site arguments once, just to see the key you're actually getting.
+
+If you're mid-upgrade, the [Next.js 16 migration guide](/blog/nextjs-16-migration-guide-breaking-changes) covers how `use cache` slots in alongside the other breaking changes. The `use cache` directive really is the caching model Next.js should have shipped years ago. But "explicit" only helps if you know what you're being explicit *about* — and the answer is always the cache key. Learn to see the key behind the syntax, and the footguns turn back into a one-line directive that just works.
+
+## References
+
+### Sources
+
+- [Next.js docs: use cache directive](https://nextjs.org/docs/app/api-reference/directives/use-cache) - placement, serializable arguments and return values
+- [Next.js blog: Composable Caching](https://nextjs.org/blog/composable-caching) - how the compiler derives cache keys and captures closures
+- [Next.js issue #74498](https://github.com/vercel/next.js/issues/74498) - the undocumented module-scope serialization bypass
+- [Next.js docs: cacheTag](https://nextjs.org/docs/app/api-reference/functions/cacheTag) - on-demand invalidation with tags
+- [Next.js docs: revalidateTag](https://nextjs.org/docs/app/api-reference/functions/revalidateTag) - stale-while-revalidate purge semantics
+
+### Further Reading
+
+- [Cache Components for Instant and Fresh Pages (Vercel Academy)](https://vercel.com/academy/nextjs-foundations/cache-components) - the guided migration path
+- [Next.js: Our Journey with Caching](https://nextjs.org/blog/our-journey-with-caching) - why the implicit model was abandoned
+- [Next.js Caching Explained: Every Strategy](https://dev.to/cole_ruche/nextjs-caching-explained-every-strategy-you-need-to-know-react-cache-use-cache-cachetags--3hkl) - how use cache relates to React cache() and unstable_cache
+
+---
+
+~Seb 👊
