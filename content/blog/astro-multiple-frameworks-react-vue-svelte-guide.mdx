@@ -1,0 +1,140 @@
+---
+title: 'One Astro App, Many Frameworks: React, Vue, and Svelte Together'
+date: '2026-07-23'
+category: 'Development'
+tags: ['astro', 'islands', 'react', 'vue', 'svelte']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: 'Astro can run React, Vue, and Svelte components side by side on the same page — a genuine migration superpower. But islands are isolated: no shared context, and each ships its own runtime. Here is how to mix frameworks deliberately, share state across them, and not pay for it twice.'
+---
+
+The first time I put a React component and a Svelte component on the same Astro page and both just *worked*, I did a double-take. Not "compiled to the same output" worked — actually-running-React-next-to-actually-running-Svelte worked, in one page, in one build. **Astro's multiple frameworks** support is one of those features that sounds like a party trick until you're mid-migration and realize it's a lifeline.
+
+But it's a feature with sharp edges that the "look, they coexist!" demos never show you. Islands are *isolated* — your React context doesn't cross to the next island, your Redux store doesn't either, and every framework you add ships its own runtime. So this is the honest version: why you'd genuinely want this, how to share state across the boundary when you need to, and how not to pay for it twice.
+
+## Why You'd Actually Want This
+
+Two real reasons, and one bad one.
+
+**Incremental migration (the big one).** You're on React and you want to move to Svelte — or you inherited a Vue app and your team writes React now. Astro lets you migrate *component by component* instead of in one terrifying big-bang rewrite. Old React island here, new Svelte island there, same page, shipping the whole time. This is the same [incremental-decoupling instinct as micro-frontends](/blog/micro-frontends-nextjs-module-federation-guide), but at the component level instead of the app level.
+
+**Best tool per widget.** A complex data-grid has a great Vue library; your team's design system is React; a tiny reactive widget is cleanest in Svelte. Astro lets each be what it's best as.
+
+**The bad reason:** because you can. Mixing frameworks for novelty means shipping multiple runtimes to users who'd never notice if you'd just picked one. Which brings us to the costs — but first, the mechanics.
+
+## How It Works: Integrations and client: Directives
+
+Astro has official integrations for React, Vue, Svelte, Solid, Preact, and Alpine. Install the ones you need, import components, and drop them into `.astro` files. Each interactive component becomes an island, and you control *how and when* it hydrates with a `client:` directive:
+
+```astro
+---
+import ReactSearch from '../components/Search.tsx'
+import VueDataGrid from '../components/DataGrid.vue'
+import SvelteToggle from '../components/Toggle.svelte'
+---
+<!-- Three frameworks, one page, each an independent island -->
+<ReactSearch client:load />       <!-- hydrate immediately -->
+<VueDataGrid client:visible />    <!-- hydrate when scrolled into view -->
+<SvelteToggle client:idle />      <!-- hydrate when the browser is idle -->
+```
+
+The `client:` directives are the hydration control:
+
+- **`client:load`** — hydrate immediately. For above-the-fold interactivity.
+- **`client:idle`** — hydrate when the browser goes idle. For non-urgent widgets.
+- **`client:visible`** — hydrate when the component scrolls into view. Great for below-the-fold islands — nothing loads until needed.
+- **`client:media`** — hydrate only at a media query (e.g. a mobile-only menu).
+- **`client:only`** — skip server rendering entirely, render only on the client. Sometimes necessary for framework components that assume a browser.
+
+Picking the right directive is most of the performance story: `client:visible` on a heavy grid means its framework runtime doesn't download until the user reaches it.
+
+## The Hard Truth: Islands Are Isolated
+
+Here's the part that breaks people's mental model. **Islands are islands.** Each one hydrates independently in its own little bubble. That means:
+
+- **React Context does not cross island boundaries.** A `<Provider>` in one island doesn't reach a component in another island — even another React island.
+- **Redux, Pinia, Svelte stores** — same story. State managers scoped to one island stay there.
+- Someone I know tried a React island with Redux next to a Vue island and expected them to share data. They hydrated independently, shared nothing, and *duplicated their data fetching*. Two islands, two fetches, zero shared state.
+
+This isn't a bug; it's the architecture. Islands are isolated *so that* they can be independent, lazily hydrated, and framework-agnostic. But it means "share state across components" — trivial in a single-framework SPA — becomes a real design question the moment those components live in different islands.
+
+## Sharing State Across Frameworks With Nano Stores
+
+Astro's answer, and the one that actually works across frameworks, is **Nano Stores** — a tiny framework-agnostic store that every island can subscribe to:
+
+```typescript
+// stores/cart.ts — framework-agnostic shared state
+import { atom } from 'nanostores'
+export const cartCount = atom(0)
+```
+
+```tsx
+// React island reads and writes it
+import { useStore } from '@nanostores/react'
+import { cartCount } from '../stores/cart'
+export function CartBadge() {
+  const count = useStore(cartCount)
+  return <span>{count}</span>
+}
+```
+
+```svelte
+<!-- Svelte island writes to the SAME store -->
+<script>
+  import { cartCount } from '../stores/cart'
+  function add() { cartCount.set(cartCount.get() + 1) }
+</script>
+<button on:click={add}>Add</button>
+```
+
+A React `CartBadge` and a Svelte "Add" button now share one source of truth across the framework boundary. Nano Stores has adapters for React, Vue, Svelte, Solid, and Preact, which is exactly why it's the recommended cross-island solution — `svelte/store`, by contrast, only auto-subscribes inside Svelte, so it can't be your shared layer.
+
+## The Nano Stores Caveats Nobody Mentions
+
+Two limitations that will cost you an afternoon if you don't know them up front:
+
+- **Writing to a store from a `.astro` file or a non-hydrated component won't reach client islands.** The `.astro` frontmatter runs at build/request time on the server; the island runs later in the browser. They're not the same execution context, so a value you set server-side in `.astro` doesn't propagate to the hydrated store. Initialize client state *inside* an island, or pass initial values as plain props.
+- **You cannot pass a Nano Store as a prop** to a client component. Import the store directly in each island instead of threading it through props.
+
+For simpler needs, plain **Web APIs** also work as a cross-island channel — `localStorage`, custom DOM events, or a shared `data-` attribute. They're lower-level but dependency-free, and fine for "island A tells island B something happened."
+
+## The Payload Cost of Mixing
+
+Every framework you add ships **its own runtime**. One page with React, Vue, and Svelte islands downloads the React runtime *and* the Vue runtime *and* the Svelte runtime (Svelte's is tiny, the others less so). That's the tax on "best tool per widget," and it directly erodes the [minimal-JavaScript win](/blog/astro-vs-nextjs-16-2026-decision) that made you choose Astro in the first place.
+
+The discipline: mix frameworks when you have a *reason* (migration, a genuinely better library for a specific widget), not as a default. For a greenfield project, pick one framework for your islands and enjoy the single runtime. Multi-framework is a capability to reach for deliberately, not a starting posture.
+
+## When to Mix (and When It's Just Showing Off)
+
+- **Mix when:** you're migrating between frameworks incrementally, or a specific widget has a clearly superior library in another framework and the payload cost is worth it.
+- **Don't mix when:** it's greenfield and one framework would serve every island — you'd be paying multiple runtimes for nothing.
+
+## Checklist
+
+1. Add only the framework integrations you actually need — each is a runtime users download.
+2. Choose `client:` directives by urgency: `client:visible`/`client:idle` for below-the-fold, `client:load` only for immediate interactivity.
+3. Don't expect React Context / Redux / stores to cross island boundaries — they won't.
+4. Share cross-island, cross-framework state with **Nano Stores** (or Web APIs for simple signals).
+5. Remember Nano Stores caveats: no writes from `.astro`, no passing a store as a prop.
+6. Justify every added framework runtime against the JS-payload cost.
+
+Astro's multi-framework support is a genuine superpower — it turns a scary framework migration into a gradual, ship-the-whole-time process, and lets you borrow the best widget from any ecosystem. Just respect that islands are isolated by design: share state through Nano Stores, hydrate lazily, and add runtimes only when you have a reason. Used deliberately, it's the most pragmatic escape hatch in frontend. Used casually, it's three runtimes doing one framework's job.
+
+## References
+
+### Sources
+
+- [Astro docs: Front-end frameworks](https://docs.astro.build/en/guides/framework-components/) - official integrations and the client: hydration directives
+- [Astro docs: Share state between islands](https://docs.astro.build/en/recipes/sharing-state-islands/) - Nano Stores and its caveats
+- [Astro docs: Islands architecture](https://docs.astro.build/en/concepts/islands/) - why islands are isolated and bundle their own runtime
+- [UI Integrations — Using React, Vue, and Svelte in Astro (Luis Llamas)](https://www.luisllamas.es/en/astro-ui-framework-integrations/) - practical multi-framework setup
+
+### Further Reading
+
+- [Sharing State with Islands Architecture (Frontend at Scale)](https://frontendatscale.com/blog/islands-architecture-state/) - the state-sharing problem in depth
+- [Astro Islands Architecture: When to Use Partial Hydration](https://dev.to/uaslimcreate/astro-islands-architecture-when-to-use-partial-hydration-3962) - choosing client: directives well
+
+---
+
+~Seb 👊
