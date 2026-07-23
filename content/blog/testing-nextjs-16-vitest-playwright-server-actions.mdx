@@ -1,0 +1,188 @@
+---
+title: 'Testing Next.js 16: Where Vitest Ends and Playwright Begins'
+date: '2026-07-23'
+category: 'Development'
+tags: ['nextjs', 'testing', 'vitest', 'playwright', 'server-actions']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: 'The hardest part of testing Next.js 16 is not writing tests, it is knowing which tool tests what. Async Server Components draw a hard line: Vitest cannot render them, Playwright must. Here is the boundary, the mocking gotchas, and the server-action tests that actually catch bugs.'
+---
+
+I added one word to a passing test suite and it collapsed. The word was `await` — I made a Server Component fetch its data directly, the way you're supposed to in the App Router, and Vitest's render threw instantly. My first instinct was "the setup is broken." It wasn't. Vitest was telling me something structural: **that component is on the wrong side of the testing boundary.**
+
+That boundary is the whole game when it comes to **testing Next.js server actions** and components in 2026. The tooling isn't hard — Vitest and Playwright both set up in minutes. What trips everyone up is knowing *what* to test *where*, and the async Server Component is the line in the sand. Get the boundary right and your tests are fast, stable, and catch real bugs. Get it wrong and you'll spend a weekend fighting a test runner that was never going to render that component. This is the map.
+
+## The Two-Layer Model and the Line Between Them
+
+Testing a Next.js app splits cleanly into two layers, and the split is not arbitrary — it follows what can and cannot run outside a browser:
+
+- **Vitest + React Testing Library** — everything that doesn't need a real browser or an async server render: server actions as plain functions, zod schemas, utility functions, synchronous Server and Client Components.
+- **Playwright** — everything that does: async Server Components, full auth flows, checkout, anything where the real server and browser have to be in the loop.
+
+The dividing line is literally the `await` in an async Server Component. If a component fetches data directly (`const data = await getData()`), it belongs to Playwright. If it takes its data as props and renders synchronously, Vitest can handle it. Internalize that one rule and 90% of "how do I test this?" answers itself.
+
+Vitest, for the record, is the right unit runner now — Vite-native, fast cold starts, native ESM, a near-identical API to Jest so migration is mostly search-and-replace. Every current Next.js testing guide from the Vercel team uses it.
+
+## Layer 1: Vitest for Server Actions and Sync Components
+
+Server actions are the highest-value thing to unit test, because they're where your auth, validation, and mutations live — and because they're just async functions, they test beautifully. Minimal setup:
+
+```typescript
+// vitest.config.ts
+import { defineConfig } from 'vitest/config'
+import react from '@vitejs/plugin-react'
+
+export default defineConfig({
+  plugins: [react()],
+  test: {
+    environment: 'jsdom',
+    setupFiles: ['./vitest.setup.ts'],
+  },
+})
+```
+
+A synchronous component tests exactly like any React component — render it, assert on the output:
+
+```tsx
+import { render, screen } from '@testing-library/react'
+import { TaskCard } from './TaskCard'
+
+it('renders the task title', () => {
+  render(<TaskCard task={{ id: '1', title: 'Buy milk' }} />)
+  expect(screen.getByText('Buy milk')).toBeInTheDocument()
+})
+```
+
+The subtlety is that a Server Component is only unit-testable *if it's synchronous*. A component that receives its data as props is fine. A component that awaits its own data is Playwright's job. That constraint is a good design nudge, too — it pushes you toward components that take data as props, which are easier to test and reuse regardless.
+
+## Mocking the Framework: next/headers and next/navigation
+
+Here's where the toy tutorials leave you stranded. Real server code calls `cookies()`, `headers()`, and `redirect()` — and all of them rely on a request-scoped async context that **does not exist** in a test. Call them unmocked and you get cryptic context errors. Mock the modules:
+
+```typescript
+import { vi } from 'vitest'
+
+// Mock request-scoped APIs — they have no request in a unit test
+vi.mock('next/headers', () => ({
+  cookies: () => ({ get: (k: string) => (k === 'session' ? { value: 'test-session' } : undefined) }),
+  headers: () => new Map(),
+}))
+
+// redirect() throws a special signal in real Next.js; mock it to assert calls
+vi.mock('next/navigation', () => ({
+  redirect: vi.fn(),
+}))
+```
+
+This is not a workaround, it's the correct mental model: in a unit test there is no request, so anything request-scoped is a seam you fill. The same applies to your session helper — mock `getSession` (or `getAppSession` if you followed my [production auth setup](/blog/nextauth-v5-vs-clerk-nextjs-auth-rbac)) to return the exact user you want to test against.
+
+## The Server-Action Test Matrix That Catches Real Bugs
+
+A single happy-path test for a server action is theater. The bugs live in the branches — specifically the authorization branches I keep hammering on in the [server actions security guide](/blog/nextjs-server-actions-security). Test the matrix:
+
+```typescript
+import { deleteTask } from '@/app/actions/tasks'
+import * as session from '@/lib/session'
+
+describe('deleteTask', () => {
+  it('rejects an anonymous caller', async () => {
+    vi.spyOn(session, 'getAppSession').mockResolvedValue(null)
+    expect(await deleteTask({ taskId: 't1' })).toEqual({ error: 'Unauthorized' })
+  })
+
+  it('rejects invalid input', async () => {
+    vi.spyOn(session, 'getAppSession').mockResolvedValue({ userId: 'u1', role: 'user' })
+    expect(await deleteTask({ taskId: 123 })).toEqual({ error: 'Invalid input' })
+  })
+
+  it("rejects deleting another user's task", async () => {
+    vi.spyOn(session, 'getAppSession').mockResolvedValue({ userId: 'u2', role: 'user' })
+    // task t1 is owned by u1
+    expect(await deleteTask({ taskId: 't1' })).toEqual({ error: 'Not found' })
+  })
+
+  it('lets an admin delete any task', async () => {
+    vi.spyOn(session, 'getAppSession').mockResolvedValue({ userId: 'u9', role: 'admin' })
+    expect(await deleteTask({ taskId: 't1' })).toEqual({ success: true })
+  })
+})
+```
+
+Four tests — anonymous, invalid input, wrong owner, admin override — per protected action. They're cheap, they run in milliseconds, and they catch the IDOR-shaped bugs that actually reach production. This is the single highest-ROI testing you can do in a Next.js app.
+
+## Why Async Server Components Break Vitest
+
+It's worth understanding *why* the `await` throws, so you stop treating it as a bug to fix. React's Server Component runtime expects an async execution environment — a server render pipeline that streams output. Vitest's test runner doesn't provide that pipeline. So the instant a component suspends on `await fetch(...)`, the render has nowhere to go and throws.
+
+This is not a gap Vercel forgot to fill; it's a fundamental mismatch between "unit test in jsdom" and "async server render." The official guidance is explicit: use E2E tests for async components. Fighting it — with experimental renderers, hand-rolled async wrappers — buys you a brittle test that breaks on the next React version. Accept the boundary and put those components in Playwright, where a real server renders them for real.
+
+## Layer 2: Playwright, Where the Server Is the Boundary
+
+For async Server Components and full flows, Playwright drives a real browser against a real server. The reassuring part: Server Components need no special handling in E2E. They render to HTML on the server and stream to the browser, so by the time your test touches the page, it's looking at fully-rendered, hydrated DOM — indistinguishable from any other page.
+
+```typescript
+import { test, expect } from '@playwright/test'
+
+test('dashboard shows the user\'s tasks after login', async ({ page }) => {
+  await page.goto('/login')
+  await page.getByLabel('Email').fill('user@test.dev')
+  await page.getByLabel('Password').fill('correct-horse')
+  await page.getByRole('button', { name: 'Sign in' }).click()
+
+  await expect(page.getByRole('heading', { name: 'Your Tasks' })).toBeVisible()
+  await expect(page.getByText('Buy milk')).toBeVisible()
+})
+```
+
+Best practices that keep E2E from becoming your flakiest CI step: fresh browser contexts per test for isolation, role-based selectors (`getByRole`, `getByLabel`) over brittle CSS, the Page Object Model for shared flows, and retry logic for network wobble.
+
+## Don't Mock Server Actions in E2E
+
+This is the mistake I see most in App Router E2E suites. In the App Router the important work happens *inside* server actions and Server Components, which aren't truly mockable from the browser's side. So don't try. **The server is your test boundary.** You drive the real UI, the real action runs, the real database (a test one) mutates, and you assert on what the user sees. If you find yourself reaching for a way to stub a server action in Playwright, you've mixed up the layers — that stubbing belongs in the Vitest unit test, where the action is a plain function you already control.
+
+The clean division: Vitest tests the action's *logic* in isolation with mocked dependencies; Playwright tests the action's *effect* through the real UI with a real backend. Neither tries to do the other's job.
+
+## CI and the Production-Build Rule
+
+One rule prevents a whole category of flaky-CI misery: **run Playwright against the production build, not the dev server.** The dev server has hot reloading, extra debug behavior, and different timing that don't exist in production — testing it means testing an environment your users never see. Build, start, then test:
+
+```yaml
+# .github/workflows/e2e.yml (excerpt)
+- run: npm run build
+- run: npm run start & npx wait-on http://localhost:3000
+- run: npx playwright test
+```
+
+Playwright is built for CI — headless, natively parallel, HTML reports — and runs on every major platform. Wire it into the same [CI pipeline where your other checks live](/blog/optimizing-cicd-pipelines-dx-deploy-times-guide), keep Vitest as the fast pre-commit gate, and reserve the slower Playwright suite for pull requests.
+
+## Checklist
+
+1. Async Server Component? → Playwright. Synchronous or props-only? → Vitest. That's the line.
+2. Mock `next/headers`, `next/navigation`, and your session helper in unit tests — there's no request there.
+3. Every protected server action gets the four-branch matrix: anonymous, invalid input, wrong owner, admin.
+4. Don't fight Vitest to render async components — it throws by design.
+5. In E2E, drive the real UI; never mock server actions — the server is the boundary.
+6. Run Playwright against the production build, not `next dev`.
+7. Fast Vitest on pre-commit, fuller Playwright on PRs.
+
+The tools are easy; the boundary is the skill. Once you stop asking "how do I test this?" and start asking "which side of the async line is this on?", Next.js testing turns from a fight into a routine — and the tests you write are the ones that actually catch the bugs that matter.
+
+## References
+
+### Sources
+
+- [Next.js docs: Testing with Vitest](https://nextjs.org/docs/app/guides/testing/vitest) - official setup and the async Server Component limitation
+- [Next.js docs: Testing with Playwright](https://nextjs.org/docs/app/guides/testing/playwright) - E2E setup and the production-build guidance
+- [How do you unit test server actions? (vercel/next.js Discussion #69036)](https://github.com/vercel/next.js/discussions/69036) - community patterns for action testing
+- [Running Tests with RTL and Vitest on Async RSC (Aurora Scharff)](https://aurorascharff.no/posts/running-tests-with-rtl-and-vitest-on-internationalized-react-server-components-in-nextjs-app-router/) - deep dive on the async boundary
+- [Next.js Testing Guide: Unit and E2E with Vitest and Playwright (Strapi)](https://strapi.io/blog/nextjs-testing-guide-unit-and-e2e-tests-with-vitest-and-playwright) - end-to-end walkthrough of both layers
+
+### Further Reading
+
+- [Testing React Server Components: Vitest Patterns for Async Boundaries (SitePoint)](https://www.sitepoint.com/testing-react-server-components-vitest-async-boundaries-mock/) - mocking strategies at the async edge
+- [Playwright vs Cypress for Next.js E2E in 2026](https://qaskills.sh/blog/playwright-vs-cypress-nextjs-e2e-2026) - if you're choosing an E2E runner
+
+---
+
+~Seb 👊
