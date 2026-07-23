@@ -1,0 +1,332 @@
+---
+title: 'Next.js Server Actions Security: Rate Limiting, CSRF, and Beyond'
+date: '2026-07-23'
+category: 'Development'
+tags: ['nextjs', 'security', 'server-actions', 'rate-limiting', 'react']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: 'Every Next.js server action is a public HTTP endpoint anyone can POST to. I walk through the security layers most apps are missing: runtime validation, in-action auth, rate limiting with @upstash/ratelimit, and formalizing it all with next-safe-action.'
+---
+
+The first time I pointed `curl -X POST` at one of my "admin-only" server actions — no session cookie, no UI, just a raw request — it happily executed and returned data. Nothing about **Next.js server actions security** is automatic: every action you write compiles down to a public HTTP endpoint, and the fact that a button is only rendered for admins means exactly nothing to an attacker with `fetch`.
+
+If that sounds theoretical, it isn't. CVE-2025-55182 — the React/Next.js RCE from late 2025 — was exploited in the wild within 24 hours of disclosure, with attackers hunting for crypto credentials on compromised servers. Server actions are a fantastic DX win, but they [moved your backend into your frontend repo](/blog/nextjs-2026-server-components-edge-runtime-guide), and most tutorials stop at the happy path.
+
+This is the guide I wish existed when I hardened my own app: what Next.js already does for you, exactly where those built-ins stop, and the layers you have to add yourself — runtime validation, in-action auth, rate limiting with `@upstash/ratelimit`, and finally formalizing all of it with `next-safe-action`.
+
+## Your Server Action Is a Public Endpoint
+
+Let's establish the threat model. When you write this:
+
+```typescript
+'use server'
+
+export async function deleteTask(taskId: string) {
+  await db.task.delete({ where: { id: taskId } })
+}
+```
+
+Next.js generates an HTTP POST endpoint for it. Anyone can invoke it with a crafted request — they don't need your form, your page, or your JavaScript. The compiler gives the action an encrypted, non-deterministic ID that rotates between builds, and since Next.js 15 unused actions are stripped from the bundle entirely. That's genuinely useful hardening.
+
+But **unguessable is not authorization**. The action ID appears in your client bundle the moment any page references it. Treat every server action exactly like you'd treat a public API route, because that's what it is.
+
+## What Next.js Gives You for Free (and Where It Stops)
+
+Before adding layers, it's worth knowing what the framework already handles, so you don't duplicate it — and so you don't over-trust it:
+
+- **POST-only invocation.** Server actions can only be called via POST, which combined with `SameSite` cookies (the browser default) blocks the classic CSRF-via-GET vectors.
+- **Origin header comparison.** On every action request, Next.js compares the `Origin` header against the `Host` (or `X-Forwarded-Host`) header. Mismatch → request aborted. This is the built-in CSRF protection.
+- **Encrypted action IDs + dead code elimination.** Closure variables are encrypted with a key rotated per build, and actions never imported by client code are removed.
+- **Error hashing in production.** React replaces server-side error messages with a hash before they reach the client, so stack traces don't leak.
+
+Now the fine print, because this is where apps get burned.
+
+### CSRF: How the Built-In Origin Check Actually Works
+
+The Origin/Host comparison is solid for the common case, but it has two edges you need to understand:
+
+**1. Requests without an Origin header pass.** For compatibility, a request that lacks an `Origin` header (or sends `Origin: null`) is allowed through. Browsers send `Origin` on cross-site POSTs, so this doesn't reopen classic CSRF — but it means the check does nothing against non-browser clients. `curl` doesn't send an Origin header. Your CSRF protection is *browser* protection, not endpoint protection.
+
+**2. Reverse proxies break the comparison.** If your app sits behind a proxy or a multi-domain setup, `Host` won't match `Origin` and legitimate requests get aborted. The fix is explicit allowlisting in `next.config.js`:
+
+```typescript
+// next.config.js
+module.exports = {
+  experimental: {
+    serverActions: {
+      allowedOrigins: ['myapp.com', '*.my-proxy.com'],
+    },
+  },
+}
+```
+
+Be conservative here. Every origin you add is an origin that can drive authenticated mutations in your users' browsers. I've seen configs with `'*'`-style wildcards copied from Stack Overflow that quietly disable the protection entirely.
+
+The takeaway: CSRF is handled for browser traffic, and you should *not* bolt a token-based CSRF library on top of server actions. But nothing about it authenticates the caller. That's on you.
+
+## Layer 1: Runtime Validation with Zod
+
+TypeScript types are erased at runtime. This signature is a lie the moment someone crafts their own request:
+
+```typescript
+'use server'
+
+// "taskId: string" guarantees nothing at runtime —
+// the wire format is attacker-controlled
+export async function updateTask(taskId: string, data: { title: string }) { ... }
+```
+
+Validate every input at the boundary, exactly like you would in an Express handler:
+
+```typescript
+'use server'
+
+import { z } from 'zod'
+
+const updateTaskSchema = z.object({
+  taskId: z.string().cuid(),
+  title: z.string().min(1).max(200),
+})
+
+export async function updateTask(input: unknown) {
+  const parsed = updateTaskSchema.safeParse(input)
+  if (!parsed.success) {
+    return { error: 'Invalid input' }
+  }
+  const { taskId, title } = parsed.data
+  // ...proceed with known-good data
+}
+```
+
+If runtime validation is new territory, I wrote a [complete guide to Zod runtime validation](/blog/zod-typescript-validation-complete-guide) that covers schemas, transforms, and the full-stack setup with React Hook Form — here I'll stick to the security-relevant habits:
+
+- Type the parameter as `unknown`, not as your DTO. It forces you through the parse and makes the trust boundary visible in the signature.
+- Return a generic error, not `parsed.error.format()`. Detailed validation errors are fine for forms you own; they're also a map of your schema for anyone probing the endpoint.
+
+The same rule covers `FormData`, headers, and cookies — all attacker-controlled. And never trust hidden form inputs to carry authorization context ("`<input type="hidden" name="role" value="admin">`" is a real thing I've seen in a code review).
+
+## Layer 2: Authenticate and Authorize Inside Every Action
+
+Render-time gating is not a security boundary. Hiding the delete button from non-admins is UX, not security. Every action needs its own check:
+
+```typescript
+'use server'
+
+import { getSession } from '@/lib/auth'
+
+export async function deleteTask(input: unknown) {
+  const session = await getSession()
+  if (!session) {
+    return { error: 'Unauthorized' }
+  }
+
+  const parsed = deleteTaskSchema.safeParse(input)
+  if (!parsed.success) return { error: 'Invalid input' }
+
+  const task = await db.task.findUnique({ where: { id: parsed.data.taskId } })
+
+  // Authorization: ownership check, not just authentication
+  if (!task || task.ownerId !== session.userId) {
+    return { error: 'Not found' } // don't confirm existence
+  }
+
+  await db.task.delete({ where: { id: task.id } })
+  return { success: true }
+}
+```
+
+Note the two distinct steps: *authentication* (is there a valid session?) and *authorization* (may **this** user touch **this** resource?). The second one is where most real-world holes live — IDOR bugs where any logged-in user can delete anyone's task by ID.
+
+One more gotcha unique to server actions — **closure capture**. If you define an action inline inside a component, it captures variables from the surrounding scope:
+
+```typescript
+export default async function Page() {
+  const user = await getUser()
+  const apiSecret = process.env.INTERNAL_API_SECRET // ⚠️
+
+  async function syncData() {
+    'use server'
+    // apiSecret is captured in the closure, encrypted,
+    // and shipped to the client as part of the action payload
+    await fetch('https://internal.example.com', {
+      headers: { Authorization: apiSecret },
+    })
+  }
+  // ...
+}
+```
+
+The closure is encrypted, but the encryption key lives in your build — and key rotation between builds has caused its own class of bugs. The rule is simple: never capture secrets or privileged data in an action closure. Read secrets from `process.env` *inside* the action body, and re-derive the session server-side rather than capturing it.
+
+## Layer 3: Rate Limiting with @upstash/ratelimit
+
+Nothing in Next.js rate limits anything. Your login action, your "send email" action, your AI-completion action — all of them will happily process 10,000 requests a minute from one IP. For anything mutating state or costing money, add abuse prevention.
+
+`@upstash/ratelimit` is the pragmatic choice for serverless Next.js because it's HTTP-based Redis — no connection pooling problems on Vercel:
+
+```typescript
+// lib/rate-limit.ts
+import { Ratelimit } from '@upstash/ratelimit'
+import { Redis } from '@upstash/redis'
+
+export const ratelimit = new Ratelimit({
+  redis: Redis.fromEnv(),
+  limiter: Ratelimit.slidingWindow(10, '1 m'), // 10 requests per minute
+  prefix: 'ratelimit:actions',
+})
+```
+
+In an API route you'd return a 429. In a server action you return a structured error instead, because the caller is your own UI expecting your result shape:
+
+```typescript
+'use server'
+
+import { headers } from 'next/headers'
+import { ratelimit } from '@/lib/rate-limit'
+
+export async function sendInvite(input: unknown) {
+  const session = await getSession()
+  if (!session) return { error: 'Unauthorized' }
+
+  // Key by user ID when authenticated; fall back to IP for public actions
+  const h = await headers()
+  const ip = h.get('x-forwarded-for')?.split(',')[0] ?? 'unknown'
+  const key = session?.userId ?? ip
+
+  const { success, remaining, reset } = await ratelimit.limit(key)
+  if (!success) {
+    return {
+      error: 'Too many requests. Try again shortly.',
+      retryAfter: Math.ceil((reset - Date.now()) / 1000),
+    }
+  }
+
+  // ...validated, authorized work
+}
+```
+
+Practical notes from running this in production:
+
+- **Key by user ID first, IP second.** IPs are shared (corporate NATs, mobile carriers) and spoofable at the app layer; user IDs are neither. Use IP only for unauthenticated surfaces like login — where rate limiting matters most, since that's your brute-force surface.
+- **Pick sliding window unless you have a reason.** Fixed windows allow burst-at-the-boundary (20 requests in 2 seconds straddling the minute mark); token bucket is better for APIs with legitimate bursts.
+- **Different actions deserve different limits.** I run `5/min` on auth-adjacent actions, `30/min` on ordinary mutations, and `3/min` on anything that sends email or calls a paid API.
+
+If you don't want a Redis dependency, an in-memory LRU works on a single long-lived server — but it resets on every deploy and does nothing across serverless instances, which is precisely where Next.js apps run. Budget the Upstash free tier; it's worth it.
+
+## Layer 4: Formalizing It with next-safe-action
+
+By now every action of ours does the same dance: session check → rate limit → validate → authorize → work. Copy-pasting that into thirty actions is how one of them ends up missing a step. This is exactly the middleware problem, and `next-safe-action` is the library that formalizes the pattern you'd otherwise hand-roll.
+
+You define clients once, with composable middleware:
+
+```typescript
+// lib/safe-action.ts
+import { createSafeActionClient } from 'next-safe-action'
+import { getSession } from '@/lib/auth'
+import { ratelimit } from '@/lib/rate-limit'
+
+export const actionClient = createSafeActionClient()
+
+export const authActionClient = actionClient.use(async ({ next }) => {
+  const session = await getSession()
+  if (!session) throw new Error('Unauthorized')
+
+  const { success } = await ratelimit.limit(session.userId)
+  if (!success) throw new Error('Too many requests')
+
+  // Typed context flows into every action using this client
+  return next({ ctx: { userId: session.userId, role: session.role } })
+})
+```
+
+Then each action shrinks to its actual business logic:
+
+```typescript
+'use server'
+
+import { z } from 'zod'
+import { authActionClient } from '@/lib/safe-action'
+
+export const deleteTask = authActionClient
+  .inputSchema(z.object({ taskId: z.string().cuid() }))
+  .action(async ({ parsedInput, ctx }) => {
+    const task = await db.task.findUnique({ where: { id: parsedInput.taskId } })
+    if (!task || task.ownerId !== ctx.userId) throw new Error('Not found')
+
+    await db.task.delete({ where: { id: task.id } })
+    return { success: true }
+  })
+```
+
+Validation runs before your code, the session and rate limit are guaranteed by construction, and `ctx` is fully typed through the middleware chain. On the client, the companion `useAction` hook gives you pending state, typed errors, and plays nicely with `useOptimistic`.
+
+I intentionally showed the manual version first. If you adopt `next-safe-action` without understanding what its middleware replaces, you'll trust it for things it doesn't do — it does not add CSRF protection (Next.js's Origin check still handles that), and it doesn't decide your *authorization* rules. Ownership checks stay in your action body.
+
+## Return-Value Hygiene and Error Handling
+
+Two quieter issues that belong in your review checklist:
+
+**Shape what you return.** Action return values are serialized to the client in full. `return user` sends the password hash, the Stripe customer ID, and whatever else lives on that row. Return DTOs shaped to what the UI renders:
+
+```typescript
+return { id: user.id, name: user.name, avatarUrl: user.avatarUrl }
+```
+
+**Throw deliberately.** In production React swaps thrown server errors for a hash, which protects you from leaking internals — but also means your UI shows a useless generic message. The pattern that works: `throw` for unexpected failures (let the error boundary catch them), `return { error }` for expected ones the form should display. Libraries like next-safe-action bake this split in with their `serverError` vs validation-error channels.
+
+## Testing Your Defenses
+
+The test that matters most costs one minute: call your action the way an attacker would. Grab the action's request out of the browser's network tab (invoke it once through the UI), then replay it without credentials:
+
+```bash
+curl -X POST https://localhost:3000/your-page \
+  -H "Next-Action: <action-id-from-network-tab>" \
+  -H "Content-Type: text/plain;charset=UTF-8" \
+  --data '["<attacker-controlled-input>"]'
+```
+
+If that returns anything but an authorization error, you have a finding. Beyond the smoke test:
+
+- Unit-test actions as plain async functions — mock `getSession` to return `null`, a regular user, and an owner, and assert every branch.
+- Test the *authorization* branch specifically: user A calling with user B's resource ID must get "not found".
+- Hammer a rate-limited action in a loop and assert the structured error appears at request N+1.
+
+Static analysis catches a surprising share of these issues before they ship — I covered wiring that into CI in my [GitHub Code Scanning with CodeQL guide](/blog/github-code-scanning-codeql-setup-free-alternatives).
+
+## Production Checklist
+
+Before you ship a server action, walk this list:
+
+1. Input typed as `unknown` and parsed with zod — including `FormData` and IDs from the client.
+2. Session check *inside* the action, not just around the UI.
+3. Ownership/role check against the specific resource — authentication is not authorization.
+4. Rate limit keyed by user ID (or IP for public actions), with limits matched to the action's cost.
+5. No secrets or privileged objects captured in closures.
+6. Return value is a DTO, not a database row.
+7. Expected failures returned as values; unexpected ones thrown.
+8. `allowedOrigins` configured (and minimal) if you're behind a proxy.
+9. One `curl` replay without credentials, just to be sure.
+
+This list matters double if AI wrote your actions — LLMs generate the happy path, and I've collected the recurring gaps in a separate [AI-generated code security audit checklist](/blog/vibe-coding-security-audit-checklist). Or adopt `next-safe-action` and get points 1, 2, 4, and 7 enforced by construction — which is my honest recommendation for any codebase with more than a handful of actions. Security that exists by default beats security that exists by discipline.
+
+## References
+
+### Sources
+
+- [How to Think About Security in Next.js](https://nextjs.org/blog/security-nextjs-server-components-actions) - official explanation of encrypted action IDs, dead code elimination, and the Origin/Host CSRF comparison
+- [Next.js Data Security Guide](https://nextjs.org/docs/app/guides/data-security) - treat actions as public endpoints; return-value hygiene guidance
+- [serverActions config reference](https://nextjs.org/docs/app/api-reference/config/next-config-js/serverActions) - `allowedOrigins` for reverse proxy setups
+- [Next.js server action security (Arcjet)](https://blog.arcjet.com/next-js-server-action-security/) - threat model for actions as public POST endpoints
+- [Rate Limiting Next.js API Routes using Upstash Redis](https://upstash.com/blog/nextjs-ratelimiting) - `@upstash/ratelimit` setup and algorithm options
+- [next-safe-action middleware docs](https://next-safe-action.dev/docs/define-actions/middleware) - composable `.use()` middleware with typed context
+
+### Further Reading
+
+- [Next.js Server Actions Security: 5 Vulnerabilities You Must Fix](https://makerkit.dev/blog/tutorials/secure-nextjs-server-actions) - vulnerability-driven walkthrough with more IDOR examples
+- [CSRF in Next.js deep dive](https://vibeappscanner.com/vulnerability-in/csrf-nextjs) - the Origin-check edge cases in more depth
+- [next-safe-action getting started](https://next-safe-action.dev/docs/getting-started) - full setup including the `useAction` client hook
+
+---
+
+~Seb 👊
