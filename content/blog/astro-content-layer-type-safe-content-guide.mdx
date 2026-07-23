@@ -1,0 +1,153 @@
+---
+title: 'Astro Content Layer: Type-Safe Content From Markdown, CMS, or a Database'
+date: '2026-07-23'
+category: 'Development'
+tags: ['astro', 'content-layer', 'content-collections', 'typescript', 'cms']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: 'The Content Layer is Astro''s best idea: one typed, schema-validated API over any content source. Markdown, a headless CMS, a database — same loader contract, same getCollection call, full TypeScript autocompletion. Here is how it works, including the Astro 6 changes older guides miss.'
+---
+
+Most content-heavy sites end up with content scattered across five places: markdown in the repo, a headless CMS for the marketing team, a database for user-generated stuff, a JSON file someone committed in 2023, and an API for the pricing table. And most codebases handle each one differently — a different fetch, a different shape, a different set of "is this field actually there?" bugs.
+
+Astro's **Content Layer** is the fix, and it's genuinely Astro's best idea. It's not a markdown feature, even though that's how most tutorials present it. It's an *abstraction*: one typed, schema-validated API over **any** content source. Markdown, MDX, Contentful, a Postgres table — behind the same loader contract, queried with the same `getCollection` call, with full TypeScript autocompletion the whole way. The source becomes an implementation detail. Here's how it actually works, plus the Astro 6 changes that already made half the tutorials out there wrong.
+
+## What the Content Layer Actually Is
+
+The mental model is two pieces: a **loader** (where the content comes from) and a **schema** (what shape it must have). You wire them together with `defineCollection`, and everything downstream — querying, types, validation — is identical no matter what the loader is pulling from.
+
+```typescript
+// src/content.config.ts
+import { defineCollection, z } from 'astro:content'
+import { glob } from 'astro/loaders'
+
+const blog = defineCollection({
+  loader: glob({ pattern: '**/*.md', base: './src/data/blog' }), // WHERE
+  schema: z.object({                                             // WHAT SHAPE
+    title: z.string(),
+    description: z.string(),
+    pubDate: z.coerce.date(),
+    tags: z.array(z.string()).default([]),
+  }),
+})
+
+export const collections = { blog }
+```
+
+Swap the `loader` and everything else stays the same. That's the whole point — and it's why the Content Layer also delivers roughly **5x faster builds and ~50% less memory** than the legacy collections it replaced: the abstraction let Astro optimize the pipeline underneath it.
+
+## glob(): One Entry Per File
+
+The built-in `glob()` loader creates **one entry per matching file**. It's what you want for content that renders as individual pages — blog posts, docs pages, portfolio projects:
+
+```typescript
+loader: glob({ pattern: '**/*.{md,mdx}', base: './src/data/blog' })
+```
+
+Each file becomes an entry, its filename (or a slug field) becomes the id, and its frontmatter gets validated against your schema. If you're coming from a [markdown-based blog setup](/blog/nextjs-16-migration-guide-breaking-changes), this is the direct, faster replacement for hand-rolled file reading.
+
+## file(): Structured Data in One File
+
+The `file()` loader is the one people forget exists. It creates **multiple entries from a single structured file** — perfect for data that isn't one-page-per-item: a list of team members, product specs, a table of pricing tiers:
+
+```typescript
+import { file } from 'astro/loaders'
+
+const authors = defineCollection({
+  loader: file('./src/data/authors.json'), // one JSON array -> many entries
+  schema: z.object({
+    id: z.string(),
+    name: z.string(),
+    avatar: z.string(),
+  }),
+})
+```
+
+One `authors.json` array becomes a queryable, typed collection. Reach for `file()` whenever your content is *data* rather than *documents*.
+
+## The Schema Is the Point
+
+The `loader` gets attention, but the **schema** is what makes the Content Layer trustworthy. It's a Zod schema, so your frontmatter is validated at build time and your queries are fully typed — a typo'd or missing field fails the build instead of rendering `undefined` in production. If Zod isn't second nature yet, it's worth the [dedicated read](/blog/zod-typescript-validation-complete-guide), because everything typed in Astro flows through it.
+
+The payoff shows up in your editor: `getCollection('blog')` returns entries whose `data` is typed to your schema exactly, with autocompletion on every field. `pubDate` is a `Date` (thanks to `z.coerce.date()`), `tags` is a `string[]` that defaults to empty — no runtime guessing. Validation and types from one declaration is the whole reason to bother with collections instead of raw file reads.
+
+## A Custom Loader: Pulling From a CMS or Database
+
+Here's where the abstraction earns its keep, and where most guides stop short. Because a loader is just "something that populates the store," you can write one that pulls from **anywhere** — Contentful, Sanity, Storyblok, a PocketBase or Postgres database, any API — and everything downstream stays identical:
+
+```typescript
+// A custom loader that fetches from a headless CMS
+const products = defineCollection({
+  loader: async () => {
+    const res = await fetch('https://cms.example.com/api/products')
+    const items = await res.json()
+    // return an array of { id, ...data } — the store keys on id
+    return items.map((p) => ({ id: p.slug, ...p }))
+  },
+  schema: z.object({
+    id: z.string(),
+    name: z.string(),
+    price: z.number(),
+    inStock: z.boolean(),
+  }),
+})
+```
+
+Your components don't know or care that `products` comes from a CMS and `blog` comes from markdown. Both are `getCollection('...')`, both are typed, both are validated. That's the CMS-agnostic superpower — you can swap Contentful for Sanity by rewriting one loader, and not a single page component changes. (For content that must be *fresh per request* rather than baked at build, Astro 6's **live collections** extend this same idea to runtime — a topic worth its own deep dive.)
+
+## Querying: getCollection, getEntry, and Relations
+
+Two functions cover almost everything:
+
+```astro
+---
+import { getCollection, getEntry } from 'astro:content'
+
+const posts = await getCollection('blog')          // all entries, typed
+const featured = await getEntry('blog', 'hello-world') // one entry by id
+---
+{posts.map((post) => <a href={`/blog/${post.id}`}>{post.data.title}</a>)}
+```
+
+And collections can **reference** each other for relations — a blog post pointing at an author entry — with `reference()` in the schema, so your "author" field is a validated link into the `authors` collection rather than a loose string. That's how you model relational content without leaving the typed world.
+
+## Astro 6 Changes Older Guides Miss
+
+This is the part that'll bite you if you follow a 2024/2025 tutorial. Astro 6 (stable March 2026) made breaking changes:
+
+- **Legacy content collections are removed by default.** The old `src/content/` convention with automatic collections is gone — you define collections explicitly via the Content Layer now.
+- **`z` from `astro:content` is deprecated in favor of `astro/zod`.** Older code imports `z` from `astro:content`; new code should import from `astro/zod`. Tutorials predating this will have you on a deprecation path.
+- **Live content collections are stable** — the runtime-data counterpart to build-time collections.
+
+If a guide shows content sitting in `src/content/blog/` with no explicit `loader`, it's pre-Content-Layer and will steer you wrong on Astro 6.
+
+## Checklist
+
+1. Every collection is a `loader` + Zod `schema` via `defineCollection` — the source is swappable.
+2. `glob()` for one-page-per-file content; `file()` for structured data.
+3. Schema validates frontmatter at build time; lean on it so bad data fails the build, not production.
+4. Custom loaders isolate CMS/DB/API access — swapping providers touches one file.
+5. Query with `getCollection`/`getEntry`; model relations with `reference()`.
+6. On Astro 6: define collections explicitly, import `z` from `astro/zod`, and reach for live collections when you need request-time freshness.
+
+The Content Layer is what lets an Astro site treat "where the content lives" as a detail rather than an architecture. One typed API, validated at build, autocompleted in your editor, indifferent to whether the bytes came from a markdown file or a database. Get comfortable writing loaders and your content source stops being a lock-in — which, on a content-driven site, is most of the battle.
+
+## References
+
+### Sources
+
+- [Astro docs: Content Loader API](https://docs.astro.build/en/reference/content-loader-reference/) - glob() and file() loaders and the custom loader contract
+- [Astro docs: Content Collections](https://docs.astro.build/en/guides/content-collections/) - defineCollection, schema, getCollection/getEntry
+- [Content Layer API in Astro: how to create a CMS-agnostic website (Maciek Palmowski)](https://maciekpalmowski.dev/blog/content-layer-api-in-astro-how-to-create-a-cms-agnostic-website/) - the any-source abstraction in practice
+- [Live Content Collections: A Deep Dive (Astro)](https://astro.build/blog/live-content-collections-deep-dive/) - build-time vs runtime collections
+- [Astro Content Collections: Complete 2026 Guide (inhaq)](https://inhaq.com/blog/getting-started-with-astro-content-collections) - Astro 6 changes and current patterns
+
+### Further Reading
+
+- [Community Loaders for Astro Content Layer (Astro)](https://astro.build/blog/community-loaders/) - ready-made loaders for popular CMSs and sources
+- [Building an Astro Loader (pawcode)](https://blog.pawcode.de/posts/building-an-astro-loader/) - writing a custom loader step by step
+
+---
+
+~Seb 👊
