@@ -1,0 +1,132 @@
+---
+title: 'The Backend Is Now a Folder: When Server-First Next.js Bites'
+date: '2026-07-23'
+category: 'Architecture'
+tags: ['nextjs', 'architecture', 'server-actions', 'backend', 'system-design']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: 'Stable server actions turned the backend into a folder inside your frontend repo, and for a lot of apps that is exactly right. This is the honest other half: the concrete signals that tell you when server-first is quietly the wrong call, and the escape hatch that buys you time.'
+---
+
+Two years ago my "backend" was a separate repo, a separate deploy, a separate on-call rotation, and a REST contract I argued about in code review. Today, on three of my projects, the backend is a directory called `app/actions/`. No API layer, no separate service, no contract — just `'use server'` at the top of some functions. It's faster to build, faster to change, and I ship features in a fraction of the time.
+
+I'm also, on one of those projects, starting to regret it. Not because server-first is wrong — for most of what I build, [the backend living inside the frontend repo](/blog/nextjs-2026-server-components-edge-runtime-guide) is genuinely the right call. But "the backend is a folder" is a feature *and* a trap, and the frustrating thing about the trap is that it's completely predictable in advance. You can tell, before you write a line, which side of the line your app is on. This article is the honest other half of the server-first hype: the specific signals that say "this is going to bite," and the escape hatch that lets you defer the decision instead of betting the architecture on it.
+
+## How We Got Here
+
+The progression was gradual and then sudden. API routes made the Next.js app able to *have* endpoints. Server Components made data fetching a server concern. Then server actions and functions stabilized, and suddenly mutations were just functions you call from the client — no fetch, no route, no serialization boilerplate you write yourself. Put those together and, for a large class of apps, the backend is now just a folder inside the frontend repo. There's no second system. That's the pitch, and it's not marketing — it's real, and it's genuinely great when it fits.
+
+## Where It Genuinely Shines
+
+I want to be fair to the model before I attack it, because I reach for it by default. Server-first is the right call when:
+
+- **It's a product with one frontend.** A SaaS dashboard, an internal tool, a content site with an admin — one UI consuming the data, one team owning the whole thing. The API contract you'd extract would have exactly one consumer, so extracting it is pure overhead.
+- **The work is request/response CRUD.** User submits, server validates and mutates, UI updates. Server actions plus [proper validation and auth](/blog/nextjs-server-actions-security) cover this beautifully, and [`useOptimistic`](/blog/useoptimistic-react-19-server-actions-guide) makes it feel instant.
+- **The team is small and full-stack.** No frontend/backend boundary to respect means no ceremony to maintain it. Everyone touches everything; the monolith-in-a-folder matches how the team actually works.
+
+For that profile — which is most apps most people build — stop reading and go ship. The rest of this is for when your app doesn't match it, and the tell is one of four signals.
+
+## Signal 1: You're Fetching Data With Server Actions
+
+This is the one people trip over first because the docs don't shout it: **server actions are queued, and they execute sequentially.** They were designed for mutations, and the queue is a feature there — you don't want two "delete account" calls racing. But the moment you reach for actions to *fetch* data, that queue becomes a waterfall.
+
+```tsx
+// ❌ Three server actions to load a dashboard = three sequential round-trips
+const user = await getUser()      // waits
+const stats = await getStats()    // waits for getUser to finish
+const feed = await getFeed()      // waits for both
+```
+
+Independent reads that should fire in parallel now run one after another because they share the action queue. The fix isn't a trick — it's that **actions are the wrong tool for reads.** Fetch in Server Components (which parallelize naturally), or use a real data layer. If you find your `app/actions/` folder full of `getX` functions, that's not a style issue; it's the architecture telling you the folder-backend is being used against its grain. I compared the read-side options — REST, GraphQL, tRPC — in a [separate data-layer guide](/blog/graphql-vs-rest-vs-trpc-data-layer-guide), and the answer is often "not a server action."
+
+## Signal 2: Background Jobs, WebSockets, Long-Running Work
+
+Server actions run in the request/response lifecycle. They're not built for work that outlives the request:
+
+- **Background jobs** — sending a batch of emails, generating a report, processing an upload — need a queue and a worker, not an action that the platform will time out.
+- **WebSockets / real-time** — actions are POST-and-done; there's no persistent connection to hang a socket on.
+- **Long-running processes** — anything measured in minutes fights serverless execution limits.
+
+You *can* bolt these on (external queue services, separate socket servers), but notice what's happening: the moment you do, you've grown a second system anyway. The folder-backend didn't eliminate your backend; it postponed the part of it that doesn't fit the request/response mold. If your product's core is real-time or job-heavy, server-first isn't saving you the backend — it's just hiding where you'll need one.
+
+## Signal 3: More Than One Consumer
+
+The folder-backend has exactly one client: your Next.js frontend. That's its whole efficiency. So the question that predicts pain is: **will anything else ever need this data?**
+
+- A mobile app (React Native, native iOS/Android)?
+- A public or partner API?
+- A second web property?
+- Webhooks and third-party integrations calling in?
+
+If yes, server actions can't serve them — they're an internal RPC bound to your React client, not a general API. You'll end up building a real API *alongside* your actions, and now you maintain two access paths to the same data with two sets of auth and validation, which is strictly worse than having built the API once. One consumer today with a credible second consumer on the roadmap is the classic case where the folder is a trap.
+
+## Signal 4: Team and Deploy Boundaries
+
+Conway's Law doesn't care about your framework. The folder-backend assumes one team deploys one unit. It strains when:
+
+- **Separate teams** own frontend and backend and want independent deploy cadences. A shared repo where a frontend change and a backend change ship together is friction they'll feel daily.
+- **You need independent scaling.** A CPU-heavy backend and a traffic-heavy frontend in the same deployable scale together whether they want to or not.
+- **Testing crosses the whole tree.** Because auth, data access, and business logic are woven through the file structure, testing a single action often means mocking a big chunk of the app — and it gets genuinely unclear which services the auth logic depends on or how middleware applies. That opacity is a coupling smell, and it compounds as the folder grows.
+
+None of these are fatal at small scale. All of them get worse monotonically as the org grows, which is why they belong on a *predict-in-advance* list.
+
+## The Escape Hatch: BFF Passthrough
+
+Here's the pattern that lets you have the DX now without betting the architecture — and it's the one the hype pieces skip. Use server actions as a **Backend-for-Frontend layer** that passes through to a real backend, rather than as the backend itself:
+
+```typescript
+'use server'
+
+import { cookies } from 'next/headers'
+
+export async function createOrder(input: unknown) {
+  const parsed = orderSchema.safeParse(input)
+  if (!parsed.success) return { error: 'Invalid input' }
+
+  // The action is a thin BFF: validate, then call the real backend service,
+  // passing the session through so the service knows who's asking.
+  const session = (await cookies()).get('session')?.value
+  const res = await fetch(`${process.env.API_URL}/orders`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${session}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(parsed.data),
+  })
+  return res.json()
+}
+```
+
+Now the server action is a client-friendly seam — it shapes data for *your* UI, keeps the great DX, and stays out of the browser — but the *actual* business logic lives in a service you can extract, scale, test, and expose to other consumers independently. You start with the service co-located (even in the same repo) and split it out the day a signal above turns real, with the UI none the wiser because it only ever talked to the action. That's how you defer the monolith-vs-services decision instead of making it on day one. (This is the [BFF pattern](/blog/bff-the-frontends-best-friend-in-the-microservices-world) wearing server-action clothes.)
+
+## A Decision Framework
+
+Run your app past the four signals:
+
+1. **Are you fetching with actions?** → Move reads to Server Components or a data layer; if you can't, reconsider.
+2. **Background jobs, sockets, or long-running work at the core?** → You need a real backend; server-first only hides it.
+3. **A second consumer (mobile, public API, integrations) now or soon?** → Build the API; don't double up on actions.
+4. **Separate teams, independent scaling, or painful cross-tree testing?** → The boundary wants to be real.
+
+Zero signals: the backend as a folder is not a compromise, it's the right architecture — enjoy it. One signal, and it's a real consumer or job system: reach for the BFF passthrough now, keep the DX, keep the option to split. Two or more strong signals: build the separate backend from the start; the folder will fight you the whole way and the migration later costs more than the boundary would have now.
+
+## Closing
+
+"The backend is now a folder" is one of the genuinely great DX wins of the last few years, and I use it constantly. But it's a *default*, not a law, and treating it as a law is how a 20-minute-to-scaffold app becomes an accidental distributed system two years later. The trap is predictable — queued reads, background work, extra consumers, team boundaries — so predict it. Pick the folder when it fits, reach for the BFF seam when you're unsure, and build the real backend when the signals are loud. The architecture that ages well isn't the one with the fewest files; it's the one that matched its signals honestly on day one.
+
+## References
+
+### Sources
+
+- [Next.js: Backend for Frontend guide](https://nextjs.org/docs/app/guides/backend-for-frontend) - the BFF-with-server-actions passthrough pattern and cookie forwarding
+- [Next.js Server Actions vs tRPC: A 2026 Architect's Guide](https://medium.com/@factman60/next-js-server-actions-vs-trpc-a-2026-architects-guide-85cc4953bae4) - the architecture trade-offs framed as a decision
+- [Can Next.js Replace Your Backend? Pros, Cons, Use Cases](https://www.ghazikhan.in/blog/nextjs-replace-backend-pros-cons) - honest limits on jobs, sockets, and long-running work
+- [Next.js from a DevOps perspective (GitHub Discussion #84732)](https://github.com/vercel/next.js/discussions/84732) - coupling, scaling, and deploy-boundary concerns
+
+### Further Reading
+
+- [Next.js Server Action vs API Route vs Separate Backend](https://dev.to/robiulman/nextjs-14-server-action-api-route-vs-separate-backend-4266) - side-by-side of the three approaches
+- [Next.js 15 vs NestJS: Backend Architecture Comparison](https://www.nordync.com/blog/nextjs-15-vs-nestjs-2026-backend-architecture-comparison) - when a dedicated backend framework wins
+
+---
+
+~Seb 👊
