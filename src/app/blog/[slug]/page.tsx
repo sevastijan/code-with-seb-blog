@@ -4,7 +4,6 @@ import {
   getPostBySlug,
   getPostSlugs,
   getRelatedPosts,
-  getCounterpartSlug,
   extractTableOfContents,
   parseMarkdown,
 } from '@/lib/mdx';
@@ -35,20 +34,12 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   }
 
   const url = `https://www.codewithseb.com/blog/${slug}`;
-  const plSlug = getCounterpartSlug(slug, 'en', 'pl');
-  const languages: Record<string, string> = {
-    en: url,
-  };
-  if (plSlug) {
-    languages.pl = `https://www.codewithseb.com/pl/blog/${plSlug}`;
-  }
 
   return {
     title: post.title,
     description: post.excerpt,
     alternates: {
       canonical: url,
-      languages,
     },
     openGraph: {
       title: post.title,

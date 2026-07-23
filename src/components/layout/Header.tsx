@@ -5,7 +5,8 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { ArrowUpRight } from 'lucide-react';
 import { LogoAnimated } from '@/components/LogoAnimated';
-import { LanguageSwitcher, localeFromPathname, type BlogSlugMap } from '@/components/layout/LanguageSwitcher';
+// LanguageSwitcher temporarily removed while the Polish locale is disabled.
+import { localeFromPathname, type BlogSlugMap } from '@/components/layout/LanguageSwitcher';
 import { t, localePrefix } from '@/lib/i18n';
 
 export function Header({ blogSlugMap }: { blogSlugMap?: BlogSlugMap }) {
@@ -84,7 +85,6 @@ export function Header({ blogSlugMap }: { blogSlugMap?: BlogSlugMap }) {
 
           {/* CTA + language */}
           <div className="hidden lg:flex items-center gap-4">
-            <LanguageSwitcher blogSlugMap={blogSlugMap} />
             <Link href={`${prefix}/contact`} className="nav-cta group" data-cursor-hover>
               <span className="nav-cta-text">{ctaLabel}</span>
               <span className="nav-cta-icon">
@@ -149,10 +149,6 @@ export function Header({ blogSlugMap }: { blogSlugMap?: BlogSlugMap }) {
               </span>
               <span className="nav-cta-bg" />
             </Link>
-
-            <div className="nav-mobile-lang">
-              <LanguageSwitcher blogSlugMap={blogSlugMap} />
-            </div>
 
             <div className="nav-mobile-socials">
               <a href="https://github.com/sevastijan" target="_blank" rel="noopener noreferrer" className="nav-mobile-social">GitHub</a>
