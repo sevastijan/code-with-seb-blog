@@ -1,0 +1,257 @@
+---
+title: 'NextAuth.js v5 vs Clerk: From Mock Session to Production Auth'
+date: '2026-07-23'
+category: 'Development'
+tags: ['nextjs', 'authentication', 'nextauth', 'clerk', 'rbac']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: 'Your tutorial app has a mock session and a TODO comment. I wire the same task app to both NextAuth.js v5 (Auth.js) and Clerk behind one interface, compare real costs, and build the role-based authorization layer neither provides out of the box.'
+---
+
+Every Next.js tutorial app I've ever reviewed has the same file in it. It's called `lib/auth.ts`, it exports a `getSession()` that returns a hardcoded user object, and above it sits the most optimistic comment in software: `// TODO: replace with real auth`.
+
+This is the article about that TODO. I'm going to take the classic tutorial setup — a task app with a mock session — and wire it to real auth twice: once with **NextAuth.js v5** (now Auth.js), once with **Clerk**. Same app, same interface, two very different philosophies. Then I'll build the part that neither library gives you out of the box: role-based authorization, so an admin can delete any task while regular users can only touch their own.
+
+If you're choosing between NextAuth v5 vs Clerk right now, the comparison tables you've read probably listed features. Features aren't the decision. The decision is: **who hosts your users, who owns the complexity, and what happens at invoice time.**
+
+## Hosted vs Self-Hosted: The Actual Trade-Off
+
+**Auth.js v5** is a library. It runs in your app, sessions live in your JWT or your database, users live in your tables. It's free forever, and everything it doesn't do — 2FA, passkeys, organizations, RBAC, account management UI — is yours to build. That list is longer than most people expect.
+
+**Clerk** is a service. You install an SDK, wrap your app in a provider, and get polished sign-in screens, user profiles, MFA, and organizations in an afternoon. Your users live in Clerk's database, and you pay per monthly active user: free up to the entry tier, then roughly $0.02/MAU on Pro. Run the math for your product: at 100k MAU you're around **$1,025/month** (as of mid-2026 pricing), and B2B apps pay extra per organization. Also worth knowing before you commit: Clerk's prebuilt components are heavy — they can account for as much as half of your client bundle if you use the full component suite.
+
+My honest framing after shipping both:
+
+- **Clerk** buys you weeks of work for money. Best when auth is not your product and MAU count is modest or revenue-correlated (B2B SaaS).
+- **Auth.js v5** buys you control and zero marginal cost for effort. Best when you have unusual providers, data-residency requirements, or consumer-scale MAU where per-user pricing gets absurd.
+
+Neither is "more production-ready." Both are production-ready in different currencies.
+
+## Step Zero: A Provider-Agnostic Session Interface
+
+Before touching either library, do the one thing that makes this choice reversible. Your app should never import `next-auth` or `@clerk/nextjs` outside of one file. Define the interface your app actually needs:
+
+```typescript
+// lib/session.ts
+export type Role = 'user' | 'admin'
+
+export interface AppSession {
+  userId: string
+  email: string
+  role: Role
+}
+
+// The ONLY function the rest of the app calls.
+// Its implementation is the provider-specific part.
+export async function getAppSession(): Promise<AppSession | null> {
+  // swapped per provider below
+}
+```
+
+This is the same shape your mock session already had — which is exactly the point. The mock wasn't wrong as an interface; it was wrong as an implementation. Keep the interface, replace the guts, and your server actions, layouts, and route handlers don't change no matter which provider wins.
+
+## Path A: Auth.js (NextAuth) v5
+
+v5 was a significant rewrite for the App Router, and if you learned NextAuth from v4-era tutorials, the API moved under you. The config now lives in a root-level `auth.ts`, `getServerSession` is gone, and one universal `auth()` call works everywhere — Server Components, Route Handlers, middleware, and server actions:
+
+```typescript
+// auth.ts (project root)
+import NextAuth from 'next-auth'
+import GitHub from 'next-auth/providers/github'
+import { PrismaAdapter } from '@auth/prisma-adapter'
+import { db } from '@/lib/db'
+
+export const { handlers, auth, signIn, signOut } = NextAuth({
+  adapter: PrismaAdapter(db),
+  providers: [GitHub], // AUTH_GITHUB_ID / AUTH_GITHUB_SECRET inferred from env
+  callbacks: {
+    session({ session, user }) {
+      // Expose the role stored in our own users table
+      session.user.role = user.role
+      return session
+    },
+  },
+})
+```
+
+```typescript
+// app/api/auth/[...nextauth]/route.ts
+import { handlers } from '@/auth'
+export const { GET, POST } = handlers
+```
+
+Note the small quality-of-life win: v5 infers credentials from `AUTH_`-prefixed environment variables, so provider setup is mostly naming things correctly. Migration gotchas if you're coming from v4: minimum Next.js is 14, `next-auth/middleware` imports are gone, and the stricter OIDC spec-compliance in `@auth/core` can break exotic OAuth providers — test every provider you use, not just GitHub and Google.
+
+The adapter line matters more than it looks. With a database adapter you get database sessions and a `users` table you own — which is where our `role` column lives. That's the Auth.js answer to RBAC: **it doesn't have one, so your schema is the source of truth.** I covered wiring up the OAuth side in more depth in my [Google login implementation guide](/blog/implementation-of-google-login-in-react-vite-application-using-react-oauth-google) — the provider dance hasn't changed much, just the plumbing around it.
+
+Now the swap:
+
+```typescript
+// lib/session.ts — Auth.js implementation
+import { auth } from '@/auth'
+
+export async function getAppSession(): Promise<AppSession | null> {
+  const session = await auth()
+  if (!session?.user?.id) return null
+  return {
+    userId: session.user.id,
+    email: session.user.email!,
+    role: (session.user.role as Role) ?? 'user',
+  }
+}
+```
+
+Delete the mock. The rest of the app doesn't notice.
+
+## Path B: Clerk
+
+Clerk's setup is genuinely as fast as advertised. Middleware plus provider plus components:
+
+```typescript
+// middleware.ts
+import { clerkMiddleware, createRouteMatcher } from '@clerk/nextjs/server'
+
+const isProtectedRoute = createRouteMatcher(['/tasks(.*)', '/admin(.*)'])
+
+export default clerkMiddleware(async (auth, req) => {
+  if (isProtectedRoute(req)) await auth.protect()
+})
+
+export const config = {
+  matcher: ['/((?!_next|.*\\..*).*)'],
+}
+```
+
+For roles, Clerk's idiomatic answer is session claims: store the role in the user's `publicMetadata` and customize the session token to include it. Then the implementation of our interface:
+
+```typescript
+// lib/session.ts — Clerk implementation
+import { auth, currentUser } from '@clerk/nextjs/server'
+
+export async function getAppSession(): Promise<AppSession | null> {
+  const { userId, sessionClaims } = await auth()
+  if (!userId) return null
+
+  const user = await currentUser()
+  return {
+    userId,
+    email: user?.primaryEmailAddress?.emailAddress ?? '',
+    role: (sessionClaims?.metadata?.role as Role) ?? 'user',
+  }
+}
+```
+
+Two production notes the quickstart won't tell you. First, prefer reading the role from `sessionClaims` (it's in the JWT, zero extra latency) over `currentUser()` (a network call to Clerk's API — cache it or you'll feel it on every action). Second, promotion flows — who gets to *set* `publicMetadata.role` — go through Clerk's backend API, and that code path needs the same authorization scrutiny as anything else. An "admin panel" that calls `clerkClient.users.updateUserMetadata` without checking the *caller's* role is a privilege-escalation kit.
+
+## RBAC: The Layer Neither Gives You
+
+Here's the part that's identical regardless of provider, because both paths now emerge into the same `AppSession`. Authorization is *your* domain logic. Centralize it — scattered `if (role === 'admin')` strings are how one typo becomes a security bug:
+
+```typescript
+// lib/permissions.ts
+import type { AppSession, Role } from '@/lib/session'
+
+const permissions = {
+  'task:delete:any': ['admin'],
+  'task:delete:own': ['admin', 'user'],
+  'user:promote': ['admin'],
+} as const satisfies Record<string, readonly Role[]>
+
+export type Permission = keyof typeof permissions
+
+export function can(session: AppSession, permission: Permission): boolean {
+  return (permissions[permission] as readonly Role[]).includes(session.role)
+}
+```
+
+And the canonical example — admin deletes any task, user deletes only their own:
+
+```typescript
+'use server'
+
+import { z } from 'zod'
+import { getAppSession } from '@/lib/session'
+import { can } from '@/lib/permissions'
+
+export async function deleteTask(input: unknown) {
+  const session = await getAppSession()
+  if (!session) return { error: 'Unauthorized' }
+
+  const parsed = z.object({ taskId: z.string().cuid() }).safeParse(input)
+  if (!parsed.success) return { error: 'Invalid input' }
+
+  const task = await db.task.findUnique({ where: { id: parsed.data.taskId } })
+  if (!task) return { error: 'Not found' }
+
+  const isOwner = task.ownerId === session.userId
+  const allowed = isOwner
+    ? can(session, 'task:delete:own')
+    : can(session, 'task:delete:any')
+
+  if (!allowed) return { error: 'Not found' } // don't reveal existence
+
+  await db.task.delete({ where: { id: task.id } })
+  return { success: true }
+}
+```
+
+The single most important sentence in this article: **middleware is routing protection, not authorization.** Server actions are directly callable HTTP endpoints — a request never has to pass through your protected page to invoke one. `clerkMiddleware` and Auth.js middleware keep anonymous users away from `/admin` *pages*; they do nothing about someone POSTing straight to your delete action. Every action checks the session and the permission itself. I went deep on this whole class of problem — validation, rate limiting, CSRF — in [Next.js Server Actions Security](/blog/nextjs-server-actions-security), and the middleware pattern from that article composes perfectly here: an `adminActionClient` built with next-safe-action can enforce `role === 'admin'` by construction for a whole family of actions.
+
+Where roles *live* differs by path, and it has consequences:
+
+- **Auth.js + database sessions:** role is read from your DB on each session fetch — demoting an admin takes effect immediately.
+- **Auth.js + JWT / Clerk session claims:** the role is baked into the token — a demoted admin keeps their powers until the token refreshes. For high-stakes permissions, re-check against the database inside the action, not just the claim.
+
+That last bullet is the kind of thing you only learn during an incident. Learn it here instead.
+
+## Testing and Migration Notes
+
+Because everything flows through `getAppSession()`, testing authorization is mocking one function:
+
+```typescript
+import { deleteTask } from '@/app/actions/tasks'
+import * as sessionModule from '@/lib/session'
+
+it('blocks a user from deleting another user\'s task', async () => {
+  vi.spyOn(sessionModule, 'getAppSession').mockResolvedValue({
+    userId: 'user_2', email: 'u2@test.dev', role: 'user',
+  })
+  const result = await deleteTask({ taskId: taskOwnedByUser1.id })
+  expect(result.error).toBe('Not found')
+})
+```
+
+Run the matrix: anonymous, user-on-own-resource, user-on-foreign-resource, admin-on-foreign-resource. Four tests per protected action; they're cheap and they catch the exact bugs that make it to Hacker News.
+
+If you're migrating between providers later, the interface pays off again: export users (Clerk has an export API; Auth.js users are already in your DB), map fields into `AppSession`, swap the one file. The painful part is sessions — there's no portable session, so a provider migration is a forced global logout. Schedule it; don't fight it.
+
+## The Decision Checklist
+
+- **Consumer app, big free tier, unpredictable MAU** → Auth.js v5. Per-MAU pricing punishes viral success.
+- **B2B SaaS, orgs and SSO on the roadmap, small team** → Clerk. Organizations and enterprise SSO are exactly the features you don't want to hand-build.
+- **Compliance requires user data in your database** → Auth.js v5, database sessions.
+- **You need auth working by Friday** → Clerk, no contest.
+- **Either way** → hide it behind one interface, own your RBAC in your own code, and enforce it inside every server action — not in middleware.
+
+The mock session was never the embarrassing part of your tutorial app. Shipping it with the TODO still attached is. Pick a path this week; the interface makes it a reversible decision.
+
+## References
+
+### Sources
+
+- [Auth.js: Migrating to v5](https://authjs.dev/getting-started/migrating-to-v5) - breaking changes, root `auth.ts`, universal `auth()`, `AUTH_` env inference
+- [Clerk: Implement basic RBAC with metadata](https://clerk.com/docs/guides/secure/basic-rbac) - roles via `publicMetadata` and session claims
+- [Clerk: RBAC in Next.js 15](https://clerk.com/blog/nextjs-role-based-access-control) - route protection plus role checks patterns
+- [Better Auth vs Clerk vs NextAuth vs Supabase Auth (Makerkit)](https://makerkit.dev/blog/tutorials/better-auth-vs-clerk) - verified 2026 pricing and feature gaps
+- [Clerk Pricing: The Complete Guide (SuperTokens)](https://supertokens.com/blog/clerk-pricing-the-complete-guide) - tier breakdown and hidden costs
+
+### Further Reading
+
+- [Auth.js Next.js reference](https://authjs.dev/reference/nextjs) - full API surface of the v5 integration
+- [Next.js RBAC with Auth.js v5](https://nextjslaunchpad.com/article/nextjs-role-based-access-control-authjs-v5-middleware-server-component-authorization) - layered enforcement across middleware, components, and actions
+- [Clerk vs Better Auth pricing verification](https://dev.to/thiago_alvarez_a7561753aa/clerk-vs-better-auth-2026-we-verified-every-price-so-you-dont-have-to-13pk) - independent cost comparison at multiple scales
+
+---
+
+~Seb 👊
