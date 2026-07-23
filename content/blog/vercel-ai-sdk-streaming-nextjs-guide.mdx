@@ -1,0 +1,210 @@
+---
+title: 'Streaming AI Responses in Next.js with the Vercel AI SDK'
+date: '2026-07-23'
+category: 'Development'
+tags: ['nextjs', 'vercel-ai-sdk', 'streaming', 'ai', 'react']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: 'A streaming chat demo takes ten minutes with the Vercel AI SDK. A production one takes the rest of this article: the correct 2026 pattern (useChat + streamText, not the deprecated RSC path), real tool calling, and the rate limiting, cost, and error handling every tutorial skips.'
+---
+
+The Vercel AI SDK demo is a lie of omission. You wire `streamText` to a route handler, drop `useChat` into a component, and ninety seconds later tokens are streaming into your UI like magic. It's genuinely that easy — and that ease is exactly why so many "AI-powered" Next.js apps ship with no rate limiting, no cost cap, no error handling, and a copy-pasted API path that Vercel deprecated over a year ago.
+
+This is a guide to **Vercel AI SDK streaming in Next.js** that spends ten minutes on the demo and the rest on the part that actually matters: the correct 2026 pattern, tool calling wired to real data, and the prototype-to-production gap that is, as Vercel puts it, "mostly engineering discipline." If you're adding AI to a real app, the streaming is the easy 10%.
+
+## The Three Layers, and Which to Actually Use
+
+The SDK is organized into three layers, and knowing which is which saves you from following the wrong tutorial:
+
+- **AI SDK Core** — server-side `streamText`, `generateText`, `streamObject`, and tool calling. Provider-agnostic: one API, swap OpenAI for Anthropic for Google by changing an import.
+- **AI SDK UI** — framework hooks (`useChat`, `useCompletion`) that manage streaming state, message history, and re-rendering on the client. **This is the stable, production path.**
+- **AI SDK RSC** — `streamUI` and generative-UI helpers that stream React Server Components from the model.
+
+Here's the trap: **AI SDK RSC (`streamUI`) is experimental and was deprecated in the 4.x line, yet half the tutorials you'll find still teach it as the headline feature.** For production in 2026, Vercel's own recommendation is AI SDK UI — `useChat` from `@ai-sdk/react`. Reach for RSC generative UI only for experiments you're willing to rewrite. I'll show the stable path in full and the RSC path with its caveat attached, so you know why not to lead with it.
+
+## The Correct 2026 Pattern: streamText + useChat
+
+Server side — a route handler that streams. The whole server contract is `streamText` plus a streaming response:
+
+```typescript
+// app/api/chat/route.ts
+import { openai } from '@ai-sdk/openai'
+import { streamText } from 'ai'
+
+export async function POST(req: Request) {
+  const { messages } = await req.json()
+
+  const result = streamText({
+    model: openai('gpt-4o'),
+    system: 'You are a concise, helpful assistant.',
+    messages,
+  })
+
+  return result.toDataStreamResponse()
+}
+```
+
+Client side — `useChat` handles message state, streaming display, input binding, and error state, so you write UI, not stream-parsing:
+
+```tsx
+'use client'
+import { useChat } from '@ai-sdk/react'
+
+export function Chat() {
+  const { messages, input, handleInputChange, handleSubmit, status } = useChat()
+
+  return (
+    <div>
+      {messages.map((m) => (
+        <div key={m.id} data-role={m.role}>
+          {m.content}
+        </div>
+      ))}
+      <form onSubmit={handleSubmit}>
+        <input value={input} onChange={handleInputChange} disabled={status !== 'ready'} />
+      </form>
+    </div>
+  )
+}
+```
+
+That's the demo, and it's correct — this pairing is the stable foundation to build the rest on. Everything below is the production shell around it.
+
+## Tool Calling Wired to Real Data
+
+Tool calling is where an AI feature stops being a chatbot and starts being useful — the model decides to call a function, you run it against your real data, and the result flows back into the response. Most tutorials show a toy `getWeather`. Here's the shape wired to your actual database:
+
+```typescript
+import { streamText, tool } from 'ai'
+import { z } from 'zod'
+
+const result = streamText({
+  model: openai('gpt-4o'),
+  messages,
+  tools: {
+    getOrderStatus: tool({
+      description: 'Look up the status of a customer order by ID',
+      parameters: z.object({ orderId: z.string() }),
+      execute: async ({ orderId }) => {
+        // Runs on YOUR server — apply the same auth you'd apply anywhere
+        const order = await db.order.findUnique({ where: { id: orderId } })
+        if (!order || order.customerId !== currentUserId) {
+          return { error: 'Order not found' }
+        }
+        return { status: order.status, eta: order.estimatedDelivery }
+      },
+    }),
+  },
+})
+```
+
+Two things every tutorial glosses: the `parameters` schema is zod for a reason — the *model* supplies those arguments, so they're untrusted input and you [validate them exactly like a server action](/blog/nextjs-server-actions-security). (Tool arguments from an LLM are a [prompt-injection surface](/blog/prompt-injection-attacks-llm-security-guide), not just a typing convenience.) And `execute` runs on your server with your database access, so an authorization check belongs inside it — an LLM asking for `orderId: "any-id-it-hallucinates"` must not be able to read another customer's order.
+
+## Generative UI: streamUI and Its Caveat
+
+The flashy version streams actual React components instead of text — a loading spinner appears instantly and gets replaced by a real `<OrderCard />` when the tool resolves:
+
+```tsx
+// Experimental — AI SDK RSC. Great demo, rewrite-risk in production.
+import { streamUI } from 'ai/rsc'
+
+const result = await streamUI({
+  model: openai('gpt-4o'),
+  messages,
+  tools: {
+    showOrder: {
+      description: 'Display an order card',
+      parameters: z.object({ orderId: z.string() }),
+      generate: async function* ({ orderId }) {
+        yield <OrderCardSkeleton />
+        const order = await db.order.findUnique({ where: { id: orderId } })
+        return <OrderCard order={order} />
+      },
+    },
+  },
+})
+```
+
+It's genuinely impressive, and it's genuinely experimental. My honest advice: build the same experience with `useChat` plus tool results rendered client-side for anything you're shipping, and treat `streamUI` as a prototype tool. Betting a production feature on a deprecated-and-experimental API is how you sign up for an unplanned rewrite when the next major version lands.
+
+## Production Layer 1: Rate Limiting and Cost Caps
+
+This is the layer that separates a demo from a thing you can afford to run. An unprotected AI endpoint is a **direct line to your credit card** — every request costs real tokens, and an abuser (or a bug) can run up thousands of dollars overnight. Rate limit it like the expensive resource it is:
+
+```typescript
+import { Ratelimit } from '@upstash/ratelimit'
+import { Redis } from '@upstash/redis'
+
+const ratelimit = new Ratelimit({
+  redis: Redis.fromEnv(),
+  limiter: Ratelimit.slidingWindow(10, '1 h'), // AI is costly — limit hard
+})
+
+export async function POST(req: Request) {
+  const userId = await requireUserId() // authenticate first
+  const { success } = await ratelimit.limit(userId)
+  if (!success) {
+    return new Response('Rate limit exceeded', { status: 429 })
+  }
+  // ...streamText
+}
+```
+
+Beyond rate limiting, cap the spend itself: set `maxTokens` on every call so a single request can't generate an unbounded (and unbounded-cost) response, and log token usage per request so you can see cost creep before the invoice does. The same [rate-limiting toolkit I use for server actions](/blog/nextjs-server-actions-security) applies verbatim here — AI endpoints are just server actions with a metered backend.
+
+## Production Layer 2: Errors, Aborts, and Timeouts
+
+Streams fail halfway. Users navigate away mid-response. Models time out. Handle all three:
+
+- **Abort on unmount / navigation.** `useChat` exposes a `stop()` function — wire it to a cancel button and call it on cleanup so an abandoned stream doesn't keep billing you.
+- **Surface errors, don't swallow them.** `useChat` returns an `error` object; render it. A silent dead stream reads as "the app is broken."
+- **Set a server-side timeout.** A model that hangs shouldn't hold a serverless function (and its cost) open indefinitely. Bound the request.
+- **Handle tool-execution failures gracefully.** If `execute` throws, return a structured error the model can relay — don't let one failed DB lookup kill the whole stream.
+
+None of this is exotic; it's the same resilience you'd give any network-bound feature. It just gets skipped because the happy-path demo works so well that "done" feels closer than it is.
+
+## Production Layer 3: Provider-Agnosticism as a Hedge
+
+The AI SDK's provider-agnostic Core is usually sold as convenience — swap `openai('gpt-4o')` for `anthropic('claude-...')` by changing one line. It's also **risk management.** Models get deprecated, repriced, rate-limited, or [pulled entirely](/blog/fable-5-suspension-llm-vendor-risk-architecture), and an app hard-wired to one provider's SDK is an app that goes down when that provider does. Keeping your generation behind the AI SDK's uniform interface means a provider outage is a config change, not an incident:
+
+```typescript
+// One env-driven switch instead of a provider hard-coded across your app
+const model = process.env.AI_PROVIDER === 'anthropic'
+  ? anthropic('claude-sonnet-4-5')
+  : openai('gpt-4o')
+```
+
+Design the seam now, while it's free, and you buy yourself an escape hatch you'll be grateful for the first time a provider has a bad week. (This is the same [vendor-risk discipline](/blog/fable-5-suspension-llm-vendor-risk-architecture) I apply to any critical AI dependency.)
+
+## Checklist
+
+Before shipping an AI SDK feature:
+
+1. Using `streamText` + `useChat` (AI SDK UI), not the deprecated RSC/`streamUI` path.
+2. Endpoint authenticates the user *before* streaming.
+3. Rate limited per user with a strict window — AI is expensive.
+4. `maxTokens` set and per-request token usage logged for cost visibility.
+5. Tool `parameters` validated with zod; authorization enforced inside `execute`.
+6. `error` surfaced in the UI; `stop()` wired for aborts; server-side timeout set.
+7. Generation behind the provider-agnostic interface so you can switch models.
+
+The Vercel AI SDK earns its popularity — the streaming really is a few lines, and the DX is excellent. But the few lines are the part that was never hard. The work that makes an AI feature production-grade is the boring shell around them: authentication, rate limiting, cost caps, error handling, and a provider seam. Build that shell, and you've got something you can actually run in front of users without watching your cloud bill with one eye open.
+
+## References
+
+### Sources
+
+- [AI SDK by Vercel — Introduction](https://ai-sdk.dev/docs/introduction) - the Core / UI / RSC layer split and provider-agnostic API
+- [Real-time AI in Next.js: streaming with the Vercel AI SDK (LogRocket)](https://blog.logrocket.com/nextjs-vercel-ai-sdk-streaming/) - the streamText + toDataStreamResponse + useChat pattern
+- [Introducing AI SDK 3.0 with Generative UI](https://vercel.com/blog/ai-sdk-3-generative-ui) - streamUI and generative UI, with its experimental status
+- [Next.js AI Streaming with the Vercel AI SDK (SitePoint)](https://www.sitepoint.com/nextjs-ai-streaming-building-realtime-apps-with-vercel-ai-sdk/) - end-to-end streaming walkthrough
+
+### Further Reading
+
+- [Vercel AI SDK Guide 2026: Build Streaming AI Apps in TypeScript](https://baeseokjae.github.io/posts/vercel-ai-sdk-guide-2026/) - broader tour including Workflows, Sandbox, and AI Elements
+- [Vercel AI SDK 2026: 12 Patterns for Streaming + Tool Use](https://nextfuture.io.vn/blog/ultimate-guide-vercel-ai-sdk-2026) - production patterns for tool calling at scale
+
+---
+
+~Seb 👊
