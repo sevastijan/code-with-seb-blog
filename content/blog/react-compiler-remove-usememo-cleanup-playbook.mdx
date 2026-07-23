@@ -1,0 +1,139 @@
+---
+title: 'Stop Writing useMemo: A Safe React Compiler Cleanup Playbook'
+date: '2026-07-23'
+category: 'Development'
+tags: ['react', 'react-compiler', 'performance', 'usememo', 'refactoring']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: 'The React Compiler is stable and it memoizes better than you do by hand. But mass-deleting useMemo is where teams break production — usually via a useEffect that quietly depended on reference stability. Here is the safe, reviewable procedure to remove manual memoization for good.'
+---
+
+The pull request looked harmless: "chore: remove redundant useMemo, compiler handles it now." It deleted a one-line `useMemo` that wrapped a filter object. It also, three files away, turned a `useEffect` that ran once into a `useEffect` that ran on every single render — because that effect's dependency array included the object the `useMemo` had been keeping stable. The re-render loop it caused took down a search page in production for twenty minutes.
+
+That's the gap in the advice you've read a hundred times. "The React Compiler is here, **remove useMemo**" is correct. It's also, applied carelessly, one of the faster ways to break a working app. The compiler genuinely memoizes better than you do by hand — but *deleting* your existing memoization is a refactor with one sharp edge, and everyone's blog post skips it. This is the playbook that doesn't.
+
+If you want the internals — how the compiler rewrites your components, what the compiled output looks like — I wrote that [deep dive on React Compiler's automatic memoization](/blog/react-compiler-deep-dive-automatic-memoization-guide) separately. This article assumes you're sold on the *why* and need the *how to safely rip out the old stuff*.
+
+## Why Manual Memoization Is Now Redundant
+
+Quick grounding. React Compiler 1.0 shipped stable in October 2025 and is now the default in the major frameworks. At build time it analyzes each component, figures out which values depend on which inputs, and inserts memoization automatically — more granularly than hand-written `useMemo`/`useCallback`, because it operates on the actual dependency graph rather than the dependency array you remembered to update.
+
+Two facts make cleanup possible rather than mandatory:
+
+1. **Your existing `useMemo`/`useCallback` don't break.** Under the compiler they become *redundant*, not *harmful*. You can leave them and ship.
+2. **The compiler drops unnecessary ones anyway.** It'll skip memoization it deems pointless. So the runtime cost of leftover manual memo is roughly nil.
+
+Which raises the honest question: if leftover memoization isn't harmful, why remove it at all? Because it's *noise*. It clutters diffs, it misleads new readers into thinking the memoization is load-bearing, and it hides the rare cases where memoization actually *is* still needed. Cleanup is a readability win, not a performance one — and that framing matters, because it means **there is no rush, and no excuse for a risky big-bang removal.**
+
+## The One Dangerous Case: Reference Stability That Effects Depend On
+
+Here is the entire risk, in one pattern:
+
+```tsx
+// A useMemo whose job was never "expensive computation" —
+// it was "give me a STABLE reference across renders"
+const filters = useMemo(() => ({ status, sortBy }), [status, sortBy])
+
+useEffect(() => {
+  fetchResults(filters) // runs when `filters` reference changes
+}, [filters]) // <-- this array depends on filters being stable
+```
+
+Delete that `useMemo` and `filters` becomes a fresh object literal every render. The `useEffect` dependency array now sees a "new" `filters` every time, so the effect fires every render — refetch, setState, re-render, refetch, forever. The compiler will happily memoize `filters` for *rendering* purposes, but the reference identity your effect's dependency array observes is a semantic contract the compiler doesn't rewrite for you here.
+
+This is the trap, and it's specifically about **`useMemo`/`useCallback` values that flow into `useEffect`, `useLayoutEffect`, or a `useSyncExternalStore` dependency array.** Those are the memoizations you cannot blindly delete. Everything else — memoization that only feeds JSX or is passed as props — is safe to remove, because the compiler covers rendering.
+
+So the removal rule is a filter: *before deleting a `useMemo`/`useCallback`, ask "does its result appear in any effect's dependency array?" If yes, stop and think. If no, delete freely.*
+
+## The Safe Removal Procedure
+
+Do this in reviewable waves, gated by the linter. Never a find-and-replace across the repo.
+
+**Step 1 — Enable the compiler and its lint rule first.** Turn on `babel-plugin-react-compiler` (or your framework's flag) and the ESLint plugin. The lint rule flags components that violate the Rules of React — the compiler silently skips those, and you want to *see* them, because a skipped component is one where your manual memo is still doing real work.
+
+```js
+// eslint.config.js
+import reactCompiler from 'eslint-plugin-react-compiler'
+
+export default [
+  { plugins: { 'react-compiler': reactCompiler },
+    rules: { 'react-compiler/react-compiler': 'error' } },
+]
+```
+
+**Step 2 — Ship the compiler with all existing memoization still in place.** This is the safety net. The compiler runs, your `useMemo` calls are redundant but harmless, and nothing behaviorally changes. Bake this in production for a bit. Now removal is a *separate*, independently-revertable change.
+
+**Step 3 — Remove in small, typed waves.** Pick one category at a time so each PR is reviewable:
+
+- **Wave A: `useMemo`/`useCallback` that feed only JSX or props.** The safe majority. Grep for them, confirm none appear in an effect dependency array, delete.
+- **Wave B: `React.memo` wrappers.** Remove once the callbacks/objects they receive are compiler-stabilized. The compiler makes most `React.memo` redundant, but leave it where a component takes children it can't stabilize.
+- **Wave C: the effect-dependency cases.** Handle individually, never in bulk. For each, either leave the memoization (it's legitimately load-bearing) or refactor the effect to not depend on object identity — e.g. depend on the primitives directly:
+
+```tsx
+// Instead of depending on a memoized object, depend on the primitives
+useEffect(() => {
+  fetchResults({ status, sortBy })
+}, [status, sortBy]) // no object identity to keep stable — nothing to memoize
+```
+
+That refactor is usually the *right* fix and lets you delete the `useMemo` safely.
+
+**Step 4 — One PR per wave, per area.** Keep diffs small enough that a reviewer can actually reason about each deletion. The failure mode is a 4,000-line "remove all memoization" PR that nobody can review and that hides the one dangerous deletion among 300 safe ones.
+
+## What NOT to Remove: The Real Edge Cases
+
+The compiler covers 90%+ of cases. Keep manual memoization — and don't feel bad about it — in the places it genuinely can't see:
+
+- **Inside `try`/`catch`.** The compiler can't analyze control flow that might throw, so it skips memoization there. Your manual `useMemo` in a try block stays.
+- **Class components.** The compiler only processes function components and hooks. Class components are untouched; their `shouldComponentUpdate`/`PureComponent` logic stays exactly as is.
+- **Third-party hooks returning fresh objects each render.** The classic is TanStack Query's `useMutation`, which returns a new object every render. If your callback closes over the whole mutation object rather than the destructured function, the compiler can't stabilize it — memoize manually or destructure the stable function out. (I hit adjacent issues wiring [TanStack Query into RSC apps](/blog/tanstack-query-advanced-caching-rsc-guide).)
+- **Measured, genuinely expensive computations.** If profiling shows a specific heavy calculation the compiler didn't catch, a deliberate `useMemo` with a comment explaining the measurement is good engineering, not a code smell.
+
+The mental shift: manual memoization goes from "the default performance hygiene you sprinkle everywhere" to "a targeted tool you reach for in named, documented exceptions."
+
+## Handling the Compiler Bail-Out
+
+One subtlety that catches people mid-cleanup: if you *keep* a manual `useMemo` and it doesn't match what the compiler would have inferred, **the compiler bails out of optimizing that entire component.** It won't fight your manual memoization; it steps aside. So a half-removed component — some manual memo left, some gone — can end up *less* optimized than either fully-manual or fully-compiler.
+
+The implication for your waves: within a single component, go all-in or all-out. Don't leave one lonely `useMemo` next to code you expect the compiler to optimize — either that component is a documented edge case (keep all its manual memo, accept the bail-out) or it's clean (remove all of it, let the compiler own it). The lint rule from Step 1 helps you spot components the compiler is skipping.
+
+## Verifying You Actually Gained Something
+
+Cleanup is a readability change, but you still want to confirm you didn't *regress*. After each wave:
+
+- **React DevTools Profiler** on the affected screens — compare render counts before/after. They should be equal or better. If a screen now re-renders more, you deleted a load-bearing memoization; that's your reference-stability bug.
+- **Watch for effect-fire regressions specifically.** Add a temporary `console.count` in effects near deleted memoization during review. An effect that now counts up every render is the exact failure this playbook exists to prevent.
+- **The reported wins are real but modest** — teams see roughly 25–40% fewer re-renders from the compiler overall, but that comes from *enabling the compiler* (Step 2), not from *deleting* your `useMemo` (Step 3). Don't expect the deletions themselves to move the needle; their payoff is a cleaner codebase.
+
+## Playbook Checklist
+
+1. Enable the compiler **and** the ESLint plugin; treat lint violations as "compiler is skipping this."
+2. Ship with existing memoization intact first — decouple "turn on compiler" from "remove memo."
+3. Before deleting any `useMemo`/`useCallback`, check whether its result appears in an effect dependency array.
+4. Remove in waves: JSX/props-only first, `React.memo` next, effect-dependency cases individually and last.
+5. Keep manual memo in try/catch, class components, unstable third-party hooks, and measured hot paths.
+6. All-in or all-out per component — avoid the mismatch bail-out.
+7. Profile each wave; a rise in render count or effect fires means you cut something load-bearing.
+
+"Stop writing useMemo" is the right destination. The compiler earns its place and hand-memoization is genuinely obsolete for the common case. But getting *from* a codebase full of it *to* a clean one is a refactor, and the only truly dangerous move in that refactor is deleting the reference stability an effect quietly relied on. Respect that one edge, go in reviewable waves, and you'll delete years of boilerplate without a single incident.
+
+## References
+
+### Sources
+
+- [React docs: React Compiler](https://react.dev/learn/react-compiler) - official compiler guide and the ESLint plugin
+- [React docs: memo](https://react.dev/reference/react/memo) - where React.memo still applies in the compiler era
+- [react/react issue #34289](https://github.com/react/react/issues/34289) - the nuanced debate on the middle ground between compiler and manual memo
+- [React 19 Memoization: Is useMemo & useCallback No Longer Necessary?](https://dev.to/joodi/react-19-memoization-is-usememo-usecallback-no-longer-necessary-3ifn) - practical edge-case catalog
+- [React Compiler vs Manual Memoization](https://blog.openreplay.com/react-compiler-vs-manual-memoization/) - where the compiler struggles with third-party hooks
+
+### Further Reading
+
+- [React Compiler Deep Dive: How Automatic Memoization Actually Works](/blog/react-compiler-deep-dive-automatic-memoization-guide) - the internals behind this playbook
+- [Stop Writing useMemo and useCallback: A Migration Guide to React Compiler 1.0](https://adeelhere.com/blog/2026-03-24-react-compiler-migration-guide) - another practitioner's migration walkthrough
+- [React.memo in React 19 and the Compiler Era (Steve Kinney)](https://stevekinney.com/courses/react-performance/react-memo-react-19-and-compiler-era) - deeper treatment of React.memo's remaining role
+
+---
+
+~Seb 👊
