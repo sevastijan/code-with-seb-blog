@@ -1,0 +1,184 @@
+---
+title: 'Partial Prerendering in Production: Where to Draw the Boundaries'
+date: '2026-07-23'
+category: 'Development'
+tags: ['nextjs', 'ppr', 'suspense', 'performance', 'react']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: 'Partial Prerendering is stable in Next.js 16, and the concept — static shell, dynamic holes — is easy. The hard part is deciding where the holes go. This is a production guide to Suspense boundary placement, the errors that teach you the model, and the granularity tradeoff nobody warns you about.'
+---
+
+I turned on Partial Prerendering for a product page and watched a page that should have been 90% static become 100% dynamic. One line did it — a `cookies()` call sitting in the layout, reading a theme preference. That single request-time API, at the wrong level of the tree, poisoned the entire route: no static shell, no edge-served instant paint, none of the benefit I'd enabled PPR to get.
+
+That's the thing every **Partial Prerendering Next.js** tutorial undersells. The concept is genuinely simple — serve a static shell instantly, stream the dynamic bits into holes. But PPR isn't a feature you flip on. It's a *discipline*: deciding, per page, where the static/dynamic boundaries go. Get the boundaries right and you get the best rendering model Next.js has ever shipped. Get them wrong and you either lose the whole benefit or fight build errors until you give up. This is a guide to getting them right.
+
+## What PPR Actually Produces at Build Time
+
+PPR went stable in Next.js 16 (October 2025) as part of Cache Components. You opt in once:
+
+```typescript
+// next.config.ts
+const nextConfig = {
+  cacheComponents: true, // PPR is now the default rendering behavior in the App Router
+}
+```
+
+Note what's *gone*: the old `experimental.ppr` flag and the per-route `experimental_ppr` export were removed. PPR isn't experimental or opt-in-per-route anymore; with Cache Components on, it's how the App Router renders.
+
+At **build time**, for each PPR route, Next.js produces two artifacts:
+
+1. **A static HTML shell** — everything that's identical for every visitor: layout, nav, header, footer, static content, and `Suspense` *fallbacks* standing in for the dynamic parts.
+2. **A `postponedState` blob** — a serialized record of exactly where rendering was paused, so the server can pick up precisely where the shell left off.
+
+The mental model: React renders your page at build time and, whenever it hits something it can't know yet (a dynamic hole), it drops in the Suspense fallback and records "resume here." The shell is done and cacheable at the CDN edge. The holes are IOUs.
+
+## The Request Path: Shell Now, Holes Streamed
+
+At **request time**, in a single HTTP response:
+
+1. The CDN serves the static shell from the edge nearest the user — milliseconds, no origin round-trip. The browser starts parsing HTML, scripts, and fonts immediately.
+2. In parallel, the origin server *resumes* rendering from the `postponedState`, producing the real content for each dynamic hole.
+3. Those holes stream into the same response and hydrate their Suspense boundaries as they arrive.
+
+The user sees a complete-looking page instantly and the personalized pieces fill in a beat later, all in one streamed response. This is the payoff — and it's why boundary placement is everything, because **the boundaries are literally the line between "served from the edge in 20ms" and "waited on the origin."**
+
+## The Real Skill: Drawing Suspense Boundaries
+
+Here's the rule that determines what's static and what's a hole: **anything wrapped in a `<Suspense>` boundary — or anything that reads a request-time API like `cookies()`, `headers()`, or `searchParams` — becomes dynamic.** Everything else is prerendered into the shell.
+
+So the design question for every page is: *what must be personalized or fresh, and can I isolate it behind a Suspense boundary so the rest can be static?*
+
+```tsx
+import { Suspense } from 'react'
+
+export default function ProductPage({ params }: { params: { id: string } }) {
+  return (
+    <main>
+      {/* STATIC — same for everyone, prerendered into the shell */}
+      <SiteHeader />
+      <ProductDetails id={params.id} />   {/* cached product data */}
+      <ProductImages id={params.id} />
+
+      {/* DYNAMIC — isolated behind Suspense, streamed per request */}
+      <Suspense fallback={<PriceSkeleton />}>
+        <LivePrice id={params.id} />      {/* per-region pricing, request-time */}
+      </Suspense>
+
+      <Suspense fallback={<CartSkeleton />}>
+        <CartStatus />                    {/* reads cookies() */}
+      </Suspense>
+
+      <SiteFooter />
+    </main>
+  )
+}
+```
+
+The header, footer, product details, and images ship in the shell and paint from the edge. The live price and cart status are two small holes that stream in. That's the ideal PPR shape: a big static shell with a few well-contained dynamic islands.
+
+The corollary — and the source of my opening disaster — is that **a request-time API leaks upward.** If `CartStatus` read `cookies()` but *weren't* wrapped in Suspense, or if I'd read `cookies()` in the page or layout itself, the dynamic-ness would propagate to the whole route and there'd be no shell to prerender. The boundary isn't just a loading indicator; it's the wall that contains dynamic-ness so it can't flood the static parts.
+
+## The Error That Teaches the Model
+
+When you enable Cache Components, you'll meet this error, probably in your first build:
+
+```
+Error: Uncached data was accessed outside of a <Suspense> boundary.
+```
+
+It's annoying and it is also the single best teacher you'll get, because it fires at *build and dev time* — before production, before users. Next.js is refusing to guess. It found data that can't be resolved during prerendering, and it's forcing you to declare your intent: either this is dynamic (wrap it in `<Suspense>`) or this is cacheable (mark it with [`use cache`](/blog/nextjs-use-cache-directive-footguns-guide)).
+
+The fix is always one of two moves:
+
+- **It should be static/cached** → add `use cache` to the data function so it becomes part of the shell.
+- **It should be dynamic** → wrap the component that reads it in `<Suspense>` so it becomes a contained hole.
+
+The classic trap the error surfaces: a dynamic API called at the *page or layout level*. Search your route for `cookies()`, `headers()`, or `connection()` outside any Suspense boundary. Each one is a place where dynamic-ness escaped its island and made the whole route dynamic. Push each call *down* into a leaf component and wrap that component. The error goes away and, not coincidentally, your shell comes back.
+
+Treat every occurrence of this error as PPR telling you exactly where a boundary belongs. It's not fighting you; it's doing your architecture review.
+
+## Granularity: Too Coarse vs Too Fine
+
+Boundary placement has a Goldilocks problem that nobody warns you about.
+
+**Too coarse** — one giant Suspense boundary around half the page — and your shell is tiny. If the boundary wraps content that *could* have been static, you've handed it to the origin for no reason. The user waits on the server for things that never needed a server.
+
+**Too fine** — a separate boundary around every field — and you risk request waterfalls and a flicker-fest of skeletons resolving at different times. Ten tiny holes each doing their own data fetch can serialize into a worse experience than two well-chosen ones, and the UI jank of ten independent pop-ins reads as "broken," not "fast."
+
+The heuristic I use: **one boundary per independent dynamic data source, drawn as low in the tree as possible.** Live price is one source → one boundary. Cart status is another → another boundary. Don't merge unrelated dynamic things into one boundary (they'll block each other), and don't split one logical dynamic unit into many (they'll waterfall). This is the same instinct as [streaming SSR strategy](/blog/ssr-vs-ssg-vs-isr-vs-rsc-nextjs-strategies) — decide what can wait, and make sure what can't wait doesn't drag the rest with it. If Suspense itself is still fuzzy, my [React Suspense tutorial](/blog/react-suspense-tutorial-lazy-loading-async-rendering-data-fetching-react-18-19) covers the fundamentals PPR builds on.
+
+## A Worked Example: Fixing My Product Page
+
+Back to the page that went fully dynamic. The culprit was theme-reading in the layout:
+
+```tsx
+// ❌ Before: cookies() in the layout makes EVERY route under it dynamic
+export default function RootLayout({ children }) {
+  const theme = cookies().get('theme')?.value ?? 'light' // poisons the shell
+  return <html data-theme={theme}><body>{children}</body></html>
+}
+```
+
+The fix wasn't to abandon per-user theming — it was to move the request-time read into a small, Suspense-wrapped component and let the layout stay static:
+
+```tsx
+// ✅ After: layout is static; the one dynamic bit is contained
+export default function RootLayout({ children }) {
+  return (
+    <html>
+      <body>
+        <Suspense fallback={null}>
+          <ThemeScript />   {/* reads cookies(), sets data-theme, streams in */}
+        </Suspense>
+        {children}
+      </body>
+    </html>
+  )
+}
+```
+
+Same feature, but the dynamic-ness is now a contained island instead of a route-wide flood. The shell prerenders, the edge serves it instantly, and the theme applies as the tiny hole streams in. That one refactor took the page from 100% dynamic back to a mostly-static shell — which is the entire reason to run PPR.
+
+## Migration and When to Skip PPR
+
+Migrating an existing SSR route is mechanical once you have the model: identify the dynamic boundaries, wrap them in Suspense, move any page/layout-level dynamic APIs down into leaves, and mark cacheable data with `use cache`. Let the `Uncached data...` error drive the punch list — it'll name every spot that needs a decision.
+
+Skip or de-prioritize PPR when:
+
+- **The page is fully dynamic by nature** — a real-time trading dashboard where every pixel is per-request has no meaningful static shell to extract. PPR adds ceremony for no shell.
+- **The page is fully static** — a marketing page with zero per-request content is already optimally served as static; PPR's machinery buys nothing.
+- **You're not on the App Router** — PPR is App Router only. Pages Router and other frameworks need a different streaming approach.
+
+PPR shines in the vast middle: pages that are *mostly* the same for everyone with a few personalized or live pieces. That's most real product pages, which is exactly why it's becoming the default model.
+
+## Checklist
+
+1. `cacheComponents: true` set; no leftover `experimental.ppr` config.
+2. Every request-time API (`cookies`, `headers`, `searchParams`) lives in a leaf component wrapped in `<Suspense>`, never in a page or layout.
+3. One Suspense boundary per independent dynamic data source, placed as low as possible.
+4. Cacheable data marked with `use cache` so it joins the shell.
+5. No `Uncached data outside <Suspense>` errors at build — each one resolved as either static or dynamic on purpose.
+6. Skeletons are stable-sized so streaming holes don't cause layout shift.
+7. Verified the shell is actually static (check that the build reports the route as partially prerendered, not fully dynamic).
+
+Partial Prerendering rewards one skill above all: knowing where the line between static and dynamic belongs on each page, and having the discipline to keep dynamic-ness contained behind Suspense so it can't drown your shell. Learn to read the boundary errors as design feedback, and PPR stops being a config flag and becomes the way you think about every page.
+
+## References
+
+### Sources
+
+- [Next.js 16 release blog](https://nextjs.org/blog/next-16) - PPR stable via Cache Components; removed experimental flags
+- [Vercel: Partial Prerendering — a new default rendering model](https://vercel.com/blog/partial-prerendering-with-next-js-creating-a-new-default-rendering-model) - shell-at-edge and streamed-holes architecture
+- [Next.js docs: cacheComponents config](https://nextjs.org/docs/app/api-reference/config/next-config-js/cacheComponents) - enabling PPR as default App Router behavior
+- [Next.js: PPR Platform Guide](https://nextjs.org/docs/app/guides/ppr-platform-guide) - build-time shell and postponedState mechanics
+
+### Further Reading
+
+- [Partial Prerendering (PPR) in Production: Architecture Patterns](https://samcheek.com/blog/nextjs-partial-prerendering-production-2026) - more real-world boundary patterns
+- [A closer look at Partial Prerendering](https://dev.to/peterlidee/a-closer-look-at-partial-prerendering-15lb) - step-by-step of the static/dynamic split
+- [Cache Components for Instant and Fresh Pages (Vercel Academy)](https://vercel.com/academy/nextjs-foundations/cache-components) - how PPR and use cache fit together
+
+---
+
+~Seb 👊
