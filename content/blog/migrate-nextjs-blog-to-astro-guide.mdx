@@ -1,0 +1,122 @@
+---
+title: 'Migrating a Next.js Blog to Astro: When It''s Worth It (and When It''s Not)'
+date: '2026-07-23'
+category: 'Development'
+tags: ['astro', 'nextjs', 'migration', 'content-sites', 'seo']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: 'Content sites are leaving Next.js for Astro and cutting ~45% of their JavaScript. But migrate the wrong project and you will fight the framework. Here is the honest go/no-go, a realistic 1-3 day playbook, and the SEO-preserving redirect step everyone underestimates.'
+---
+
+The internet is full of "I migrated from Next.js to Astro and cut 45% of my JavaScript" posts, and they're mostly true. One real migration dropped a comparable page from Next.js's ~463 KB of JS to Astro's ~9 KB and kept a perfect Lighthouse SEO score. Those numbers are real and they're tempting. They're also the wrong place to start, because the first question in **migrating Next.js to Astro** isn't *how* — it's *whether*, and getting that wrong means fighting the framework for weeks over a decision you could have made in five minutes.
+
+So this guide leads with the go/no-go, then gives you a realistic 1-3 day playbook for the projects that *should* migrate — with honest attention to the two things that actually determine success: reusing your React components instead of rewriting them, and preserving your URLs so you don't torch your search rankings on launch day.
+
+## First: Is Your Site a Content Site or an App?
+
+This is the entire decision, and it's binary enough to answer honestly:
+
+- **Migrate if** your site is *mostly static content with limited interactivity* — a blog, docs, marketing pages, a portfolio, a mostly-static storefront. You'll gain real speed, cut hosting costs, and Astro's [content-first architecture](/blog/astro-islands-vs-react-server-components-guide) is built for exactly this.
+- **Stay on Next.js if** your site is a genuine *application* — a dashboard, an app with heavy client-side state, complex authenticated flows, lots of interconnected interactivity. Astro *can* do these with advanced techniques, but you'd be swimming upstream against what it's optimized for, and you'd lose the [React app ergonomics](/blog/nextjs-2026-server-components-edge-runtime-guide) that make that work pleasant.
+
+The tell: open your site and ask "what percentage of this needs to react to the user in the browser?" If it's "the whole thing" (a dashboard), stay. If it's "a search box, a theme toggle, and a comment form" on top of static content, migrate. A blog is almost always a migrate.
+
+## What Actually Transfers (It's More Than You Think)
+
+The good news that makes migration a few days rather than a few weeks: Astro and Next.js are more alike than the framework tribalism suggests. Both use **file-based routing**, both are **component-based**, and Astro's `.astro` syntax is close enough to JSX that it reads familiar on day one. Your MDX content, your Tailwind setup, your React components — none of it is dead weight. You're porting, not rewriting.
+
+## The Playbook: Content, Routing, Components
+
+A realistic order of operations for a blog:
+
+**1. Scaffold Astro and add MDX.** Install `@astrojs/mdx` so your existing `.md`/`.mdx` files come along. Copy your global CSS or Tailwind config into `src/styles/` and link it from a base layout.
+
+**2. Bring the content.** Your posts need small frontmatter adjustments — Astro uses a `layout` property (or, better, you move them into a content collection). I'd route them through the [Content Layer with a `glob()` loader](/blog/astro-content-layer-type-safe-content-guide) rather than raw `src/pages/` files, because you get typed, schema-validated frontmatter for free and it's the modern Astro way.
+
+**3. Rebuild routing.** Two choices: drop files in `src/pages/` for automatic file-based routing, or use content collections plus a dynamic `[slug].astro` with `getStaticPaths()` to generate pages from your collection. For a blog, the collection + dynamic route is the cleaner path.
+
+**4. Port layouts and components** to `.astro` where they're static, and keep the interactive ones as islands (next section).
+
+## Reusing React Components as Islands
+
+Here's the misconception that scares people off: you do **not** have to rewrite your React components in `.astro`. Astro runs React components directly. The rule is simple:
+
+- **Static component** (renders the same for everyone, no interactivity) → convert to `.astro`, ship zero JS.
+- **Interactive component** (needs to run in the browser) → keep it as React, drop it in as an island with a `client:` directive:
+
+```astro
+---
+import SearchBox from '../components/SearchBox.tsx' // your existing React component
+---
+<!-- Static content renders to pure HTML -->
+<article>...</article>
+
+<!-- The interactive bit ships as an island, hydrated in the browser -->
+<SearchBox client:load />
+```
+
+You'll need to strip Next.js-specific hooks (`useRouter`, `next/link`, `next/image` → Astro equivalents) and fix import paths, but the component *logic* transfers. This is why the migration is fast: the interactive 10% stays React, the static 90% becomes zero-JS `.astro`, and that split is exactly where the 45%-less-JavaScript number comes from.
+
+## Data Fetching: getStaticProps to Astro
+
+Next.js data-fetching functions have direct Astro equivalents, and they move to the top of the `.astro` file's frontmatter fence:
+
+```astro
+---
+// Was getStaticProps in Next.js — now it's just top-level await in frontmatter
+import { getCollection } from 'astro:content'
+
+const posts = await getCollection('blog')          // local content
+const stars = await fetch('https://api.github.com/repos/withastro/astro')
+  .then((r) => r.json())                            // remote data
+---
+```
+
+`getStaticProps` becomes a direct import or `import.meta.glob()` for local files; external data is a plain `fetch()`. `getServerSideProps` maps to Astro's on-demand rendering if you truly need per-request data. There's no special data-fetching API to learn — it's just async code that runs at build (or request) time.
+
+## The High-Risk Step: URLs, Redirects, and SEO
+
+This is the part that's technically boring and strategically the most dangerous. Your code migrating cleanly means nothing if you **change your URLs and lose your search rankings.** The single most common migration mistake is shipping new slugs without redirects and skipping the post-launch Search Console check.
+
+Rules that protect your traffic:
+
+- **Preserve every existing URL exactly.** If `/blog/my-post` was the old path, it must still be `/blog/my-post`. Map your Astro routing to match your old structure before you optimize anything.
+- **If a URL *must* change, add a 301 redirect** from old to new. Astro supports redirects in config; use them for every changed path.
+- **After launch, watch Search Console** for crawl errors and 404 spikes, and resubmit your sitemap.
+
+The reassuring part: because both frameworks render real HTML, SEO transfers cleanly when URLs are preserved — real migrations report Lighthouse SEO staying at 100 and Core Web Vitals *improving* thanks to the lighter JS payload. The risk isn't the framework; it's carelessness with URLs. Treat redirects as the highest-priority task, not a cleanup afterthought.
+
+## Realistic Effort and Expected Payoff
+
+For a typical blog or marketing site, budget **1-3 days**. The MDX pipeline is largely compatible, content collections replace your data layer, and component reuse keeps the interactive parts intact. The payoff is concrete: substantially less shipped JavaScript (30-45% cuts are common), faster loads and better Core Web Vitals, lower hosting costs, and — if you go to Cloudflare — the [first-class edge story post-acquisition](/blog/cloudflare-acquires-astro-what-it-means). For a content site, that's a genuinely good trade for a few days of work.
+
+## Go/No-Go Checklist
+
+1. **Content site, not an app?** If it's a dashboard, stop — stay on Next.js.
+2. Content moved to a typed content collection via the Content Layer.
+3. Static components → `.astro`; interactive components kept as React islands with `client:` directives.
+4. Next-specific hooks removed, import paths and `next/*` imports swapped for Astro equivalents.
+5. **Every existing URL preserved**, or 301-redirected if it truly must change.
+6. Post-launch Search Console check for 404s; sitemap resubmitted.
+7. Verified the JS/perf win actually landed (Lighthouse before/after).
+
+Migrating a content site from Next.js to Astro is one of the higher-ROI moves you can make in 2026 — real speed and cost wins for a few days of mostly-mechanical work. Just make the *whether* decision honestly before the *how*, reuse your React instead of rewriting it, and guard your URLs like the SEO asset they are. Do that, and the "cut 45% of my JavaScript" post writes itself — about your site.
+
+## References
+
+### Sources
+
+- [Astro docs: Migrating from Next.js](https://docs.astro.build/en/guides/migrate-to-astro/from-nextjs/) - the official routing, MDX, component, and data-fetching migration steps
+- [Migrating from Next.js to Astro: Step by Step (Makers' Den)](https://makersden.io/blog/migrating-from-nextjs-to-astro) - a practical end-to-end walkthrough
+- [Why We Migrated from Next.js to Astro and Cut 45% of Our JavaScript (Treon)](https://medium.com/@treonstudio/why-we-migrated-site-from-next-js-to-astro-and-cut-45-of-our-javascript-69c229c8fb95) - real before/after JS and performance numbers
+- [Astro vs Next.js 2026: 9KB vs 463KB JS Tested](https://tech-insider.org/astro-vs-nextjs-2026/) - the payload comparison behind the migration case
+
+### Further Reading
+
+- [Migrating from Next.js to Astro (John Zanussi)](https://johnzanussi.com/posts/nextjs-to-astro-migration) - a developer's detailed migration diary
+- [Astro SEO: A Developer's Implementation Guide (2026)](https://nadiamohamed.me/insights/astro-seo/) - preserving and improving SEO on the new stack
+
+---
+
+~Seb 👊
