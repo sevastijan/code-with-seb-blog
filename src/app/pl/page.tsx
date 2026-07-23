@@ -16,8 +16,14 @@ export default function HomePagePl() {
   const allPosts = getAllPosts('pl');
   const featuredPosts = getFeaturedPosts('pl');
 
-  // Use first featured post, or fall back to latest post
-  const featuredPost = featuredPosts[0] || allPosts[0];
+  // Hero banner always shows the newest post; a featured post only wins when
+  // it IS the newest, so stale `featured` flags can't pin an old article.
+  const latest = allPosts[0];
+  const newestFeatured = featuredPosts[0];
+  const featuredPost =
+    newestFeatured && latest && newestFeatured.date >= latest.date
+      ? newestFeatured
+      : latest;
 
   // Get latest posts excluding the featured one, limit to 4
   const latestPosts = allPosts
