@@ -1,0 +1,148 @@
+---
+title: 'Deploying Astro to Cloudflare Workers: Edge, D1, and R2 in 2026'
+date: '2026-07-23'
+category: 'Development'
+tags: ['astro', 'cloudflare-workers', 'd1', 'r2', 'edge-deployment']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: 'Post-acquisition, Astro on Cloudflare Workers is first-class — edge rendering plus D1 and R2 at your fingertips. But Astro 6 changed the bindings API and older guides will steer you wrong. Here is the current setup, the D1/R2 wiring, and the wrangler-dev gotcha that trips everyone.'
+---
+
+Since [Cloudflare acquired the Astro team](/blog/cloudflare-acquires-astro-what-it-means), deploying Astro to Cloudflare Workers stopped being "one option among many" and became *the* first-class path — edge rendering, plus D1 (a SQLite database at the edge) and R2 (object storage) sitting right there as bindings. It's a genuinely great full-stack story on a global network.
+
+It's also a minefield of outdated tutorials. Astro 6 changed the bindings API — the thing half the guides on the internet still show you was **removed** — and there's one local-dev gotcha that makes people chase phantom bugs for an afternoon. So here's the current, correct way to **deploy Astro to Cloudflare Workers** in 2026, with D1 and R2 wired up and the traps flagged.
+
+## The Adapter and output: server
+
+To run Astro's server-side features on Cloudflare, you need the official **`@astrojs/cloudflare`** adapter — it's the only supported way to do Astro SSR on Cloudflare, and it requires Astro 6 (adapter 13.6.0 pairs with `astro@^6.3.0` and `wrangler@^4.83.0` as of mid-2026, so upgrade to Astro 6 first).
+
+```js
+// astro.config.mjs
+import { defineConfig } from 'astro/config'
+import cloudflare from '@astrojs/cloudflare'
+
+export default defineConfig({
+  output: 'server',          // REQUIRED for edge-side dynamic features
+  adapter: cloudflare(),
+})
+```
+
+The `output: 'server'` line matters more than it looks. A static export **misses** edge-side dynamic features like `Astro.cookies` and `Astro.request` — the very things you're deploying to Workers to use. If you want personalization, [server islands](/blog/astro-server-islands-personalization-guide), or anything per-request, you need server output. (For a purely static site with no dynamic needs, you don't need Workers at all — Pages static hosting is simpler.)
+
+## Deploying: Build to a Worker
+
+The path is short. Install the adapter, set the config above, then build — the adapter generates a Cloudflare-compatible `_worker.js`. Deploy by connecting a Git repo to Cloudflare or pushing with `wrangler`. For a basic site you don't even need a `wrangler` config file; the adapter handles it. You *do* need one the moment you add bindings, which is where the real power is.
+
+## Bindings: KV, D1, R2 in wrangler Config
+
+A **binding** is how your Worker talks to Cloudflare's products — KV (key-value), D1 (SQL database), R2 (object storage), Durable Objects. You declare them in `wrangler.jsonc`:
+
+```jsonc
+// wrangler.jsonc
+{
+  "name": "my-astro-site",
+  "compatibility_date": "2026-05-29",
+  "main": "./dist/_worker.js/index.js",
+  "d1_databases": [
+    { "binding": "DB", "database_name": "my-db", "database_id": "your-d1-id" }
+  ],
+  "r2_buckets": [
+    { "binding": "UPLOADS", "bucket_name": "my-uploads" }
+  ],
+  "kv_namespaces": [
+    { "binding": "CACHE", "id": "your-kv-id" }
+  ]
+}
+```
+
+Each `binding` name is how you'll reference it in code. Use `.dev.vars` for local secrets and the Cloudflare dashboard for production environment variables.
+
+## Accessing Bindings the Astro 6 Way
+
+**This is the part older guides get wrong.** Astro 6 **removed `Astro.locals.runtime.env`** — the API nearly every pre-2026 tutorial uses. If you copy that, you'll get `undefined` and a confusing debugging session. The current way is to import `env` from the `cloudflare:workers` module directly:
+
+```astro
+---
+// An Astro page or endpoint — the Astro 6 way
+import { env } from 'cloudflare:workers'
+
+// D1 query
+const { results } = await env.DB.prepare('SELECT * FROM posts WHERE published = 1').all()
+---
+{results.map((post) => <article>{post.title}</article>)}
+```
+
+Bindings are also reachable via `context.locals` in Astro middleware if you prefer to attach them there. Either way: **`cloudflare:workers` env, not `Astro.locals.runtime.env`.** If a tutorial shows the latter, it predates Astro 6.
+
+## The wrangler dev Gotcha
+
+Here's the one that costs everyone an afternoon. **`astro dev` does not have access to your Cloudflare bindings.** The standard Astro dev server knows nothing about your D1 database, your KV namespace, or your R2 bucket — so your binding calls fail or return nothing, locally, even though the config is perfect and it'll work in production.
+
+The fix is to develop against **`wrangler dev`** (or `wrangler pages dev`), which emulates the real Worker environment *including* KV, D1, and R2:
+
+```bash
+# NOT `astro dev` when you're using bindings
+npx wrangler dev
+```
+
+Reach for `astro dev` for pure-frontend iteration, but the moment you're touching a binding, switch to `wrangler dev` or you're debugging a problem that doesn't exist. This single gotcha is behind most "my D1 works in prod but not locally" confusion.
+
+## A Full-Stack Shape: D1 + Drizzle, R2 for Files
+
+Put it together and Astro on Cloudflare is a legitimate full-stack platform. D1 is SQLite at the edge, and it pairs cleanly with [Drizzle](/blog/drizzle-vs-prisma-2026-typescript-orm-decision) — whose tiny bundle and SQL-native model are a natural fit for Workers' constraints:
+
+```typescript
+import { env } from 'cloudflare:workers'
+import { drizzle } from 'drizzle-orm/d1'
+
+const db = drizzle(env.DB)
+const posts = await db.select().from(postsTable)
+```
+
+R2 handles object storage — user uploads, generated files, images — with an S3-compatible API and no egress fees, accessed through the `UPLOADS` binding. A content site with a comment system, user uploads, and dynamic data can run entirely on Astro + D1 + R2 at the edge, globally, cheaply. That's the payoff the acquisition is pushing toward.
+
+## Types: Don't Skip wrangler types
+
+Bindings are untyped by default, which throws away half the reason you're on TypeScript. Generate types and wire them in:
+
+```bash
+npx wrangler types   # generates binding types
+```
+
+Then reference them in `env.d.ts` so `env.DB`, `env.UPLOADS`, and friends are properly typed. Skipping this leaves you with `any`-typed bindings and no autocomplete — a small step that pays off on every query.
+
+## Why This Is the Path Post-Acquisition
+
+None of this is *required* — Astro still deploys anywhere, and that portability is worth [protecting deliberately](/blog/cloudflare-acquires-astro-what-it-means). But it's honest to say that after the acquisition, the Astro-on-Cloudflare experience is the one getting first-class attention: the tightest integration, the earliest optimizations, the smoothest DX. If you're already committed to Cloudflare's platform, that alignment is a real benefit. Just keep your D1/R2 access behind a thin layer so "runs best on Cloudflare" stays a choice rather than a cage.
+
+## Checklist
+
+1. On Astro 6, `@astrojs/cloudflare` adapter installed, `output: 'server'` set.
+2. Bindings (D1, R2, KV) declared in `wrangler.jsonc` with clear binding names.
+3. Access bindings via `import { env } from 'cloudflare:workers'` — **not** the removed `Astro.locals.runtime.env`.
+4. Develop with `wrangler dev` whenever bindings are involved — `astro dev` can't see them.
+5. `.dev.vars` for local secrets, dashboard env vars for production.
+6. `wrangler types` run and wired into `env.d.ts` for typed bindings.
+7. D1 access behind a thin adapter (e.g. Drizzle) so you keep an exit.
+
+Deploying Astro to Cloudflare Workers in 2026 is genuinely excellent once you're past the outdated-tutorial minefield — first-class edge rendering with a real database and object storage a binding away. Get on Astro 6, use the `cloudflare:workers` env API, develop with `wrangler dev`, and type your bindings. Do that and you've got a fast, global, full-stack site on the platform that now builds the framework itself.
+
+## References
+
+### Sources
+
+- [Astro docs: @astrojs/cloudflare](https://docs.astro.build/en/guides/integrations-guide/cloudflare/) - the adapter, output modes, and runtime bindings
+- [Deploy an Astro site (Cloudflare docs)](https://developers.cloudflare.com/pages/framework-guides/deploy-an-astro-site/) - the official deployment steps
+- [Accessing Cloudflare bindings in Astro (Gift Egwuenu)](https://giftegwuenu.com/til/cloudflare-bindings-astro/) - practical binding access patterns
+- [Going full-stack on Astro with Cloudflare D1 and Drizzle (Kevin Kipp)](https://kevinkipp.com/blog/going-full-stack-on-astro-with-cloudflare-d1-and-drizzle/) - the D1 + Drizzle full-stack shape
+- [Building Modern Web Apps with Astro and Cloudflare Workers (Trigi Digital)](https://trigidigital.com/blog/astro-cloudflare-workers-guide/) - a current end-to-end 2026 guide
+
+### Further Reading
+
+- [Astro on Cloudflare Pages: 4-Step Production Deploy (Markaicode)](https://markaicode.com/tutorial/how-to-deploy-astro-production/) - the streamlined Pages path
+- [Implementing ISR in Astro with Cloudflare KV (LaunchFast)](https://www.launchfa.st/blog/astro-incremental-static-regeneration-cloudflare-kv) - using KV for incremental regeneration
+
+---
+
+~Seb 👊
