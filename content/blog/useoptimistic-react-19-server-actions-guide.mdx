@@ -1,0 +1,238 @@
+---
+title: 'useOptimistic in React 19: Instant UI With Automatic Rollback'
+date: '2026-07-23'
+category: 'Development'
+tags: ['react', 'react-19', 'useoptimistic', 'server-actions', 'nextjs']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: 'useOptimistic is not setState with a twist — it is derived state replayed on top of the last confirmed value. Once you get that model, automatic rollback stops being magic. A practical guide with server actions, temp IDs, and error handling.'
+---
+
+My first optimistic update with `useOptimistic` in React 19 reverted itself half a second after I made it, for no visible reason, with no error thrown. The task appeared in the list, vanished, then reappeared when the server responded. I assumed the hook was broken. The hook was fine — my mental model was.
+
+Most **useOptimistic React 19** tutorials show you a like button and tell you rollback is "automatic." True, but useless, because they never explain *why* it's automatic — and without the why, the first flicker or race condition sends you back to hand-rolled `useState` snapshots. So let's fix the model first, then build something realistic: an optimistic task list backed by a server action, with temp IDs, error surfacing, and multiple in-flight mutations.
+
+## The Mental Model: Optimistic State Is Derived, Not Set
+
+Here's the thing that makes everything else click. `useOptimistic` does not *store* your optimistic value. It stores your **pending updates**, and continuously replays them on top of the base state you pass in:
+
+```
+rendered value = base state  +  (pending optimistic updates, replayed in order)
+```
+
+Think of it like a git rebase. Your base state is `main` — the last server-confirmed truth. Each `addOptimistic` call is a local commit on top of it. While a transition is in flight, React shows you `main + your commits`. When the transition settles, your local commits are discarded and you're looking at plain `main` again — whatever `main` now contains.
+
+Two big consequences fall out of this model:
+
+1. **Rollback isn't a feature, it's the default.** Nothing "undoes" your optimistic update on failure. It simply stops being replayed once the async work settles, and the UI re-renders from base state. If the server action failed, base state never changed — so the UI shows the old value. That's the whole trick.
+2. **Success works the same way.** On success, your optimistic update *also* disappears — but by then the base state has been updated (via `revalidatePath`, a router refresh, or a state update), so the confirmed data takes its place seamlessly. If your base state *doesn't* update on success, the UI reverts even though the mutation worked. That was my "broken hook": my revalidation wasn't wired up, so the replay ended and `main` still had the old list.
+
+## Anatomy: The Hook, the Action, the Transition
+
+```tsx
+'use client'
+
+import { useOptimistic, startTransition } from 'react'
+
+const [optimisticValue, addOptimistic] = useOptimistic(
+  baseValue,                      // server-confirmed state (usually a prop from an RSC)
+  (current, optimisticInput) => { // pure reducer: current + input -> next shown state
+    return /* next optimistic value */
+  }
+)
+```
+
+Rules that aren't optional:
+
+- **`addOptimistic` must be called inside a transition** — a form `action`, or an explicit `startTransition`. Called outside, React warns and the update gets dropped or flickers (there's a well-known [React issue #31967](https://github.com/facebook/react/issues/31967) full of people hitting exactly this). The transition is what tells React "this optimistic layer lives until this async work settles."
+- **The reducer must be pure.** It runs during render replay, potentially many times. No side effects, no `toast()`, no validation calls. Compute the next shown state, nothing else.
+
+## A Real Example: Optimistic Task List
+
+Server side first — a normal server action (which, as always, [needs its own validation and auth](/blog/nextjs-server-actions-security), optimism doesn't change that):
+
+```typescript
+'use server'
+
+import { revalidatePath } from 'next/cache'
+
+export async function addTask(formData: FormData) {
+  const title = formData.get('title')
+  if (typeof title !== 'string' || !title.trim()) {
+    return { error: 'Title is required' }
+  }
+
+  const task = await db.task.create({
+    data: { title: title.trim(), ownerId: await requireUserId() },
+  })
+
+  revalidatePath('/tasks') // <- this is what updates the BASE state on success
+  return { success: true, task }
+}
+```
+
+Client component with temp IDs — the detail every like-button demo skips. An optimistic item doesn't have a database ID yet, and your `key` prop needs something stable:
+
+```tsx
+'use client'
+
+import { useOptimistic, useRef } from 'react'
+import { addTask } from './actions'
+
+type Task = { id: string; title: string; pending?: boolean }
+
+export function TaskList({ tasks }: { tasks: Task[] }) {
+  const formRef = useRef<HTMLFormElement>(null)
+
+  const [optimisticTasks, addOptimisticTask] = useOptimistic(
+    tasks,
+    (current, newTitle: string) => [
+      ...current,
+      {
+        id: `optimistic-${crypto.randomUUID()}`, // temp ID for the key prop
+        title: newTitle,
+        pending: true,                            // lets the UI style it differently
+      },
+    ]
+  )
+
+  async function formAction(formData: FormData) {
+    const title = formData.get('title') as string
+    addOptimisticTask(title)   // inside the form action = inside a transition ✓
+    formRef.current?.reset()   // clear input immediately — feels instant
+    await addTask(formData)
+  }
+
+  return (
+    <>
+      <form ref={formRef} action={formAction}>
+        <input name="title" placeholder="New task..." required />
+      </form>
+      <ul>
+        {optimisticTasks.map((task) => (
+          <li key={task.id} style={{ opacity: task.pending ? 0.5 : 1 }}>
+            {task.title}
+          </li>
+        ))}
+      </ul>
+    </>
+  )
+}
+```
+
+Walk through the lifecycle with the rebase model in mind:
+
+1. User submits "Buy milk". `addOptimisticTask` adds a half-transparent item on top of the server list. Input clears instantly.
+2. `addTask` runs on the server, inserts the row, calls `revalidatePath('/tasks')`.
+3. The RSC re-renders, the `tasks` prop now *includes* "Buy milk" with its real ID. The transition settles, the optimistic layer is discarded — and nobody notices, because the confirmed item took its place.
+4. **Failure case:** the action throws or the network dies. Transition settles, optimistic layer discarded, `tasks` prop unchanged — "Buy milk" vanishes. Automatic rollback, zero code.
+
+The `pending: true` flag is a small touch with outsized UX value: dimming in-flight items communicates "this isn't saved yet" honestly, and it means a rollback reads as "the grayed-out thing didn't stick" instead of "the app ate my data."
+
+## Rollback Alone Is Not Error Handling
+
+A vanishing item is *correct* but it isn't *kind*. The user needs to know why. This is where `useOptimistic` pairs with `useActionState` — the two hooks split the job cleanly: `useOptimistic` owns *what the list shows right now*, `useActionState` owns *the action's lifecycle* (result, error, pending):
+
+```tsx
+'use client'
+
+import { useOptimistic, useActionState } from 'react'
+import { addTask } from './actions'
+
+export function TaskList({ tasks }: { tasks: Task[] }) {
+  const [optimisticTasks, addOptimisticTask] = useOptimistic(tasks, addReducer)
+
+  const [state, formAction] = useActionState(
+    async (_prev: { error?: string }, formData: FormData) => {
+      addOptimisticTask(formData.get('title') as string)
+      return await addTask(formData) // its return value lands in `state`
+    },
+    {}
+  )
+
+  return (
+    <>
+      <form action={formAction}>
+        <input name="title" required />
+      </form>
+      {state.error && <p role="alert">{state.error} — your task wasn’t saved.</p>}
+      <ul>{/* ...optimisticTasks as before */}</ul>
+    </>
+  )
+}
+```
+
+Now a failed insert rolls back the list *and* renders the reason next to the form. One subtlety: call `addOptimisticTask` at the top of the action callback like this (it's within the transition React starts for the form action), and keep any client-side validation *before* it in the event path — the reducer itself stays pure.
+
+## Multiple In-Flight Actions
+
+Because pending updates are a *queue* replayed in order, `useOptimistic` handles rapid-fire mutations better than a hand-rolled snapshot ever did. Submit three tasks quickly: three optimistic commits stack on the base state, and as each server action settles and revalidates, the base state absorbs the confirmed rows while remaining commits keep replaying on top.
+
+Two things still deserve care:
+
+- **Deletes and edits need idempotent reducers.** An optimistic delete is `(current, id) => current.filter(t => t.id !== id)` — replaying it against a base state where the row is already gone is a no-op. That's the property you want; reducers that *count* on an item existing will misbehave under races.
+- **Don't mix optimistic writes with client caches you don't control.** If TanStack Query (or anything else) also owns a copy of this list, pick one owner for optimism. Two systems both "helpfully" patching the UI is how you get ghost items — I ran into a cousin of this problem wiring [TanStack Query into RSC apps](/blog/tanstack-query-advanced-caching-rsc-guide).
+
+## When NOT to Use Optimistic UI
+
+The pattern assumes failure is rare and cheap to communicate. Skip it when neither holds:
+
+- **Payments and irreversible operations.** "Your transfer went through" followed by a rollback is a trust-destroying lie. Show pending state honestly with `useActionState`'s `isPending` instead — I compared the full toolkit in my [React Concurrent Mode guide](/blog/react-concurrent-mode-practical-guide).
+- **Mutations with meaningful server-side transforms.** If the server assigns ordering, computes prices, or merges conflicts, your optimistic guess will be visibly wrong before it's corrected. A skeleton row beats a wrong row.
+- **Low-latency backends.** If your action resolves in 80 ms, optimism buys you nothing measurable. Add it where round-trips hurt.
+
+## Testing the Rollback Path
+
+The failure path is the whole point, so test it explicitly. Component-level with a mocked action module:
+
+```tsx
+it('rolls back and surfaces the error when the action fails', async () => {
+  vi.mocked(addTask).mockResolvedValue({ error: 'Title is required' })
+
+  render(<TaskList tasks={[]} />)
+  await userEvent.type(screen.getByRole('textbox'), 'Buy milk{enter}')
+
+  // optimistic item appears...
+  expect(screen.getByText('Buy milk')).toBeInTheDocument()
+
+  // ...then rolls back once the action settles
+  await waitFor(() => {
+    expect(screen.queryByText('Buy milk')).not.toBeInTheDocument()
+    expect(screen.getByRole('alert')).toHaveTextContent('Title is required')
+  })
+})
+```
+
+And one end-to-end test with network throttling turned on — optimistic UI bugs love to hide behind fast localhost round-trips.
+
+## Checklist
+
+1. Base state comes from the server (RSC prop) and updates on success via `revalidatePath` — otherwise successful updates "roll back" too.
+2. `addOptimistic` called inside a transition or form action, never in a bare event handler.
+3. Reducer is pure and idempotent under replay.
+4. Optimistic items get temp IDs and a visible pending style.
+5. Errors surface via `useActionState` after rollback — silence is not UX.
+6. Skipped for irreversible or server-transformed mutations.
+
+The rebase model is the takeaway: base state is truth, optimistic updates are local commits, settling is the rebase. Every confusing behavior — flickers, phantom rollbacks, races — becomes explainable the moment you stop thinking of `useOptimistic` as `useState` with sugar.
+
+## References
+
+### Sources
+
+- [React docs: useOptimistic](https://react.dev/reference/react/useOptimistic) - API reference and the transition requirement
+- [React v19 release post](https://react.dev/blog/2024/12/05/react-19) - Actions, useOptimistic, and useActionState overview
+- [React issue #31967](https://github.com/facebook/react/issues/31967) - the outside-transition rollback confusion in the wild
+- [Epic React: useOptimistic to Make Your App Feel Instant](https://www.epicreact.dev/use-optimistic-to-make-your-app-feel-instant-zvyuv) - mental-model framing that inspired the rebase analogy
+- [SitePoint: React useOptimistic production patterns](https://www.sitepoint.com/react-useoptimistic-production-patterns-for-instant-ui-updates/) - reducer purity and validation placement
+
+### Further Reading
+
+- [Optimistic Updates in Next.js: useOptimistic, Server Actions, and Automatic Rollback](https://dev.to/whoffagents/optimistic-updates-in-nextjs-14-useoptimistic-server-actions-and-automatic-rollback-5hbl) - alternative walkthrough with App Router focus
+- [freeCodeCamp: the Optimistic UI pattern with useOptimistic](https://www.freecodecamp.org/news/how-to-use-the-optimistic-ui-pattern-with-the-useoptimistic-hook-in-react/) - gentler introduction if the reducer model is new
+- [React docs: useActionState](https://react.dev/reference/react/useActionState) - the companion hook for action lifecycle and errors
+
+---
+
+~Seb 👊
