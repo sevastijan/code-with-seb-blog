@@ -1,0 +1,176 @@
+---
+title: 'Transactional Email in Next.js: React Email + Resend Done Right'
+date: '2026-07-23'
+category: 'Development'
+tags: ['nextjs', 'react-email', 'resend', 'email', 'react']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: 'Email HTML is stuck in 1999 — inline styles, table layouts, and Outlook rendering with Word. React Email hides that; Resend delivers it. Here is the full stack for Next.js: components as templates, sending from a server action, and the deliverability and reliability work that keeps you out of spam.'
+---
+
+The welcome email looked perfect. Clean layout, nice spacing, a centered button — beautiful in Gmail, beautiful on my phone. Then a customer sent me a screenshot from Outlook, where it rendered as a stack of misaligned boxes with the button floating somewhere near the footer. That's the moment every developer learns the same lesson: **email is not the web.** It's a hostile, fragmented, decades-old rendering environment wearing an HTML costume.
+
+The 2026 standard stack for **transactional email in Next.js** — React Email plus Resend — exists precisely to insulate you from that environment. React Email lets you write templates as components; Resend delivers them reliably. The demo is ten minutes. But the difference between a demo and something you run in production isn't the sending — it's deliverability and reliability, the two things that decide whether your password-reset email lands in the inbox or vanishes into spam. Let's build the whole thing.
+
+## Why Email HTML Is Its Own Hostile World
+
+You need to understand what you're up against, because it explains every design decision below. Email clients did not modernize with browsers. In email:
+
+- **`<style>` tags get stripped** by many clients, so nearly all styling must be **inline**.
+- **Layout is done with `<table>` elements, not flexbox or grid** — because Outlook renders with the *Microsoft Word* engine, which doesn't understand modern CSS layout at all. Your flexbox email is a broken email in Outlook.
+- **Gmail clips messages over 102 KB**, hiding the rest behind a "view entire message" link — which, if your unsubscribe footer is down there, is a compliance problem.
+- **Width should stay ≤ 600px** for mobile, and you should ship a **plain-text version** for deliverability and accessibility.
+
+Hand-writing HTML that survives 50+ clients under these rules is miserable and error-prone. That misery *is* the reason React Email exists — not developer comfort, but correctness in an environment where "correct" means something bizarre.
+
+## React Email: Components That Compile to Email-Safe HTML
+
+React Email gives you a component library that renders to that table-based, inline-styled HTML for you. You write React; it emits email-safe markup tested across clients:
+
+```tsx
+// emails/WelcomeEmail.tsx
+import { Html, Head, Body, Container, Heading, Text, Button, Hr } from '@react-email/components'
+
+export function WelcomeEmail({ name, loginUrl }: { name: string; loginUrl: string }) {
+  return (
+    <Html>
+      <Head />
+      <Body style={{ backgroundColor: '#f6f6f6', fontFamily: 'sans-serif' }}>
+        <Container style={{ maxWidth: '600px', margin: '0 auto', padding: '24px' }}>
+          <Heading>Welcome, {name} 👋</Heading>
+          <Text>Thanks for signing up. Your account is ready.</Text>
+          <Button href={loginUrl} style={{ background: '#111', color: '#fff', padding: '12px 20px' }}>
+            Go to your dashboard
+          </Button>
+          <Hr />
+          <Text style={{ color: '#888', fontSize: '12px' }}>
+            If you didn’t create this account, ignore this email.
+          </Text>
+        </Container>
+      </Body>
+    </Html>
+  )
+}
+```
+
+Note the `<Container>` capping width at 600px and inline `style` objects — React Email's components encode the email rules so you don't have to remember them. It also ships a **local preview server** (`npm run email dev`) that renders your templates in the browser as you edit, which is the DX that makes email work bearable. Because templates are just components, you get type-safe props, reuse (a shared `<Layout>`), and the same [composition patterns](/blog/modular-feature-design-react-plug-and-play) you use everywhere else in React.
+
+## Sending From a Next.js Server Action With Resend
+
+Resend is the delivery API. Rendering the component and sending is a few lines in a server action:
+
+```typescript
+'use server'
+import { Resend } from 'resend'
+import { WelcomeEmail } from '@/emails/WelcomeEmail'
+
+const resend = new Resend(process.env.RESEND_API_KEY)
+
+export async function sendWelcomeEmail(userId: string) {
+  const user = await db.user.findUnique({ where: { id: userId } })
+  if (!user) return { error: 'User not found' }
+
+  const { data, error } = await resend.emails.send({
+    from: 'My App <hello@myapp.com>',       // your verified domain
+    to: user.email,
+    subject: 'Welcome to My App',
+    react: WelcomeEmail({ name: user.name, loginUrl: `${process.env.APP_URL}/dashboard` }),
+  })
+
+  if (error) return { error: 'Failed to send' }
+  return { messageId: data?.id }
+}
+```
+
+The `react` field takes your component directly — Resend renders it to email HTML server-side. In development you can send to your *own* address without any domain setup. Everything after this point is what makes it production-grade. And since this is a server action, the usual rules apply — it's a [public endpoint that needs auth and rate limiting](/blog/nextjs-server-actions-security), because "send email" is exactly the kind of action abuse loves.
+
+## Deliverability: SPF, DKIM, DMARC
+
+Here's the part that separates working from *actually arriving*. Sending an email is easy; landing in the inbox instead of spam is an authentication problem. To send from your own domain in production, you verify it in Resend by adding DNS records, and each record does a specific job:
+
+- **SPF** (a TXT record) — declares which servers are allowed to send mail for your domain. Without it, receiving servers can't confirm Resend is authorized on your behalf.
+- **DKIM** (a CNAME/TXT record) — cryptographically signs your emails so the recipient can verify they weren't altered and genuinely came from your domain.
+- **DMARC** (a TXT record) — tells receivers what to do when SPF/DKIM fail, and gives you reporting.
+
+Skip these and your beautifully-rendered email reliably lands in spam — which for a password reset means locked-out users and support tickets. This is not optional polish; it's the foundation. Add the records Resend gives you, wait for verification, and *then* switch `from` to your domain. (Resend's own [email authentication guide](https://resend.com/blog/email-authentication-a-developers-guide) walks the DNS specifics.)
+
+## Reliability: Idempotency and Not Double-Sending
+
+Server actions can retry. Network blips, user double-clicks, a deploy mid-request — any of these can fire your send twice, and a customer getting two "your password was reset" emails erodes trust fast. Make sends idempotent by keying them:
+
+```typescript
+export async function sendReceiptEmail(orderId: string) {
+  // Only send once per order — the DB is the idempotency guard
+  const existing = await db.emailLog.findUnique({ where: { orderId_type: { orderId, type: 'receipt' } } })
+  if (existing) return { messageId: existing.messageId, deduped: true }
+
+  const { data, error } = await resend.emails.send({ /* ... */ })
+  if (error) return { error: 'Failed to send' }
+
+  await db.emailLog.create({ data: { orderId, type: 'receipt', messageId: data!.id } })
+  return { messageId: data!.id }
+}
+```
+
+Log every send with a natural key (order + type), check before sending, and a retry becomes a no-op instead of a duplicate. This is the same durability instinct as any [mutation you don't want to run twice](/blog/nextjs-server-first-architecture-backend-folder) — email just makes the double-fire visible to the customer.
+
+## Webhooks: Bounces, Complaints, and the Suppression List
+
+Sending isn't the end of the story — you need to know what *happened* to the email. Resend POSTs delivery events (delivered, opened, clicked, bounced, marked-as-spam) to a webhook endpoint you configure. The two that matter for hygiene:
+
+- **Bounces** — the address is dead. Keep sending to it and your domain reputation drops, dragging *all* your mail toward spam.
+- **Complaints** — someone marked you as spam. Sending again is both rude and reputation-poison.
+
+Resend maintains an automatic **suppression list** so it stops sending to known-bad addresses, but you should also record these events in your own database so your app knows not to rely on a dead address. A webhook handler is just a route:
+
+```typescript
+// app/api/webhooks/resend/route.ts
+export async function POST(req: Request) {
+  const event = await req.json() // verify the signature in production
+  if (event.type === 'email.bounced' || event.type === 'email.complained') {
+    await db.user.update({ where: { email: event.data.to }, data: { emailStatus: 'suppressed' } })
+  }
+  return new Response('ok')
+}
+```
+
+## The Gotchas Worth a Second Look
+
+Before you ship, the small things that bite:
+
+- **Gmail's 102 KB clip.** Keep emails lean; put unsubscribe/legal footers where they won't get hidden behind "view entire message."
+- **Always include plain text.** React Email + Resend can generate it — a plain-text alternative improves both deliverability and accessibility.
+- **Test in real clients.** The preview server is not Outlook. For anything high-stakes, run it through Litmus or Email on Acid, or at minimum send yourself a copy in Gmail, Outlook, and Apple Mail.
+- **≤ 600px width.** Wider breaks on mobile.
+
+## Checklist
+
+1. Templates built with React Email components (inline styles, table layout handled for you), width ≤ 600px.
+2. Sent from a server action that's authenticated and rate-limited.
+3. Domain verified with SPF, DKIM, and DMARC before using your `from` domain — the inbox-vs-spam line.
+4. Sends made idempotent via a logged natural key so retries don't double-send.
+5. Webhook handler recording bounces/complaints; rely on Resend's suppression list too.
+6. Plain-text alternative included; total size under Gmail's 102 KB clip.
+7. Tested in real clients (Outlook especially), not just the preview server.
+
+React Email and Resend genuinely make email pleasant — you write components, you get type safety, and you never hand-code a `<table>` again. But the stack only *looks* like the hard part is the template. The hard part is that email is a delivery problem wearing a rendering costume: authenticate your domain, make your sends idempotent, and listen to your bounces, and your transactional email will actually reach the people you send it to — which, in the end, is the only metric that matters.
+
+## References
+
+### Sources
+
+- [Send emails with Next.js (Resend)](https://resend.com/nextjs) - official quickstart for sending from Next.js
+- [Email Authentication: A Developer's Guide (Resend)](https://resend.com/blog/email-authentication-a-developers-guide) - SPF, DKIM, and DMARC setup
+- [Managing Domains (Resend docs)](https://resend.com/docs/dashboard/domains/introduction) - domain verification DNS records
+- [Create and Send Email Templates Using React Email and Resend (freeCodeCamp)](https://www.freecodecamp.org/news/create-and-send-email-templates-using-react-email-and-resend-in-nextjs/) - end-to-end template + send walkthrough
+- [React Email Integration Guide](https://resources.mailertogo.com/services/react-email-integration-services) - cross-client rendering constraints
+
+### Further Reading
+
+- [React Email documentation](https://react.email/docs) - the full component library and preview server
+- [Email Deliverability for SaaS: SPF, DKIM, DMARC + Resend](https://dev.to/whoffagents/email-deliverability-for-saas-spf-dkim-dmarc-setup-and-resend-integration-1hpd) - deliverability in depth
+
+---
+
+~Seb 👊
