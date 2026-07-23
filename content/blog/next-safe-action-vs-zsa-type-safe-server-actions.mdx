@@ -1,0 +1,205 @@
+---
+title: 'Type-Safe Server Actions: next-safe-action vs zsa vs DIY'
+date: '2026-07-23'
+category: 'Development'
+tags: ['nextjs', 'server-actions', 'typescript', 'zod', 'next-safe-action']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: 'next-safe-action and zsa both turn server actions into validated, typed, middleware-wrapped functions. The fastest way to choose is to see the same action built three ways — including by hand — so you know exactly what you are buying before you add a dependency.'
+---
+
+Every Next.js codebase I've reviewed in the last year has the same block of code, pasted at the top of a dozen server actions: check the session, parse the input with zod, return a generic error if either fails, then do the actual work. It's five lines of ceremony wrapping one line of logic, repeated everywhere, and the day someone forgets one of those lines is the day you get a security bug.
+
+Two libraries exist to kill that duplication: **next-safe-action** and **zsa** (Zod Server Actions). Every comparison I've read jumps straight to a feature table and a verdict. I think that's backwards. The fastest way to choose is to see the *same action* built three ways — by hand, with zsa, with next-safe-action — because then you know exactly what each library buys you, and whether you even need one. Adding a dependency you don't understand is how you end up trusting it for things it doesn't do.
+
+## The Baseline: Rolling Your Own in 15 Lines
+
+Before any library, here's the pattern both of them replace. A hand-rolled wrapper that enforces auth, validates input, and returns typed results:
+
+```typescript
+// lib/action.ts
+import { z } from 'zod'
+import { getSession } from '@/lib/auth'
+
+export function authedAction<S extends z.ZodType, R>(
+  schema: S,
+  handler: (input: z.infer<S>, ctx: { userId: string }) => Promise<R>
+) {
+  return async (raw: unknown): Promise<{ data: R } | { error: string }> => {
+    const session = await getSession()
+    if (!session) return { error: 'Unauthorized' }
+
+    const parsed = schema.safeParse(raw)
+    if (!parsed.success) return { error: 'Invalid input' }
+
+    try {
+      return { data: await handler(parsed.data, { userId: session.userId }) }
+    } catch {
+      return { error: 'Something went wrong' }
+    }
+  }
+}
+```
+
+Usage:
+
+```typescript
+'use server'
+import { z } from 'zod'
+import { authedAction } from '@/lib/action'
+
+export const deleteTask = authedAction(
+  z.object({ taskId: z.string().cuid() }),
+  async ({ taskId }, { userId }) => {
+    const task = await db.task.findUnique({ where: { id: taskId } })
+    if (!task || task.ownerId !== userId) throw new Error('Not found')
+    await db.task.delete({ where: { id: task.id } })
+    return { success: true }
+  }
+)
+```
+
+Fifteen lines of infrastructure, and it genuinely covers the common case: auth guaranteed, input validated, errors normalized, `ctx.userId` typed. Keep this in your head as the yardstick — everything the libraries add is measured against "what does this give me over the 15-line version?" (And note none of these tools replace the [full security picture](/blog/nextjs-server-actions-security) — rate limiting and CSRF still live elsewhere. Validation itself is a whole topic; my [Zod guide](/blog/zod-typescript-validation-complete-guide) covers the schemas these actions depend on.)
+
+## Option A: next-safe-action (Chained Middleware)
+
+next-safe-action (v7, ~3.5k+ GitHub stars) is the mature option, and its model is **chained middleware** — you build a client once and compose `.use()` layers, each passing typed context forward:
+
+```typescript
+// lib/safe-action.ts
+import { createSafeActionClient } from 'next-safe-action'
+import { getSession } from '@/lib/auth'
+
+export const authActionClient = createSafeActionClient().use(async ({ next }) => {
+  const session = await getSession()
+  if (!session) throw new Error('Unauthorized')
+  return next({ ctx: { userId: session.userId } }) // ctx flows to the next layer
+})
+```
+
+```typescript
+'use server'
+import { z } from 'zod'
+import { authActionClient } from '@/lib/safe-action'
+
+export const deleteTask = authActionClient
+  .inputSchema(z.object({ taskId: z.string().cuid() }))
+  .action(async ({ parsedInput, ctx }) => {
+    const task = await db.task.findUnique({ where: { id: parsedInput.taskId } })
+    if (!task || task.ownerId !== ctx.userId) throw new Error('Not found')
+    await db.task.delete({ where: { id: task.id } })
+    return { success: true }
+  })
+```
+
+The middleware chain is where it pulls ahead of DIY: one layer validates the session, the next resolves the organization, the next checks a role — and the resolver receives a fully typed context assembled by all of them. It also ships metadata support, fine-grained error handling, and — the real differentiator — first-class client hooks (`useAction`, `useOptimisticAction`).
+
+## Option B: zsa (Procedural Composition)
+
+zsa is newer, smaller, and favors **explicit procedural composition** over chained clients. Instead of building a client with middleware, you define a *procedure* and chain actions onto it:
+
+```typescript
+// lib/zsa.ts
+import { createServerActionProcedure } from 'zsa'
+import { getSession } from '@/lib/auth'
+
+export const authedProcedure = createServerActionProcedure().handler(async () => {
+  const session = await getSession()
+  if (!session) throw new Error('Unauthorized')
+  return { userId: session.userId } // becomes ctx for chained actions
+})
+```
+
+```typescript
+'use server'
+import { z } from 'zod'
+import { authedProcedure } from '@/lib/zsa'
+
+export const deleteTask = authedProcedure
+  .createServerAction()
+  .input(z.object({ taskId: z.string().cuid() }))
+  .handler(async ({ input, ctx }) => {
+    const task = await db.task.findUnique({ where: { id: input.taskId } })
+    if (!task || task.ownerId !== ctx.userId) throw new Error('Not found')
+    await db.task.delete({ where: { id: task.id } })
+    return { success: true }
+  })
+```
+
+Functionally it's the same guarantees. The `authedProcedure` *is* your middleware — it just wears a procedural rather than a chained-client shape. For basic actions zsa tends to have marginally less boilerplate, and it pairs naturally with TanStack Query if that's already in your stack.
+
+## Side-by-Side: The Same deleteTask, Three Ways
+
+Line them up and the differences shrink to ergonomics:
+
+| Concern | DIY | next-safe-action | zsa |
+|---|---|---|---|
+| Input validation | manual `safeParse` | `.inputSchema()` | `.input()` |
+| Auth/context | closure arg | `.use()` middleware → `ctx` | procedure → `ctx` |
+| Typed context chain | you thread it | chained, composed | procedure composition |
+| Client hooks | write your own | `useAction`, `useOptimisticAction` | via TanStack Query patterns |
+| Maturity / ecosystem | n/a | most mature, most tutorials | newer, smaller, cleaner |
+| Boilerplate for basic action | lowest per-action, but no hooks | low | lowest |
+
+The load-bearing row is **client hooks**. On the server, all three are close enough that preference decides. The gap opens on the client.
+
+## Client Hooks: Where the Libraries Earn Their Keep
+
+The DIY version gives you a function that returns `{ data } | { error }`. Calling it from a component means you write your own `useState`/`useTransition` dance for pending state and error display. next-safe-action hands you that for free:
+
+```tsx
+'use client'
+import { useAction } from 'next-safe-action/hooks'
+import { deleteTask } from './actions'
+
+export function DeleteButton({ taskId }: { taskId: string }) {
+  const { execute, isPending, result } = useAction(deleteTask)
+  return (
+    <>
+      <button onClick={() => execute({ taskId })} disabled={isPending}>
+        {isPending ? 'Deleting…' : 'Delete'}
+      </button>
+      {result.serverError && <p role="alert">{result.serverError}</p>}
+    </>
+  )
+}
+```
+
+`useOptimisticAction` goes further, wiring the action into [React 19's optimistic UI](/blog/useoptimistic-react-19-server-actions-guide) with rollback handled for you. This is the concrete thing you're buying, and it's why next-safe-action is my default: the client story is done, not homework. zsa leans on TanStack Query's `useMutation` for the equivalent, which is great if you're already invested in TanStack and redundant if you're not.
+
+## When DIY Is Actually Right
+
+Here's what the library READMEs won't tell you: if you have **fewer than about five actions and no need for client hooks**, the 15-line wrapper is the correct choice. No dependency, no version to track, no API to learn, and you understand every line because you wrote it. I've shipped production apps that never needed more — a handful of mutations, server-rendered results, no optimistic UI. Adding a library there is complexity for its own sake.
+
+The DIY wrapper stops scaling when you hit *composition* (three different context layers — auth, org, role — that different actions mix and match) or when you want polished client-side pending/error/optimistic states across many forms. That's precisely the point where hand-threading context and hand-writing hooks becomes the bug farm the libraries exist to prevent.
+
+## How to Choose (and Migrate)
+
+- **Greenfield app, will have many actions and rich client UX** → **next-safe-action.** Most mature, best client hooks, the boilerplate authors you'll copy from already use it.
+- **Already all-in on TanStack Query, prefer procedural style** → **zsa.** It slots into your existing mutation patterns with less friction.
+- **A handful of actions, server-rendered results** → **DIY.** Ship the 15-line wrapper and move on.
+
+Migrating DIY → either library is mechanical because your call sites already pass a validated input object; you swap the wrapper and adjust the return-shape access. Migrating *between* the two libraries is more involved (different context APIs, different hooks) — so don't hedge by using both. Pick one per codebase.
+
+## Verdict
+
+next-safe-action wins on maturity, ecosystem, and — decisively — its client hooks; it's my default recommendation for any app with more than a handful of actions. zsa is a genuinely competitive, slightly leaner alternative that shines when TanStack Query is already your data layer. And the option nobody markets — rolling your own — is the right answer more often than the library ecosystem would like to admit. Whichever you pick, the point of seeing all three is the same: know what you're buying before you `npm install` it, because a validation-and-auth wrapper you don't understand is a security boundary you're trusting on faith.
+
+## References
+
+### Sources
+
+- [next-safe-action documentation](https://next-safe-action.dev/) - v7 middleware chaining, metadata, and the useAction/useOptimisticAction hooks
+- [zsa (Zod Server Actions)](https://shagag.dev/zsa/) - createServerAction and createServerActionProcedure composition model
+- [next-safe-action vs ZSA: Server Actions in 2026 (PkgPulse)](https://www.pkgpulse.com/guides/next-safe-action-vs-zsa-type-safe-server-actions-2026) - maturity, star counts, and feature comparison
+- [Implementing Type-Safe Server Actions with zsa](https://dev.to/vyan/implementing-type-safe-nextjs-server-actions-with-zsa-a-comprehensive-guide-25bn) - procedural composition examples
+
+### Further Reading
+
+- [Best React 19 Server Action Libraries 2026 (PkgPulse)](https://www.pkgpulse.com/guides/best-react-19-server-action-libraries-2026) - the wider field beyond these two
+- [Efficient Type-Safe Server Actions with ZSA](https://kir4n.hashnode.dev/efficient-type-safe-server-actions-in-nextjs-with-zsa) - deeper zsa walkthrough with procedures
+
+---
+
+~Seb 👊
