@@ -1,0 +1,175 @@
+---
+title: 'Observability for Next.js: OpenTelemetry and the Serverless Blind Spot'
+date: '2026-07-23'
+category: 'Architecture'
+tags: ['nextjs', 'observability', 'opentelemetry', 'devops', 'monitoring']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: 'You cannot SSH into a serverless function that already scaled to zero. Observability is how you see inside it anyway. Here is OpenTelemetry in Next.js done right — instrumentation.ts, the @vercel/otel-vs-manual choice, the custom spans worth adding, and correlating logs to traces.'
+---
+
+A user reported that checkout was slow. Sometimes. For some people. I went to investigate and hit the wall that defines modern debugging: the serverless function that handled their request had finished, scaled to zero, and ceased to exist. There was no server to SSH into, no process to inspect, no disk to image. Whatever happened during that request was gone unless I'd captured it in flight.
+
+That's the case for **Next.js observability**, and it's a different case than the one the monitoring vendors make. It's not about pretty dashboards. It's that your production environment is *ephemeral* — the same property that made the [React2Shell post-mortem](/blog/cve-2025-55182-react2shell-rsc-security-postmortem) so hard to forensically investigate makes *every* production issue hard to investigate. You can't examine the server after the fact, so you have to record what it was doing while it ran. OpenTelemetry is how. This is the correct setup, the choices that matter, and the gotchas that make people think it "isn't working."
+
+## The Serverless Blind Spot
+
+Here's the specific gap. Your platform — Vercel or otherwise — gives you *function-level* timings: this function took 340ms. Useful, but it doesn't tell you the story *inside* the request. Was it the database query? The third-party API? The middleware? A cold start? You get the total, not the breakdown, and you get nothing that follows a single request across middleware → server action → database → external API as one connected timeline.
+
+That connected timeline is a **distributed trace**, and building it is what OpenTelemetry does. Without it, "checkout is sometimes slow" is unsolvable — you have a symptom and no way to see the cause because the evidence deleted itself when the function returned. With it, you open the trace for a slow request and *see* the 900ms Stripe call sitting inside the 1.1s total. The blind spot is the whole reason; everything else is mechanics.
+
+## What OpenTelemetry Gives You
+
+Three signals, and they're most powerful together:
+
+- **Traces** — the end-to-end journey of one request, as a tree of spans.
+- **Spans** — individual timed operations within a trace (a DB query, an API call, a server action), each with attributes.
+- **Logs** — structured events, ideally stamped with the trace they belong to so you can pivot from "this request was slow" to "here's the exact log line from inside it."
+
+OpenTelemetry is **vendor-agnostic**: it emits over the OTLP protocol to *any* compatible backend — SigNoz, Datadog, Axiom, Honeycomb, Grafana. You instrument once and stay free to switch backends, which matters because observability vendors are sticky and expensive, and you don't want your instrumentation welded to one of them.
+
+## Setup: instrumentation.ts and the register Hook
+
+Next.js has first-class support. Since Next.js 15, a file named `instrumentation.ts` at the **project root** is auto-detected and its `register` function runs once at startup:
+
+```typescript
+// instrumentation.ts  (project ROOT — not app/, not pages/)
+import { registerOTel } from '@vercel/otel'
+
+export function register() {
+  registerOTel({ serviceName: 'my-app' })
+}
+```
+
+That's the entire zero-config path. The single most common "OpenTelemetry isn't working" cause is this file being in the wrong place — inside `app/` or `pages/` instead of the root — in which case `register` never runs and you get no traces, silently, with no error. (On Next.js 14 and earlier you also need `experimental: { instrumentationHook: true }` in the config; on 15+ it's automatic.)
+
+## @vercel/otel vs Manual NodeSDK — Which and When
+
+Two ways to wire it up, and the choice comes down to one question: do you need the **edge runtime**?
+
+**`@vercel/otel`** — the zero-config package. Works out of the box, and critically, it's the *only* option that supports the edge runtime. Use it if any of your code (middleware especially) runs on edge, or if you just want it to work.
+
+**Manual `NodeSDK`** — install the individual packages and build the pipeline yourself when you need control `@vercel/otel` doesn't expose:
+
+```typescript
+// instrumentation.ts — manual path (Node runtime only)
+import { NodeSDK } from '@opentelemetry/sdk-node'
+import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http'
+import { Resource } from '@opentelemetry/resources'
+
+export function register() {
+  const sdk = new NodeSDK({
+    resource: new Resource({ 'service.name': 'my-app' }),
+    traceExporter: new OTLPTraceExporter({
+      url: process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT,
+    }),
+  })
+  sdk.start()
+}
+```
+
+The trap: **the manual NodeSDK does not run on the edge runtime.** If your middleware is on edge (it usually is) and you reach for NodeSDK, you'll get no traces from that layer and a confusing partial picture. When in doubt, `@vercel/otel`; go manual only when you have a concrete need it can't meet, and only for Node-runtime code.
+
+## The Custom Spans Actually Worth Adding
+
+Auto-instrumentation traces the framework's own operations, but the spans that solve *your* incidents are the ones around *your* expensive work. Add custom spans where time actually goes:
+
+```typescript
+import { trace, SpanStatusCode } from '@opentelemetry/api'
+
+const tracer = trace.getTracer('my-app')
+
+export async function processOrder(orderId: string) {
+  return tracer.startActiveSpan('processOrder', async (span) => {
+    span.setAttribute('order.id', orderId)
+    try {
+      const order = await tracer.startActiveSpan('db.fetchOrder', async (s) => {
+        const result = await db.order.findUnique({ where: { id: orderId } })
+        s.end()
+        return result
+      })
+      await tracer.startActiveSpan('stripe.charge', async (s) => {
+        await stripe.charge(order)
+        s.end()
+      })
+      span.setStatus({ code: SpanStatusCode.OK })
+      return order
+    } catch (err) {
+      span.setStatus({ code: SpanStatusCode.ERROR })
+      span.recordException(err as Error)
+      throw err
+    } finally {
+      span.end()
+    }
+  })
+}
+```
+
+Now the "sometimes slow checkout" trace shows exactly which child span — `db.fetchOrder` or `stripe.charge` — ate the time. The rule of thumb: wrap **database queries, external API calls, and significant server actions**. Don't span every function; span the boundaries where latency and failures hide. Attributes (`order.id`, user tier, region) are what let you later ask "was it slow only for EU users?" — add the ones you'll want to filter by.
+
+## Correlating Logs to Traces
+
+A trace tells you *where* time went; a log tells you *what happened*. They're exponentially more useful joined. The move is to stamp every structured log line with the current `trace_id` so you can jump from a slow span straight to the log emitted inside it:
+
+```typescript
+import { trace } from '@opentelemetry/api'
+
+function log(level: string, message: string, fields: Record<string, unknown> = {}) {
+  const span = trace.getActiveSpan()
+  const ctx = span?.spanContext()
+  console.log(JSON.stringify({
+    level, message, ...fields,
+    trace_id: ctx?.traceId,   // the join key
+    span_id: ctx?.spanId,
+    timestamp: new Date().toISOString(),
+  }))
+}
+```
+
+Structured JSON logs (not `console.log('thing happened', obj)`) are the price of admission — fields like `error_id`, `duration`, and `query_count` only become filterable and alertable when they're real JSON keys. On Vercel, these flow through **Log Drains** to your external platform; correlated by `trace_id`, three separate signals become one debuggable story.
+
+## The Cold-Start Gotcha
+
+Serverless enforces strict startup budgets, and `register()` runs *during* cold start. If your instrumentation init is heavy — loading big exporters, doing network handshakes — you can blow the startup limit (Vercel's is around 10 seconds) and make cold starts *worse* than the problem you're diagnosing. If init is expensive, load it lazily rather than synchronously at module top-level. Observability that slows down the thing it observes is a bad trade; keep the register path lean.
+
+## Choosing a Backend
+
+Because OTel is vendor-agnostic, the backend is a swappable decision, not a lock-in:
+
+- **SigNoz / Grafana (self-host or cloud)** — open-source, cost-predictable, good if you want to own the data.
+- **Axiom / Honeycomb** — excellent trace exploration, generous-ish tiers, developer-friendly.
+- **Datadog** — the enterprise default; powerful, and priced like it.
+
+Wiring the exporter and any alerting into your deploy flow belongs in the [CI/CD pipeline](/blog/optimizing-cicd-pipelines-dx-deploy-times-guide) rather than being bolted on by hand. Point your `OTLP` endpoint at whichever, and switch later by changing an environment variable rather than re-instrumenting. That portability is worth protecting — resist backend-specific SDKs that would undo it.
+
+## Checklist
+
+1. `instrumentation.ts` at the **project root**, exporting `register` — verify it's not buried in `app/`.
+2. `@vercel/otel` unless you have a specific Node-only need; it's the only edge-compatible path.
+3. Custom spans around DB queries, external APIs, and key server actions — not everywhere.
+4. Meaningful span attributes (ids, tier, region) so you can filter incidents later.
+5. Structured JSON logs stamped with `trace_id` for log↔trace correlation.
+6. Instrumentation init kept lean to protect cold-start budgets.
+7. OTLP endpoint pointed at a vendor-agnostic backend you can swap.
+
+The dashboards are a nice side effect. The real reason to instrument a Next.js app is that its production environment evaporates the instant each request finishes — and you can't debug what you can't see. OpenTelemetry records the request while it's alive so that "checkout is sometimes slow" becomes a trace you can open, not a mystery you can't reproduce. Set it up before the incident, because you can't add it retroactively to a request that already happened.
+
+## References
+
+### Sources
+
+- [Next.js docs: OpenTelemetry](https://nextjs.org/docs/app/guides/open-telemetry) - the instrumentation hook, register(), and @vercel/otel
+- [How to Instrument Next.js Applications with OpenTelemetry (SigNoz)](https://signoz.io/blog/opentelemetry-nextjs/) - exporter config and custom spans
+- [OpenTelemetry Next.js: Tracing for App Router (Uptrace)](https://uptrace.dev/guides/opentelemetry-nextjs) - manual NodeSDK setup details
+- [Add structured application logs to Vercel Functions (Vercel)](https://vercel.com/kb/guide/add-structured-application-logs-to-vercel-functions) - structured JSON logging and Log Drains
+- [Structured Logging in Next.js with OpenTelemetry (SigNoz)](https://signoz.io/blog/opentelemetry-nextjs-logging/) - correlating logs to traces
+
+### Further Reading
+
+- [How to Configure OpenTelemetry in Next.js Using @vercel/otel (OneUptime)](https://oneuptime.com/blog/post/2026-02-06-opentelemetry-nextjs-vercel-otel/view) - the zero-config path in depth
+- [OpenTelemetry for Next.js: Distributed Tracing, Custom Spans, and Structured Logging](https://dev.to/whoffagents/opentelemetry-for-nextjs-distributed-tracing-custom-spans-and-structured-logging-4p4p) - end-to-end worked example
+
+---
+
+~Seb 👊
