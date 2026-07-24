@@ -193,11 +193,6 @@ export function BlogHeroSimple({ totalPosts }: BlogHeroSimpleProps) {
         </div>
       </div>
 
-      {/* Scroll indicator */}
-      <div className={`blog-hero-simple-scroll ${isRevealed ? 'revealed' : ''}`}>
-        <span>SCROLL</span>
-        <div className="blog-hero-simple-scroll-line" />
-      </div>
     </section>
   );
 }

@@ -89,31 +89,10 @@ export function ArticleContent({ content }: ArticleContentProps) {
       });
     });
 
-    // Animate elements on scroll
-    const observer = new IntersectionObserver(
-      (entries) => {
-        entries.forEach(entry => {
-          if (entry.isIntersecting) {
-            entry.target.classList.add('visible');
-          }
-        });
-      },
-      { threshold: 0.1, rootMargin: '0px 0px -50px 0px' }
-    );
-
-    const animatableElements = article.querySelectorAll(
-      '.prose-h2, .prose-h3, .prose-h4, .prose-p, .prose-ul, .prose-ol, .prose-blockquote, .code-block-wrapper, .prose-figure'
-    );
-    animatableElements.forEach(el => {
-      el.classList.add('prose-animate');
-      observer.observe(el);
-    });
-
     return () => {
       copyButtons.forEach(button => {
         button.replaceWith(button.cloneNode(true));
       });
-      observer.disconnect();
     };
   }, [content]);
 

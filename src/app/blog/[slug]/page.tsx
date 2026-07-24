@@ -1,4 +1,5 @@
 import { Metadata } from 'next';
+import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import {
   getPostBySlug,
@@ -177,9 +178,9 @@ export default async function BlogPostPage({ params }: Props) {
           {post.tags && post.tags.length > 0 && (
             <div className="article-tags">
               {post.tags.map(tag => (
-                <span key={tag} className="article-tag">
+                <Link key={tag} href={`/blog?tag=${encodeURIComponent(tag)}`} className="article-tag">
                   #{tag}
-                </span>
+                </Link>
               ))}
             </div>
           )}

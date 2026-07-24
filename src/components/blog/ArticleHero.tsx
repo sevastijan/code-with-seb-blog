@@ -199,13 +199,6 @@ export function ArticleHero({ title, excerpt, category, date, readTime, author, 
         </div>
 
       </div>
-
-      {/* Scroll indicator - centered at bottom */}
-      <div className={`article-hero-scroll-inline ${isRevealed ? 'revealed' : ''}`}>
-        <span>Scroll</span>
-        <div className="article-hero-scroll-line" />
-      </div>
-
     </section>
   );
 }

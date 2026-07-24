@@ -1,5 +1,5 @@
 import type { Metadata } from 'next';
-import { getAllPosts, getFeaturedPosts, getAllCategories } from '@/lib/mdx';
+import { getAllPosts, getAllCategories } from '@/lib/mdx';
 import { ScrollProgress } from '@/components/ScrollProgress';
 import { FooterAwwwards } from '@/components/FooterAwwwards';
 import { BlogArchiveClient } from '@/components/blog/BlogArchiveClient';
@@ -20,11 +20,7 @@ export const metadata: Metadata = {
 
 export default function BlogPage() {
   const allPosts = getAllPosts();
-  const featuredPosts = getFeaturedPosts();
   const categoryNames = getAllCategories();
-
-  // Get featured post
-  const featuredPost = featuredPosts[0] || allPosts[0];
 
   // Prepare categories with counts
   const categories = [
@@ -35,24 +31,13 @@ export default function BlogPage() {
     }))
   ];
 
-  // Posts without featured
-  const postsWithoutFeatured = allPosts.filter(p => p.slug !== featuredPost?.slug);
-
   return (
     <div className="grain">
       <ScrollProgress />
 
       <BlogArchiveClient
         totalPosts={allPosts.length}
-        featuredPost={featuredPost ? {
-          slug: featuredPost.slug,
-          title: featuredPost.title,
-          excerpt: featuredPost.excerpt,
-          category: featuredPost.category,
-          date: featuredPost.date,
-          readTime: featuredPost.readTime,
-        } : null}
-        posts={postsWithoutFeatured}
+        posts={allPosts}
         categories={categories}
       />
 

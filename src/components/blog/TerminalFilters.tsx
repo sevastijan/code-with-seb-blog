@@ -1,6 +1,8 @@
 'use client';
 
 import { useState, useCallback, useRef, useEffect } from 'react';
+import { LayoutGrid, List } from 'lucide-react';
+import type { ViewMode } from './BentoGrid';
 
 interface CategoryCount {
   name: string;
@@ -11,11 +13,15 @@ interface TerminalFiltersProps {
   categories: CategoryCount[];
   activeCategory: string;
   onCategoryChange: (category: string) => void;
+  activeTag?: string | null;
+  onClearTag?: () => void;
+  viewMode?: ViewMode;
+  onViewModeChange?: (mode: ViewMode) => void;
 }
 
 const SCRAMBLE_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ@#$%&*01';
 
-export function TerminalFilters({ categories, activeCategory, onCategoryChange }: TerminalFiltersProps) {
+export function TerminalFilters({ categories, activeCategory, onCategoryChange, activeTag, onClearTag, viewMode, onViewModeChange }: TerminalFiltersProps) {
   const [hoveredCategory, setHoveredCategory] = useState<string | null>(null);
   const [displayTexts, setDisplayTexts] = useState<Record<string, string>>({});
   const scrambleRefs = useRef<Record<string, NodeJS.Timeout | null>>({});
@@ -96,6 +102,7 @@ export function TerminalFilters({ categories, activeCategory, onCategoryChange }
 
   return (
     <div className={`terminal-filters ${isRevealed ? 'revealed' : ''}`}>
+      <div className="container terminal-filters-inner">
       <div className="terminal-filters-prompt">
         <span className="terminal-filters-symbol">$</span>
         <span className="terminal-filters-command">filter</span>
@@ -127,10 +134,45 @@ export function TerminalFilters({ categories, activeCategory, onCategoryChange }
             <div className="terminal-filter-glow" />
           </button>
         ))}
+
+        {/* Active tag filter chip */}
+        {activeTag && (
+          <button
+            className="terminal-filter-btn active terminal-filter-tag"
+            onClick={onClearTag}
+            title="Clear tag filter"
+          >
+            <span className="terminal-filter-bracket">[</span>
+            <span className="terminal-filter-text">#{activeTag.toUpperCase()}</span>
+            <span className="terminal-filter-tag-x">✕</span>
+            <span className="terminal-filter-bracket">]</span>
+          </button>
+        )}
       </div>
 
       {/* Decorative line */}
       <div className="terminal-filters-line" />
+
+      {/* View mode toggle */}
+      {viewMode && onViewModeChange && (
+        <div className="blog-view-toggle">
+          <button
+            className={`blog-view-toggle-btn ${viewMode === 'grid' ? 'active' : ''}`}
+            onClick={() => onViewModeChange('grid')}
+            aria-label="Grid view"
+          >
+            <LayoutGrid className="w-4 h-4" />
+          </button>
+          <button
+            className={`blog-view-toggle-btn ${viewMode === 'list' ? 'active' : ''}`}
+            onClick={() => onViewModeChange('list')}
+            aria-label="List view"
+          >
+            <List className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+      </div>
     </div>
   );
 }

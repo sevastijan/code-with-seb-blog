@@ -1,8 +1,8 @@
 'use client';
 
-import { useRef, useCallback, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { ArrowUpRight, LayoutGrid, List } from 'lucide-react';
+import { ArrowUpRight } from 'lucide-react';
 
 interface Post {
   slug: string;
@@ -16,10 +16,11 @@ interface Post {
 interface BentoGridProps {
   posts: Post[];
   basePath?: string;
+  viewMode?: ViewMode;
 }
 
 type CardSize = 'large' | 'wide' | 'normal';
-type ViewMode = 'grid' | 'list';
+export type ViewMode = 'grid' | 'list';
 
 // Determine card size based on index for asymmetric layout
 function getCardSize(index: number, totalPosts: number): CardSize {
@@ -41,8 +42,6 @@ function BentoCard({
   size: CardSize;
   basePath?: string;
 }) {
-  const cardRef = useRef<HTMLAnchorElement>(null);
-  const [isHovered, setIsHovered] = useState(false);
   const [isRevealed, setIsRevealed] = useState(false);
 
   // Reveal animation with stagger
@@ -51,66 +50,12 @@ function BentoCard({
     return () => clearTimeout(timer);
   }, [index]);
 
-  const handleMouseMove = useCallback((e: React.MouseEvent<HTMLAnchorElement>) => {
-    const card = cardRef.current;
-    if (!card) return;
-
-    const rect = card.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-    const centerX = rect.width / 2;
-    const centerY = rect.height / 2;
-
-    const rotateX = (y - centerY) / 20;
-    const rotateY = (centerX - x) / 20;
-
-    card.style.transform = `perspective(1000px) rotateX(${rotateX}deg) rotateY(${rotateY}deg) translateZ(10px)`;
-
-    // Update glow position
-    const glow = card.querySelector('.bento-card-glow') as HTMLElement;
-    if (glow) {
-      glow.style.background = `radial-gradient(circle at ${x}px ${y}px, rgba(0, 255, 136, 0.2) 0%, transparent 50%)`;
-      glow.style.opacity = '1';
-    }
-
-    // Update scanline position
-    const scanline = card.querySelector('.bento-card-scanline') as HTMLElement;
-    if (scanline) {
-      scanline.style.top = `${y}px`;
-    }
-  }, []);
-
-  const handleMouseLeave = useCallback(() => {
-    const card = cardRef.current;
-    if (!card) return;
-
-    card.style.transform = 'perspective(1000px) rotateX(0) rotateY(0) translateZ(0)';
-
-    const glow = card.querySelector('.bento-card-glow') as HTMLElement;
-    if (glow) {
-      glow.style.opacity = '0';
-    }
-  }, []);
-
   return (
     <Link
-      ref={cardRef}
       href={`${basePath}/blog/${post.slug}`}
-      className={`bento-card bento-card-${size} ${isHovered ? 'hovered' : ''} ${isRevealed ? 'revealed' : ''}`}
-      onMouseMove={handleMouseMove}
-      onMouseLeave={() => {
-        handleMouseLeave();
-        setIsHovered(false);
-      }}
-      onMouseEnter={() => setIsHovered(true)}
+      className={`bento-card bento-card-${size} ${isRevealed ? 'revealed' : ''}`}
       style={{ '--card-index': index } as React.CSSProperties}
     >
-      {/* Glow effect */}
-      <div className="bento-card-glow" />
-
-      {/* Scanline */}
-      <div className="bento-card-scanline" />
-
       {/* Category */}
       <div className="bento-card-category">{post.category}</div>
 
@@ -182,30 +127,10 @@ function ListCard({ post, index, basePath = '' }: { post: Post; index: number; b
   );
 }
 
-export function BentoGrid({ posts, basePath = '' }: BentoGridProps) {
-  const [viewMode, setViewMode] = useState<ViewMode>('grid');
-
+export function BentoGrid({ posts, basePath = '', viewMode = 'list' }: BentoGridProps) {
   return (
     <section className="bento-grid-section">
       <div className="container">
-        {/* View Mode Toggle */}
-        <div className="blog-view-toggle">
-          <button
-            className={`blog-view-toggle-btn ${viewMode === 'grid' ? 'active' : ''}`}
-            onClick={() => setViewMode('grid')}
-            aria-label="Grid view"
-          >
-            <LayoutGrid className="w-4 h-4" />
-          </button>
-          <button
-            className={`blog-view-toggle-btn ${viewMode === 'list' ? 'active' : ''}`}
-            onClick={() => setViewMode('list')}
-            aria-label="List view"
-          >
-            <List className="w-4 h-4" />
-          </button>
-        </div>
-
         {viewMode === 'grid' ? (
           <div className="bento-grid">
             {posts.map((post, index) => (

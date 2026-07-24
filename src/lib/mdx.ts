@@ -273,8 +273,14 @@ export function parseMarkdown(content: string): string {
   html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
   html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
 
-  // Links
-  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" class="prose-link">$1</a>');
+  // Links — external ones open in a new tab so readers don't leave the article
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, text, href) => {
+    const isExternal =
+      /^https?:\/\//.test(href) && !href.startsWith('https://www.codewithseb.com');
+    return isExternal
+      ? `<a href="${href}" class="prose-link" target="_blank" rel="noopener noreferrer">${text}</a>`
+      : `<a href="${href}" class="prose-link">${text}</a>`;
+  });
 
   // Images
   html = html.replace(/!\[([^\]]*)\]\(([^)]+)\)/g,

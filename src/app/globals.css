@@ -96,7 +96,7 @@
     background: var(--c-bg);
     color: var(--c-text);
     font-family: var(--font-inter), system-ui, sans-serif;
-    overflow-x: hidden;
+    overflow-x: clip;
   }
 
   ::selection {
@@ -6401,16 +6401,17 @@
 
   .blog-post-page {
     background: var(--c-bg);
-    overflow-x: hidden;
+    /* clip, not hidden: overflow-x hidden turns the element into a scroll
+       container, which breaks position: sticky on the TOC sidebar */
+    overflow-x: clip;
   }
 
   /* Article Hero */
   .article-hero {
     position: relative;
-    min-height: 100vh;
     display: flex;
     align-items: center;
-    padding: clamp(8rem, 15vw, 12rem) 0 clamp(4rem, 8vw, 6rem);
+    padding: clamp(7rem, 12vw, 9rem) 0 clamp(2.5rem, 5vw, 4rem);
     overflow: hidden;
   }
 
@@ -6443,7 +6444,7 @@
   }
 
   .article-hero-bg-text-1 {
-    font-size: 90vh;
+    font-size: min(45vh, 24rem);
     top: 50%;
     right: -5%;
     color: transparent;
@@ -7057,17 +7058,6 @@
     font-size: 1.125rem;
     line-height: 1.8;
     color: var(--c-text);
-  }
-
-  .prose-animate {
-    opacity: 0;
-    transform: translateY(30px);
-    transition: all 0.8s var(--ease-out-expo);
-  }
-
-  .prose-animate.visible {
-    opacity: 1;
-    transform: translateY(0);
   }
 
   .prose-h2 {
@@ -9046,6 +9036,17 @@
     color: var(--c-accent);
   }
 
+  /* Active tag chip inside terminal filters (blog archive, ?tag= param) */
+  .terminal-filter-tag .terminal-filter-tag-x {
+    margin-left: 0.5rem;
+    font-size: 0.6875rem;
+    opacity: 0.7;
+  }
+
+  .terminal-filter-tag:hover .terminal-filter-tag-x {
+    opacity: 1;
+  }
+
   /* Article share */
   .article-share {
     display: flex;
@@ -9173,14 +9174,6 @@
 
   .related-card:hover {
     border-color: var(--c-border-hover);
-  }
-
-  .related-card-glow {
-    position: absolute;
-    inset: 0;
-    opacity: 0;
-    transition: opacity 0.4s ease;
-    pointer-events: none;
   }
 
   .related-card-num {
@@ -9753,13 +9746,16 @@
    ============================================ */
 
 .terminal-filters {
-  padding: clamp(2rem, 5vw, 3rem) clamp(1.5rem, 5vw, 4rem);
+  padding: clamp(2rem, 5vw, 3rem) 0;
   border-top: 1px solid var(--c-border);
   border-bottom: 1px solid var(--c-border);
   background: rgba(0, 0, 0, 0.3);
   opacity: 0;
   transform: translateY(20px);
   transition: all 0.8s var(--ease-out-expo);
+}
+
+.terminal-filters-inner {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -9873,6 +9869,11 @@
   margin-left: 1rem;
 }
 
+/* Toggle placed inside the filters row */
+.terminal-filters .blog-view-toggle {
+  margin: 0;
+}
+
 @media (max-width: 768px) {
   .terminal-filters-line {
     display: none;
@@ -9946,31 +9947,6 @@
     grid-column: span 1;
     grid-row: span 1;
   }
-}
-
-/* Glow effect */
-.bento-card-glow {
-  position: absolute;
-  inset: 0;
-  opacity: 0;
-  transition: opacity 0.5s ease;
-  pointer-events: none;
-}
-
-/* Scanline */
-.bento-card-scanline {
-  position: absolute;
-  left: 0;
-  right: 0;
-  height: 1px;
-  background: linear-gradient(90deg, transparent, var(--c-accent-2), transparent);
-  opacity: 0;
-  transition: opacity 0.3s ease;
-  pointer-events: none;
-}
-
-.bento-card:hover .bento-card-scanline {
-  opacity: 0.6;
 }
 
 /* Card number */
@@ -10227,8 +10203,17 @@
 
 .blog-list-item:hover {
   background: rgba(255, 255, 255, 0.02);
-  padding-left: 1rem;
-  padding-right: 1rem;
+}
+
+/* Slide content on hover with transforms (no layout shift, GPU-composited) */
+.blog-list-item-num,
+.blog-list-item-content {
+  transition: transform 0.35s var(--ease-out-expo, cubic-bezier(0.16, 1, 0.3, 1));
+}
+
+.blog-list-item:hover .blog-list-item-num,
+.blog-list-item:hover .blog-list-item-content {
+  transform: translateX(0.75rem);
 }
 
 .blog-list-item-num {
@@ -10239,6 +10224,7 @@
   min-width: 2rem;
   padding-top: 0.25rem;
   opacity: 0.6;
+  transition: transform 0.35s var(--ease-out-expo, cubic-bezier(0.16, 1, 0.3, 1)), opacity 0.2s ease;
 }
 
 .blog-list-item:hover .blog-list-item-num {
@@ -11280,10 +11266,9 @@
 
 .blog-hero-simple {
   position: relative;
-  min-height: 80vh;
   display: flex;
   align-items: center;
-  padding: clamp(8rem, 15vw, 12rem) 0 clamp(4rem, 8vw, 6rem);
+  padding: clamp(6.5rem, 10vw, 8rem) 0 clamp(2rem, 4vw, 3rem);
   overflow: hidden;
 }
 
@@ -11435,12 +11420,12 @@
 
 /* Title */
 .blog-hero-simple-title {
-  margin-bottom: 2rem;
+  margin-bottom: 1.5rem;
 }
 
 .blog-hero-simple-word {
   display: block;
-  font-size: clamp(3rem, 12vw, 10rem);
+  font-size: clamp(2.5rem, 8vw, 6.5rem);
   font-weight: 800;
   line-height: 0.85;
   letter-spacing: -0.04em;
@@ -15324,5 +15309,237 @@
   .srv2-cta .container {
     flex-direction: column;
     align-items: flex-start;
+  }
+}
+
+/* ============================================
+   SERVICES V2 — DEVELOPMENT SUBPAGE
+   Additive. Reuses srv2-hero / -process / -graph
+   / -cta from the block above. Old srv-* classes
+   are untouched (still used by /pl + other subpages).
+   Accent arrives via --srv2-accent set on the page root.
+   ============================================ */
+
+/* --- Hero back link --- */
+.srv2-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 2rem;
+  font-family: var(--font-mono), monospace;
+  font-size: 0.8125rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--c-text-muted);
+  transition: color 0.25s ease;
+}
+
+.srv2-back svg {
+  width: 0.875rem;
+  height: 0.875rem;
+  transition: transform 0.25s ease;
+}
+
+.srv2-back:hover {
+  color: var(--srv2-accent);
+}
+
+.srv2-back:hover svg {
+  transform: translateX(-3px);
+}
+
+/* --- Generic section wrapper + lead --- */
+.srv2-sec {
+  padding: clamp(4rem, 10vh, 7rem) 0;
+  border-top: 1px solid var(--c-border);
+}
+
+.srv2-sec-lead {
+  margin-top: 1.25rem;
+  max-width: 40rem;
+  font-size: clamp(1rem, 1.4vw, 1.1875rem);
+  line-height: 1.6;
+  color: var(--c-text-muted);
+}
+
+/* --- Card grid (What I build / Principles) --- */
+.srv2-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr));
+  gap: 1px;
+  margin-top: clamp(2.5rem, 5vh, 3.5rem);
+  background: var(--c-border);
+  border: 1px solid var(--c-border);
+}
+
+.srv2-card {
+  display: flex;
+  flex-direction: column;
+  padding: clamp(1.75rem, 3vw, 2.5rem);
+  background: var(--c-bg);
+}
+
+.srv2-card-num {
+  font-family: var(--font-mono), monospace;
+  font-size: 0.8125rem;
+  letter-spacing: 0.2em;
+  color: var(--srv2-accent);
+}
+
+.srv2-card-title {
+  margin-top: 1rem;
+  font-family: var(--font-display), system-ui, sans-serif;
+  font-size: 1.5rem;
+  font-weight: 700;
+  line-height: 1.05;
+  letter-spacing: -0.01em;
+  text-transform: uppercase;
+}
+
+.srv2-card-desc {
+  margin-top: 0.875rem;
+  font-size: 0.9375rem;
+  line-height: 1.6;
+  color: rgba(255, 255, 255, 0.65);
+}
+
+.srv2-card-meta {
+  margin-top: auto;
+  padding-top: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.srv2-card-meta-row {
+  display: flex;
+  gap: 0.75rem;
+  font-family: var(--font-mono), monospace;
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--c-text-muted);
+}
+
+.srv2-card-meta-key {
+  flex-shrink: 0;
+  width: 4.5rem;
+  color: var(--srv2-accent);
+}
+
+/* --- Tech stack --- */
+.srv2-stack {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr));
+  gap: 1px;
+  margin-top: clamp(2.5rem, 5vh, 3.5rem);
+  background: var(--c-border);
+  border: 1px solid var(--c-border);
+}
+
+.srv2-stack-group {
+  padding: clamp(1.75rem, 3vw, 2.5rem);
+  background: var(--c-bg);
+}
+
+.srv2-stack-cat {
+  padding-bottom: 1.25rem;
+  border-bottom: 1px solid var(--c-border);
+  font-family: var(--font-mono), monospace;
+  font-size: 0.8125rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--srv2-accent);
+}
+
+.srv2-stack-list {
+  margin-top: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.srv2-stack-name {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--c-text);
+}
+
+.srv2-stack-desc {
+  margin-top: 0.25rem;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: var(--c-text-muted);
+}
+
+/* --- FAQ (native details, no JS) --- */
+.srv2-faq {
+  max-width: 48rem;
+  margin-top: clamp(2.5rem, 5vh, 3.5rem);
+}
+
+.srv2-faq-item {
+  border-top: 1px solid var(--c-border);
+}
+
+.srv2-faq-item:last-child {
+  border-bottom: 1px solid var(--c-border);
+}
+
+.srv2-faq-q {
+  display: flex;
+  align-items: baseline;
+  gap: 1rem;
+  padding: 1.5rem 0;
+  cursor: pointer;
+  list-style: none;
+  font-family: var(--font-display), system-ui, sans-serif;
+  font-size: clamp(1.0625rem, 1.6vw, 1.25rem);
+  font-weight: 600;
+  color: var(--c-text);
+  transition: color 0.25s ease;
+}
+
+.srv2-faq-q::-webkit-details-marker {
+  display: none;
+}
+
+.srv2-faq-q:hover {
+  color: var(--srv2-accent);
+}
+
+.srv2-faq-num {
+  flex-shrink: 0;
+  font-family: var(--font-mono), monospace;
+  font-size: 0.8125rem;
+  letter-spacing: 0.15em;
+  color: var(--srv2-accent);
+}
+
+.srv2-faq-icon {
+  flex-shrink: 0;
+  margin-left: auto;
+  width: 0.875rem;
+  height: 0.875rem;
+  color: var(--c-text-muted);
+  transition: transform 0.25s ease, color 0.25s ease;
+}
+
+.srv2-faq-item[open] .srv2-faq-icon {
+  transform: rotate(45deg);
+  color: var(--srv2-accent);
+}
+
+.srv2-faq-a {
+  max-width: 42rem;
+  padding: 0 0 1.75rem 2.5rem;
+  font-size: 0.9375rem;
+  line-height: 1.65;
+  color: rgba(255, 255, 255, 0.65);
+}
+
+@media (max-width: 640px) {
+  .srv2-faq-a {
+    padding-left: 0;
   }
 }

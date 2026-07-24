@@ -1,10 +1,9 @@
 'use client';
 
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useEffect } from 'react';
 import { BlogHeroSimple } from './BlogHeroSimple';
-import { FeaturedPostBrutalist } from '../FeaturedPostBrutalist';
 import { TerminalFilters } from './TerminalFilters';
-import { BentoGrid } from './BentoGrid';
+import { BentoGrid, type ViewMode } from './BentoGrid';
 import { LoadMoreProgress } from './LoadMoreProgress';
 import { NewsletterSignal } from './NewsletterSignal';
 
@@ -15,15 +14,7 @@ interface Post {
   category: string;
   date: string;
   readTime: string;
-}
-
-interface FeaturedPost {
-  slug: string;
-  title: string;
-  excerpt: string;
-  category: string;
-  date: string;
-  readTime: string;
+  tags?: string[];
 }
 
 interface CategoryCount {
@@ -33,7 +24,6 @@ interface CategoryCount {
 
 interface BlogArchiveClientProps {
   totalPosts: number;
-  featuredPost: FeaturedPost | null;
   posts: Post[];
   categories: CategoryCount[];
   basePath?: string;
@@ -43,20 +33,42 @@ const POSTS_PER_PAGE = 8;
 
 export function BlogArchiveClient({
   totalPosts,
-  featuredPost,
   posts,
   categories,
   basePath = '',
 }: BlogArchiveClientProps) {
   const [activeCategory, setActiveCategory] = useState('All');
+  const [activeTag, setActiveTag] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<ViewMode>('list');
   const [visibleCount, setVisibleCount] = useState(POSTS_PER_PAGE);
   const [isLoading, setIsLoading] = useState(false);
 
-  // Filter posts based on active category
+  // Pick up ?tag= from the URL (links under each article point here)
+  useEffect(() => {
+    const tag = new URLSearchParams(window.location.search).get('tag');
+    if (tag) setActiveTag(tag);
+  }, []);
+
+  const clearTag = useCallback(() => {
+    setActiveTag(null);
+    setVisibleCount(POSTS_PER_PAGE);
+    const url = new URL(window.location.href);
+    url.searchParams.delete('tag');
+    window.history.replaceState(null, '', url.toString());
+  }, []);
+
+  // Filter posts based on active tag and category
   const filteredPosts = useMemo(() => {
-    if (activeCategory === 'All') return posts;
-    return posts.filter(p => p.category === activeCategory);
-  }, [posts, activeCategory]);
+    let result = posts;
+    if (activeTag) {
+      const tagLower = activeTag.toLowerCase();
+      result = result.filter(p => p.tags?.some(t => t.toLowerCase() === tagLower));
+    }
+    if (activeCategory !== 'All') {
+      result = result.filter(p => p.category === activeCategory);
+    }
+    return result;
+  }, [posts, activeCategory, activeTag]);
 
   // Visible posts based on pagination
   const visiblePosts = useMemo(() => {
@@ -84,28 +96,19 @@ export function BlogArchiveClient({
       {/* Hero - Simple version without embedded card */}
       <BlogHeroSimple totalPosts={totalPosts} />
 
-      {/* Featured Post - Brutalist style like homepage */}
-      {featuredPost && (
-        <FeaturedPostBrutalist
-          slug={featuredPost.slug}
-          title={featuredPost.title}
-          excerpt={featuredPost.excerpt}
-          category={featuredPost.category}
-          date={featuredPost.date}
-          readTime={featuredPost.readTime}
-          basePath={basePath}
-        />
-      )}
-
       {/* Terminal Filters */}
       <TerminalFilters
         categories={categories}
         activeCategory={activeCategory}
         onCategoryChange={handleCategoryChange}
+        activeTag={activeTag}
+        onClearTag={clearTag}
+        viewMode={viewMode}
+        onViewModeChange={setViewMode}
       />
 
       {/* Bento Grid */}
-      <BentoGrid posts={visiblePosts} basePath={basePath} />
+      <BentoGrid posts={visiblePosts} basePath={basePath} viewMode={viewMode} />
 
       {/* Load More */}
       <div className="container">

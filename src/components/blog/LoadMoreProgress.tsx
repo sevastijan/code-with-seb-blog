@@ -54,6 +54,9 @@ export function LoadMoreProgress({ loaded, total, onLoadMore, isLoading = false 
 
   return (
     <div className="load-more-progress">
+      {/* Decorative line */}
+      <div className="load-more-progress-line load-more-progress-line-left" />
+
       {/* Progress bar container */}
       <button
         className={`load-more-progress-btn ${isLoading ? 'loading' : ''}`}
@@ -89,8 +92,7 @@ export function LoadMoreProgress({ loaded, total, onLoadMore, isLoading = false 
         <div className="load-more-progress-bracket load-more-progress-bracket-br" />
       </button>
 
-      {/* Decorative lines */}
-      <div className="load-more-progress-line load-more-progress-line-left" />
+      {/* Decorative line */}
       <div className="load-more-progress-line load-more-progress-line-right" />
     </div>
   );
