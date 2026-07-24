@@ -15055,8 +15055,17 @@
   border-top: 1px solid var(--c-border);
 }
 
+/* two-column rhythm matching the service sections above */
+.srv2-process .container {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr);
+  gap: clamp(2rem, 5vw, 5rem);
+  align-items: start;
+}
+
 .srv2-process-header {
-  margin-bottom: clamp(3rem, 7vh, 5rem);
+  position: sticky;
+  top: 6rem;
 }
 
 .srv2-process-title {
@@ -15069,38 +15078,136 @@
   text-transform: uppercase;
 }
 
-.srv2-process-steps {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: clamp(2rem, 4vw, 4rem);
+/* Process rendered as a git commit graph (git log --graph) */
+.srv2-graph {
+  width: 100%;
 }
 
-.srv2-process-step {
-  border-top: 1px solid var(--c-border);
-  padding-top: 1.5rem;
-}
-
-.srv2-process-step-num {
+.srv2-graph-cmd {
   font-family: var(--font-mono), monospace;
   font-size: 0.8125rem;
-  letter-spacing: 0.2em;
+  letter-spacing: 0.02em;
   color: var(--c-text-muted);
+  padding-bottom: 1.25rem;
+  margin-bottom: 2.5rem;
+  border-bottom: 1px solid var(--c-border);
 }
 
-.srv2-process-step-title {
-  margin-top: 1rem;
-  font-family: var(--font-display), system-ui, sans-serif;
-  font-size: 1.5rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: -0.01em;
+.srv2-graph-prompt {
+  color: var(--c-accent-2);
+  margin-right: 0.5rem;
 }
 
-.srv2-process-step-desc {
-  margin-top: 0.875rem;
+/* blinking terminal cursor after the command */
+.srv2-graph-cmd::after {
+  content: '';
+  display: inline-block;
+  width: 0.5rem;
+  height: 1em;
+  margin-left: 0.35rem;
+  vertical-align: text-bottom;
+  background: var(--c-accent-2);
+  animation: srv2-caret 1.1s steps(1) infinite;
+}
+
+@keyframes srv2-caret {
+  0%, 50% { opacity: 1; }
+  50.01%, 100% { opacity: 0; }
+}
+
+.srv2-graph-log {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.srv2-graph-commit {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1.75rem minmax(0, 1fr);
+  column-gap: 1.25rem;
+  padding-bottom: 2.75rem;
+}
+
+.srv2-graph-commit:last-child {
+  padding-bottom: 0;
+}
+
+/* connecting line, drawn from each node down to the next */
+.srv2-graph-commit::before {
+  content: '';
+  position: absolute;
+  left: calc(0.875rem - 0.5px);
+  top: 0.4em;
+  bottom: -0.4em;
+  width: 1px;
+  background: linear-gradient(
+    to bottom,
+    var(--srv2-accent) 0,
+    rgba(255, 255, 255, 0.12) 2.5rem
+  );
+}
+
+.srv2-graph-commit:last-child::before {
+  display: none;
+}
+
+.srv2-graph-rail {
+  position: relative;
+}
+
+.srv2-graph-node {
+  position: absolute;
+  top: 0.35em;
+  left: 50%;
+  width: 0.85rem;
+  height: 0.85rem;
+  transform: translateX(-50%);
+  border-radius: 50%;
+  background: var(--srv2-accent);
+  box-shadow:
+    0 0 0 4px color-mix(in srgb, var(--srv2-accent) 15%, transparent),
+    0 0 14px color-mix(in srgb, var(--srv2-accent) 55%, transparent);
+}
+
+.srv2-graph-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  font-family: var(--font-mono), monospace;
+  line-height: 1;
+}
+
+.srv2-graph-hash {
   font-size: 0.9375rem;
-  line-height: 1.6;
-  color: rgba(255, 255, 255, 0.6);
+  letter-spacing: 0.06em;
+  color: var(--srv2-accent);
+}
+
+.srv2-graph-ref {
+  font-size: 0.6875rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 0.25rem 0.55rem;
+  border-radius: 2px;
+  color: var(--srv2-accent);
+  border: 1px solid color-mix(in srgb, var(--srv2-accent) 40%, transparent);
+  background: color-mix(in srgb, var(--srv2-accent) 10%, transparent);
+}
+
+.srv2-graph-head {
+  color: var(--c-text);
+  border-color: var(--c-border-hover);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.srv2-graph-msg {
+  margin-top: 0.85rem;
+  font-size: clamp(1rem, 1.4vw, 1.1875rem);
+  line-height: 1.55;
+  color: rgba(255, 255, 255, 0.78);
+  max-width: 40rem;
 }
 
 /* --- Final CTA --- */
@@ -15168,7 +15275,7 @@
 /* --- Scroll fade-in (CSS only, progressive enhancement) --- */
 @supports (animation-timeline: view()) {
   .srv2-service,
-  .srv2-process-step {
+  .srv2-graph-commit {
     animation: srv2-fade-in 1ms linear both;
     animation-timeline: view();
     animation-range: entry 0% entry 35%;
@@ -15188,7 +15295,11 @@
 
 @media (prefers-reduced-motion: reduce) {
   .srv2-service,
-  .srv2-process-step {
+  .srv2-graph-commit {
+    animation: none;
+  }
+
+  .srv2-graph-cmd::after {
     animation: none;
   }
 }
@@ -15200,8 +15311,14 @@
     gap: 2rem;
   }
 
-  .srv2-process-steps {
+  .srv2-process .container {
     grid-template-columns: 1fr;
+    gap: 2.5rem;
+  }
+
+  .srv2-process-header {
+    position: static;
+    top: auto;
   }
 
   .srv2-cta .container {

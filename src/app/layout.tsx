@@ -131,7 +131,7 @@ const personSchema = {
   knowsAbout: [
     "Artificial Intelligence",
     "AI Agents",
-    "Web Development",
+    "Software Engineering",
     "Next.js",
     "React",
     "TypeScript",

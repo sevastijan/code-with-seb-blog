@@ -21,13 +21,13 @@ const aiServices = {
 
 const devServices = {
   en: [
-    { name: 'Web Development', href: '/services/development' },
+    { name: 'Software Engineering', href: '/services/development' },
     { name: 'Technical Architecture', href: '/services/development' },
     { name: 'Technical Consulting', href: '/services/consulting' },
     { name: 'Code Review', href: '/services/development' },
   ],
   pl: [
-    { name: 'Web Development', href: '/services/development' },
+    { name: 'Software Engineering', href: '/services/development' },
     { name: 'Architektura techniczna', href: '/services/development' },
     { name: 'Konsulting techniczny', href: '/services/consulting' },
     { name: 'Code Review', href: '/services/development' },

@@ -7,78 +7,84 @@ import { FooterAwwwards } from '@/components/FooterAwwwards';
 const services = [
   {
     id: '01',
-    slug: 'ai',
-    name: 'AI Engineering',
-    tagline: 'Practical AI, not demos.',
+    slug: 'development',
+    name: 'Software Engineering',
+    tagline: 'Software that gets out of the way.',
     description:
-      'Custom agents, LLM integration, and workflow automation — built into your stack and measured against real outcomes, not benchmarks in a slide deck.',
-    color: '#00ff88',
+      'Full-stack products built with Next.js, React, and TypeScript, with the API design and cloud architecture underneath to hold up under real traffic long after launch day.',
+    color: '#ff3d00',
     goodFit: [
-      'You have a repetitive process that eats hours every week',
-      'You want an LLM feature in your product, not a proof of concept',
-      'You tried an AI tool and it fell apart in production',
+      'You need an MVP that can grow into the real product',
+      'Your current app slows down or buckles under load',
+      'You want senior hands without hiring a full team',
     ],
     deliverables: [
-      'A working integration running in your stack',
-      'Evaluation and tests for model behavior',
-      'Documentation your team can maintain without me',
+      'Typed, reviewed code that lives in your repository',
+      'A CI/CD pipeline and deployment ready to run',
+      'Weekly releases you can actually click through',
     ],
   },
   {
     id: '02',
-    slug: 'development',
-    name: 'Web Development',
-    tagline: 'Production-grade web applications.',
+    slug: 'ai',
+    name: 'AI Engineering',
+    tagline: 'Agents and automations that hold up in production.',
     description:
-      'Next.js, React, and TypeScript applications with solid API design and cloud architecture. Built to survive real users, not just the demo.',
-    color: '#ff3d00',
+      'Custom agents, LLM integration, and workflow automation, built into your stack and measured against real outcomes rather than benchmarks on a slide.',
+    color: '#00ff88',
     goodFit: [
-      'You need an MVP that can grow into the real product',
-      'Your existing app is slowing down or breaking under load',
-      'You need senior hands without hiring a full team',
+      'A repetitive process is quietly eating hours every week',
+      'You want an LLM feature in the product, not another proof of concept',
+      'You shipped an AI tool and it broke the moment real users arrived',
     ],
     deliverables: [
-      'Code in your repository, reviewed and typed',
-      'CI/CD pipeline and deployment setup',
-      'Predictable iterations with working software each week',
+      'A working integration running inside your own stack',
+      'Evaluations and tests that keep model behavior honest',
+      'Documentation your team can maintain after I hand it over',
     ],
   },
   {
     id: '03',
     slug: 'consulting',
     name: 'Technical Consulting',
-    tagline: 'Senior judgment, on demand.',
+    tagline: 'The hard technical calls, made with you.',
     description:
-      'Architecture review, code review — including AI-generated codebases — and technology strategy from someone who still ships production code every week.',
+      'Architecture and code review, including AI-generated codebases, plus technology strategy from someone who still ships production code every week.',
     color: '#8b5cf6',
     goodFit: [
-      'You face an architecture decision you don\'t want to make blind',
-      'A codebase needs expert eyes before you invest further',
-      'You need a second opinion on a vendor or stack choice',
+      'You are facing an architecture decision you would rather not make blind',
+      'A codebase needs expert eyes before you invest further in it',
+      'You want a second opinion on a vendor or a stack choice',
     ],
     deliverables: [
-      'Written recommendations with clear priorities',
-      'Concrete risks and trade-offs, not generic advice',
-      'A decision you can defend to your team and board',
+      'Written recommendations with priorities you can act on',
+      'The real risks and trade-offs, not generic advice',
+      'A decision you can defend to your team and your board',
     ],
   },
 ];
 
 const steps = [
   {
-    num: '01',
-    title: 'Scope',
-    desc: 'We define the problem, the constraints, and what done means — before any code is written.',
+    hash: 'a1f3c9e',
+    ref: 'scope',
+    color: '#00ff88',
+    message: 'Define the problem, the constraints, and what “done” means before any code gets written.',
+    head: false,
   },
   {
-    num: '02',
-    title: 'Build',
-    desc: 'Short iterations with working software at the end of each one. You see progress, not status reports.',
+    hash: '7b2e40d',
+    ref: 'build',
+    color: '#ff3d00',
+    message: 'Release working software every week, so progress is something you can run, not a status report.',
+    head: false,
   },
   {
-    num: '03',
-    title: 'Ship',
-    desc: 'Deployment, monitoring, and a handover your team can maintain without me on speed dial.',
+    hash: 'e4d8a1c',
+    ref: 'ship',
+    color: '#8b5cf6',
+    message: 'Deploy, monitor, and hand over a codebase your team can keep running without me.',
+    head: true,
   },
 ];
 
@@ -97,9 +103,10 @@ export default function ServicesPage() {
             AI that works.
           </h1>
           <p className="srv2-hero-sub">
-            I design, build, and review production systems — web applications, AI
-            integrations, and the architecture behind them.{' '}
-            <strong>10+ years of hands-on engineering.</strong>
+            No agency overhead, no juniors on your budget. Just a senior engineer
+            who ships production software and AI, and still writes the code every
+            week.{' '}
+            <strong>10+ years in.</strong>
           </p>
           <nav className="srv2-hero-nav" aria-label="Services on this page">
             {services.map((service) => (
@@ -174,14 +181,32 @@ export default function ServicesPage() {
             <h2 className="srv2-process-title">Scope. Build. Ship.</h2>
           </div>
 
-          <div className="srv2-process-steps">
-            {steps.map((step) => (
-              <div key={step.num} className="srv2-process-step">
-                <span className="srv2-process-step-num">{step.num}</span>
-                <h3 className="srv2-process-step-title">{step.title}</h3>
-                <p className="srv2-process-step-desc">{step.desc}</p>
-              </div>
-            ))}
+          <div className="srv2-graph">
+            <div className="srv2-graph-cmd">
+              <span className="srv2-graph-prompt">$</span> git log --graph --oneline --reverse
+            </div>
+
+            <ol className="srv2-graph-log">
+              {steps.map((step) => (
+                <li
+                  key={step.hash}
+                  className="srv2-graph-commit"
+                  style={{ '--srv2-accent': step.color } as CSSProperties}
+                >
+                  <span className="srv2-graph-rail" aria-hidden="true">
+                    <span className="srv2-graph-node" />
+                  </span>
+                  <div className="srv2-graph-body">
+                    <div className="srv2-graph-meta">
+                      <span className="srv2-graph-hash">{step.hash}</span>
+                      <span className="srv2-graph-ref">{step.ref}</span>
+                      {step.head && <span className="srv2-graph-ref srv2-graph-head">HEAD → main</span>}
+                    </div>
+                    <p className="srv2-graph-msg">{step.message}</p>
+                  </div>
+                </li>
+              ))}
+            </ol>
           </div>
         </div>
       </section>
