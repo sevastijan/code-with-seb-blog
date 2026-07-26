@@ -1,0 +1,83 @@
+---
+title: 'Claude Code Auto Memory: The Notes Claude Writes Itself'
+date: '2026-07-09'
+category: 'AI'
+tags: ['claude-code', 'memory', 'developer-workflow', 'productivity', 'ai-agents']
+featured: false
+author: 'Sebastian'
+draft: false
+excerpt: "Claude Code now writes its own memory — build commands, debugging patterns, your style preferences — and recalls them in future sessions without you touching a file. It's on by default and quietly changing how much context you have to repeat. Here's how it works and where it goes wrong."
+---
+
+Somewhere in the last few months, Claude Code started remembering things I never told it to remember. I'd fix a flaky test, and three sessions later it would preemptively avoid the same trap. I'd correct its build command once, and it stopped getting it wrong. At first I assumed I'd written it into a `CLAUDE.md` and forgotten. I hadn't. It was **auto memory** — Claude saving notes to itself, on its own initiative, and recalling them when relevant.
+
+This is a genuinely different thing from the `CLAUDE.md` file you hand-author, and it's **on by default**, which means it's already shaping your sessions whether you've noticed or not. After living with it, I think it's one of the more quietly consequential features Claude Code has shipped — and also one with a failure mode worth understanding before you trust it. Let me break down what it actually does.
+
+## What auto memory actually is
+
+Auto memory lets Claude **accumulate knowledge across sessions without you writing anything.** As it works, Claude decides that certain facts are worth keeping and saves them for its future self: build and test commands, debugging insights ("this project's auth mocks need X"), architecture notes, your code-style preferences, workflow habits.
+
+The key word is *decides*. Claude doesn't dump something every session. It judges whether a piece of information would plausibly be useful in a future conversation, and only then writes it. When it happens, you see it inline — messages like **"Saved 2 memories"** or **"Recalled 2 memories"** — so it's observable, not magic happening behind your back.
+
+Mechanically, memories are plain markdown files living at:
+
+```text
+~/.claude/projects/<project>/memory/
+```
+
+One directory per repository, **local to your machine** — nothing ships to a server. Claude reads and writes these files during a session, pulling the relevant ones into context when they apply and appending new ones when it learns something durable. Because they're just files, you can open them, edit them, and delete the ones that are wrong. That transparency matters, and we'll come back to it.
+
+## Auto memory vs CLAUDE.md: two systems, one goal
+
+This is the part people conflate. Claude Code now has **two** persistent-context mechanisms, and they're complementary, not redundant:
+
+- **`CLAUDE.md`** — instructions *you* write to give Claude persistent context. Deliberate, curated, version-controlled with your repo, shared with your team. This is where your conventions, architecture decisions, and "always do X" rules live. I covered how to structure it well in my [guide to CLAUDE.md as persistent memory](/blog/claude-md-memory-persistent-context-guide).
+- **Auto memory** — notes *Claude* writes itself, based on what it observes and the corrections you give it. Emergent, machine-authored, local to your machine, personal to you.
+
+The clean way to think about it: `CLAUDE.md` is the onboarding doc you write for a new hire; auto memory is the notebook that hire keeps at their own desk. One is intentional and shared; the other is observed and personal. Together they mean you repeat yourself far less — the whole point of good [context engineering](/blog/context-engineering-claude-code-guide) is to stop re-explaining the same things, and auto memory automates the half of that you were never disciplined enough to write down.
+
+## The interaction with Opus 5 you should notice
+
+Here's a non-obvious knock-on effect. [Opus 5 verifies its own work and needs far fewer explicit guardrails](/blog/claude-opus-5-claude-code-developer-review), which is why the advice for that model is to *trim* your `CLAUDE.md` aggressively. Auto memory changes the calculus of what you trim: some of the project-specific knowledge you'd have hand-written into `CLAUDE.md` now gets captured automatically the first time it comes up.
+
+So the emerging division of labor is: keep `CLAUDE.md` for the things a *teammate* needs (conventions, architecture, shared rules), and let auto memory absorb the incidental, personal, learned-by-doing knowledge (that one weird build flag, the test that needs a specific setup). You write less, and what you do write is the stuff that genuinely belongs in version control.
+
+## Turning it on and off
+
+It's on by default. To toggle it, open the memory panel in a session:
+
+```text
+/memory
+```
+
+There's an auto-memory toggle in there; flipping it writes `autoMemoryEnabled` to your user settings at `~/.claude/settings.json`. You'd disable it if you're working in a context where you don't want machine-authored notes accumulating — a throwaway experiment, a heavily sandboxed environment, or a repo where you want *only* the curated `CLAUDE.md` in play.
+
+For most day-to-day work, I leave it on. The value compounds: the longer you work in a repo, the more Claude has quietly learned about it, and the less you find yourself re-explaining the same quirks.
+
+## Where it goes wrong — and why you should read your memory files
+
+The honest caveat, and it's an important one: **automatic memory is not learning, and it's not always right.** Claude captures what it *observed*, which sometimes means it enshrines a mistake. If you did something the wrong way once and Claude noted it as the pattern, it'll happily recall that wrong pattern later, confidently. A memory is a point-in-time observation, not a verified fact — a build command that was true last month may be stale now.
+
+This is exactly why the files being plain, local markdown matters so much. Periodically **open `~/.claude/projects/<project>/memory/` and read it.** Delete memories that are wrong or outdated. Treat it like weeding a garden, not like a database you never inspect. The failure mode isn't dramatic — it's subtle drift, where Claude keeps acting on a stale assumption and you can't figure out why until you read the note it's carrying. Five minutes of reading its memory files resolves the mystery instantly.
+
+My rule: trust auto memory for *convenience* (it saves me repetition), verify it for *correctness* (I don't assume a recalled memory is still true). When Claude recalls a memory that cites a specific file, flag, or command, and it matters, I confirm it against the current code rather than taking it on faith. Same discipline you'd apply to a colleague's year-old notes.
+
+## The bottom line
+
+Auto memory is the feature that finally closes the gap between "context I bothered to write down" and "context that actually accumulates." It's on by default, it's local and inspectable, and it pairs neatly with a leaner `CLAUDE.md` in the Opus 5 era — the model learns your project's incidental quirks so you don't have to document them. Just remember what it is: a notebook of observations, not a source of truth. Let it save you the repetition, read it occasionally to weed the mistakes, and never assume a recalled note is still accurate without a glance at the code. Do that, and it's a quiet, compounding win. Ignore the files entirely, and one day you'll spend an hour debugging a phantom that turns out to be a stale memory Claude wrote three weeks ago.
+
+## References
+
+### Sources
+- [How Claude remembers your project — Claude Code Docs](https://code.claude.com/docs/en/memory) — the official memory model and file locations
+- [Claude Code Memory, Explained: CLAUDE.md, Auto Memory, and What They Miss — MemoryPlugin](https://blog.memoryplugin.com/claude-code-memory/) — the two-system breakdown and toggle behavior
+- [Automatic Memory Is Not Learning — Brent W. Peterson](https://medium.com/@brentwpeterson/automatic-memory-is-not-learning-4191f548df4c) — the crucial caveat on what auto memory does and doesn't do
+- [Claude Code Session Memory: Automatic Cross-Session Context — claudefa.st](https://claudefa.st/blog/guide/mechanics/session-memory) — how recall works across sessions
+
+### Further Reading
+- [Claude Code Dreams: Anthropic's New Memory Feature — claudefa.st](https://claudefa.st/blog/guide/mechanics/auto-dream) — a deeper look at the save/recall mechanics
+- [Claude Features 2026 overview — Suprmind](https://suprmind.ai/hub/claude/features/) — where memory fits among Projects, Skills, and MCP
+
+---
+
+~Seb 👊

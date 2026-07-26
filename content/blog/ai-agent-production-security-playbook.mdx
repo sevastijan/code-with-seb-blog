@@ -1,0 +1,84 @@
+---
+title: 'Your AI Agents Will Get Breached. Here''s the Playbook'
+date: '2026-07-07'
+category: 'AI'
+tags: ['ai-security', 'ai-agents', 'production', 'observability', 'devops']
+featured: false
+author: 'Sebastian'
+draft: false
+excerpt: "88% of organizations running AI agents in production had a security incident in the past year, and only 11% of production agents pass a basic security bar. This isn't a prompt-injection problem you patch — it's an operations problem. Here's how to run agents that fail safe."
+---
+
+Two numbers from 2026 should reframe how you think about agent security. First: **88% of organizations running AI agents in production had a confirmed or suspected security incident** in the past year (Gravitee). Second: **only 11% of production agents pass a basic security bar** (Help Net Security). Put those together and the conclusion is uncomfortable but clear — if you're running agents in production, you are almost certainly running vulnerable ones, and something has probably already gone wrong.
+
+I've watched teams respond to this by hunting for the perfect prompt-injection filter, as if there's a regex that makes the problem go away. There isn't. Agent security isn't a vulnerability you patch; it's an **operations discipline** you adopt, the same way you eventually accepted that you can't prevent every bug so you build systems that fail gracefully. The goal isn't an agent that can't be attacked. It's an agent that, when attacked, can't do much damage. Here's the playbook I use.
+
+## Stop trying to prevent the injection. Contain it.
+
+The single most important mental shift: **assume the prompt injection succeeds.** Every serious security team — Microsoft, CISA, the NSA — now writes their guidance this way, because [prompt injection remains fundamentally unsolved](/blog/prompt-injection-llm-security-guide). If your defense is "we'll detect and block the malicious instruction," you've already lost, because attackers only need to win once and your classifier needs to win every time.
+
+The defensible question isn't "can the agent be tricked?" It's "**what's the worst thing a tricked agent can do?**" That's the blast radius, and it's the number you actually control.
+
+## Blast radius is the whole game
+
+The blast radius of any injection or supply-chain compromise **scales directly with the agent's permissions.** An agent that can only read public docs can be fully hijacked and the damage is nil. An agent holding a standing production database credential can be nudged into exfiltrating your customer table with a single poisoned instruction. Same attack, wildly different outcomes — and the only variable is what you handed the agent.
+
+So you shrink the radius, deliberately, at deployment:
+
+- **Scope every tool and token to the task.** If an agent doesn't need write access, it gets read-only. If it doesn't need production, it gets staging. This is the same least-privilege posture the [NSA's MCP hardening guidance](/blog/nsa-mcp-hardening-ai-agent-security-guide) hammers on, and it's the highest-leverage control you have.
+- **Replace standing credentials with just-in-time provisioning.** CISA's guidance is explicit: no agent should hold a long-lived credential. Issue narrow, short-lived tokens per task and let them expire. A stolen credential that's already dead is not a breach.
+- **Enforce at runtime, not in the prompt.** This is the trap teams fall into: "blast-radius gates" written as prompt instructions ("never access the payments table") fail under injection, because the injection overrides the instruction. The gate has to live *outside* the model — in the tool layer, the API gateway, the IAM policy — where the model can't talk it out of doing its job.
+
+Runtime enforcement is the difference between a policy and a wish. If the only thing stopping your agent from wiring money is a sentence in its system prompt, you don't have a control. You have a suggestion.
+
+## Human-in-the-loop is governance, not a notification
+
+Everyone says "keep a human in the loop." Most people implement it wrong — as a stream of notifications the human rubber-stamps. Message-level review, where a human skims each step, is **structurally insufficient**: humans habituate, click approve, and miss the one poisoned step in a hundred benign ones.
+
+The correct framing: HITL is a **governance mechanism that prevents agents from self-authorizing consequential actions.** You don't ask a human to watch everything. You draw a bright line around the actions that are expensive to undo — anything with financial, operational, or security impact — and you make those *require* explicit human authorization, enforced in the tooling. Deleting data, moving money, changing permissions, deploying to production, sending external communications: these stop and wait for a human to actively say yes.
+
+Everything else runs autonomously. The art is drawing the line correctly — too many checkpoints and humans habituate again; too few and the agent self-authorizes a disaster. Anchor the line to *irreversibility and impact*, not to your comfort level.
+
+## You can't defend what you can't see
+
+The 88% who had incidents mostly found out late, because agent observability is an afterthought. You cannot investigate — or even notice — what you didn't record. So instrument agents like the production systems they are:
+
+- **Log every tool call, input, and output.** This is your audit trail and your incident-response starting point. Non-negotiable.
+- **Alert on behavioral signals, not just errors.** The tells that something's wrong are statistical: a jump in refusal rate, a spike in hallucination rate, a drop in cost-per-success, latency anomalies, drift past a threshold. Route these to your incident-management system the way you'd route a latency alert. This is exactly what a proper [observability stack buys you](/blog/nextjs-opentelemetry-observability-guide) — applied to agents instead of services.
+- **Watch trajectories, not messages.** Crescendo attacks manipulate an agent across many turns, each one innocent-looking, escalating gradually toward a restricted action. Any single message passes review; only the *conversation trajectory* reveals the attack. Your monitoring has to reason about the whole session, not evaluate messages in isolation.
+
+## Inventory your agents — including the shadow ones
+
+CISA's first recommended action is the least glamorous and the most skipped: **inventory every agent you're running, including shadow agents** nobody registered. You cannot secure what you don't know exists, and in 2026 half the agents in a mid-size org were spun up by a team that never told security. Audit the service accounts. Find the agents holding credentials. Run a blast-radius assessment on each. The boring inventory is what turns "we have no idea how exposed we are" into a list you can actually work down.
+
+## The week-one playbook
+
+If you run agents in production and haven't done this, here's the order that buys the most safety fastest:
+
+1. **Inventory every agent and its permissions.** You can't assess what you can't see.
+2. **Run a blast-radius assessment on each.** For every agent, write down the worst thing it could do if fully hijacked. The scary ones jump out immediately.
+3. **Scope down tokens and kill standing credentials.** Move to just-in-time, least-privilege access. This shrinks every scary number from step 2.
+4. **Put runtime gates on consequential actions.** Money, data deletion, prod deploys, external comms — enforced in tooling, requiring human authorization.
+5. **Turn on logging and behavioral alerts.** So the next incident is one you catch in minutes, not one you read about in a customer's tweet.
+
+None of this requires a research breakthrough. It's the same defense-in-depth we already apply to every other production system, applied to a new kind of actor that happens to be [manipulable by anyone who can get text in front of it](/blog/uncomfortable-truths-ai-coding-agents-2026).
+
+## The bottom line
+
+The 88% number isn't a reason to pull agents out of production — they're too useful, and that ship has sailed. It's a reason to stop treating agent security as a model problem and start treating it as an operations problem. You will not prevent every injection. You *can* make sure that when one lands, the agent it hijacked couldn't touch anything that matters, every action it took was logged, and anything irreversible needed a human to say yes. That's not a perfect defense. Perfect isn't on the menu. Surviving the incident you're statistically going to have — that's the actual goal, and it's entirely achievable with controls you already understand.
+
+## References
+
+### Sources
+- [Defense in depth for autonomous AI agents — Microsoft Security](https://www.microsoft.com/en-us/security/blog/2026/05/14/defense-in-depth-autonomous-ai-agents/) — blast-radius framing and runtime enforcement
+- [Only 11% of production agents pass the AI agent security bar — Help Net Security](https://www.helpnetsecurity.com/2026/06/03/research-ai-agent-security-capability/) — the security-capability research
+- [Securing AI agents: The enterprise security playbook — Microsoft](https://techcommunity.microsoft.com/blog/marketplace-blog/securing-ai-agents-the-enterprise-security-playbook-for-the-agentic-era/4503627) — HITL as governance, checkpoint design
+- [AI Agent Security Checklist (2026) — Iternal](https://iternal.ai/ai-agent-security-checklist) — CISA actions, inventory, just-in-time credentials
+
+### Further Reading
+- [The Complete Guide to AI Agent Security for Enterprises — NeuralTrust](https://neuraltrust.ai/blog/ai-agent-security-enterprises-complete-guide) — a broader enterprise treatment
+- [AI Agent Prompt Injection Defense: 2026 Production Playbook — Lushbinary](https://lushbinary.com/blog/ai-agent-prompt-injection-defense-production-playbook/) — deeper on the injection-defense layer
+
+---
+
+~Seb 👊

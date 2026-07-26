@@ -1,0 +1,111 @@
+---
+title: 'WebAssembly + React: Running Rust in the Browser'
+date: '2026-07-04'
+category: 'Development'
+tags: ['webassembly', 'react', 'rust', 'performance', 'frontend']
+featured: false
+author: 'Sebastian'
+draft: false
+excerpt: "A 4K image filter that takes 1.2 seconds in JavaScript runs in 58 milliseconds as Rust compiled to WebAssembly. In 2026 the tooling is finally boring enough to use in production. Here's how to wire Rust into a React app, and — more importantly — when you actually should."
+---
+
+Here's the number that makes WebAssembly worth your attention: a JavaScript image-processing pipeline that took **1.2 seconds** to apply filters to a 4K image runs the same work in **58 milliseconds** as Rust compiled to Wasm. That's not a tuning win. That's a different category of experience — a frozen tab versus an instant one.
+
+For years Wasm lived in the "interesting, someday" pile because the tooling was sharp-edged and the use cases fuzzy. In 2026 that changed: **wasm-bindgen and wasm-pack are stable, runtime support is universal, and the use cases are well understood.** It's boring now, in the good way. But "you can" is not "you should," and the fastest way to waste a week is to Wasm-ify something that never needed it. Let me show you both the how and the when.
+
+## When Wasm actually helps (and when it's a trap)
+
+Wasm is **1.5× to 20× faster than JavaScript for compute-intensive tasks.** Note the qualifier — *compute-intensive*. That's the entire decision criterion, and getting it wrong is the classic mistake.
+
+**Reach for Wasm when** the bottleneck is CPU-bound number crunching:
+
+- Image and video processing (filters, transforms, encoding)
+- Cryptography and hashing
+- Parsing large or complex formats
+- Machine-learning inference in the browser
+- 3D rendering and simulation
+- Anything with tight numeric loops over big buffers
+
+**Do not reach for Wasm when** the work is DOM manipulation, network I/O, or general app logic. Wasm can't touch the DOM directly, and the cost of crossing the JS↔Wasm boundary will *erase* any gain on work that isn't heavy enough to justify it. Wrapping a form handler in Rust makes your app slower and your build harder. The honest filter: if you couldn't measure the JavaScript version being slow, Wasm is the wrong tool.
+
+This is really a [performance-budget](/blog/performance-budgets-frontend-engineers-guide) decision. Profile first, confirm the hot path is genuine CPU-bound compute, *then* consider Wasm — the same discipline that stops you reaching for it on work where [the React Compiler or plain optimization](/blog/react-compiler-remove-usememo-cleanup-playbook) would already be plenty. (For the broader question of whether Wasm is worth it at all — beyond React — I wrote a [general decision guide on when JavaScript isn't enough](/blog/webassembly-practical-guide-when-javascript-isnt-enough).)
+
+## The architecture: Rust lifts, React presents
+
+The clean mental model, and the one that keeps the boundary sane: **Rust handles the heavy lifting, React handles presentation, and the two communicate through serialized data and shared memory buffers.** You don't rewrite your UI in Rust. You carve out the one expensive function, move *that* to Wasm, and leave everything else as idiomatic React.
+
+You write the compute in Rust and expose it with `wasm-bindgen`:
+
+```rust
+// lib.rs — the compute-heavy part, in Rust
+use wasm_bindgen::prelude::*;
+
+#[wasm_bindgen]
+pub fn apply_grayscale(pixels: &mut [u8]) {
+    // Operate directly on the pixel buffer — tight numeric loop,
+    // exactly the kind of work JS is slow at.
+    for chunk in pixels.chunks_mut(4) {
+        let luma = (0.299 * chunk[0] as f32
+                  + 0.587 * chunk[1] as f32
+                  + 0.114 * chunk[2] as f32) as u8;
+        chunk[0] = luma; // R
+        chunk[1] = luma; // G
+        chunk[2] = luma; // B
+        // chunk[3] is alpha — leave it
+    }
+}
+```
+
+`wasm-pack build --target web` compiles that to a `.wasm` module plus a tiny JS wrapper. Then it's an ordinary async import in React:
+
+```jsx
+// ImageEditor.jsx — React stays React
+import { useEffect, useRef } from 'react';
+import init, { apply_grayscale } from './pkg/image_tools.js';
+
+export function ImageEditor({ imageData }) {
+  const ready = useRef(false);
+
+  useEffect(() => {
+    // Load the Wasm module once, on mount.
+    init().then(() => { ready.current = true; });
+  }, []);
+
+  const handleFilter = () => {
+    if (!ready.current) return;
+    // Pass the pixel buffer straight into Rust; it mutates in place.
+    apply_grayscale(imageData.data);
+    // ...write imageData back to the canvas
+  };
+
+  return <button onClick={handleFilter}>Grayscale</button>;
+}
+```
+
+React never knows or cares that a filter runs in Rust. The boundary is one function call over a shared buffer — which is exactly why you want the Rust side to do *a lot* of work per call. Chatty, fine-grained calls across the boundary are where naive Wasm integrations lose all their speed.
+
+## The tooling gotcha that will waste your afternoon
+
+One specific trap, because it's the thing that cost me the most time and it's entirely avoidable: **the `wasm-bindgen` crate version must exactly match the `wasm-bindgen-cli` version.** Not "compatible" — *exactly* equal. A mismatch produces cryptic runtime errors that look like your code is broken when it's really a version skew between the library and the CLI that generated the glue.
+
+Current stable is `wasm-bindgen` v0.2.118+ and `wasm-pack` v0.14.0+. Pin the versions, keep the crate and the CLI locked together, and you'll skip the single most common Wasm-integration headache. And mind your [bundle budget](/blog/dynamic-bundle-optimization-under-200kb-guide) — a Wasm module is bytes the user downloads, so lazy-load it and only pay for it on the routes that actually use the heavy feature.
+
+## The bottom line
+
+WebAssembly in 2026 is production-ready, universally supported, and no longer exotic — and for genuinely compute-heavy work in the browser, the speedups aren't incremental, they're the difference between a frozen tab and an instant one. But it earns its place in exactly one situation: a real, measured, CPU-bound bottleneck that JavaScript can't clear. Profile first. If the hot path is heavy numeric work — images, crypto, parsing, ML, 3D — carve that one function out to Rust, keep React as the presentation layer, pass big buffers across a thin boundary, and pin your `wasm-bindgen` versions. Do that and you get near-native performance in the two functions that needed it, with an app that's still, everywhere else, a normal React app. Reach for it anywhere else and you've added a build toolchain and a language to make your form handler slower. The tool is sharp now. Just point it at the right thing.
+
+## References
+
+### Sources
+- [Rust WASM in 2026: From Toy Demos to Real Production Apps — Nandann](https://www.nandann.com/blog/rust-wasm-production-2026) — production readiness, the 4K-image benchmark, boundary architecture
+- [Rust Wasm for Next.js: 2026 Compilation Strategies — Nandann](https://www.nandann.com/blog/rust-wasm-nextjs-2026-compilation-strategies) — wasm-bindgen/wasm-pack versions and the version-match gotcha
+- [WebAssembly for Web Developers: Getting Started in 2026 — daily.dev](https://daily.dev/blog/webassembly-getting-started-wasm-web-developers/) — when Wasm helps vs when it doesn't
+- [Rust with React: A Practical WebAssembly UI Guide — Corrosion Expert](https://corrosion-expert.com/rust-tools/rust-with-react) — the Rust-lifts-React-presents integration pattern
+
+### Further Reading
+- [The State of WebAssembly in 2026 — Xuro](https://xuro.net/blog/state-of-webassembly-2026/) — the wider ecosystem and where Wasm is heading
+- [Creating a State Manager for React with Rust and WebAssembly — rust-dd](https://rust-dd.com/post/creating-a-state-manager-for-react-with-rust-and-webassembly) — a more advanced integration example
+
+---
+
+~Seb 👊

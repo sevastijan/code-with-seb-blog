@@ -1,0 +1,68 @@
+---
+title: 'Big Agent vs Micro-Agents: How to Tier Your Coding Fleet'
+date: '2026-07-26'
+category: 'AI'
+tags: ['ai-agents', 'model-routing', 'cost-optimization', 'architecture', 'claude-code']
+featured: false
+author: 'Sebastian'
+draft: false
+excerpt: "One expensive frontier agent, or a swarm of cheap specialized ones? On July 16 every major vendor upgraded their coding agents and forced the question. The answer isn't a model — it's an architecture. Here's the decision framework and the tiering that cuts cost 40-60% without losing quality."
+---
+
+On July 16, 2026, nearly every major AI vendor shipped a coding-agent upgrade on the same day. GPT-5.5-pro, GPT-5.3-codex, Claude's fleet, Haiku 4.5 — all refreshed within hours of each other. And buried under the benchmark one-upmanship was the question that actually matters for anyone building with these things: **do you route work to one big, expensive agent, or compose a swarm of small, cheap, specialized ones?**
+
+This is the real architecture decision of 2026, and most teams get it wrong by defaulting to one extreme. They either run a frontier model for everything (and get a bill that makes finance nervous) or chase the micro-agent dream so hard they build a distributed system to do a job one good agent would have finished in a single pass. The right answer is neither. It's tiering — and getting the tiers right cuts cost 40-60% with no quality loss. Here's how I think about it.
+
+## The two architectures, honestly
+
+**The big agent.** One capable frontier model — [Opus 5](/blog/claude-opus-5-claude-code-developer-review), GPT-5.5-pro — handles the whole task end to end. It plans, executes, and verifies in one coherent context. The upside is exactly that coherence: nothing gets lost in translation between agents, the model holds the whole problem in working memory, and you don't build orchestration plumbing. The downside is cost (frontier tokens for every trivial step) and that a single long context eventually degrades on very large jobs.
+
+**Micro-agents.** Many small, specialized agents — often on cheaper models like GPT-5.3-codex or Haiku 4.5 — each own a narrow job: one triages, one routes, one writes tests, one reviews. The upside is cost (you only spend frontier money where it's needed) and parallelism. The downside is real and underrated: **every hand-off between agents is a place for context to leak**, coordination overhead compounds, and debugging a swarm is genuinely harder than debugging one agent. A distributed system of LLMs has all the problems of a distributed system *plus* all the problems of LLMs.
+
+The mistake is treating this as a religious choice. It's a routing decision you make per task.
+
+## The tiering that actually works
+
+The pattern that consistently wins for me is **a frontier brain directing cheap hands** — and it's the same logic whether you're doing it across a [nested subagent tree](/blog/claude-code-nested-subagents-agent-hierarchies-guide) or a flat fleet:
+
+- **Triage / routing → cheapest model.** The agent that reads an incoming task and decides where it goes doesn't need to be smart, it needs to be fast and cheap. Haiku 4.5 all day.
+- **Planning / architecture → frontier model.** Decomposition quality determines whether the whole run succeeds or wastes itself. This is where you spend. A bad plan from a cheap model poisons every downstream agent.
+- **Bulk execution → mid-tier.** Sonnet 5 or GPT-5.3-codex. Strong enough to implement well, a fraction of frontier cost, and you're running a lot of these in parallel.
+- **Verification / mechanical checks → cheapest model.** Running the test suite, checking a diff for obvious issues, formatting — Haiku again.
+
+That distribution is where the 40-60% cost reduction comes from: you're not paying frontier prices for triage and formatting, only for the reasoning that genuinely needs it. It's the same instinct I laid out in the [Fable 5 orchestrator playbook](/blog/fable-5-claude-code-model-routing-playbook) — a `max`-effort brain routing to cheap workers — now made trivial by [Opus 5's per-subagent model control](/blog/claude-opus-5-claude-code-developer-review), which lets you assign a different model to every node in a run.
+
+## The decision framework
+
+Strip away the hype and the choice comes down to three properties of the task.
+
+**1. Does it decompose cleanly?** If the work splits into independent slices (per-file, per-module, per-endpoint), micro-agents shine — you parallelize and route each slice to the cheapest capable model. If the slices are deeply interdependent and need shared context, a big agent's single coherent memory beats the coordination tax of a swarm. **Interdependence favors the big agent; independence favors micro-agents.**
+
+**2. How expensive is a coordination failure?** Every agent hand-off can drop context. If the task is forgiving (a failed slice just gets retried), micro-agents are fine. If a dropped detail causes a subtle, expensive bug, keep it in one context where nothing gets lost in translation.
+
+**3. What's the cost sensitivity?** If you're running this pattern thousands of times a day, the tiering savings dominate and micro-agents pay for their complexity. If it's an occasional high-stakes task, the big agent's simplicity and coherence are worth the extra tokens — don't build a distributed system to save pennies on a job you run twice a week.
+
+My rule of thumb: **start with the big agent, split into micro-agents only when a specific pain forces it** — cost you can measure, a job too big for one context, or a slice you run so often that specializing it clearly pays. Premature micro-agent architecture is the LLM era's version of premature microservices, and it fails the same way: you inherit all the distributed-systems pain before you've earned any of the benefit.
+
+## Where the fleet lives
+
+One more axis the July 16 upgrades surfaced: your fleet doesn't have to be one vendor, or even all cloud. The [multi-CLI stack](/blog/multi-cli-stack-claude-code-codex-gemini-orchestration-guide) — Claude Code plus Codex plus Gemini — is a real pattern precisely because different agents are better at different jobs, and orchestrating across them is now normal. And the cheapest tier of all increasingly isn't cloud at all: [local-first coding agents on small models](/blog/local-first-coding-agents-small-models-guide) can own the mechanical majority of work for zero marginal cost, with the cloud fleet reserved for the hard tail. The most cost-efficient architecture I've run is local models for the bulk, mid-tier cloud for real implementation, and a frontier model only for planning and the genuinely hard problems.
+
+## The bottom line
+
+The July 16 upgrade day made every tier better, but it didn't answer the question it raised — and the answer was never "pick the best model." It's "route each kind of work to the cheapest model that can do it well, and don't add orchestration complexity until a measurable pain demands it." Start with one capable agent. Measure where it's expensive or where it strains. Split *those* jobs into cheaper specialized agents, tier your models so frontier money only funds frontier-hard reasoning, and reach for a swarm only when the task genuinely decomposes. Do that and you get most of the micro-agent savings with a fraction of the micro-agent headache — which is the only version of this that survives contact with a real codebase and a real budget.
+
+## References
+
+### Sources
+- [The best AI developer tools in 2026 — Simple Talk (Red Gate)](https://www.red-gate.com/simple-talk/ai/the-best-ai-developer-tools-in-2026-from-coding-agents-to-code-review/) — the July 2026 coding-agent landscape and tiering context
+- [Best Multi-Agent Frameworks in 2026: LangGraph, CrewAI — gurusup](https://gurusup.com/blog/best-multi-agent-frameworks-2026) — micro-agent orchestration patterns and trade-offs
+- [Multi-Agent Orchestration: 5 Patterns That Work in 2026 — Digital Applied](https://www.digitalapplied.com/blog/multi-agent-orchestration-5-patterns-that-work) — when composition beats a single agent
+
+### Further Reading
+- [Building Production-Ready AI Agents in 2026 — MLflow](https://mlflow.org/articles/building-production-ready-ai-agents-in-2026/) — the layered-architecture view of agent systems
+- [AI Agent Engineering in 2026: Architectures and Patterns](https://blog.whoisjsonapi.com/ai-agent-engineering-in-2026-architectures-patterns-and-real-world-systems/) — model-tiering economics in depth
+
+---
+
+~Seb 👊
