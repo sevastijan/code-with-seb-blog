@@ -1,36 +1,28 @@
 import Link from 'next/link';
-import { ArrowRight } from 'lucide-react';
+import { ArrowRight, ArrowUpRight } from 'lucide-react';
 import { ScrollProgress } from '@/components/ScrollProgress';
 import { HeroParallax } from '@/components/HeroParallax';
 import { HeroCodeSymbol } from '@/components/HeroCodeSymbol';
 import { ScrollFade, ScrollScale } from '@/components/HeroScrollAnimations';
-import { FeaturedPostBrutalist } from '@/components/FeaturedPostBrutalist';
-import { MarqueeAwwwards } from '@/components/MarqueeAwwwards';
-import { BlogGridAwwwards } from '@/components/BlogGridAwwwards';
 import { ServicesAwwwards } from '@/components/ServicesAwwwards';
-import { CTAAwwwards } from '@/components/CTAAwwwards';
 import { FooterAwwwards } from '@/components/FooterAwwwards';
-import { getAllPosts, getFeaturedPosts } from '@/lib/mdx';
+import { getAllPosts } from '@/lib/mdx';
+
+function formatDate(date: string) {
+  return new Date(date).toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  });
+}
 
 export default function HomePage() {
   const allPosts = getAllPosts();
-  const featuredPosts = getFeaturedPosts();
-
-  // Hero banner always shows the newest post. A manually featured post only
-  // wins the banner when it IS the newest — so stale `featured` flags can't
-  // pin an old article here (the auto-publish pipeline sets featured: false).
   const latest = allPosts[0];
-  const newestFeatured = featuredPosts[0];
-  const featuredPost =
-    newestFeatured && latest && newestFeatured.date >= latest.date
-      ? newestFeatured
-      : latest;
-
-  // Get latest posts excluding the featured one, limit to 4
-  const latestPosts = allPosts
-    .filter(p => p.slug !== featuredPost?.slug)
+  const recentPosts = allPosts
+    .filter((p) => p.slug !== latest?.slug)
     .slice(0, 4)
-    .map(p => ({
+    .map((p) => ({
       slug: p.slug,
       title: p.title,
       excerpt: p.excerpt,
@@ -56,13 +48,6 @@ export default function HomePage() {
             {/* Dark gradient backdrop for readability */}
             <div className="hero-text-backdrop" />
 
-            {/* Intro */}
-            <ScrollFade delay={0}>
-              <div className="mb-6 relative">
-                <span className="label">@codewithseb • Senior Software Developer & AI Specialist</span>
-              </div>
-            </ScrollFade>
-
             {/* Mega headline with parallax */}
             <ScrollScale intensity={0.5}>
               <div className="mb-10 md:mb-14 relative">
@@ -82,61 +67,113 @@ export default function HomePage() {
 
             {/* Tagline */}
             <ScrollFade delay={50}>
-              <div className="max-w-lg mb-10">
+              <div className="max-w-xl mb-10">
                 <p className="text-xl md:text-2xl leading-relaxed">
-                  <span className="text-[var(--c-text)]">Senior software developer & AI specialist.</span>
-                  <span className="text-[var(--c-text-muted)]"> Turning complex tech into competitive advantage.</span>
+                  <span className="text-[var(--c-text)]">I build production software and the AI that runs inside it.</span>
+                  <span className="text-[var(--c-text-muted)]"> Here I write about how it&apos;s done, and where you can put me to work.</span>
                 </p>
               </div>
             </ScrollFade>
 
             {/* CTA */}
             <ScrollFade delay={100}>
-              <div className="flex flex-wrap items-center gap-4">
-                <Link href="/blog" className="btn-magnetic">
-                  <span>Read the blog</span>
-                  <ArrowRight className="w-5 h-5" />
-                </Link>
-                <Link href="/contact" className="link-underline text-lg">
+              <div className="home-hero-cta">
+                <Link href="/services" className="home-hero-btn home-hero-btn-primary">
                   <span>Work with me</span>
+                  <ArrowRight />
+                </Link>
+                <Link href="/blog" className="home-hero-btn home-hero-btn-ghost">
+                  <span>Read the blog</span>
                 </Link>
               </div>
             </ScrollFade>
           </div>
 
-          {/* Scroll hint */}
-          <div className="absolute bottom-8 left-1/2 -translate-x-1/2 flex flex-col items-center gap-2 text-[var(--c-text-muted)]">
-            <span className="label text-xs">Scroll</span>
-            <div className="w-px h-12 bg-gradient-to-b from-[var(--c-text-muted)] to-transparent" />
+          {/* Scroll hint - mouse with scrolling wheel */}
+          <div className="home-scroll-hint" aria-hidden="true">
+            <span className="home-scroll-mouse">
+              <span className="home-scroll-wheel" />
+            </span>
           </div>
         </div>
       </section>
 
-      {/* Featured Post - Brutalist Takeover */}
-      {featuredPost && (
-        <FeaturedPostBrutalist
-          slug={featuredPost.slug}
-          title={featuredPost.title}
-          excerpt={featuredPost.excerpt}
-          category={featuredPost.category}
-          date={featuredPost.date}
-          readTime={featuredPost.readTime}
-        />
+      {/* LATEST ARTICLES - featured + list, one section */}
+      {latest && (
+        <section className="home-blog">
+          <div className="container">
+            <div className="home-blog-head">
+              <div>
+                <span className="label">From the blog</span>
+                <h2 className="home-blog-title">Latest articles</h2>
+              </div>
+              <Link href="/blog" className="home-blog-all">
+                <span>All posts</span>
+                <ArrowUpRight />
+              </Link>
+            </div>
+
+            <Link href={`/blog/${latest.slug}`} className="home-blog-featured">
+              <div className="home-blog-meta">
+                <span className="home-blog-cat">{latest.category}</span>
+                <span>{formatDate(latest.date)}</span>
+                <span>{latest.readTime}</span>
+              </div>
+              <h3 className="home-blog-featured-title">{latest.title}</h3>
+              <p className="home-blog-featured-excerpt">{latest.excerpt}</p>
+              <span className="home-blog-read">
+                Read article
+                <ArrowRight />
+              </span>
+            </Link>
+
+            <div className="home-blog-grid">
+              {recentPosts.map((post) => (
+                <Link key={post.slug} href={`/blog/${post.slug}`} className="home-blog-card">
+                  <div className="home-blog-meta">
+                    <span className="home-blog-cat">{post.category}</span>
+                    <span>{formatDate(post.date)}</span>
+                  </div>
+                  <h3 className="home-blog-card-title">{post.title}</h3>
+                  <span className="home-blog-card-arrow">
+                    <ArrowUpRight />
+                  </span>
+                </Link>
+              ))}
+            </div>
+
+            <div className="home-blog-more-wrap">
+              <Link href="/blog" className="home-blog-more">
+                <span>View all articles</span>
+                <ArrowRight />
+              </Link>
+            </div>
+          </div>
+        </section>
       )}
 
-      {/* Marquee - Awwwards style */}
-      <MarqueeAwwwards />
-
-      {/* Latest Posts Grid - Awwwards Edition */}
-      <BlogGridAwwwards posts={latestPosts} />
-
-      {/* Services - Awwwards Edition */}
+      {/* SERVICES - Awwwards carousel (unchanged) */}
       <ServicesAwwwards />
 
-      {/* CTA - Awwwards Edition */}
-      <CTAAwwwards />
+      {/* CTA */}
+      <section className="srv2-cta">
+        <div className="container">
+          <h2 className="srv2-cta-title">
+            Let&apos;s build
+            <br />
+            something.
+          </h2>
+          <p className="srv2-cta-desc">
+            Tell me what you&apos;re working on and where it&apos;s stuck. No pitch, no sales
+            call, just a straight answer on whether I can help.
+          </p>
+          <Link href="/contact" className="srv2-cta-btn">
+            <span>Start a conversation</span>
+            <ArrowRight />
+          </Link>
+        </div>
+      </section>
 
-      {/* Footer - Awwwards Edition */}
       <FooterAwwwards />
     </div>
   );

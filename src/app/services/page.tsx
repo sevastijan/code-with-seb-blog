@@ -214,13 +214,15 @@ export default function ServicesPage() {
       {/* CTA */}
       <section className="srv2-cta">
         <div className="container">
-          <div>
-            <h2 className="srv2-cta-title">Have a project in mind?</h2>
-            <p className="srv2-cta-desc">
-              Tell me what you&apos;re building and where it&apos;s stuck. I&apos;ll tell you
-              honestly whether I can help.
-            </p>
-          </div>
+          <h2 className="srv2-cta-title">
+            Not sure which
+            <br />
+            one fits?
+          </h2>
+          <p className="srv2-cta-desc">
+            Tell me what you&apos;re building. I&apos;ll point you to the right one, or tell
+            you honestly if I&apos;m not it.
+          </p>
           <Link href="/contact" className="srv2-cta-btn">
             <span>Start a conversation</span>
             <ArrowRight />

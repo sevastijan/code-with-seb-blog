@@ -180,12 +180,13 @@ export function ArticleHero({ title, excerpt, category, date, readTime, author, 
         {/* Meta information */}
         <div className={`article-hero-meta ${isRevealed ? 'revealed' : ''}`}>
           {author && (
-            <div className="article-hero-author">
+            <Link href={`${basePath}/about`} className="article-hero-author">
               <div className="article-hero-author-avatar">
-                {author.charAt(0)}
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src="/sebastian.jpg" alt={author} loading="lazy" />
               </div>
               <span>{author}</span>
-            </div>
+            </Link>
           )}
           <div className="article-hero-meta-divider" />
           <div className="article-hero-meta-item">

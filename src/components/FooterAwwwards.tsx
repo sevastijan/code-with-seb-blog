@@ -4,45 +4,45 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 
-const aiServices = {
+const services = {
   en: [
-    { name: 'AI Strategy', href: '/services/ai' },
-    { name: 'AI Automation', href: '/services/ai' },
-    { name: 'LLM Integration', href: '/services/ai' },
-    { name: 'AI Agents', href: '/services/ai' },
+    { name: 'Software Engineering', href: '/services/development' },
+    { name: 'AI Engineering', href: '/services/ai' },
+    { name: 'Technical Consulting', href: '/services/consulting' },
+    { name: 'All services', href: '/services' },
   ],
   pl: [
-    { name: 'Strategia AI', href: '/services/ai' },
-    { name: 'Automatyzacja AI', href: '/services/ai' },
-    { name: 'Integracja LLM', href: '/services/ai' },
-    { name: 'Agenty AI', href: '/services/ai' },
+    { name: 'Software Engineering', href: '/services/development' },
+    { name: 'AI Engineering', href: '/services/ai' },
+    { name: 'Technical Consulting', href: '/services/consulting' },
+    { name: 'Wszystkie usługi', href: '/services' },
   ],
 };
 
-const devServices = {
+const explore = {
   en: [
-    { name: 'Software Engineering', href: '/services/development' },
-    { name: 'Technical Architecture', href: '/services/development' },
-    { name: 'Technical Consulting', href: '/services/consulting' },
-    { name: 'Code Review', href: '/services/development' },
+    { name: 'Blog', href: '/blog' },
+    { name: 'Work', href: '/work' },
+    { name: 'About', href: '/about' },
+    { name: 'Contact', href: '/contact' },
   ],
   pl: [
-    { name: 'Software Engineering', href: '/services/development' },
-    { name: 'Architektura techniczna', href: '/services/development' },
-    { name: 'Konsulting techniczny', href: '/services/consulting' },
-    { name: 'Code Review', href: '/services/development' },
+    { name: 'Blog', href: '/blog' },
+    { name: 'Realizacje', href: '/work' },
+    { name: 'O mnie', href: '/about' },
+    { name: 'Kontakt', href: '/contact' },
   ],
 };
 
 const footerCopy = {
   en: {
     tagline: <>Turning &quot;it can&apos;t be done&quot; into &quot;it&apos;s already live.&quot;<br />AI, code &amp; strategy for founders who ship.</>,
-    aiServices: 'AI Services', development: 'Development', connect: 'Connect',
+    services: 'Services', explore: 'Explore', connect: 'Connect',
     localTime: 'Local time', availability: 'Available for work', builtWith: 'Built with', location: 'in Cracow',
   },
   pl: {
     tagline: <>Zamieniam &quot;to się nie da&quot; w &quot;to już działa na produkcji.&quot;<br />AI, kod i strategia dla founderów, którzy wdrażają.</>,
-    aiServices: 'Usługi AI', development: 'Development', connect: 'Kontakt',
+    services: 'Usługi', explore: 'Nawigacja', connect: 'Kontakt',
     localTime: 'Czas lokalny', availability: 'Dostępny do współpracy', builtWith: 'Zbudowane z', location: 'w Krakowie',
   },
 };
@@ -221,14 +221,14 @@ export function FooterAwwwards() {
 
         {/* Services grid */}
         <div className="footer-mega-services">
-          {/* AI Services */}
+          {/* Services */}
           <div className="footer-mega-service-col">
             <p className="footer-mega-nav-label">
               <span className="footer-mega-label-icon">◈</span>
-              {c.aiServices}
+              {c.services}
             </p>
             <div className="footer-mega-service-links">
-              {aiServices[lang].map((service, i) => (
+              {services[lang].map((service, i) => (
                 <Link
                   key={service.name}
                   href={`${p}${service.href}`}
@@ -242,14 +242,14 @@ export function FooterAwwwards() {
             </div>
           </div>
 
-          {/* Dev Services */}
+          {/* Explore */}
           <div className="footer-mega-service-col">
             <p className="footer-mega-nav-label">
               <span className="footer-mega-label-icon">◇</span>
-              {c.development}
+              {c.explore}
             </p>
             <div className="footer-mega-service-links">
-              {devServices[lang].map((service, i) => (
+              {explore[lang].map((service, i) => (
                 <Link
                   key={service.name}
                   href={`${p}${service.href}`}
