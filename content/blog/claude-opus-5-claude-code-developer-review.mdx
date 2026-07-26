@@ -1,0 +1,111 @@
+---
+title: 'Claude Opus 5 in Claude Code: What Actually Changed'
+date: '2026-07-26'
+category: 'AI'
+tags: ['claude-code', 'opus-5', 'claude', 'ai-models', 'developer-review']
+featured: false
+author: 'Sebastian'
+draft: false
+excerpt: "Claude Opus 5 landed on July 24 and reached Claude Code the same day. Same price as Opus 4.8, but thinking is on by default, it verifies its own work, and half your CLAUDE.md just became dead weight. Here's what changed and what to do about it."
+---
+
+Claude Opus 5 landed on July 24, 2026, and hit Claude Code the same day in v2.1.219. Same price as Opus 4.8 — $5 in, $25 out per million tokens — so my first instinct was "nice, a free bump." That instinct was wrong. Not because the model is worse, but because Opus 5 changes enough default behavior that half the scaffolding I'd built around Opus 4.8 is now actively working against me.
+
+The headline number is real: **SWE-bench Pro jumped from 69.2% to 79.2%** — a ten-point gain at the same price. But the story that matters for daily Claude Code work isn't the benchmark. It's that the model now does, natively, three things I used to force it to do with prompts and guardrails. And if you don't delete those guardrails, you pay for them twice. Let me walk through what actually changed.
+
+## The benchmarks, briefly
+
+I'll keep this short because benchmarks are the least interesting part.
+
+- **SWE-bench Pro: 79.2%**, up from 4.8's 69.2%. That puts Opus 5 in a dead heat at the frontier — Mythos 5 sits at 80.3%, Fable 5 at 80.0%, Opus 5 at 79.2%. Under a point separates the three.
+- **ARC-AGI-3: 30.2%** — roughly 4× GPT-5.6 Sol and about 20× Opus 4.8. That's the number that actually surprised me; abstract reasoning is where 4.8 fell down hardest.
+- **Aggregate coding: ~89.5 vs 4.8's ~81.1.** In practice this means fewer correction cycles per agentic run. Drive an agent through a real codebase and Opus 5 finishes more tasks per attempt.
+
+Pricing is unchanged from 4.8, which makes Opus 5 half the cost of Fable 5 for a score within a point of it. The specs: **1M-token context (that's the default *and* the maximum now), 128k max output, an effort ladder up to `max`, thinking on by default, and a knowledge cutoff of May 2026.** If you want the full lineup context, my [Claude 5 family model-selection guide](/blog/claude-5-family-model-selection-guide) still holds — Opus 5 just slots in as the new default-frontier pick.
+
+Good. Benchmarks done. Here's what you actually feel.
+
+## Change #1: thinking is on by default (and it changes your bill)
+
+On Opus 4.8, a request ran without extended thinking unless you opted into adaptive thinking. **On Opus 5, thinking is on by default,** and `effort` (low / medium / high / xhigh / max) is now the main dial for depth, latency, and cost.
+
+This is the change that quietly moves your invoice. The same request that ran cheap on 4.8 now pays for reasoning tokens it didn't before. The model isn't more expensive per token — it just *thinks* more unless you tell it not to. So the lever you tune is no longer "which model," it's "what effort." For routine mechanical work, drop effort to low and you claw the cost back; save `xhigh`/`max` for the genuinely hard problems.
+
+There are hard **breaking changes** in the API here, and they'll bite if you script against Claude:
+
+- If you disable thinking (`thinking: {"type": "disabled"}`), **effort must be `high` or below.** Combining disabled thinking with `xhigh` or `max` now returns a `400`. On 4.8 those two settings were independent.
+- **`max_tokens` must now cover the thinking budget**, not just the visible output. Under-size it and you'll truncate mid-reason.
+
+If you manage a Claude token budget the way I described in my [token-optimization playbook](/blog/claude-code-token-optimization-bill-cut-guide), revisit it now — the effort dial replaces most of the model-switching tricks that used to save money.
+
+## Change #2: it verifies its own work — so stop telling it to
+
+Opus 5 verifies its own output without being asked. It writes a change, then checks it, reruns the reasoning, and catches its own mistakes before handing them back. Opus 4.8 did this only when you built the loop yourself.
+
+This sounds minor. It is not, because of what it does to your **CLAUDE.md**. Over the last year most of us accreted a pile of instructions like "after writing code, verify it compiles," "double-check your work," "re-read the diff before finishing." Every one of those was a guardrail for a model that needed it. Opus 5 mostly doesn't — and those instructions now *stack on top of* behavior the model already has, costing tokens and, worse, sometimes degrading quality by making it over-verify.
+
+Anthropic made the same move internally: they reportedly deleted around 80% of Claude Code's own system prompt for Opus 5. The lesson generalizes. Go through your `CLAUDE.md` and delete every instruction that Opus 5 no longer needs — verification nags first. Trim it down to what the model genuinely *can't* infer from the repo itself: your conventions, your domain rules, your deploy quirks. This is exactly the de-prescribing shift I wrote about for [Fable 5's prompting style](/blog/fable-5-prompting-de-prescribing-guide) — Opus 5 needs the same haircut. A lean, high-signal `CLAUDE.md` — the kind I argued for in my [persistent-context guide](/blog/claude-md-memory-persistent-context-guide) — now matters more than ever, because the model fills in more of the gaps correctly on its own.
+
+## Change #3: nested subagents, and a spawn depth you must cap
+
+Opus 5 reaches for subagents more readily than 4.8, and Claude Code raised the ceiling to match. **Subagents can now spawn their own subagents, up to depth 3 by default** (it was 1). You can watch depth-2+ agents when you pass `--forward-subagent-text`, keyed by the spawning Agent tool's `tool_use` id.
+
+Agent trees three levels deep are genuinely powerful for decomposition — a top-level agent fans out to workers that themselves fan out. But it's also a way to light your token budget on fire without noticing, because a single top-level task can now silently explode into a tree of dozens of agents. If you don't want nesting, disable it explicitly:
+
+```bash
+# Cap subagent nesting back to a single level (Opus 4.8 behavior)
+export CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=1
+```
+
+My rule after a week: leave nesting on for genuinely large, decomposable jobs (migrations, audits, broad refactors) and cap it at 1 for everyday feature work where a flat fan-out is plenty. If you're new to orchestrating agents at all, my guides to [dynamic workflows with parallel subagents](/blog/claude-code-dynamic-workflows-parallel-subagents-guide) and [sub-agent architecture](/blog/claude-code-sub-agents-multi-agent-systems-guide) are the place to start before you turn depth-3 loose on a real repo.
+
+Pair that with **per-subagent model control** — you can now assign different models to different agents in a run — and the cost calculus gets interesting: a `max`-effort Opus 5 orchestrator directing cheap Haiku 4.5 workers is a genuinely good default. It's the same model-routing logic I laid out in my [Fable 5 orchestrator playbook](/blog/fable-5-claude-code-model-routing-playbook), now with an extra level of tree to route across.
+
+## Change #4: it writes longer, and effort no longer controls length
+
+Small but real: Opus 5 writes more by default. Longer explanations, longer code, more thorough answers. Combined with the fact that **`effort` now controls reasoning depth rather than response length**, you've lost the old implicit "low effort = terse" behavior. If you want short, you now have to *ask* for short explicitly in the prompt. I re-added "be concise, no preamble" to a few of my subagent definitions the first day for exactly this reason.
+
+## Fewer spurious refusals
+
+One quality-of-life win: Opus 5's safety classifiers are tuned to trigger roughly 85% less often than 4.8's. In practice that means far fewer of those maddening false refusals on legitimate security work — reading a CVE, writing an exploit PoC for a pentest, discussing malware behavior defensively. If Opus 4.8 kept stonewalling your security tasks, that friction largely goes away.
+
+## How to actually migrate
+
+Claude Code ships a migration tool. Run it first:
+
+```bash
+# In Claude Code — invokes the bundled Claude API skill
+/claude-api migrate
+```
+
+It swaps the model ID, applies the breaking parameter changes (the thinking/effort constraints, `max_tokens` sizing, any prefill replacements), calibrates effort for your target, and hands you a checklist of things to verify by hand. It won't clean your `CLAUDE.md` for you, though — that judgment is yours.
+
+My concrete migration checklist after a week on Opus 5:
+
+1. **Run `/claude-api migrate`** and work through its checklist.
+2. **Set a default effort.** Medium for most work; drop to low for mechanical tasks to offset default-on thinking.
+3. **Delete verification nags from CLAUDE.md.** It self-verifies now. Trim aggressively — aim to cut, not add.
+4. **Decide your spawn depth.** Cap at 1 for feature work; leave depth-3 for big decomposable jobs.
+5. **Re-add length constraints** where you need terse output — effort won't do it anymore.
+6. **Fix scripted callers** that combine disabled thinking with high effort, and re-check `max_tokens`.
+
+## Is it worth switching?
+
+Yes, and it's not close — same price, a full generation of capability, and fewer refusals. But "free upgrade" undersells the work. Opus 5 is better *and* it moves defaults, so a lazy swap leaves you paying for reasoning you're not tuning and running guardrails the model no longer needs. The upgrade is trivial. Getting the *value* out of it means deleting things — half your CLAUDE.md, your verification prompts, your model-switching cost hacks — and trusting the model to do what you used to script. That's a harder habit than pasting a new model ID, and it's where the actual gains hide.
+
+## References
+
+### Sources
+- [Claude Opus 5 vs Opus 4.8: What Changed — Codersera](https://codersera.com/blog/claude-opus-5-vs-opus-4-8-2026/) — SWE-bench Pro jump, effort toggle, safety-classifier changes
+- [Claude Opus 5 Benchmarks Explained — Codersera](https://codersera.com/blog/claude-opus-5-benchmarks-explained-2026/) — Frontier-Bench, ARC-AGI-3, SWE-bench numbers
+- [Claude Opus 5 for Developers: Migrate, Fast Mode, Effort — ExplainX](https://www.explainx.ai/blog/claude-opus-5-developers-migrate-fast-mode-july-2026) — breaking API changes and the thinking/effort constraints
+- [Anthropic Deleted 80% of Claude Code's System Prompt — Charles Jones](https://charlesjones.dev/blog/claude-opus-5-context-engineering-what-to-delete) — what to delete from your CLAUDE.md
+- [Claude Code v2.1.219 Major Updates — DevelopersIO](https://dev.classmethod.jp/en/articles/20260725-cc-updates-v2-1-219/) — day-one Claude Code integration and Fast Mode
+
+### Further Reading
+- [Claude Platform Migration Guide](https://platform.claude.com/docs/en/about-claude/models/migration-guide) — the official parameter-by-parameter migration reference
+- [Claude Opus 5: The Everyday Frontier Model — Claude AI Dev](https://claudeai.dev/blog/claude-opus-5-community-feedback/) — community feedback and real-world usage patterns
+
+---
+
+~Seb 👊

@@ -1,0 +1,124 @@
+---
+title: 'Claude Code Nested Subagents: Building Agent Hierarchies'
+date: '2026-07-25'
+category: 'AI'
+tags: ['claude-code', 'subagents', 'multi-agent', 'orchestration', 'ai-agents']
+featured: false
+author: 'Sebastian'
+draft: false
+excerpt: "Claude Code subagents can now spawn their own subagents, five levels deep. It's the difference between a manager with ten reports and an org chart — and just like a real org, it creates value and chaos in equal measure. Here's how to use the depth without setting your token budget on fire."
+---
+
+For most of 2026, a Claude Code subagent was a leaf. The root session could fan out to a dozen workers, but those workers couldn't delegate — they did their task and reported back. That flat model was fine for parallel search-and-summarize, and useless the moment a task was too big for a single agent to even *plan*.
+
+That changed in v2.1.172 on June 10, and Opus 5 leaned into it hard. **Subagents can now spawn their own subagents, up to five levels deep.** Your root session is level 0, its children are level 1, and so on down to level-5 leaf agents that can't delegate further. Opus 5 raised the *default* auto-spawn depth from 1 to 3, which means the model will now build these trees on its own whether or not you asked it to.
+
+I've spent the last few weeks running deep agent trees on real work, and the honest summary is: this is the biggest orchestration upgrade since subagents shipped, and it's also the easiest way I've found to accidentally spawn forty agents for a task that needed four. Let me show you both sides.
+
+## What a nested subagent actually is
+
+The mental model that clicked for me: **each subagent is a full, independent Claude Code session, not a function call.** When an agent spawns a child, that child gets:
+
+- A **fresh 200K-token context window** — it doesn't inherit the parent's cluttered history, only the goal it's handed.
+- An **independent system prompt**, so you can specialize it.
+- **Independent model selection** — a child can run a different model than its parent.
+- An **independent tool allowlist** — a research child can be read-only while an implementation child can write.
+
+That independence is the whole point. A flat fan-out shares one overworked context. A tree gives every branch a clean slate scoped to exactly its slice of the problem. This is the same context-isolation principle I keep coming back to in [context engineering for Claude Code](/blog/context-engineering-claude-code-guide) — nesting just applies it recursively.
+
+## The org-chart analogy (and why it's not a metaphor)
+
+The design deliberately mirrors an engineering org:
+
+- **Level 0 — you**, handing down a goal.
+- **Level 1 — the lead architect** agent: reads the goal, plans the decomposition, spawns module owners.
+- **Level 2 — senior engineers**: each owns a module, breaks it into tasks, spawns workers.
+- **Level 3–4 — workers**: implement individual pieces in parallel.
+- **Level 5 — leaf agents**: the deepest execution, often verification or narrow lookups.
+
+The reason this isn't just a cute metaphor is that the *failure modes* mirror a real org too. Give a level-1 agent a vague goal and it makes bad decomposition decisions that cascade down through every layer, exactly like a manager who scopes a project badly. The leverage and the risk both compound with depth. If you've built flat multi-agent systems before — the kind I covered in the [sub-agents guide](/blog/claude-code-sub-agents-multi-agent-systems-guide) — you already know 90% of failures are planning failures. Nesting multiplies that: a planning failure at level 1 is now five levels of wasted work.
+
+## You don't configure it — you prompt it
+
+Here's the part that surprises people: **nesting requires no config files and no flags.** Any agent that receives a goal broad enough to benefit from delegation will spawn children on its own. The control surface is your *prompt*, not a setting.
+
+That means the skill is writing prompts that make scope explicit at each level. A good top-level prompt for a tree looks less like a task and more like a delegation brief:
+
+```text
+You are the lead for migrating our REST API to tRPC. This is a large,
+decomposable job — delegate aggressively.
+
+1. First, survey the codebase and produce a module-by-module migration plan.
+2. Spawn one subagent per module. Give each the module's boundaries, the
+   shared type conventions, and an instruction to delegate further if the
+   module is large.
+3. Each module agent should spawn a verification child that runs the type
+   checker and the module's tests before reporting success.
+4. Consolidate results. Report only: modules done, modules blocked, and why.
+```
+
+Notice what that prompt does: it *names the tree shape*. It tells level 1 to spawn per-module, tells level 2 to spawn verifiers, and defines what bubbles back up. Vague prompts produce vague trees; explicit scope at each layer is the entire discipline.
+
+## The token-budget trap
+
+Now the part nobody puts in the launch post. **A single top-level task can silently explode into a tree of dozens of agents**, each with its own 200K context, each burning tokens. Depth-3 default auto-spawn means Opus 5 will do this *without you asking* if it decides the goal is big enough.
+
+I learned this the expensive way — a "refactor the auth module" request that I expected to be one or two agents fanned into an eleven-agent tree because each file got its own worker and each worker spawned a verifier. The work was correct. The bill was not what I'd budgeted.
+
+Two controls matter. First, cap the depth when you don't want deep trees:
+
+```bash
+# Cap nesting to a single level — the pre-June flat behavior
+export CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=1
+
+# Or allow moderate nesting but not the full five
+export CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=2
+```
+
+Second, **watch the tree while it runs.** Pass `--forward-subagent-text` and Claude Code surfaces the output of depth-2+ agents, keyed by the `tool_use` id of the agent that spawned them, so you can actually see what your level-3 workers are doing instead of staring at a spinner:
+
+```bash
+claude --forward-subagent-text "migrate the REST API to tRPC"
+```
+
+My working rule: **flat by default, deep on purpose.** For everyday feature work I keep `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=1` and let the model fan out one level. I only unleash depth-3-plus on genuinely large, decomposable jobs — migrations, whole-repo audits, sweeping renames — where the token cost is justified by the parallelism. This pairs directly with the cost discipline in my [token-optimization playbook](/blog/claude-code-token-optimization-bill-cut-guide); nesting is the single fastest way to blow past a budget if you're not paying attention.
+
+## Model routing across the tree
+
+The feature that makes deep trees economical rather than ruinous is **per-agent model selection.** You don't need Opus 5 at every node. The pattern that works for me:
+
+- **Level 1 (the architect)**: Opus 5 at high or `max` effort. Decomposition quality is everything — a bad plan here wastes the whole tree, so this is where you spend.
+- **Levels 2–3 (module owners, workers)**: Sonnet 5. Strong enough to implement well, far cheaper than running Opus everywhere.
+- **Level 5 (leaf verifiers, lookups)**: Haiku 4.5. Mechanical checks don't need a frontier model.
+
+A `max`-effort Opus 5 brain directing a swarm of cheap Haiku hands is the whole promise of nesting realized. It's the same routing logic from my [Fable 5 orchestrator playbook](/blog/fable-5-claude-code-model-routing-playbook), now with more layers to route across — and it's a big part of why [Opus 5's per-subagent model control](/blog/claude-opus-5-claude-code-developer-review) matters more than the benchmark bump.
+
+## When to reach for depth (and when not to)
+
+After the honeymoon, here's my actual decision rule.
+
+**Use deep nesting when:** the task is large and cleanly decomposable (per-module, per-file, per-endpoint), the subtasks are genuinely independent, and verification can happen at the leaves. Migrations, audits, and large mechanical refactors are the sweet spot. For orchestrating this across repos or a whole team rather than one machine, that's where external orchestrators like [remote control and dispatch](/blog/claude-code-remote-control-dispatch-guide) take over from in-session nesting.
+
+**Stay flat when:** the task is small, the subtasks share state (nesting's context isolation becomes a liability when children need to coordinate), or you're iterating quickly and want to watch every step. A three-level tree for a two-file change is pure overhead and a worse debugging experience.
+
+The trap is treating depth as a quality dial — "more agents must be better." It isn't. Depth is a *decomposition* tool. If the problem doesn't decompose into independent branches, a tree just adds latency, cost, and coordination failures. Match the structure to the problem, not to the feature's novelty.
+
+## The bottom line
+
+Nested subagents turn Claude Code from a manager with ten direct reports into a real org chart — and inherit an org chart's problems along with its power. The capability is genuine: I've watched a five-level tree land a migration in one run that would've been a day of manual babysitting. But the defaults now build these trees for you, so the job shifted from "can I nest?" to "should I, and how deep?" Cap your spawn depth, route cheap models to the leaves, write prompts that name the tree shape, and watch the branches with `--forward-subagent-text`. Do that and depth is a superpower. Ignore it and it's just a very sophisticated way to spend money.
+
+## References
+
+### Sources
+- [Claude Code Nested Sub-Agents: 5-Level Agent Hierarchies — claudcod.com](https://claudcod.com/blog/claude-code-nested-subagents/) — the depth model, v2.1.172 release, independent-session details
+- [The Changelog Says 5 Levels — Ready Solutions AI](https://readysolutions.ai/blog/2026-06-11-claude-code-nested-subagents/) — hands-on probing of the depth limits
+- [Claude Code Subagents and Orchestration Guide — hidekazu-konishi.com](https://hidekazu-konishi.com/entry/claude_code_subagents_and_orchestration_guide.html) — delegation and fan-out patterns
+- [Claude Code Multi-Agent Orchestration: 2026 Guide — Tembo](https://www.tembo.io/blog/claude-code-multi-agent-orchestration) — orchestration patterns and team analogy
+
+### Further Reading
+- [Claude Code Nested Subagents: 5 Levels Deep — claudefa.st](https://claudefa.st/blog/guide/agents/nested-subagents) — a complementary walkthrough with examples
+- [Ralphable: 5-Level Hierarchy Guide](https://ralphable.com/blog/claude-code-nested-sub-agents-5-level-hierarchy-guide-2026) — engineering-team framing of the hierarchy
+
+---
+
+~Seb 👊
