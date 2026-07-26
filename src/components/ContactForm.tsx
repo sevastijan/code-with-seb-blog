@@ -5,6 +5,14 @@ import { ArrowUpRight, Check, Loader2 } from 'lucide-react';
 
 type FormStatus = 'idle' | 'sending' | 'success' | 'error';
 
+const budgetOptions = [
+  { value: '$5,000 - $10,000', label: '$5k–10k' },
+  { value: '$10,000 - $25,000', label: '$10k–25k' },
+  { value: '$25,000 - $50,000', label: '$25k–50k' },
+  { value: '$50,000+', label: '$50k+' },
+  { value: 'Not sure yet', label: 'Not sure yet' },
+];
+
 export function ContactForm() {
   const [formData, setFormData] = useState({
     name: '',
@@ -44,20 +52,15 @@ export function ContactForm() {
 
   if (status === 'success') {
     return (
-      <div className="flex flex-col items-center justify-center py-16 text-center">
-        <div className="w-16 h-16 rounded-full bg-[#00ff88]/10 flex items-center justify-center mb-6">
-          <Check className="w-8 h-8 text-[#00ff88]" />
+      <div className="contact-success">
+        <div className="contact-success-icon">
+          <Check />
         </div>
-        <h3 className="text-2xl font-bold mb-2">Message sent!</h3>
-        <p className="text-[var(--c-text-muted)] mb-8">
-          I&apos;ll get back to you within 24 hours.
+        <h3 className="contact-success-title">Message sent</h3>
+        <p className="contact-success-text">
+          Thanks for reaching out. I&apos;ll get back to you within 24 hours,
+          usually much sooner.
         </p>
-        <button
-          onClick={() => setStatus('idle')}
-          className="text-sm text-[var(--c-accent)] hover:underline"
-        >
-          Send another message
-        </button>
       </div>
     );
   }
@@ -66,7 +69,7 @@ export function ContactForm() {
     'w-full px-0 py-4 bg-transparent border-0 border-b border-[var(--c-border)] text-[var(--c-text)] placeholder:text-[var(--c-text-muted)] focus:outline-none focus:border-[var(--c-accent)] transition-colors duration-300';
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-8">
+    <form onSubmit={handleSubmit} className="contact-form space-y-8">
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-8">
         <div>
           <label htmlFor="name" className="label mb-3 block">
@@ -119,23 +122,26 @@ export function ContactForm() {
           />
         </div>
         <div>
-          <label htmlFor="budget" className="label mb-3 block">
-            Budget range
-          </label>
-          <select
-            id="budget"
-            name="budget"
-            value={formData.budget}
-            onChange={(e) => setFormData({ ...formData, budget: e.target.value })}
-            className={`${inputClasses} cursor-pointer`}
-            disabled={status === 'sending'}
-          >
-            <option value="">Select budget</option>
-            <option value="$5,000 - $10,000">$5,000 - $10,000</option>
-            <option value="$10,000 - $25,000">$10,000 - $25,000</option>
-            <option value="$25,000 - $50,000">$25,000 - $50,000</option>
-            <option value="$50,000+">$50,000+</option>
-          </select>
+          <label className="label mb-3 block">Budget range</label>
+          <div className="budget-chips" role="group" aria-label="Budget range">
+            {budgetOptions.map((option) => (
+              <button
+                type="button"
+                key={option.value}
+                className="budget-chip"
+                aria-pressed={formData.budget === option.value}
+                onClick={() =>
+                  setFormData({
+                    ...formData,
+                    budget: formData.budget === option.value ? '' : option.value,
+                  })
+                }
+                disabled={status === 'sending'}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
