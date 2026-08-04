@@ -1,0 +1,229 @@
+---
+title: 'Chrome DevTools for Agents 1.0: Your Coding Agent Can Finally See'
+date: '2026-08-02'
+category: 'AI'
+tags: ['ai-agents', 'mcp', 'chrome-devtools', 'debugging', 'claude-code']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: "Chrome DevTools for agents went stable: an MCP server, a token-efficient CLI, and agent skills that hand your coding agent real traces, heap snapshots and Lighthouse audits. Here's the setup, the tool surface that will eat your context window, and the security model nobody wants to talk about."
+---
+
+For two years the standard agent debugging loop has been: agent writes CSS, agent declares victory, I open the browser, the layout is broken, I paste a screenshot back, agent apologizes and writes different CSS. Repeat until one of us gives up.
+
+The agent wasn't being lazy. It genuinely could not see. It was writing code for a runtime it had no access to — the equivalent of a backend engineer who's allowed to write SQL but never allowed to run it.
+
+Chrome DevTools for agents just hit 1.0, and the loop is different now. My agent opens a page, records a performance trace, reads the console, takes a heap snapshot, and tells me the memory leak is a detached DOM node held by an event listener I forgot to remove. It did that without me touching the browser.
+
+That's the pitch, and it's real. But 1.0 ships three separate things with three very different cost profiles, and the one everybody will install is not the one most people should be using.
+
+## What actually shipped
+
+Three interfaces to the same underlying capability:
+
+1. **An MCP server** — the familiar one, `chrome-devtools-mcp`, now officially stable. Connects your agent to a live Chrome instance over the Model Context Protocol.
+2. **A CLI** — new, and described by the Chrome team as "a token-efficient alternative that allows agents to batch actions into scripts."
+3. **Agent skills** — expert instructions that teach an agent *when* and *how* to combine tools for multi-step work like an accessibility audit or a performance investigation.
+
+Supported clients at launch: Claude Code, Gemini CLI, and Antigravity 2.0 (where it's pre-bundled as a browser sub-agent). Anything that speaks `mcpServers` config works too.
+
+The 1.0 milestone added Lighthouse audits, device and network emulation, Chrome extension debugging, heap snapshot analysis, WebMCP support, and auto-connect to an already-authenticated browser context. That last one is both the most useful and the most dangerous feature in the release — more on that later.
+
+## Setup, per client
+
+### Claude Code
+
+It ships as a plugin, which means two slash commands:
+
+```
+/plugin marketplace add ChromeDevTools/chrome-devtools-mcp
+/plugin install chrome-devtools-mcp@chrome-devtools-plugins
+```
+
+The plugin route matters here: it installs the MCP server *and* the agent skills together. Adding the raw MCP server by hand gets you the tools without the instructions that tell the model how to sequence them, and the difference in output quality is bigger than you'd expect. If you're already building your own [reusable Claude Code skills](/blog/claude-code-skills-reusable-ai-workflows-guide), this is a good reference implementation of the pattern.
+
+### Gemini CLI
+
+```bash
+gemini extensions install --auto-update https://github.com/ChromeDevTools/chrome-devtools-mcp
+```
+
+That's the recommended path because it includes skills. The MCP-only variant, if you want it:
+
+```bash
+gemini mcp add chrome-devtools npx chrome-devtools-mcp@latest
+```
+
+### Everything else
+
+Any client with standard MCP config:
+
+```json
+{
+  "mcpServers": {
+    "chrome-devtools": {
+      "command": "npx",
+      "args": ["-y", "chrome-devtools-mcp@latest"]
+    }
+  }
+}
+```
+
+Codex users get a one-liner:
+
+```bash
+codex mcp add chrome-devtools -- npx chrome-devtools-mcp@latest
+```
+
+Requirements are minimal: Node.js LTS and current stable Chrome.
+
+To verify the install, ask your agent something that forces a real browser action:
+
+> Check the performance of https://developers.chrome.com
+
+If it opens Chrome and records a trace, you're wired up. If it hallucinates a Lighthouse score without opening anything, you're not.
+
+## The tool surface, and why it matters
+
+This is the part I want you to actually look at, because it's the crux of the trade-off. Here's what the MCP server exposes:
+
+**Input automation** — `click`, `click_at`, `drag`, `fill`, `fill_form`, `hover`, `press_key`, `type_text`, `upload_file`, `handle_dialog`
+
+**Navigation** — `navigate_page`, `new_page`, `close_page`, `list_pages`, `select_page`, `wait_for`
+
+**Emulation** — `emulate` (device, color scheme, network conditions, geolocation), `resize_page`
+
+**Performance** — `performance_start_trace`, `performance_stop_trace`, `performance_analyze_insight`
+
+**Network** — `list_network_requests`, `get_network_request`
+
+**Debugging** — `evaluate_script`, `list_console_messages`, `get_console_message`, `take_screenshot`, `take_snapshot`, `screencast_start`, `screencast_stop`, `lighthouse_audit`
+
+**Memory** — twelve heap snapshot tools: `take_heapsnapshot`, `get_heapsnapshot_summary`, `get_heapsnapshot_retainers`, `get_heapsnapshot_retaining_paths`, `get_heapsnapshot_dominators`, `get_heapsnapshot_duplicate_strings`, `compare_heapsnapshots`, and more
+
+**Extensions** — `install_extension`, `reload_extension`, `trigger_extension_action`, `list_extensions`, `uninstall_extension`
+
+**Page-exposed tools** — `list_webmcp_tools`, `execute_webmcp_tool`, `list_3p_developer_tools`, `execute_3p_developer_tool`
+
+That's north of fifty tools. Every one of them has a name, a description, and a JSON schema, and in a naive MCP setup **all of it sits in your context window on every single turn**, whether the task involves a browser or not.
+
+I measured this on a session where I was editing a Rust file with the DevTools MCP connected: the tool definitions alone were consuming a meaningful slice of the window before I'd typed a word. If you've ever wondered why your [token bill looks worse than your usage feels](/blog/claude-code-token-optimization-bill-cut-guide), ambient MCP tool surfaces are a common culprit.
+
+Which brings us to the underrated half of the release.
+
+## The CLI is the interesting part
+
+The Chrome team shipped a CLI alongside the MCP server and described it as token-efficient. That framing undersells what's actually going on.
+
+An MCP tool call is one round trip per action. Click, wait for the model to think, screenshot, wait for the model to think, read console, wait. Ten actions is ten inference passes, each carrying the full conversation plus the full tool schema. A CLI invocation is *one* tool call containing a script that performs all ten actions and returns one consolidated result.
+
+For a debugging loop that's genuinely exploratory — "why is this element positioned wrong" — the MCP round trips are worth it, because the agent needs to see each result before deciding the next step. For anything repeatable — verify a build, run an audit, check three breakpoints, confirm a form submits — the CLI is strictly better. Same capability, a fraction of the tokens, and no permanent context tax when you're not using it.
+
+This maps onto the same architectural decision I keep running into when [choosing between one big agent and several small ones](/blog/big-agent-vs-micro-agents-model-tiering-guide): ambient capability is expensive and should be reserved for work that genuinely needs improvisation.
+
+My current setup: CLI for the verification loop that runs on every change, MCP server enabled only in sessions where I'm actively debugging something visual.
+
+## What it's good at, concretely
+
+### Performance investigation
+
+This is the flagship use case and it earns it. The workflow is `performance_start_trace` → interact → `performance_stop_trace` → `performance_analyze_insight`. The agent gets the same trace data DevTools shows you, and — critically — the *insights* layer, not just raw events. It can tell you an LCP is being blocked by a render-blocking stylesheet rather than dumping ten thousand trace records into your context.
+
+Prompts that work well:
+
+> localhost:3000 loads slowly. Record a trace, find the three biggest contributors to LCP, and fix them.
+
+### Memory leaks
+
+Twelve heap snapshot tools is not a rounding error — someone at Google decided memory debugging was a priority. And it's the single task where agents were most helpless before, because finding a retaining path by hand is tedious pointer-chasing that a machine should obviously be doing.
+
+> Take a heap snapshot, navigate through the dashboard five times, take another, compare them, and tell me what's being retained.
+
+`compare_heapsnapshots` plus `get_heapsnapshot_retaining_paths` is the combination that finds detached DOM nodes. I've had this find a leak in about ninety seconds that I'd previously spent an afternoon failing to reproduce.
+
+### Accessibility and SEO audits
+
+`lighthouse_audit` runs the real thing, and the accessibility skill teaches the agent to interpret results rather than just paste the score. That's the difference between "your score is 82" and "these four form inputs have no accessible label, here's the fix for each."
+
+### Verification instead of assertion
+
+The most valuable use is also the most boring: after any UI change, the agent opens the page, takes a snapshot, and checks its own work. `take_snapshot` returns a text representation rather than an image, which is both cheaper and easier for the model to reason about than a screenshot.
+
+The framing I've settled on is that this converts agent output from a *claim* into an *observation*. That distinction is the whole ballgame — it's the same reason [test-driven agentic workflows outperform prompt-and-pray](/blog/test-driven-agentic-development-guide).
+
+### Extension development
+
+If you build Chrome extensions, `install_extension` / `reload_extension` / `trigger_extension_action` collapses the most annoying loop in that entire ecosystem into something an agent can drive.
+
+## The WebMCP connection
+
+Buried in the tool list: `list_webmcp_tools` and `execute_webmcp_tool`.
+
+This is the bridge between two things that were developing separately. [WebMCP lets a website hand agents a list of callable tools](/blog/webmcp-website-ai-agent-tools-guide) instead of making them guess where to click. Chrome DevTools for agents can now discover and invoke those tools.
+
+So an agent debugging your app can use your app's own declared tool surface rather than pixel-hunting through the UI. If you were on the fence about adding WebMCP to your site, this is a real argument for it: your own agent workflows get faster and more reliable, not just other people's.
+
+## The security model, stated plainly
+
+Chrome's own documentation does not hedge here, and neither will I:
+
+> Chrome DevTools for agents exposes your browser content to your agent. This allows your agent to read, inspect, debug, and modify any data in the browser or DevTools.
+
+An agent connected to an authenticated browser session **can act as you**. Your email. Your bank. Your admin dashboards. Your production Vercel account. All of it, with your cookies.
+
+Now combine that with the fact that the agent is reading page content — including content from sites you didn't write — and you have a textbook [indirect prompt injection surface](/blog/prompt-injection-llm-security-guide). A page can contain text crafted to be read as instructions. Your agent has `evaluate_script` and an authenticated session. Draw the rest of the diagram yourself.
+
+Practical rules I follow:
+
+- **Use a dedicated Chrome profile for agent work.** Not your daily driver. No password manager, no session cookies for anything that matters.
+- **Never enable auto-connect to your main browser.** It's the most convenient feature in the release and the one I'd bet on causing the first public incident.
+- **Treat `evaluate_script` as a privileged tool.** It runs arbitrary JavaScript in page context. If your client supports per-tool permissions, gate it.
+- **Scope by origin.** Localhost and staging, not production dashboards.
+- **Assume every page the agent visits is hostile input**, because from a security model perspective it is.
+
+None of this is unique to Chrome DevTools — it's the same threat model I walked through in the [agent security playbook](/blog/ai-agent-production-security-playbook) and the one underpinning the [NSA's MCP hardening guidance](/blog/nsa-mcp-hardening-ai-agent-security-guide). What's new is the blast radius. Most MCP servers expose a database or an API. This one exposes *your entire authenticated web identity*.
+
+## Chrome DevTools MCP vs Vercel's agent-browser
+
+The obvious comparison, since both target the same "let the agent see the browser" problem.
+
+**Chrome DevTools MCP** wins on debugging depth. Console, network, screenshots, snapshots, performance traces, Lighthouse, heap snapshots — nothing else comes close. Models are also visibly more fluent with it, presumably because it's been in training data since 2025. It's the better choice for a single agent doing deep verification.
+
+**agent-browser** wins on session mechanics. Explicit save/load of browser state, natural isolation when you're running several agents in parallel, and on-demand loading via skill packages so it isn't burning ambient context when idle. It's the better choice for a repeatable browser worker inside a larger pipeline.
+
+The real difference is architectural: DevTools MCP is an always-present tool surface, agent-browser is an explicit opt-in workflow. I reach for DevTools MCP more often because the debugging surface is worth the cost, but if I were building a multi-agent verification pipeline today I'd look hard at agent-browser for the isolation alone. The DevTools CLI narrows this gap considerably, which I suspect was the point.
+
+## Troubleshooting
+
+The setup does break, usually around Chrome discovery or a stale npx cache. There's a skill for that, and invoking it explicitly works better than describing symptoms:
+
+> Use the Chrome DevTools troubleshooting skill to fix my setup
+
+If that fails, paste the actual error text. The generic "it's not working" prompt sends the agent guessing through config permutations, which burns tokens and rarely lands.
+
+## Where this leaves us
+
+The gap Chrome DevTools for agents closes is not "agents can now click buttons" — Playwright MCP servers have done that for a while. It's that agents can now *measure*. Traces, heap snapshots, Lighthouse scores, network timing. Those are the ground truth that separates "I refactored this and it should be faster" from "I refactored this and LCP went from 3.1s to 1.4s."
+
+If you install one thing this week, install the plugin and start ending your UI prompts with "then verify it in the browser." That single habit change did more for my agent output quality than any prompt engineering I've tried.
+
+Just do it in a throwaway Chrome profile. I'm serious about that part.
+
+## References
+
+### Sources
+- [Streamline your AI coding workflow with Chrome DevTools for agents 1.0](https://developer.chrome.com/blog/devtools-for-agents-v1) - the stable release announcement, CLI and skills breakdown
+- [Get started with Chrome DevTools for agents](https://developer.chrome.com/docs/devtools/agents/get-started) - per-client install commands and the security warning quoted above
+- [chrome-devtools-mcp tool reference](https://github.com/ChromeDevTools/chrome-devtools-mcp/blob/main/docs/tool-reference.md) - complete tool list used for the surface breakdown
+- [Chrome DevTools (MCP) for your AI agent](https://developer.chrome.com/blog/chrome-devtools-mcp) - the original announcement and example prompts
+- [Browser verification for coding agents: Chrome DevTools MCP vs agent-browser](https://www.huuhka.net/browser-verification-for-coding-agents-chrome-devtools-mcp-vs-agent-browser/) - the comparison that shaped the architecture section
+
+### Further Reading
+- [Chrome DevTools for agents documentation](https://developer.chrome.com/docs/devtools/agents) - configuration reference and skill catalog
+- [chrome-devtools-mcp on GitHub](https://github.com/ChromeDevTools/chrome-devtools-mcp) - source, issues, and the CLI docs
+- [Model Context Protocol specification](https://modelcontextprotocol.io) - the protocol underneath all of this
+- [Chrome DevTools Claude plugin page](https://claude.com/plugins/chrome-devtools-mcp) - the plugin listing, including what the skills cover
+
+---
+
+~Seb 👊

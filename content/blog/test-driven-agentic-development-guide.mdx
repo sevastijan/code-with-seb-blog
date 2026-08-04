@@ -1,0 +1,209 @@
+---
+title: 'Test-Driven Agentic Development: Make the Agent Prove It Works'
+date: '2026-08-01'
+category: 'AI'
+tags: ['agentic-engineering', 'tdd', 'testing', 'claude-code', 'developer-workflow']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: "Incidents per PR are up 24% and change failure rates up 30% since teams adopted coding agents. A 204,000-file study shows agent-written tests cover edge cases better than human ones — and are measurably flakier. Here's the TDD loop that actually holds, and the part everyone gets backwards."
+---
+
+An agent wrote a function for me last month, wrote tests for it, ran them, and reported green across the board. The code was wrong. The tests were also wrong, in exactly the same way — they asserted the behavior the implementation happened to have, because they were written *after* it and by the same model that had already committed to a misreading of the requirement.
+
+Green suite. Broken feature. Zero signal.
+
+That's the failure mode that makes "just have the agent write tests" useless advice, and it's why test-driven agentic development is a real technique rather than TDD with extra branding. The ordering constraint that made TDD work for humans matters *more* with agents, not less — and most of what I read about this gets the crucial part backwards.
+
+## The numbers that make this urgent
+
+This isn't a stylistic preference. The industry data on what happened when agents arrived is unambiguous:
+
+- **Incidents per pull request rose ~24%.** Change failure rates rose roughly **30%**. Pull requests per engineer climbed 20% year over year — so we're shipping more, and a larger share of it is breaking.
+- **PRs got ~18% larger** with AI adoption, which is exactly the wrong direction for reviewability.
+- **Logic errors are 1.75× more common** in AI-generated code. XSS vulnerabilities appear **2.74×** more often.
+- Google's DORA data found a 25% increase in AI adoption correlated with *decreased* delivery throughput and stability for some teams — attributed to review burden and trust calibration.
+- By February 2026, a large-scale empirical study counted **more than 110,000 surviving AI-introduced issues** in production repositories.
+
+Over 30% of senior developers now ship mostly AI-generated code. The output problem is solved. The **verification** problem is not, and it's now the bottleneck — a point I've made before about [why so many agent projects fail](/blog/why-ai-agent-projects-fail-5-step-framework), but the data has caught up with the anecdote.
+
+Here's the shape of it in a single comparison. A developer writing by hand produces maybe 200 lines a day, and human attention splits roughly 1:1 between writing and verifying. The same developer with an agent produces 2,000. The verification surface grows 10×; your available attention doesn't. Something has to absorb the difference, and it's either an automated proof or an incident.
+
+## What agent-written tests are actually like
+
+The common critique is that AI writes shallow, tautological tests. The largest study on this — **204,673 test files** from the AIDev dataset, 24,941 human-authored and 179,732 agent-generated — says that's mostly wrong, and the truth is more interesting.
+
+Where agents **beat** humans:
+
+| Metric | Human | Agent |
+|---|---|---|
+| Edge-case variety score | 0.32 | **0.62** |
+| Tests null inputs | 8.3% | **13.4%** |
+| Tests zero inputs | 11.2% | **27.7%** |
+
+Agents test boundary conditions roughly twice as thoroughly as we do. They never get bored, never decide the empty-array case is obvious, never skip the negative number. That's genuinely valuable and I'd have guessed the opposite.
+
+Where agents **lose**:
+
+| Metric | Human | Agent |
+|---|---|---|
+| Strong assertions | 88.1% | 85.4% |
+| **"Unknown" assertion patterns** | **1.46%** | **11.58%** |
+| Non-determinism | 3.1% | **5.2%** |
+| File I/O issues | 3.5% | **4.4%** |
+| Flakiness candidate rate | 0.30 | **0.41** |
+
+That 11.58% figure is the one to stare at. Nearly **one in eight** agent-written assertions uses a non-standard or misspelled assertion method. Some of those don't assert anything at all — they're a method call that returns a truthy object and passes unconditionally.
+
+The paper's framing is that agents lack "environmental awareness" — they don't reliably write hermetic tests, so they touch the real filesystem, use real time, use unseeded randomness. Which means the failure mode isn't shallow coverage. It's **broad coverage you can't trust**, plus a flaky suite that trains your team to ignore red.
+
+The authors' conclusion, which I'd sign: treat agents as **high-volume test generators requiring oversight**, not as autonomous test authors.
+
+## The inversion everyone gets backwards
+
+Here's the part that actually matters, and it follows directly from the data above.
+
+The advice you'll read is "have the agent write tests alongside the code." That produces the failure I opened with. If the same model writes the implementation and then the test, the test encodes the implementation's assumptions — including its misunderstandings. You get a tautology with a passing badge.
+
+**The test has to exist before the implementation, and it has to be reviewed as a specification.**
+
+That's not ceremony. In an agentic loop the test is the only artifact carrying your intent in machine-checkable form. Prose in a prompt is interpretable. A prompt says "handle invalid input gracefully" and the agent decides what graceful means. An assertion says `expect(() => parse('')).toThrow(ValidationError)` and there is nothing to interpret.
+
+So the loop is:
+
+1. **You write the test, or co-write it and review it line by line.** Not skim. Read every assertion and ask: if the implementation were subtly wrong, would this fail?
+2. **Confirm it fails, for the right reason.** A test that passes against an empty implementation is testing nothing. This is the step people skip and it's the whole safety property.
+3. **Hand the agent the failing test and the implementation task.** Not the requirement in prose — the requirement *as the test*.
+4. **The agent iterates until green.** This part can be fully autonomous. It's the only part that should be.
+5. **You review the diff against the test, not against your memory of what you wanted.**
+
+Step 1 is where your judgment goes, and it's the step everyone tries to delegate because it's the least fun. Delegating it is the entire problem.
+
+The good news: your effort concentrates in one place. You're not reviewing 2,000 lines of implementation. You're reviewing maybe 40 lines of assertions that define what correct means, then letting a machine grind against them.
+
+## Where the agent's volume advantage belongs
+
+Given the data — agents better at edge-case variety, worse at assertion validity — the division of labor writes itself.
+
+**You write the characterization tests.** The three to five assertions that define the feature. The contract. These carry intent and must not be delegated.
+
+**The agent expands the boundary cases.** Once your contract tests exist and pass, this prompt is genuinely productive:
+
+> These tests define the contract. Add boundary cases: empty, null, zero, negative, max int, unicode, concurrent access. Don't change the existing assertions.
+
+That's where the 0.62-vs-0.32 variety score becomes yours for free. You're using the agent for the mechanical thoroughness it's good at, gated behind a contract it isn't allowed to touch.
+
+**You audit for hermeticity.** Given a 5.2% non-determinism rate, this belongs in your review checklist and ideally in CI:
+
+- Real clock? Inject it.
+- Unseeded randomness? Seed it.
+- Real filesystem or network? Mock or use a temp dir fixture.
+- Test order dependency? Run the suite shuffled.
+- Assertion methods that actually exist? This sounds absurd and it's 11.58% of the time.
+
+That last one is the cheapest lint rule you'll ever write, and in most stacks it already exists — `jest/no-standalone-expect`, `vitest/expect-expect`, `pytest`'s strict marker mode. Turn them on. They catch the single most common way agent tests silently do nothing.
+
+## Enforcing the loop instead of remembering it
+
+Discipline that lives in your head lasts about a week. Push it into the harness.
+
+**Hooks are the right lever.** A `PostToolUse` hook that runs the relevant tests after every edit gives the agent feedback without you asking for it:
+
+```json
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -r '.tool_input.file_path' | xargs -I{} npm run test:related -- {}"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+The agent now sees failures immediately rather than at the end of a long autonomous run, which is the difference between a two-line correction and a fifteen-file unwind. If you haven't set these up before, my [hooks and custom agents guide](/blog/claude-code-hooks-custom-agents-ai-pipelines-guide) covers the mechanics.
+
+**Put the rules in project memory.** Anything you'd have to repeat in every prompt belongs in `CLAUDE.md`:
+
+```markdown
+## Testing rules
+- Never write an implementation before a failing test exists for it.
+- Never modify an existing assertion to make a test pass. Ask instead.
+- Tests must be hermetic: no real clock, no network, no unseeded randomness.
+- Run the suite before claiming a task is done. Paste the output.
+```
+
+That second rule is load-bearing. Without it, an agent stuck on a red test will eventually "fix" it by editing the assertion — technically satisfying the instruction and destroying the entire point. I've watched it happen. The [persistent context guide](/blog/claude-md-memory-persistent-context-guide) covers where these rules should live so they survive across sessions.
+
+**Split the roles across agents.** The strongest structural version of this: one agent writes tests, a *different* one writes implementation, and the test agent can't edit `src/`, the implementation agent can't edit `tests/`. Filesystem permissions doing what discipline can't. [Subagents](/blog/claude-code-sub-agents-multi-agent-systems-guide) make this straightforward, and it eliminates the tautology problem structurally rather than by convention.
+
+## Tests aren't the whole proof
+
+A green suite proves the code satisfies the assertions you wrote. It doesn't prove the feature works, and it says nothing about how it looks.
+
+For UI work, the tests need a browser. [Chrome DevTools for agents](/blog/chrome-devtools-agents-mcp-browser-debugging-guide) is what closes that gap now — the agent opens the page, snapshots it, reads the console, and verifies its own change rather than asserting success. "Then verify it in the browser" is the single highest-leverage phrase you can append to a UI prompt.
+
+For end-to-end behavior, keep a Playwright layer above the unit tests. Next.js 16.3's new `instant()` helper is a good example of the genre: an assertion about *user-visible behavior* that no amount of clever unit testing would catch. My [Next.js testing guide](/blog/testing-nextjs-16-vitest-playwright-server-actions) covers where that boundary sits.
+
+And for anything touching auth, input parsing, or data access, tests are a floor, not a ceiling. Given that 45% of AI-generated code has been found to contain security vulnerabilities and XSS shows up 2.74× more often, this needs a separate pass — the [vibe coding security checklist](/blog/vibe-coding-security-audit-checklist) is the version of that I actually run.
+
+## Where TDD is the wrong tool
+
+I'd rather be useful than dogmatic, so: cases where this loop costs more than it returns.
+
+**Exploratory work.** You don't know what you're building yet. Writing a contract for an unknown is theater. Prototype freely, then throw it away and TDD the real version — the throwing away is not optional, it's what makes the prototype safe.
+
+**Pure UI layout.** There's no assertion for "this looks right." Browser verification and your eyes, not unit tests.
+
+**Glue and config.** A three-line adapter between two libraries. The test would be longer than the code and would test the libraries.
+
+**One-off scripts.** A migration that runs once, gets reviewed, and is deleted.
+
+Everything with logic, state, or an interface other code depends on: TDD. Which, with agents in the loop, is a larger share of what you write than it used to be, because the volume that used to make TDD feel expensive is now the exact reason you need it.
+
+## Where this connects to spec-driven development
+
+If this feels adjacent to [spec-driven development](/blog/spec-driven-development-spec-kit-claude-code-guide), that's because they're the same insight at different granularities. Spec-driven says: write the intent down before the agent starts, in a form it can be held to. Test-driven agentic development says the same thing where the "form" is executable.
+
+The distinction I'd draw: specs scope a *feature*, tests verify a *unit*. Specs are prose an agent still has to interpret. Tests are the only part of the chain that can't be argued with. Use specs to decide what to build; use tests to prove it got built.
+
+That combination is what [agentic engineering actually looks like on a Tuesday](/blog/vibe-coding-to-agentic-engineering-guide) — not typing less, but moving your effort from producing code to defining and enforcing what correct means.
+
+## Start here this week
+
+Pick one module you've been letting an agent modify freely. Then:
+
+1. Run its suite ten times in a row. Count the flakes. That's your baseline, and given a 0.41 flakiness candidate rate it's probably worse than you think.
+2. Grep the agent-written tests for assertion methods that don't exist in your framework. One in eight is the expected hit rate.
+3. Turn on `expect-expect` linting, or your stack's equivalent.
+4. Add the four testing rules to `CLAUDE.md`.
+5. On the next feature: write the failing test yourself, watch it fail, then hand it over.
+
+Step 5 will feel slow the first time. It stops feeling slow around the third feature, roughly when you notice you've stopped reading implementation diffs line by line — because you no longer have to. The test already read it for you.
+
+That's the actual promise here. Not that agents write better code, but that you get to stop being the last line of defense on 2,000 lines a day, which was never a job a human could do well anyway.
+
+## References
+
+### Sources
+- [Beyond Test Presence: Assessing the Quality and Robustness of Agent-Generated Tests in Open-Source Projects](https://arxiv.org/html/2607.12068v1) - the 204,673-file study; source of every assertion, edge-case and flakiness figure
+- [AI writes code faster. Your job is still to prove it works.](https://addyosmani.com/blog/code-review-ai/) - incidents per PR, change failure rates, logic error and vulnerability multipliers, the PR Contract framing
+- [TDAD: Test-Driven Agentic Development](https://arxiv.org/pdf/2603.17973) - graph-based impact analysis for catching regressions agents introduce outside the target of a change
+- [Testing with AI Agents: An Empirical Study of Test Generation Frequency, Quality, and Coverage](https://arxiv.org/html/2603.13724) - complementary data on how often agents generate tests unprompted
+- [2026 Agentic Coding Trends Report](https://resources.anthropic.com/2026-agentic-coding-trends-report) - industry context on adoption and workflow restructuring
+
+### Further Reading
+- [Code Review in the Age of AI](https://addyo.substack.com/p/code-review-in-the-age-of-ai) - what changes about review itself when volume goes up 10×
+- [Claude Code hooks documentation](https://code.claude.com/docs/en/hooks) - the event model behind the auto-test hook above
+- [Automated structural testing of LLM-based agents](https://arxiv.org/pdf/2601.18827) - testing the agents themselves, not just their output
+- [DORA State of DevOps](https://dora.dev/research/) - the throughput and stability data underlying the adoption findings
+
+---
+
+~Seb 👊

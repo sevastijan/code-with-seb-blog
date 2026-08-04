@@ -1,0 +1,416 @@
+---
+title: 'Ship Your Own Claude Code Plugin: Build, Validate, Distribute'
+date: '2026-08-04'
+category: 'AI'
+tags: ['claude-code', 'plugins', 'marketplace', 'skills', 'developer-tools']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: "Building a Claude Code plugin takes ten minutes. Shipping one that actually updates for your users is where people get stuck — and the number one cause is a single line in plugin.json. Here's the full path from a skill in .claude/ to a marketplace your team installs from."
+---
+
+I shipped a plugin to my team, pushed four bug fixes over two weeks, and every single person was still running the original broken version. No errors. No warnings. `/plugin update` said everything was current.
+
+The cause was one line in `plugin.json`:
+
+```json
+"version": "1.0.0"
+```
+
+I'd set it once and never touched it again. Claude Code resolves a plugin's version from that field first, sees the same string, and skips the update entirely — cached copy stays put. My commits were landing in git and going nowhere.
+
+That's the actual difficulty curve of Claude Code plugins. Building one is a ten-minute exercise the docs walk you through cleanly. **Distributing one correctly is where people quietly ship broken things for weeks.** So let's do the whole path, with the traps marked.
+
+## When a plugin beats a plain `.claude/` directory
+
+You don't always need a plugin. Claude Code gives you two ways to add skills, agents, and hooks:
+
+| | Standalone (`.claude/`) | Plugin |
+|---|---|---|
+| Skill name | `/hello` | `/plugin-name:hello` |
+| Sharing | manual copy | `/plugin install` |
+| Versioning | none | explicit or commit SHA |
+| Best for | personal, project-specific | teams, community, reuse |
+
+Stay standalone while you're iterating. The short skill names alone are worth it, and there's no packaging overhead when you're changing something six times an hour.
+
+Convert to a plugin when any of these become true: two or more projects need the same thing, a teammate asks you for it, or you want people to receive updates without you sending Slack messages about it.
+
+If you're building the underlying capability first, my guides on [reusable skills](/blog/claude-code-skills-reusable-ai-workflows-guide), [hooks and custom agents](/blog/claude-code-hooks-custom-agents-ai-pipelines-guide), and [subagents](/blog/claude-code-sub-agents-multi-agent-systems-guide) cover what goes *inside* the package. This post is about the package itself.
+
+## Build the plugin
+
+A plugin is a directory. The manifest lives at `.claude-plugin/plugin.json`:
+
+```bash
+mkdir -p my-first-plugin/.claude-plugin
+```
+
+```json
+{
+  "name": "my-first-plugin",
+  "description": "A greeting plugin to learn the basics",
+  "version": "1.0.0",
+  "author": {
+    "name": "Your Name"
+  }
+}
+```
+
+`name` is doing double duty here: it's the unique identifier *and* the skill namespace. A skill in a plugin named `my-first-plugin` is invoked as `/my-first-plugin:hello`. Namespacing is mandatory for plugin skills specifically so two plugins can both ship a `review` skill without fighting.
+
+Skills go in `skills/`, one folder each, containing a `SKILL.md`:
+
+```bash
+mkdir -p my-first-plugin/skills/hello
+```
+
+```markdown
+---
+description: Greet the user with a personalized message
+---
+
+# Hello Skill
+
+Greet the user named "$ARGUMENTS" warmly and ask how you can help them today.
+```
+
+`$ARGUMENTS` captures whatever the user types after the skill name. Test it without installing anything:
+
+```bash
+claude --plugin-dir ./my-first-plugin
+```
+
+```
+/my-first-plugin:hello Alex
+```
+
+### The directory layout trap
+
+This is the mistake I see in nearly every first plugin:
+
+> **Only `plugin.json` goes inside `.claude-plugin/`.** Everything else — `skills/`, `agents/`, `hooks/`, `.mcp.json` — lives at the plugin *root*.
+
+Full layout, all optional except the manifest:
+
+| Path | Purpose |
+|---|---|
+| `.claude-plugin/plugin.json` | manifest |
+| `skills/` | skills as `<name>/SKILL.md` |
+| `commands/` | legacy flat `.md` skills — use `skills/` for new work |
+| `agents/` | custom agent definitions |
+| `hooks/hooks.json` | event handlers |
+| `.mcp.json` | MCP server configs |
+| `.lsp.json` | LSP servers for code intelligence |
+| `monitors/monitors.json` | background monitors |
+| `bin/` | executables added to Bash `PATH` while enabled |
+| `settings.json` | default settings when enabled |
+
+Plugin root means the plugin's own directory — the one you pass to `--plugin-dir`. It is **never** `~/.claude/`. A `.mcp.json` at `~/.claude/.mcp.json` does nothing.
+
+Single-skill plugins can skip the `skills/` folder and put `SKILL.md` at the root. Use the folder if there's any chance of a second skill.
+
+### The parts people don't know exist
+
+Three components that get almost no coverage and are disproportionately useful:
+
+**Background monitors** — `monitors/monitors.json` lets a plugin watch something and push notifications into the session without being asked:
+
+```json
+[
+  {
+    "name": "error-log",
+    "command": "tail -F ./logs/error.log",
+    "description": "Application error log"
+  }
+]
+```
+
+Every stdout line arrives as a notification. Claude Code starts these automatically when the plugin is active.
+
+**Default settings** — a `settings.json` at the plugin root can set `agent`, which activates one of the plugin's own custom agents as the main thread:
+
+```json
+{
+  "agent": "security-reviewer"
+}
+```
+
+That's a plugin that changes what Claude Code *is* when enabled — its system prompt, tool restrictions, and model. A security review plugin, a docs-writing plugin, a pairing-mode plugin. Genuinely powerful and almost nobody uses it.
+
+**`bin/`** — executables here land on the Bash tool's `PATH` while the plugin is enabled. Ship a helper script and your skills can just call it by name.
+
+## Converting what you already have
+
+If you've got skills in `.claude/` already, the migration is mechanical:
+
+```bash
+mkdir -p my-plugin/.claude-plugin
+cp -r .claude/commands my-plugin/
+cp -r .claude/agents my-plugin/
+cp -r .claude/skills my-plugin/
+mkdir my-plugin/hooks
+```
+
+Hooks move from `settings.json` into `hooks/hooks.json` — same object shape, different file:
+
+```json
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -r '.tool_input.file_path' | xargs npm run lint:fix"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Then **delete the originals**, and know that agents and skills behave differently here. Project and user `.claude/agents/` definitions *override* same-named plugin agents, so the plugin version stays dormant until you remove the original. Skills don't override — plugin skills are namespaced, so `/review` and `/my-plugin:review` both exist and you'll confuse yourself within a week.
+
+## The development loop
+
+`--plugin-dir` is the core of it, and it has a few properties worth knowing:
+
+```bash
+# multiple plugins at once
+claude --plugin-dir ./plugin-one --plugin-dir ./plugin-two
+
+# a zip archive (v2.1.128+)
+claude --plugin-dir ./my-plugin.zip
+
+# a remote archive, e.g. a CI artifact
+claude --plugin-url https://example.com/my-plugin.zip
+```
+
+A `--plugin-dir` plugin **shadows an installed plugin of the same name** for that session. That's the loop you want for fixing a bug in something you already have installed: no uninstall, no reinstall, just point at your working copy. The exception is plugins force-enabled or force-disabled by managed settings, which `--plugin-dir` can't override.
+
+After edits, `/reload-plugins` picks up changes without a restart — skills, agents, hooks, MCP servers, and LSP servers all reload. One confusing detail: the reload summary counts only `commands/` directories, so it can cheerfully report `0 skills` right after reloading the skill you just edited. Ignore the number, test the skill.
+
+There's also a zero-flag option for personal tools:
+
+```bash
+claude plugin init my-tool
+```
+
+That scaffolds `~/.claude/skills/my-tool/` with a manifest and starter `SKILL.md`, and it loads automatically next session as `my-tool@skills-dir` — no marketplace, no install step. Perfect for the thing only you will ever use.
+
+## Distribution: build a marketplace
+
+A marketplace is one JSON file in a git repo. At `.claude-plugin/marketplace.json` in the repo root:
+
+```json
+{
+  "name": "company-tools",
+  "owner": {
+    "name": "DevTools Team",
+    "email": "devtools@example.com"
+  },
+  "description": "Internal Claude Code plugins",
+  "plugins": [
+    {
+      "name": "code-formatter",
+      "source": "./plugins/formatter",
+      "description": "Automatic code formatting on save",
+      "version": "2.1.0",
+      "author": { "name": "DevTools Team" }
+    },
+    {
+      "name": "deployment-tools",
+      "source": {
+        "source": "github",
+        "repo": "company/deploy-plugin"
+      },
+      "description": "Deployment automation tools"
+    }
+  ]
+}
+```
+
+Required: `name`, `owner`, `plugins`. Each plugin entry needs `name` and `source`.
+
+Users add and install:
+
+```
+/plugin marketplace add company/plugin-catalog
+/plugin install code-formatter@company-tools
+/reload-plugins
+```
+
+### Naming rules that will bite you
+
+Two constraints that aren't obvious:
+
+**Reserved marketplace names.** A long list is blocked for third parties — `claude-plugins-official`, `claude-community`, `anthropic-plugins`, `agent-skills`, `first-party-plugins`, `healthcare`, and more — plus anything that impersonates an official source, like `official-claude-plugins`. Claude Code re-checks this on *every load*, not just when you add a marketplace, so a name that becomes reserved later will break an already-registered marketplace with an "untrusted source" error. Fix: rename and re-add.
+
+**Kebab-case matters more than the validator implies.** `claude plugin validate` emits `Plugin name "x" is not kebab-case` as a *warning*, so it doesn't fail your build. But the claude.ai marketplace sync **rejects** non-kebab-case names outright. Lowercase letters, digits, and hyphens. Nothing else. This is exactly the kind of "passes locally, fails on publish" trap worth catching early — run with `--strict` and warnings become errors.
+
+Also note: one marketplace per name, per user. Adding a second marketplace under an existing name *replaces* the first. If you want to publish five plugins, list all five in one `marketplace.json`; don't create five marketplaces.
+
+### Plugin sources
+
+| Source | Fields | Notes |
+|---|---|---|
+| Relative path (`"./my-plugin"`) | — | must start with `./`, resolved from marketplace root, no `..` |
+| `github` | `repo`, `ref?`, `sha?` | |
+| `url` | `url`, `ref?`, `sha?` | any git URL |
+| `git-subdir` | `url`, `path`, `ref?`, `sha?` | sparse clone — good for monorepos |
+| `npm` | `package`, `version?`, `registry?` | |
+
+Relative paths resolve against the **marketplace root** (the directory containing `.claude-plugin/`), not against the `.claude-plugin/` folder itself. So `./plugins/my-plugin` means `<repo>/plugins/my-plugin`.
+
+One caveat that catches people distributing via a direct link: if users add your marketplace by URL pointing straight at `marketplace.json`, only that file gets downloaded, so relative paths can't resolve. URL distribution requires `github`, `npm`, or git URL sources.
+
+And because Claude Code copies each plugin into `~/.claude/plugins/cache` on install, **a plugin can't reference files outside its own directory**. No `../shared-utils`. Vendor it or publish it separately.
+
+## Versioning: the part that actually breaks
+
+Back to my opening failure. Claude Code resolves a plugin's version from the first of these that's set:
+
+1. `version` in the plugin's `plugin.json`
+2. `version` in the marketplace entry
+3. the git commit SHA of the source
+
+If the resolved version matches what a user already has, `/plugin update` and auto-update **skip that plugin silently**. That's the whole bug.
+
+So pick one of two strategies and commit to it:
+
+**Omit `version` entirely.** Every commit becomes a new version via SHA. This is the right default for internal and actively-developed plugins — it is impossible to get wrong, and it's what I use for everything my team consumes.
+
+**Set `version` and bump it religiously.** Correct for anything public where users deserve stable release boundaries. But it's now a release-checklist item, and forgetting it looks exactly like nothing happening.
+
+One more sharp edge: don't set `version` in *both* `plugin.json` and the marketplace entry. Claude Code always uses the `plugin.json` value, without warning. A stale manifest silently masks the version you carefully set in `marketplace.json`.
+
+### Release channels
+
+Two marketplaces pointing at different refs of the same repo gives you stable and latest channels, assignable to different user groups via managed settings:
+
+```json
+{
+  "name": "stable-tools",
+  "plugins": [
+    {
+      "name": "code-formatter",
+      "source": {
+        "source": "github",
+        "repo": "acme-corp/code-formatter",
+        "ref": "stable"
+      }
+    }
+  ]
+}
+```
+
+The constraint: **each channel must resolve to a different version.** If you use explicit versions, `plugin.json` must declare a different string at each pinned ref. If you omit `version`, distinct SHAs handle it for you — another point for the omit-it strategy.
+
+### Renaming without breaking users
+
+`renames` maps old plugin names to current ones, or to `null` for removals:
+
+```json
+{
+  "name": "acme-tools",
+  "renames": {
+    "formatter": "code-formatter",
+    "old-linter": null
+  },
+  "plugins": [ /* ... */ ]
+}
+```
+
+Claude Code follows the map, rewrites the key in user, project, and local settings, and shows a one-line notice once. Requires v2.1.193+.
+
+Treat this as **append-only history**. If you later rename `code-formatter` to `formatter-pro`, add a second entry rather than editing the first — Claude Code follows chains, so someone still on the original `formatter` resolves through both. `claude plugin validate .` rejects cycles and chains that don't terminate.
+
+Plugins with remote sources report `plugin-cache-miss` after a rename, and the user has to run `/plugin install` once to refetch under the new name.
+
+## Validate before you ship
+
+```bash
+claude plugin validate .              # from the marketplace directory
+claude plugin validate ./plugins/my-plugin   # a specific plugin
+```
+
+Or `/plugin validate .` from inside Claude Code.
+
+The two invocations check different things, which is the detail most people miss. Pointed at a **marketplace**, it checks `marketplace.json` for schema errors, duplicate plugin names, and source path traversal, and validates the `plugin.json` of any entry with a local path source. Pointed at a **plugin directory**, it also checks skill, agent, command, and hook files — YAML frontmatter and `hooks.json` syntax included.
+
+So a marketplace-level validate passing does **not** mean your plugins are valid. Run it against each plugin directory too.
+
+Errors worth memorizing:
+
+| Error | Cause |
+|---|---|
+| `File not found: .claude-plugin/marketplace.json` | missing manifest |
+| `Duplicate plugin name "x" found in marketplace` | two entries share a `name` |
+| `plugins[0].source: Path contains ".."` | source escapes the marketplace root |
+| `YAML frontmatter failed to parse` | bad frontmatter in a skill/agent/command |
+| `Invalid JSON syntax` (hooks.json) | **a malformed `hooks.json` stops the entire plugin from loading** |
+
+That last one is the nastiest failure mode in the system: one misplaced comma in your hooks file and none of your skills load either.
+
+Add `--strict` in CI to fail on warnings. Given that the kebab-case warning becomes a hard rejection at publish time, `--strict` is the setting that matches reality.
+
+## Publishing to the community marketplace
+
+Anthropic runs two public marketplaces:
+
+- **`claude-plugins-official`** — curated by Anthropic, registered automatically on first interactive launch. No application process; Anthropic decides what goes in.
+- **`claude-community`** — where third-party submissions land after review. Users add it with `/plugin marketplace add anthropics/claude-plugins-community`.
+
+Submit through one of two in-app forms: the [claude.ai submission form](https://claude.ai/admin-settings/directory/submissions/plugins/new) (requires a Team or Enterprise org with directory management access) or the [Console form](https://platform.claude.com/plugins/submit) for individual authors.
+
+Run `claude plugin validate ./your-plugin` first — the review pipeline runs the identical check, plus automated safety screening. You want `✔ Validation passed`.
+
+Approved plugins are pinned to a specific commit SHA in the community catalog, and CI bumps the pin as you push. The public catalog syncs nightly, so expect a delay between approval and installability. Check by searching for your name in the [community catalog JSON](https://github.com/anthropics/claude-plugins-community/blob/main/.claude-plugin/marketplace.json).
+
+## The honest recommendation: start private
+
+Most plugins shouldn't go to the community marketplace at all. They encode *your* conventions — your deploy process, your review checklist, your repo layout. That's a feature for your team and noise for everyone else.
+
+A private team marketplace is a private GitHub repo with a `marketplace.json`, and it's what I'd set up first. It pairs naturally with the rest of a [team onboarding setup](/blog/claude-code-team-leads-onboarding-guide): shared `CLAUDE.md`, shared hooks, shared plugins, all versioned.
+
+Two operational warnings for private repos.
+
+**Auto-update is unreliable over HTTPS.** The background refresh disables git credential helpers for its `git pull`, so it can't authenticate to a private HTTPS remote even when a helper is configured. It falls back to re-cloning from scratch — which *does* use your stored credentials but can time out on large repos. **SSH remotes aren't affected**, because a key in `ssh-agent` authenticates background pulls normally. If your team's private marketplace updates intermittently, this is why. Use SSH.
+
+**CI needs explicit credential setup.** On GitHub Actions, export a token with read access to the marketplace repo as `GH_TOKEN` and run `gh auth setup-git`. The default workflow token only reaches its own repository, so a private marketplace elsewhere needs a PAT or app token.
+
+For Team and Enterprise orgs distributing through Organization settings, the rules tighten: the marketplace repo must be private or internal, `npm` sources aren't supported, and private plugin sources only work when they share the marketplace repo's owner on github.com or sit on your GitHub Enterprise host. Everything else is fetched without credentials and must be public. The clean workaround is to put plugin folders **inside** the marketplace repo and reference them by relative path — org sync packages them during distribution, so users never need access to a separate repo. If you're operating under managed settings, this fits alongside the wider [enterprise hardening picture](/blog/claude-code-security-hardening-enterprise-guide).
+
+## A shipping checklist
+
+1. Build standalone in `.claude/` until it's stable.
+2. Convert: manifest in `.claude-plugin/`, everything else at root, delete originals.
+3. Test with `--plugin-dir`, iterate with `/reload-plugins`.
+4. Decide versioning **now**: omit `version` (SHA-based) unless you have a real reason not to.
+5. `claude plugin validate` against the marketplace *and* each plugin directory, with `--strict`.
+6. Kebab-case names. Not reserved. One marketplace per name.
+7. Private repo over SSH for team distribution; community submission only if it's genuinely general-purpose.
+8. Ship a `README.md`. It's the only documentation most users will read.
+
+The plugin system rewards treating your Claude Code config as software: versioned, validated, released. The friction of doing that properly the first time is maybe an hour. The friction of discovering three weeks later that nobody has your fixes is considerably worse — I've paid it, and it's why this post exists.
+
+## References
+
+### Sources
+- [Create plugins](https://code.claude.com/docs/en/plugins) - manifest schema, directory layout, monitors, settings.json, `--plugin-dir` behavior
+- [Create and distribute a plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces) - marketplace schema, sources, version resolution, renames, validation errors
+- [Claude Code changelog](https://code.claude.com/docs/en/changelog) - the plugin validation warnings added for names the claude.ai marketplace sync rejects
+- [anthropics/claude-plugins-community](https://github.com/anthropics/claude-plugins-community) - the public community catalog and its commit pinning behavior
+
+### Further Reading
+- [Plugins reference](https://code.claude.com/docs/en/plugins-reference) - complete technical specification for every component type
+- [Discover and install plugins](https://code.claude.com/docs/en/discover-plugins) - the user-side view, including trust and security considerations
+- [Agent Skills](https://code.claude.com/docs/en/skills) - progressive disclosure and tool restrictions for the skills you'll be packaging
+- [Manage plugins for your organization](https://support.claude.com/en/articles/13837433) - the admin workflow for Team and Enterprise distribution
+
+---
+
+~Seb 👊

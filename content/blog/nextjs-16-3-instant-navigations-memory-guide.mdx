@@ -1,0 +1,344 @@
+---
+title: 'Next.js 16.3: Instant Navigations and the 90% Dev Memory Drop'
+date: '2026-08-03'
+category: 'Development'
+tags: ['nextjs', 'turbopack', 'performance', 'caching', 'react']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: "Next.js 16.3 is two releases wearing one trench coat: free wins you get from bumping a version number, and an opt-in rewrite of prefetching that turns slow navigations into dev-time errors. Here's what the numbers actually mean for your app, and which flags to flip first."
+---
+
+My dev server was using 14 GB of RAM. Not the build. Not the test suite. `next dev`, sitting there, after about four hours of clicking around a mid-sized dashboard. I'd gotten so used to restarting it twice a day that I'd stopped noticing — it was just part of the ritual, like `rm -rf .next` when something got weird.
+
+Next.js 16.3 landed on August 3rd and that number dropped to under 2 GB without me changing a line of code.
+
+That's the good part. The part nobody's writing about yet is that 16.3 is really **two releases stapled together**, and they have completely different risk profiles. One half is free performance you get by bumping a version. The other half is an opt-in preview of what Next.js 17 will make mandatory — and if you turn it on today, your dev server will start throwing errors at you for routes that have worked fine for two years.
+
+Let me separate them, because conflating the two is how upgrades go badly.
+
+## Part one: the stuff you get for free
+
+Everything in this section requires exactly one command:
+
+```bash
+npm install next@latest
+```
+
+No config changes, no code changes, no migration guide. If you're on 16.x, this is a boring upgrade — which is the highest compliment I can pay a release.
+
+### The memory fix is real, but the 90% number is situational
+
+Turbopack's design trade-off since day one has been "cache aggressively in memory, spend RAM to save CPU." That was defensible in 2023. It stopped being defensible when every developer started running a coding agent, a language server, a typechecker, and a linter alongside the dev server, all fighting over the same 32 GB.
+
+16.3 fixes it with two features that are now on by default: **disk caching for dev** (shipped in 16.1) and **memory eviction** (new). Together they let Turbopack drop compiled results out of RAM instead of holding every route you've ever visited.
+
+Vercel's own numbers:
+
+| App | Before | After | Reduction |
+|---|---|---|---|
+| vercel.com (dashboard) | 21.5 GB | 2 GB | ~90% |
+| nextjs.org | 4,600 MB | 840 MB | ~82% |
+
+Both measured after compiling 50 routes.
+
+Here's the caveat the headlines skip: **there is no single reduction percentage that applies to your app.** The win scales with how much of your route graph you touched and how long the session ran. A five-route marketing site that you restart every twenty minutes will see close to nothing, because it was never holding much in memory to begin with. A 200-route dashboard that stays up all day is where the 90% lives.
+
+If you need to disable eviction — mostly useful when you're debugging a cache correctness issue and want to rule it out:
+
+```ts
+// next.config.ts
+const nextConfig = {
+  experimental: {
+    turbopackMemoryEviction: false, // default is 'full'
+  },
+};
+```
+
+Note that memory eviction depends on the dev filesystem cache. Turn that off and eviction goes with it.
+
+### Build caching now works on CI, which is where it matters
+
+The same persistent disk cache that's been speeding up `next dev` since 16.1 now applies to `next build`, enabled by default. Vercel's numbers on repeat builds:
+
+- `nextjs.org`: 21s cold → 9.2s cached (~2.3× faster)
+- `vercel.com/home`: 66s → 46s (~1.4×)
+- `vercel.com/geist`: 30s → 5.5s (~5.5×)
+
+The spread between 1.4× and 5.5× tells you everything about how this works. It's not a flat speedup — it's proportional to how much of your bundle didn't change. Apps dominated by a few huge shared chunks see less benefit than apps with many independent routes.
+
+To actually get this on CI you have to **persist the `.next` directory between runs**. Turbopack reads cache entries from disk at the start of the build before compiling anything new. On GitHub Actions:
+
+```yaml
+- uses: actions/cache@v4
+  with:
+    path: |
+      .next/cache
+      node_modules/.cache
+    key: next-${{ runner.os }}-${{ hashFiles('**/pnpm-lock.yaml') }}-${{ github.sha }}
+    restore-keys: |
+      next-${{ runner.os }}-${{ hashFiles('**/pnpm-lock.yaml') }}-
+```
+
+The `restore-keys` fallback matters more than the exact key. Without it, every commit gets a cache miss and you're back to cold builds.
+
+If you're still on 16.2 and want to opt in early, the flag is:
+
+```ts
+const nextConfig = {
+  experimental: {
+    turbopackFileSystemCacheForBuild: true,
+  },
+};
+```
+
+### TypeScript 7 during `next build`
+
+`next build` can now hand type checking to TypeScript 7, the [Go-native compiler rewrite that landed in July](/blog/typescript-7-project-corsa-go-rewrite-guide). You opt in by bumping the dependency, not by setting a flag:
+
+```bash
+pnpm add -D typescript@^7
+```
+
+This is the single cheapest win in the release if your build spends real time on `tsc`. One caveat carried over from the TS 7 release itself: the missing programmatic API means Vue, Svelte, Astro and MDX template type-checking still needs 7.1. For a plain Next.js + React codebase, none of that applies.
+
+### 22% more requests under load, for free
+
+The App Router rendering layer switched from web streams to native Node.js streams, removing the conversion overhead on every SSR pass. Vercel's benchmarks show apps handling up to 22% more requests under load with zero code changes.
+
+This is my favorite kind of release note: someone deleted an adapter layer and everything got faster. If you're running Next.js on your own infrastructure and sizing instances by RPS, this is a real capacity change worth re-benchmarking after upgrade.
+
+### Custom error boundaries that don't fight the framework
+
+React error boundaries in Next.js have had an ugly interaction for years: they'd catch `notFound()` and `redirect()`, which are implemented as thrown values. And they could only reset client state — there was no way to retry a Server Component that failed during render.
+
+16.3 adds `catchError`:
+
+```tsx
+// app/my-error-boundary.tsx
+'use client';
+import { catchError, type ErrorInfo } from 'next/error';
+
+function ErrorFallback(props: { title: string }, { error, retry }: ErrorInfo) {
+  return (
+    <div>
+      <h2>{props.title}</h2>
+      <p>{error.message}</p>
+      <button onClick={() => retry()}>Try again</button>
+    </div>
+  );
+}
+
+export default catchError(ErrorFallback);
+```
+
+The `retry()` function refetches the boundary's children, including re-rendering failed Server Components. That's the piece that was genuinely missing — before this, a transient upstream failure inside an RSC meant a full page reload was your only recovery path.
+
+### `import.meta.glob`, finally
+
+Turbopack now supports Vite's `import.meta.glob`. If you've ever written a `readdir` + `fs.readFile` loop in a Server Component to load a folder of markdown, this replaces it — and unlike the `fs` approach, it participates in HMR:
+
+```tsx
+// app/blog/page.tsx
+import matter from 'gray-matter';
+
+export default function Page() {
+  const posts = import.meta.glob('./posts/*.md', { eager: true });
+
+  return (
+    <ul>
+      {Object.entries(posts).map(([path, mod]) => {
+        const { data } = matter(mod.default);
+        return <li key={path}>{data.title}</li>;
+      })}
+    </ul>
+  );
+}
+```
+
+Without `eager: true`, each value is an async loader function you call yourself. The implementation supports named imports, multiple patterns, negative patterns, query strings for loaders, and generated TypeScript types.
+
+Two constraints worth knowing: it's Turbopack-only (nothing happens under `--webpack`), and non-JS extensions still need a registered loader.
+
+### Fewer prefetch requests, better static asset caching
+
+Two smaller wins: prefetches below a size threshold now get bundled into a single request instead of firing individually, and immutable static assets can optionally be reused across deployments — safe precisely *because* they're immutable, so deployment skew can't affect them.
+
+## Part two: Instant Navigations, or "the Next.js 17 preview"
+
+Now the opt-in half. This is behind two flags:
+
+```ts
+// next.config.ts
+import type { NextConfig } from 'next';
+
+const nextConfig: NextConfig = {
+  cacheComponents: true,
+  partialPrefetching: true,
+};
+
+export default nextConfig;
+```
+
+Vercel has said plainly that both will become defaults in a future major. So this isn't a side feature you can ignore — it's a preview of the migration you'll be doing anyway.
+
+### The criticism this is answering
+
+Server Components made apps ship less JavaScript and killed client-side fetch waterfalls. They also made navigations feel worse, and the team is finally saying so out loud. The server-driven flow is: click, nothing happens, server responds, page appears. The SPA flow is: click, instant shell, page fills in. The second one *feels* better even when it's objectively slower end to end.
+
+The fix builds on the `'use cache'` directive from Next.js 16, which I covered in depth in the [Cache Components guide](/blog/react-cache-components-nextjs-16-caching-guide). What's new is that `'use cache'` now backs **client-side** caching too, not just server-side.
+
+### Stream, cache, or block
+
+With `cacheComponents` on, every route that `await`s data has to make a choice:
+
+- **Stream** it with `<Suspense>` — user instantly sees a loading state, real UI streams in.
+- **Cache** it with `'use cache'` — user instantly sees previously cached UI.
+- **Block** it, explicitly, when you actually want the navigation to wait:
+
+```ts
+// in page.tsx or layout.tsx
+export const instant = false;
+```
+
+Streaming or caching produces an instant, SPA-feeling navigation. Blocking is a legitimate choice — a blog post probably shouldn't flash a skeleton — but 16.3 makes you *declare* it.
+
+**This is the part that will annoy you.** Instant Insights, the new DevTools panel, treats a slow navigation as a development-time error. Flip the flag on a mature app and you will get a list of routes that have shipped happily for years and are now yelling at you. That's the intent — it's the same design philosophy as `strict` mode in TypeScript — but budget for it. This is not a "flip it on Friday afternoon" change.
+
+Each insight also ships a prompt you can hand to a coding agent to apply the fix, which is a small thing that says a lot about who Vercel thinks is doing this migration now.
+
+### Partial Prefetching: one shell per route, not one per link
+
+This is the change I'm most enthusiastic about, because the old behavior was indefensible and everyone knew it.
+
+Before 16.3, Next.js sent a prefetch request for **every link in the viewport**. A sidebar with twenty chat links meant twenty prefetch requests, all for the same `/chat/[id]` route. Open the Network tab on any dashboard while scrolling and it looked like a DDoS you were running against yourself.
+
+Partial Prefetching borrows the SPA trick: prefetch a **reusable loading shell per route**, cache it on the client, reuse it across every link pointing at that route. Twenty chat links now cost one prefetch. Conceptually it's per-route code splitting, applied to loading states.
+
+When you *do* want more than a shell for a specific link, per-link prefetching still exists:
+
+```tsx
+<Link href="/chat/42" prefetch={true}>
+  Design review thread
+</Link>
+```
+
+Even then it won't render the full route. It renders down to whatever is available synchronously, derivable from the URL (params, searchParams), or marked `'use cache'`. The all-or-nothing choice is gone: shells are your baseline, `prefetch={true}` plus `'use cache'` is your escape hatch for the routes that deserve it.
+
+Because shells are cached per route on the client, they're also the foundation for offline navigation — which shows up as an experimental flag below.
+
+### ISR that doesn't force a bad trade
+
+If you prerender only some pages with `generateStaticParams`, the rest used to face a losing choice: show a loading shell but never get prerendered, or skip the shell and block the first visitor.
+
+Now the first visitor gets an instant loading shell, the page upgrades to fully prerendered in the background, and every subsequent visitor gets the cached final content. If you've been mapping out [which rendering strategy fits which route](/blog/ssr-vs-ssg-vs-isr-vs-rsc-nextjs-strategies), this quietly removes one of the sharper edges in that decision.
+
+### Tooling: Navigation Inspector and the `instant()` test helper
+
+Prefetching is disabled in development, which historically made loading states nearly impossible to inspect. The **Navigation Inspector** pauses a navigation at the shell so you can see exactly what the user sees before the network hop, then resume to the full page.
+
+More durable is the Playwright helper, because it turns "this navigation is instant" into a regression test:
+
+```ts
+// e2e/instant-navigation.spec.ts
+import { expect, test } from '@playwright/test';
+import { instant } from '@next/playwright';
+
+test('product title is available immediately', async ({ page }) => {
+  await page.goto('/products/shoes');
+
+  // Assert what's visible without waiting for network
+  await instant(page, async () => {
+    await page.click('a[href="/products/hats"]');
+    await expect(page.locator('h1')).toContainText('Baseball Cap');
+    await expect(page.getByText('Checking inventory...')).toBeVisible();
+  });
+
+  await expect(page.getByText('12 in stock')).toBeVisible();
+});
+```
+
+This catches the failure mode that actually bites in a team: someone adds a `cookies()` read to a shared header six months from now, the route de-opts to request-time rendering, and a page that used to appear instantly no longer does. Nobody notices until a user complains. If you already have a [Playwright layer in your Next.js test setup](/blog/testing-nextjs-16-vitest-playwright-server-actions), this drops straight into it.
+
+### Migration order I'd recommend
+
+1. **Upgrade to 16.3 with no flags.** Ship it. Collect the memory, build, and SSR wins. Verify nothing broke.
+2. **Turn on `cacheComponents` in a branch.** Work through the Instant Insights list. Decide per route: stream, cache, or `export const instant = false`. This is the real work.
+3. **Add `partialPrefetching`.** Compare Network tab before and after — the request-count drop is the easiest win to demo to a skeptical team.
+4. **Write `instant()` tests for the routes you fixed**, before anyone can regress them.
+
+Do not do steps 1 and 2 in the same PR. The first is a version bump; the second is an architecture change that happens to be spelled as a boolean.
+
+## Experimental: Rust React Compiler and offline resilience
+
+Two flags worth knowing about but not shipping yet.
+
+**The Rust React Compiler** runs the compiler inside Turbopack instead of through Babel in Node.js, skipping the generate-and-reparse round trip:
+
+```ts
+const nextConfig = {
+  reactCompiler: true,
+  experimental: {
+    turbopackRustReactCompiler: true,
+  },
+};
+```
+
+On v0, this cut time-from-`next dev`-to-ready-page by 34% cold and 46% warm. Critical caveat: **those numbers assume you've moved off Babel entirely.** If Babel is still in your pipeline for other transforms, you keep paying the Node.js startup cost and the gain shrinks a lot. If you're still deciding whether the compiler earns its place at all, my [React Compiler deep dive](/blog/react-compiler-deep-dive-automatic-memoization-guide) covers what it actually does to your components.
+
+**Network resilience** keeps soft navigations, data fetches, and Server Actions pending instead of throwing when the connection drops, retrying on reconnect:
+
+```ts
+const nextConfig = {
+  experimental: {
+    useOffline: true,
+  },
+};
+```
+
+Paired with a `useOffline` hook for the UI:
+
+```tsx
+'use client';
+import { useOffline } from 'next/offline';
+
+export function OfflineBanner() {
+  const isOffline = useOffline();
+  if (!isOffline) return null;
+  return <div>You're offline. Retrying when you reconnect.</div>;
+}
+```
+
+This composes with Partial Prefetching: because the route shell is already cached on the client, an offline navigation still renders the shell and streams data in once you reconnect. That's a genuinely nice consequence of the prefetch redesign rather than a bolted-on feature.
+
+## Known rough edges
+
+From Vercel's own preview notes, worth checking before you file a bug:
+
+- With Partial Prefetching enabled, accessing `params` inside a shell causes the route to block — and that case may not get reported as an Instant Insight. The Navigation Inspector and `instant()` helper still catch it.
+- Instant Insights tooling has issues in Safari. Use Chrome or Firefox in development.
+
+## What I'd actually do this week
+
+Upgrade to 16.3 today. It's a genuinely low-risk bump with real wins, especially if your team has been quietly restarting dev servers all day or paying for slow CI. Persist `.next/cache` in your pipeline while you're in there — that's ten minutes of YAML for up to a 5.5× build improvement on the right codebase.
+
+Then open a separate branch, flip `cacheComponents`, and look at the Instant Insights list. Not to fix it — just to see how long it is. That list is your Next.js 17 migration backlog, and you're getting to read it a full major version early. That's the most valuable thing in this release, and it doesn't show up in any benchmark chart.
+
+## References
+
+### Sources
+- [Next.js 16.3](https://nextjs.org/blog/next-16-3) - the release post; source of all memory, build, and SSR benchmark figures
+- [Next.js 16.3: Instant Navigations](https://nextjs.org/blog/next-16-3-instant-navigations) - the design rationale for shells-per-route prefetching and the stream/cache/block model
+- [Turbopack: What's New in Next.js 16.3](https://nextjs.org/blog/next-16-3-turbopack) - memory eviction internals, filesystem cache for builds, `import.meta.glob` details
+- [Announcing TypeScript 7.0](https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/) - the native compiler `next build` can now delegate type checking to
+- [Native Node.js streams PR](https://github.com/vercel/next.js/pull/94311) - the change behind the 22% throughput improvement
+
+### Further Reading
+- [Instant Navigation guide](https://nextjs.org/docs/app/guides/instant-navigation) - validating instant routes and visualizing loading states in DevTools
+- [Adopting Partial Prefetching](https://nextjs.org/docs/app/guides/adopting-partial-prefetching) - step-by-step migration path for existing apps
+- [Migrating to Cache Components](https://nextjs.org/docs/app/guides/migrating-to-cache-components) - the official upgrade guide, including the agent Skill
+- [Next Beats source](https://github.com/vercel-labs/next-beats) - a small open-source app built on 16.3 with both flags enabled
+
+---
+
+~Seb 👊
