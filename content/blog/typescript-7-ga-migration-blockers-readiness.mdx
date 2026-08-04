@@ -1,0 +1,173 @@
+---
+title: "TypeScript 7 Is GA. Your Toolchain Probably Isn't."
+date: '2026-07-30'
+category: 'Development'
+tags: ['typescript', 'migration', 'tooling', 'eslint', 'developer-tools']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: "VS Code type-checks in 10.6s instead of 125.7s. Slack's CI went from 7.5 minutes to 75 seconds. And if you install typescript@7 today, typescript-eslint won't even resolve — because TypeScript 7.0 shipped without the API the entire ecosystem is built on."
+---
+
+TypeScript 7.0 went stable on July 8th, and the numbers are as good as promised:
+
+| Codebase | Before | After | Speedup |
+|---|---|---|---|
+| VS Code | 125.7s | 10.6s | **11.9×** |
+| Sentry | 139.8s | 15.7s | 8.9× |
+| Bluesky | 24.3s | 2.8s | 8.7× |
+| Playwright | 12.8s | 1.47s | 8.7× |
+| Slack CI | 7.5 min | 1.25 min | 6× |
+
+Memory down ~18% on VS Code builds. Opening a file with errors in the editor went from 17.5 seconds to under 1.3.
+
+So I upgraded a client monorepo the week it shipped, and got this:
+
+```
+npm error ERESOLVE could not resolve
+npm error While resolving: @typescript-eslint/parser@8.x
+npm error Found: typescript@7.0.0
+npm error   peer typescript@">=4.8.4 <6.1.0" from @typescript-eslint/parser
+```
+
+That's not a version-range oversight someone will patch next week. **TypeScript 7.0 shipped without a stable programmatic API**, and typescript-eslint reads type information through the classic compiler API — the one the native Go build doesn't expose. The constraint is honest: the package genuinely cannot work.
+
+If you missed [what Project Corsa actually did to the compiler](/blog/typescript-7-project-corsa-go-rewrite-guide), that's the background. This post is about the three weeks after GA, and specifically about what you can't do yet.
+
+## The blocker: no programmatic API
+
+Everything below traces back to one fact. The Go port is a faithful reimplementation of the compiler, but the surface other tools consume — `ts.createProgram`, `ts.TypeChecker`, the AST APIs — isn't exposed in a stable form yet. Microsoft expects to ship it in **7.1**, on a 3–4 month cadence, which puts it somewhere around October 2026.
+
+Until then, anything that imports the `typescript` package to do its own analysis is stuck.
+
+### typescript-eslint: hard blocked
+
+This is the one that decides the timeline for most teams. Any rule that needs type information — `no-floating-promises`, `no-misused-promises`, `strict-boolean-expressions`, `no-unsafe-*`, the whole `recommended-type-checked` set — depends on the compiler API.
+
+If you've invested in a [strict lint setup](/blog/advanced-linting-type-safety-eslint-typescript-guide), those are exactly the rules you're paying for. Downgrading to syntax-only linting to get faster type-checking is a bad trade, and it's the trade a naive upgrade makes for you.
+
+### Framework template checking: Vue, Svelte, Astro
+
+Volar — the tooling layer behind Vue, Svelte, and Astro language support — calls the compiler API to type-check component templates. So on TypeScript 7.0:
+
+- Plain `.ts` files check fine with `tsgo`
+- **Component templates don't check at all**
+
+Your `.vue` file's `<script setup>` is fine. The template block above it isn't validated. Same story for Svelte components and `.astro` files. If you're running [Astro's Content Layer with typed collections](/blog/astro-content-layer-type-safe-content-guide) or leaning on [Vue's template type safety](/blog/vue-4-vapor-mode-no-virtual-dom-guide), that's a real loss of coverage, not a cosmetic one.
+
+MDX and Angular tooling are in the same queue.
+
+### The rest of the long tail
+
+Anything importing `typescript` programmatically is affected. `ts-morph` for codemods, `ts-node` for direct execution, webpack loaders that hand source to the compiler, custom transformers, API-extractor-style doc generators.
+
+The rule of thumb: **if a tool's docs tell you to install `typescript` as a peer dependency, assume it's blocked until 7.1.**
+
+## What the staged adoption actually looks like
+
+You don't have to choose between "wait until October" and "break your lint pipeline." There's a middle path that gets you most of the speed with none of the risk.
+
+### Phase 1: run both compilers locally
+
+Install the native preview alongside your current TypeScript:
+
+```bash
+npm install -D @typescript/native-preview
+```
+
+Then diff the diagnostics:
+
+```bash
+npx tsgo --noEmit > /tmp/tsgo.txt 2>&1
+npx tsc  --noEmit > /tmp/tsc.txt  2>&1
+diff /tmp/tsgo.txt /tmp/tsc.txt
+```
+
+This is the step people skip and it's the important one. The Go port is a faithful port, not a bug-for-bug one — you *may* find diagnostics that differ. Better to find them in a diff than in a merge conflict at 6pm.
+
+Do this before you plan anything. If the diff is empty on your codebase, your migration is a scheduling problem. If it isn't, you have a concrete list.
+
+### Phase 2: `tsgo` as a non-blocking CI job
+
+Keep `tsc` as the gate. Add `tsgo` alongside it:
+
+```yaml
+- name: Type check (blocking)
+  run: npx tsc --noEmit
+
+- name: Type check native (informational)
+  run: npx tsgo --noEmit
+  continue-on-error: true
+```
+
+Developers get the fast local checks and the responsive editor. CI keeps emit, linting, and framework tooling on the compiler that supports them. Nothing about your release path changes.
+
+This phase is where I'd sit right now for anything with a lint pipeline that matters.
+
+### Phase 3: full migration, on 7.1+
+
+Once the stable API ships and your tools adopt it — typescript-eslint first, Volar-based frameworks after — drop 6.x. That's also when declaration emit and project-reference builds get properly settled.
+
+## The exception: Next.js `next build`
+
+There is one place you can take the win immediately with no downside.
+
+[Next.js 16.3](/blog/nextjs-16-3-instant-navigations-memory-guide) can hand type checking during `next build` to TypeScript 7. You opt in by bumping the dependency, not by setting a flag:
+
+```bash
+pnpm add -D typescript@^7
+```
+
+The reason this works where a general upgrade doesn't: Next.js is invoking the *CLI*, not the programmatic API. It's asking "does this type check," not "give me a Program object."
+
+The caveat is the same one as everywhere else — if that same repo runs `typescript-eslint`, you're back to the resolution conflict. Which is why Phase 2 exists.
+
+## Who should move now, and who shouldn't
+
+**Move now if:**
+- Plain TypeScript + React, no Vue/Svelte/Astro/MDX
+- You can live on syntax-only linting for a few months, or you don't run type-aware rules
+- Your build times are genuinely painful — a 10× improvement on a 7-minute CI type check is real money
+- You're on Next.js and only want faster `next build` checks
+
+**Phase 2 and wait if:**
+- You run `recommended-type-checked` or any type-aware lint rules (most teams)
+- You ship Vue, Svelte, Astro, MDX, or Angular components
+- You have codemods or build steps built on `ts-morph` / custom transformers
+- You publish a library and depend on declaration emit behaving exactly as it does today
+
+**Definitely wait if:** you maintain a tool that consumes the compiler API. You're not migrating, you're waiting for 7.1 like everyone else, and then doing real work.
+
+## What I'd actually do this week
+
+1. **Run the Phase 1 diff.** Twenty minutes. It converts "should we upgrade" from a vibe into a list.
+2. **Add the non-blocking `tsgo` CI job.** Zero risk, and it builds confidence over weeks instead of in one anxious afternoon.
+3. **Tell people to install the native preview locally.** The editor responsiveness win — 17.5s to 1.3s to open a file with errors — is the one developers feel every hour, and it doesn't touch CI at all.
+4. **Put a calendar reminder for October.** Watch typescript-eslint's 7.1 tracking issue. That's your actual go signal, not the TypeScript release notes.
+5. **Don't upgrade the root `typescript` dependency yet** unless you fall squarely in the move-now bucket.
+
+## The part I got wrong
+
+When I wrote about Project Corsa in April, I framed the risk as *compiler API changes surprising teams*. That was directionally right and specifically wrong.
+
+The surprise isn't that the API changed. It's that **there is no API yet**, and a stable major release shipped anyway. That's a defensible call — the port is the hard part, the API can follow, and holding a 10× speedup hostage to it would have been worse. But it means "TypeScript 7.0 is stable" and "you can use TypeScript 7.0" are two different statements, and the release notes don't make that distinction for you.
+
+The compiler is done. The ecosystem is about three months behind it. Plan around the ecosystem.
+
+## References
+
+### Sources
+- [Microsoft Releases TypeScript 7.0 with a Native Go Compiler](https://www.infoq.com/news/2026/08/typescript-7-released/) - all benchmark figures, the missing programmatic API, and the 7.1 roadmap
+- [TypeScript 7.0 migration: 10x compiler, adopt in stages](https://ecorpit.com/typescript-7-migration-readiness-eslint-astro-blockers-2026/) - the typescript-eslint peer constraint, Volar blocker, and the three-phase adoption plan
+- [Announcing TypeScript 7.0](https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/) - the official release post
+- [Next.js 16.3](https://nextjs.org/blog/next-16-3) - `next build` delegating type checking to TypeScript 7 via the CLI
+
+### Further Reading
+- [TypeScript 7 One Week In: Migration Readiness Check](https://www.digitalapplied.com/blog/typescript-7-native-compiler-early-adopter-migration-readiness) - early-adopter reports from the first days after GA
+- [@typescript/native-preview on npm](https://www.npmjs.com/package/@typescript/native-preview) - the package for running `tsgo` alongside your current compiler
+- [typescript-eslint on TypeScript 7](https://typescript-eslint.io/) - track the project's compatibility status before planning your cutover
+- [TypeScript 7.0 Guide: Native Compiler, Features & Migration](https://picode.bunnode.com/blog/typescript-7-ultimate-guide) - a broader tour of what changed inside the compiler
+
+---
+
+~Seb 👊

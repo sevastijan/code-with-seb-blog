@@ -1,0 +1,226 @@
+---
+title: 'fallbackModel and Safe Mode: Claude Code Sessions That Survive 529s'
+date: '2026-07-27'
+category: 'AI'
+tags: ['claude-code', 'resilience', 'configuration', 'ai-agents', 'production']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: "A 529 overload forty minutes into an autonomous run used to mean starting over. fallbackModel fixes that — but it has a precedence rule that silently throws away your global chain, and it deliberately refuses to catch most errors. Here's the config that actually holds."
+---
+
+Forty minutes into an autonomous refactor, eleven files deep, mid-way through a migration the agent had planned itself:
+
+```
+API Error: 529 overloaded_error
+```
+
+Session over. Not paused — over. The work-in-progress lived in the conversation and the conversation had just hit a wall. I've lost afternoons to this.
+
+`fallbackModel` fixes it, and it's been GA since the June release train. It's also the single most misconfigured setting I see, because it has a precedence rule that behaves the opposite way from every other array setting in Claude Code.
+
+Let's do it properly.
+
+## The basic setup
+
+In `settings.json`:
+
+```json
+{
+  "fallbackModel": ["claude-sonnet-5", "claude-haiku-4-5"]
+}
+```
+
+Or per session:
+
+```bash
+claude --fallback-model sonnet,haiku
+```
+
+When the primary model returns overloaded or is unavailable, Claude Code switches to the next model in the chain, shows a notice, and keeps going.
+
+The rules:
+
+- **Maximum three models** in the chain after duplicates are removed. Extra entries are silently ignored.
+- Accepts friendly aliases (`sonnet`, `haiku`) or full provider identifiers — including ARNs for Bedrock and Vertex deployments.
+- The literal string `"default"` expands to your account's default model.
+
+## The precedence trap
+
+This is the part that catches people, and it's worth its own heading.
+
+**`fallbackModel` does not merge across settings layers.** The highest-precedence file that defines it supplies the *entire* chain.
+
+Precedence, highest to lowest:
+
+1. `--fallback-model` CLI flag
+2. Managed settings
+3. Command line arguments
+4. Local settings
+5. Project settings
+6. User settings
+
+So this:
+
+```json
+// ~/.claude/settings.json (user)
+{ "fallbackModel": ["claude-sonnet-5", "claude-haiku-4-5"] }
+```
+
+```json
+// .claude/settings.json (project)
+{ "fallbackModel": ["claude-sonnet-5"] }
+```
+
+...gives you a **one-model chain** in that project. Haiku is gone. Not appended, not merged — replaced.
+
+Every other array-shaped setting in Claude Code merges across layers, so the instinct is wrong here in a way that produces no error and no warning. You find out when a run dies at the exact moment you thought you'd protected against.
+
+The practical rule: **define `fallbackModel` in exactly one place.** If a project genuinely needs a different chain, write the complete chain there, not a fragment.
+
+## What it catches — and deliberately doesn't
+
+This is the design decision I've come around to appreciating.
+
+**Triggers fallback:**
+- 529 overload responses
+- Primary model unavailable
+- One automatic retry on unexpected non-retryable server errors
+
+**Surfaces immediately, no fallback:**
+- Authentication errors
+- Rate-limit errors
+- Request-size errors
+- Transport errors
+
+The second list is the important one. Those are *configuration* problems. An expired token, a request over the size limit, a rate limit you're genuinely hitting — silently routing around them would turn a five-second fix into a mystery. You'd see degraded output for a week and never learn why.
+
+I initially wanted this to be broader. I was wrong. A resilience feature that masks misconfiguration isn't resilience, it's a slow leak.
+
+### Turn scope is the other good decision
+
+The switch **lasts only for the current turn**. Your next message tries the primary model first again.
+
+This matters more than it sounds. A brief overload window at minute 40 doesn't silently downgrade you to Haiku for the remaining two hours. You take the hit for one turn and go back to your preferred model.
+
+Without this, one 529 would quietly change the quality of everything that followed, and you'd have no signal that it happened beyond a notice you scrolled past.
+
+## Chains that actually make sense
+
+Not all chains are equally good, and the naive one is usually wrong.
+
+**The reflexive chain** — `["claude-sonnet-5", "claude-haiku-4-5"]`. Fine as a default. But think about *when* it fires: mid-task, on work your primary model chose because it was hard. Handing a hard task to a much smaller model can produce something worse than a clean failure, because now you have plausible output you have to review carefully instead of an error you'd act on.
+
+**The one I actually use** — a single-step chain to the nearest capable model:
+
+```json
+{ "fallbackModel": ["claude-sonnet-5"] }
+```
+
+One tier down, not three. If Sonnet 5 is also overloaded, I'd rather the session stop and tell me than grind through a complex refactor on Haiku.
+
+**For genuinely mechanical work** — batch edits, formatting sweeps, mass renames — the deep chain is right, because the task doesn't need the reasoning in the first place:
+
+```json
+{ "fallbackModel": ["claude-sonnet-5", "claude-haiku-4-5"] }
+```
+
+That's the same reasoning as [tiering models across a fleet by task shape](/blog/big-agent-vs-micro-agents-model-tiering-guide): a fallback chain is a tiering decision made under duress, so it should follow the same logic. If you haven't thought about which model suits which work, my [Claude 5 family selection guide](/blog/claude-5-family-model-selection-guide) is the input to this decision.
+
+**For cost-sensitive setups**, note the interaction with token spend: falling back to a cheaper model is *also* a cost reduction, which is a nice accident but shouldn't be your cost strategy — that belongs in [deliberate token optimization](/blog/claude-code-token-optimization-bill-cut-guide), not in your failure path.
+
+### Multi-provider chains
+
+The most robust configuration crosses providers, because a Bedrock outage and an Anthropic API outage are usually independent events:
+
+```json
+{
+  "fallbackModel": [
+    "claude-sonnet-5",
+    "arn:aws:bedrock:us-east-1::inference-profile/anthropic.claude-sonnet-5"
+  ]
+}
+```
+
+Requires the credentials to be configured for both. Worth it for CI and for anything unattended.
+
+## Safe Mode: a debugger, not a sandbox
+
+Different feature, frequently confused with a security control. It isn't one.
+
+```bash
+claude --safe-mode
+# or
+CLAUDE_CODE_SAFE_MODE=true
+```
+
+**Disabled:** `CLAUDE.md` files, plugins, skills, hooks, MCP servers.
+
+**Preserved:** git status and directory names — it strips customizations, not working-directory context.
+
+The use case is bisecting your own configuration. When Claude Code starts behaving oddly — ignoring instructions, invoking the wrong skill, a hook firing when it shouldn't — the question is always "is it the model or is it my config?" Safe Mode answers it in one command.
+
+The workflow:
+
+1. Reproduce the weirdness normally.
+2. Run `claude --safe-mode`. Same prompt.
+3. **Still broken** → not your config. Model behavior, or a bug worth reporting.
+4. **Fixed** → it's your config. Now bisect.
+
+For step 4 there's a narrower tool:
+
+| Setting | Scope | When |
+|---|---|---|
+| `--safe-mode` | everything off | Is my config the problem at all? |
+| `disableBundledSkills` | only Anthropic-provided skills and commands hidden | Is it a *built-in* skill colliding with mine? |
+
+`disableBundledSkills` is the one I reach for more often, because the common failure is a bundled skill and a custom skill both matching the same request. If you [ship your own plugins](/blog/claude-code-plugin-marketplace-publish-guide) or maintain a set of [custom skills](/blog/claude-code-skills-reusable-ai-workflows-guide), that collision is a recurring diagnosis.
+
+**Note there is no `safeMode` key in `settings.json`.** It's a flag and an environment variable only — deliberately, since a persistent "ignore all my configuration" setting would be a foot-gun. Don't go looking for it in the settings reference.
+
+Safe Mode is also useful when someone hands you a repo and asks why Claude Code behaves strangely in it. Run safe mode first, then read their `CLAUDE.md`. Half the time the answer is a stale instruction in [project memory](/blog/claude-md-memory-persistent-context-guide) that nobody has re-read in three months.
+
+## The related hardening you probably missed
+
+Shipped in the same release train and much less discussed: **relayed messages via `SendMessage` no longer carry user permissions.**
+
+Before, a message relayed through the multi-agent messaging system inherited the originating user's authority. Which means a compromised or merely confused worker agent could escalate privileges by relaying a message upward. Now it can't.
+
+If you run [nested subagents or agent hierarchies](/blog/claude-code-nested-subagents-agent-hierarchies-guide), this closes a real privilege-escalation path — the kind that only becomes obvious in hindsight, and the kind worth auditing for in any [enterprise Claude Code setup](/blog/claude-code-security-hardening-enterprise-guide).
+
+## What to configure right now
+
+```json
+// pick ONE settings file — remember, no merging
+{
+  "fallbackModel": ["claude-sonnet-5"]
+}
+```
+
+Then:
+
+- [ ] Grep for `fallbackModel` across `~/.claude/settings.json`, `.claude/settings.json`, and `.claude/settings.local.json`. More than one definition means the lower ones are dead config.
+- [ ] Match chain depth to task shape: shallow for reasoning-heavy work, deep for mechanical batches.
+- [ ] For unattended and CI runs, cross providers.
+- [ ] Add `claude --safe-mode` to your team's troubleshooting doc as step one for "Claude is acting weird."
+- [ ] If you run subagent hierarchies, confirm you're on a build with the `SendMessage` authority fix.
+
+None of this makes your agent smarter. It makes the difference between an afternoon of work surviving a thirty-second capacity blip and an afternoon of work not surviving it — which, over a quarter of long autonomous runs, is a much bigger number than it sounds.
+
+## References
+
+### Sources
+- [Claude Code settings reference](https://code.claude.com/docs/en/settings) - the `fallbackModel` key, three-model cap, and the non-merging precedence rule
+- [Claude Code Adds Safe Mode and Fallback Model Chains](https://www.digitalapplied.com/blog/claude-code-safe-mode-fallback-models-production-resilience-guide) - trigger conditions, turn scope, safe mode scope, and the SendMessage authority change
+- [Claude Code changelog](https://code.claude.com/docs/en/changelog) - the v2.1.166 and v2.1.169 releases that introduced these
+- [Claude Code fallbackModel: Fix 529 Overload Errors](https://www.aiforanything.io/blog/claude-code-fallback-model-overload-fix-2026) - practical chain configurations from production use
+
+### Further Reading
+- [Claude Code models documentation](https://code.claude.com/docs/en/model-config) - model aliases, provider identifiers, and Bedrock/Vertex configuration
+- [Claude Code troubleshooting](https://code.claude.com/docs/en/troubleshooting) - where safe mode fits in the wider diagnostic flow
+- [Claude Code fallbackModel: 3-Tier Failover Setup](https://ofox.ai/blog/claude-code-fallbackmodel-3-tier-failover-2026/) - the deep-chain configuration, if your workloads justify it
+- [Anthropic API error reference](https://docs.claude.com/en/api/errors) - what 529 actually means and how it differs from 429
+
+---
+
+~Seb 👊

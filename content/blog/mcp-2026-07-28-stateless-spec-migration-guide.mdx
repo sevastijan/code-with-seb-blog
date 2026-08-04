@@ -1,0 +1,264 @@
+---
+title: 'MCP Goes Stateless: What the 2026-07-28 Spec Breaks in Your Server'
+date: '2026-07-31'
+category: 'AI'
+tags: ['mcp', 'ai-agents', 'protocols', 'architecture', 'migration']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: "Sessions are gone. The initialize handshake is gone. Roots, sampling and logging are deprecated. MCP's 2026-07-28 revision moves state off the server and onto the wire — and if you hand-rolled your implementation, David Soria Parra's own words are 'a lot of uplift to make this correct.'"
+---
+
+"A lot of things that made MCP are gone."
+
+That's David Soria Parra — Anthropic technical staff, one of MCP's creators — describing the 2026-07-28 revision that finalized last Tuesday. He followed it with the sentence every engineer who wrote their own MCP server should read twice: **"If you built your own implementation, it's going to be a lot of uplift to make this correct."**
+
+For context on what's at stake: MCP was being downloaded 97 million times a month before this revision, with over 10,000 servers deployed. This is not a quiet point release.
+
+The short version: sessions are gone, the `initialize` handshake is gone, and state moved from the server onto the wire protocol. If you're on an official SDK you'll mostly be fine. If you hand-rolled a server — and a lot of people did, because the protocol was simple enough to hand-roll — you have work.
+
+Let's go through what actually changed, with the before and after.
+
+## Why they did it
+
+MCP was designed for a laptop. One client, one server, a stdio pipe, a session that lived as long as the process. That model was correct for the problem it was solving in 2024.
+
+Then it went into production. A remote MCP server serving an enterprise needed sticky sessions so a request landed on the instance holding its state, a shared session store so instances could survive a rebalance, and deep packet inspection at the gateway because the only way to know what a request was doing was to parse the JSON body. Every one of those is a thing normal HTTP services stopped needing a decade ago.
+
+The fix is to make MCP look like a normal web service. Parra's framing: move "state away from the server onto the wire protocol." A server that used to need sticky routing and Redis now runs behind plain round-robin.
+
+## Change 1: sessions are gone
+
+Protocol-level sessions and the `Mcp-Session-Id` header no longer exist in the Streamable HTTP transport.
+
+**Before:** the server held per-connection state, list endpoints could vary by connection, and you needed sticky routing.
+
+**After:** if your server needs continuity across calls, it mints an **explicit handle** and passes it as a tool argument. Same idea as a database cursor or an S3 upload ID — the identifier is data your tool schema declares, not invisible transport machinery.
+
+This is the change with the biggest architectural blast radius, and it's mostly a *deletion*. Delete the session store. Delete the sticky-session config on your load balancer. Delete the reconnect-and-restore logic.
+
+What you can't delete: anything that genuinely needed cross-call state now has to model it explicitly. A tool that opened a connection in call one and used it in call two must now return a handle and accept it back. That's a schema change, and it's the part that takes real thought.
+
+## Change 2: no more `initialize` handshake
+
+The handshake is replaced by per-request metadata.
+
+Before:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "initialize",
+  "params": {
+    "protocolVersion": "2025-11-25",
+    "clientInfo": { "name": "my-client", "version": "1.0.0" },
+    "clientCapabilities": { }
+  }
+}
+```
+
+After — every request carries its own identity:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "tools/list",
+  "_meta": {
+    "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+    "io.modelcontextprotocol/clientInfo": { "name": "my-client", "version": "1.0.0" },
+    "io.modelcontextprotocol/clientCapabilities": { }
+  }
+}
+```
+
+Note the reverse-DNS namespacing on `_meta` keys. That's the extensions framework leaking into the core, and you'll see the same pattern throughout.
+
+Version advertisement moves to a new `server/discover` RPC, which you now have to implement.
+
+If your server has any logic branching on "have we initialized yet," delete it. There is no yet. Every request is complete on its own.
+
+## Change 3: routing headers
+
+Two new HTTP headers are required:
+
+```http
+POST /mcp HTTP/1.1
+Mcp-Method: POST
+Mcp-Name: tools/list
+Content-Type: application/json
+
+{"jsonrpc": "2.0", "method": "tools/list", ...}
+```
+
+This is the change I like most, and it's the one that matters if you run MCP behind any real infrastructure. Your gateway, WAF, or rate limiter can now route and authorize on **headers** instead of parsing a JSON body. Rate-limit `tools/call` differently from `tools/list`. Block a specific tool at the edge. Log operation names without a body parser in the hot path.
+
+Anyone who's tried to write a sane rate-limiting policy for an MCP endpoint will recognize how much this was needed. It's also relevant to the hardening posture the [NSA laid out for MCP deployments](/blog/nsa-mcp-hardening-ai-agent-security-guide) — edge-enforceable policy beats application-layer policy every time.
+
+## Change 4: cacheable lists
+
+List and read results now carry cache directives modeled on HTTP's `Cache-Control`:
+
+```json
+{
+  "tools": [ ... ],
+  "ttlMs": 3600000,
+  "cacheScope": "public"
+}
+```
+
+- `ttlMs` — freshness hint in milliseconds
+- `cacheScope` — `"public"` (shared intermediaries may cache) or `"private"` (client-only)
+
+This isn't optional politeness. In a stateless protocol, list endpoints are connection-independent, which means a naive client would re-fetch your entire tool catalogue on every single call. Caching is what stops that.
+
+Add these to `tools/list`, `resources/list`, `prompts/list`, `resources/read`, and `resources/templates/list`.
+
+**Get `cacheScope` right.** A tool list that varies per user — because you filter tools by permission — is `private`. Mark it `public` and you've built a cross-tenant data leak into a CDN. This is the single most likely way to turn this migration into a security incident.
+
+## Change 5: Multi Round-Trip Requests
+
+This is the cleverest part of the revision and the one worth understanding properly.
+
+The old model: when a server needed something mid-call — user confirmation via elicitation, or an LLM completion via sampling — it sent a request back over a held-open stream. That requires the connection to stay pinned to one server instance, which is exactly what stateless kills.
+
+The new model: the server **returns** an interim result describing what it needs.
+
+```json
+{
+  "resultType": "input_required",
+  "inputRequests": {
+    "elicit_1": {
+      "method": "elicitation/create",
+      "params": { "form": { "fields": [ ] } }
+    }
+  },
+  "requestState": "opaque-server-state-base64"
+}
+```
+
+The client gathers the answers and retries the original call, passing them back along with the opaque state:
+
+```json
+{
+  "method": "tools/call",
+  "params": {
+    "name": "original_tool",
+    "arguments": { },
+    "inputResponses": {
+      "elicit_1": { "action": "accept", "content": { } }
+    },
+    "requestState": "opaque-server-state-base64"
+  }
+}
+```
+
+Because the state rides in the payload, **any instance can resume the work**. The retry can land on a different pod than the original call and nothing notices.
+
+Two consequences for server authors:
+
+**Every result now needs a `resultType`.** Either `"complete"` or `"input_required"`. This is a mechanical change across your whole response surface.
+
+**`requestState` is a security boundary.** It's opaque *to the client*, which means the client can tamper with it and hand it back. Sign it or encrypt it. Do not put a raw JSON blob of your internal state on the wire and trust what comes back — that's a deserialization vulnerability with extra steps, and MCP has [already had one memorable RCE](/blog/mcp-rce-vulnerability-stdio-flaw-guide) that came from trusting the wrong input.
+
+## Change 6: tasks became an extension
+
+Tasks moved out of the experimental core into `io.modelcontextprotocol/tasks`.
+
+The blocking `tasks/result` is replaced by a poll-based `tasks/get`, `tasks/update` is added for client-to-server input, `tasks/list` is removed, and servers can now return task handles unsolicited — no per-request opt-in.
+
+Polling instead of blocking is the correct call for the same reason as everything else here: a blocking call pins a connection to an instance. Slightly more chatter, dramatically simpler operations.
+
+## Change 7: authorization hardening
+
+Four changes, all tightening real attack surface:
+
+| Change | Requirement |
+|---|---|
+| `iss` parameter (RFC 9207) | Auth servers SHOULD send it; clients **MUST** validate against the recorded issuer before redemption |
+| `application_type` | Clients **MUST** specify at registration — fixes OpenID Connect redirect URI conflicts for desktop and CLI apps |
+| Credential binding | Clients **MUST** key persisted credentials by issuer, and re-register if the issuer changes |
+| DCR | OAuth 2.0 Dynamic Client Registration is deprecated in favor of Client ID Metadata Documents |
+
+The `iss` validation closes authorization-server mix-up attacks. The credential binding change means a token issued for one server can't be replayed against another — which mattered more than people realized once a single client started talking to a dozen servers.
+
+The `application_type` fix is the quiet quality-of-life win: localhost redirect URIs on desktop and CLI clients have been a source of registration failures for a year.
+
+## Change 8: deprecations and the 12-month clock
+
+The revision introduces a formal feature lifecycle: **active → deprecated → removed**, with a minimum 12-month deprecation window. Security issues can be expedited to 90 days.
+
+Deprecated in 2026-07-28:
+
+- **Roots**
+- **Sampling** (at protocol level — the MRTR pattern replaces it)
+- **Logging**
+- **HTTP+SSE transport** (migrate to Streamable HTTP)
+
+These were removed because they were rarely used, and I think that's the right read. Roots never got meaningful client support. Sampling was conceptually elegant and operationally awkward — it inverted the trust relationship in a way most deployments weren't comfortable with anyway.
+
+Twelve months is generous. But "deprecated" and "supported by the client you actually use" aren't the same thing, so don't treat the clock as your migration deadline.
+
+## The compatibility problem nobody solved
+
+Here's the part the announcement posts underplay.
+
+Publication is not a switch-off: servers and clients on 2025-11-25 keep working. But as Stacklok's analysis put it, compatibility "requires both sides to share a supported protocol era, or for one side to implement deliberate fallback or translation."
+
+Read that again. **Legacy servers won't necessarily work with newer clients, and vice versa.** Backward compatibility isn't guaranteed — it's something someone has to build, per implementation.
+
+So the ecosystem is now in a period where any given client-server pair might not talk to each other, and the failure will surface as something unhelpful like a version error at discovery time. If you maintain a public MCP server, you'll be fielding those reports. Plan to support both eras for a while, and be explicit in your README about which you speak.
+
+## Migration checklist
+
+Everything you need for 2026-07-28 compliance:
+
+- [ ] Remove `Mcp-Session-Id` header handling entirely
+- [ ] Read `_meta` on every request instead of relying on `initialize`
+- [ ] Implement the `server/discover` RPC
+- [ ] Add `ttlMs` and `cacheScope` to all list and read results — and get `cacheScope` right
+- [ ] Accept and route on `Mcp-Method` / `Mcp-Name`
+- [ ] Add `resultType` to every result
+- [ ] Convert held-open server-initiated requests to the MRTR pattern; sign your `requestState`
+- [ ] If you use Tasks: move to the extension, switch `tasks/result` → polling `tasks/get`
+- [ ] Publish `extensions` in `ServerCapabilities`
+- [ ] Rip session affinity out of your load balancer config
+- [ ] Model any genuine cross-call state as an explicit handle in your tool schema
+- [ ] Validate `iss`, key credentials by issuer, specify `application_type`
+
+All four Tier 1 SDKs — TypeScript, Python, Go, and C# — support the new spec. If you're building on one of them, most of this list is handled for you, which is the strongest argument yet for not hand-rolling the protocol.
+
+## Who should care, and how much
+
+**If you use an official SDK:** upgrade, re-read your tool schemas for anything that assumed cross-call state, set your cache headers correctly. An afternoon.
+
+**If you hand-rolled a server:** budget real time. Parra wasn't being dramatic. The handshake removal alone touches every code path that assumed a connection lifecycle.
+
+**If you only consume MCP servers:** mostly nothing, but expect a few months of version-mismatch weirdness, and update your clients. If you're running [Chrome DevTools for agents](/blog/chrome-devtools-agents-mcp-browser-debugging-guide) or any other MCP tooling, that's on someone else's migration schedule, not yours.
+
+**If you're choosing between protocols:** this doesn't change the [MCP vs A2A decision](/blog/mcp-vs-a2a-ai-agent-protocols-guide-2026) — MCP for tools, A2A for agent-to-agent. It does make MCP substantially more deployable at scale, which strengthens the case for it in exactly the enterprise settings where it was most awkward before.
+
+## The honest assessment
+
+This is MCP admitting it was designed for a laptop and is now running in datacenters. The revision is the right set of changes — I'd have made the same ones — and it's genuinely painful for anyone who built on the old assumptions.
+
+What I'd watch for is whether the ecosystem actually converges or fragments. Twelve-month deprecation windows are only meaningful if implementations move. If a chunk of the 10,000+ deployed servers just... don't, then "MCP support" becomes a question of which era, and the interoperability promise that made the protocol valuable erodes.
+
+My guess is the SDKs carry most of the ecosystem across and this is a non-event by Q1 2027. But if you're the one maintaining a hand-rolled server, that's cold comfort. Start now — the twelve months is not for you, it's for the deprecated features.
+
+## References
+
+### Sources
+- [The 2026-07-28 Specification](https://blog.modelcontextprotocol.io/posts/2026-07-28/) - the official release post; stateless core, MRTR, caching, auth hardening
+- [MCP 2026-07-28 spec: what changed, what breaks](https://stacktr.ee/blog/mcp-2026-spec-changes) - before/after payloads and the migration checklist this post builds on
+- [Model Context Protocol prepares to break with its stateful past](https://www.theregister.com/devops/2026/07/23/model-context-protocol-prepares-to-break-with-its-stateful-past/5276722) - David Soria Parra's quotes, adoption numbers, and the compatibility warning
+- [The 2026-07-28 MCP Specification: A Stateless, Extensible Future](https://blog.mcpservers.org/posts/mcp-spec-2026-07-28) - deployment-side implications of dropping sticky sessions
+
+### Further Reading
+- [Model Context Protocol specification](https://modelcontextprotocol.io/specification) - the normative document, including all SEP references
+- [MCP Is Growing Up](https://aaif.io/blog/mcp-is-growing-up) - the Agentic AI Foundation's view on governance and the extensions framework
+- [The 2026-07-28 Release Candidate post](https://blog.modelcontextprotocol.io/posts/2026-07-28-release-candidate/) - the 10-week validation window and what changed during it
+- [RFC 9207: OAuth 2.0 Authorization Server Issuer Identification](https://datatracker.ietf.org/doc/html/rfc9207) - the `iss` validation now required of clients
+
+---
+
+~Seb 👊

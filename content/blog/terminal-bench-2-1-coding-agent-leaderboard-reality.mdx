@@ -1,0 +1,171 @@
+---
+title: 'Terminal-Bench 2.1: Why the Coding Agent Leaderboard Lies to You'
+date: '2026-07-29'
+category: 'AI'
+tags: ['benchmarks', 'ai-agents', 'model-selection', 'claude-code', 'evaluation']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: "Three Terminal-Bench 2.1 leaderboards, three different winners. On the official one, the same model swings 3.4 points depending on which CLI runs it — a bigger gap than the one between first and second place. Here's how to read agent benchmarks without picking the wrong tool."
+---
+
+Someone on my team sent me a link last week: "GPT-5.6 Sol beats Opus 5 on Terminal-Bench, should we switch?"
+
+Reasonable question. So I opened three leaderboards for the same benchmark, same version, and got three different answers.
+
+**vals.ai:**
+
+| Model | Accuracy |
+|---|---|
+| GPT-5.6 Sol | 85.77% |
+| Claude Opus 5 | 84.64% |
+| Kimi K3 | 80.90% |
+| Claude Fable 5 | 80.52% |
+
+**Artificial Analysis:**
+
+| Model | Score |
+|---|---|
+| GPT-5.6 Sol (xhigh) | 89.5% |
+| Claude Opus 5 (max effort) | 89.1% |
+| GPT-5.6 Terra (max) | 88.0% |
+
+**The official tbench.ai leaderboard:**
+
+| Agent | Model | Accuracy |
+|---|---|---|
+| Claude Code | Fable 5 | 83.8% ± 1.2% |
+| Codex | GPT-5.5 | 83.1% ± 1.1% |
+| Terminus 2 | Fable 5 | 80.4% ± 1.2% |
+| Cursor CLI | Grok 4.5 | 79.3% ± 1.5% |
+| Claude Code | Opus 4.8 | 78.9% ± 1.3% |
+
+Look at rows one and three. **Same model. 3.4 points apart.** The only difference is which CLI is driving it.
+
+That gap is larger than the gap between first and second place. Which means the headline everyone reads — "model X beats model Y" — is measuring something smaller than the thing the leaderboard varies by accident.
+
+## What Terminal-Bench 2.1 actually measures
+
+Worth knowing before we argue about it. It's 89 tasks in a sandboxed terminal environment, spanning categories from model training to system administration, easy through hard, scored `pass@1`. Runs are time-limited rather than turn-limited, and vals.ai executes remotely via daytona rather than local Docker.
+
+It's a good benchmark. Terminal work is exactly what coding agents do all day, and unlike a lot of eval suites it's hard to game by memorizing. My problem isn't with the benchmark. It's with how the numbers get read.
+
+## Problem 1: the harness is a bigger variable than the model
+
+This is the finding that should change how you shop.
+
+Fable 5 scores **83.8%** under Claude Code and **80.4%** under Terminus 2. Same weights, same tasks. What differs is the scaffolding — how the harness structures the loop, what tools it exposes, how it handles retries, how it manages context across a long run.
+
+Take that seriously and the practical conclusion flips. You are not choosing a model. **You are choosing a model-harness pair**, and the harness contributes a swing comparable to a full model generation.
+
+Which explains something I'd noticed anecdotally and couldn't justify: teams reporting that a "worse" model in their preferred CLI beat a "better" model in a different one. They weren't rationalizing. That's what the data says.
+
+It also reframes the [Claude Code vs Cursor vs Codex comparison](/blog/claude-code-vs-cursor-vs-codex-honest-developer-comparison-2026) — the CLI isn't a wrapper around the model, it's a meaningful part of the system's capability.
+
+## Problem 2: first and second are statistically tied
+
+The official leaderboard publishes confidence intervals. Nobody quotes them.
+
+- Claude Code + Fable 5: 83.8% **± 1.2%** → 82.6–85.0
+- Codex + GPT-5.5: 83.1% **± 1.1%** → 82.0–84.2
+
+Those overlap. Substantially. On this benchmark, with this sample size, those two are **not distinguishable**.
+
+Same on Artificial Analysis: 89.5% vs 89.1% is a 0.4-point gap. Eighty-nine tasks. A single flipped task is worth more than a percentage point. That gap is one task going the other way.
+
+Any headline built on a sub-1-point difference across 89 tasks is reporting noise as news. If a leaderboard doesn't publish error bars, treat the ordering of adjacent entries as arbitrary.
+
+## Problem 3: the refusal fallback asterisk
+
+This one deserves its own section because it's the least visible and the most consequential.
+
+vals.ai notes that two Anthropic models used **refusal fallbacks** — when the primary model refused a task, the harness retried on Claude Opus 4.8. For Claude Opus 5, this affected nine passing task results across three runs.
+
+Count those as failures, which is what they'd be if you ran the model without a fallback chain, and:
+
+**84.64% → 81.27%**
+
+A 3.4-point drop. That moves Opus 5 from second place to below Kimi K3.
+
+I want to be careful about what this does and doesn't mean, because it's easy to read as a gotcha.
+
+**It's not cheating.** Fallback chains are a legitimate production pattern — Claude Code ships `fallbackModel` exactly so a refusal or an overload doesn't kill a long session. Measuring the system as deployed is defensible.
+
+**But it's not comparing like with like**, and the reported number doesn't say so. If you evaluate a raw API call to Opus 5 against a raw API call to GPT-5.6 Sol, the 84.64% figure overstates what you'll get. The gap between the headline and the adjusted number is precisely the value of the fallback infrastructure, which is a real thing worth having — just not a property of the model.
+
+Two different questions get the same number attached to them:
+
+- *"Which model is better at these tasks?"* → 81.27%
+- *"Which configured system solves more tasks?"* → 84.64%
+
+Know which one you're asking.
+
+## Problem 4: effort levels aren't comparable
+
+Artificial Analysis has GPT-5.6 Sol at **xhigh** effort and Opus 5 at **max** effort. The official leaderboard lists effort levels ranging from high to max across submissions.
+
+These aren't standardized units. One vendor's "max" is not another's "xhigh." They map to different token budgets, different reasoning depths, and different costs — and the leaderboard row doesn't tell you the ratio.
+
+The official leaderboard does track cost per test, which is the column that should be in every headline and never is. A model that wins by 0.4 points at triple the cost per task lost, for almost every real workload. Cost-adjusted rankings would reorder these tables substantially, and would map far better onto the [tiering decisions you actually make](/blog/big-agent-vs-micro-agents-model-tiering-guide) when you're routing cheap mechanical work away from your expensive reasoning model.
+
+## Problem 5: 89 tasks isn't your codebase
+
+The tasks span model training to sysadmin work. Yours probably don't.
+
+Nothing here tells you which model is better at your framework version, your monorepo layout, your team's conventions, or the 400-file legacy service everyone avoids. A benchmark measures general terminal competence. You need specific competence on a specific codebase.
+
+This is the same limit I keep hitting with every eval, and it's why [the uncomfortable truths about coding agents](/blog/uncomfortable-truths-ai-coding-agents-2026) mostly aren't visible in benchmark tables. Benchmarks measure the tasks someone could write down. Your hard problems are the ones nobody wrote down.
+
+## How to actually read these tables
+
+A checklist I now run before letting a leaderboard influence anything:
+
+**1. Check the harness.** If the benchmark ran the model through a CLI different from yours, the number doesn't transfer. Look for a row matching the harness you'll actually use.
+
+**2. Look for error bars.** No confidence intervals means adjacent rankings are meaningless. With them, treat any overlap as a tie.
+
+**3. Find the asterisks.** Refusal fallbacks, retries, adjusted scores, excluded tasks. They're always in a footnote and never in the headline.
+
+**4. Normalize effort and cost.** A win at 3× the cost per task is a loss. Insist on the cost column.
+
+**5. Ignore gaps under ~2 points.** On 89 tasks that's under two tasks. It's noise.
+
+**6. Run your own eval.** Ten to twenty tasks from your actual backlog, two candidate configurations, same prompts. A day of work that beats every public leaderboard for your specific decision — and if you've built a [test-driven agent loop](/blog/test-driven-agentic-development-guide), you already have the harness for it.
+
+## So should you switch?
+
+Back to my colleague's question. My answer was no, and here's the reasoning laid out.
+
+The headline gap between GPT-5.6 Sol and Opus 5 is 0.4 to 1.1 points depending on which leaderboard you read — inside the noise floor on both. The harness swing on the official leaderboard is 3.4 points, larger than any model gap in the table. Switching models means also switching harness, so you'd be trading a measurable known quantity for an unmeasured one, in pursuit of a difference smaller than the measurement error.
+
+There *are* good reasons to switch tools: your team prefers a different CLI's ergonomics, you need a specific integration, pricing changed, you want a fallback vendor. Those are real. "It's 0.4 points ahead on Terminal-Bench" is not.
+
+If you're genuinely deciding between models rather than tools, my [Claude 5 family selection guide](/blog/claude-5-family-model-selection-guide) is built around cost and task shape rather than leaderboard position, which is the axis that actually pays.
+
+## The steelman
+
+Let me argue the other side, because I don't want this to read as benchmark nihilism.
+
+Terminal-Bench 2.1 is genuinely useful. It's hard to memorize, it tests something close to real agent work, the official leaderboard publishes error bars *and* cost, and vals.ai disclosed the refusal fallback rather than burying it. That's better methodological hygiene than most of this field manages.
+
+The failure isn't in the benchmarks. It's in the compression that happens between a leaderboard and a tweet. Every asterisk, error bar, harness note, and cost column gets stripped, and what survives is "model X beats model Y" — a claim the underlying data mostly doesn't support.
+
+Read the footnotes. They're where the actual information lives.
+
+## References
+
+### Sources
+- [Terminal-Bench 2.1 on vals.ai](https://www.vals.ai/benchmarks/terminal-bench-2-1) - the 85.77/84.64 scores, Terminus 2 harness details, and the refusal fallback adjustment to 81.27%
+- [Terminal-Bench 2.1 official leaderboard](https://www.tbench.ai/leaderboard/terminal-bench/2.1) - agent-model pairs, confidence intervals, and the Claude Code vs Terminus 2 harness gap
+- [Terminal-Bench v2.1 on Artificial Analysis](https://artificialanalysis.ai/evaluations/terminalbench-v2-1) - the independent 89.5/89.1/88.0 evaluation and effort-level labels
+- [Best AI Model for Coding: 13 Models Ranked by Benchmarks and Cost per Task](https://www.morphllm.com/best-ai-model-for-coding) - cost-per-task framing across models
+
+### Further Reading
+- [Terminal-Bench 2.1 Leaderboard: Claude Opus 5 Added](https://codingfleet.com/blog/terminal-bench-leaderboard-2026/) - the submission history as new models landed
+- [Terminal-Bench 2.1 on Snorkel AI](https://snorkel.ai/leaderboard/terminal-bench-2-1/) - a fourth independent run, useful for seeing the variance yourself
+- [Terminal-Bench 2.0 leaderboard](https://www.tbench.ai/leaderboard/terminal-bench/2.0) - the previous version, for how quickly these tables churn
+- [DORA State of DevOps](https://dora.dev/research/) - outcome metrics that correlate with shipping better than any model benchmark
+
+---
+
+~Seb 👊

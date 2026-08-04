@@ -1,0 +1,181 @@
+---
+title: '9 CVEs and a New Release Program: Next.js Security Just Changed'
+date: '2026-07-28'
+category: 'Development'
+tags: ['nextjs', 'security', 'cve', 'lts', 'vercel']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: "Four high and five medium severity CVEs — including a middleware bypass that skips your auth checks entirely. But the bigger story is why Vercel moved to preannounced monthly patches: Mozilla just disclosed 271 issues in one Firefox release, all found by an LLM."
+---
+
+There's a number in Vercel's security announcement that should worry you more than any of the nine CVEs they shipped fixes for.
+
+Mozilla recently disclosed **271 issues in a single Firefox release** — all surfaced by Anthropic's Mythos Preview. Not 271 over a year. In one release, from one LLM-assisted research pass.
+
+Vercel runs the same class of tooling against Next.js, through their own [deepsec](https://github.com/vercel-labs/deepsec), their researchers, and an expanded bug bounty. And that's the actual reason Next.js just moved from ad-hoc security patches to a **preannounced monthly cadence**. Not because Next.js got less secure. Because the rate at which vulnerabilities are *found* went up by an order of magnitude, and an ad-hoc process can't absorb that.
+
+The July release is the first one under the new model: 4 high and 5 medium severity issues, patched in **16.2.11 (Active LTS)** and **15.5.21 (Maintenance LTS)**.
+
+```bash
+npm install next@16.2.11  # for 16.2
+npm install next@15.5.21  # for 15.5
+```
+
+Go do that first, then come back for what's in it.
+
+## The four high-severity issues
+
+### CVE-2026-64642 — middleware bypass (Turbopack + single locale)
+
+This is the one I'd patch tonight.
+
+If your App Router app is built with Turbopack and has **a single entry in `config.i18n.locales`**, requests can bypass middleware entirely. Which means any authentication or authorization check your middleware performs is simply skipped.
+
+Not weakened. Skipped.
+
+The precondition sounds narrow until you realize how common it is: teams that set up i18n scaffolding with one locale "for later," teams that scoped a locale prefix for routing reasons, and — since Turbopack became the default bundler in Next.js 16 — anyone who didn't opt out. If middleware is where your auth gate lives, and for a lot of App Router apps it is, this is a full authentication bypass.
+
+Check your config right now:
+
+```ts
+// next.config.ts — if locales has exactly one entry and you're on Turbopack, patch immediately
+i18n: {
+  locales: ['en'],
+  defaultLocale: 'en',
+}
+```
+
+### CVE-2026-64645 — SSRF via rewrite destinations
+
+A `rewrites()` or `redirects()` rule that builds its external destination hostname from request-controlled input can be pointed at an **arbitrary hostname**, regardless of the rule's hostname suffix.
+
+That suffix constraint is the part that bites. Plenty of people wrote rules assuming a hostname suffix check would keep the destination inside their domain. It doesn't. For rewrites you get SSRF — the server makes the request, from inside your network, with whatever internal access it has. For redirects you get an open redirect.
+
+Audit any rule with a dynamic destination:
+
+```ts
+async rewrites() {
+  return [
+    {
+      source: '/proxy/:path*',
+      // If `host` comes from the request in any form, this was exploitable.
+      destination: 'https://:host.internal.example.com/:path*',
+    },
+  ];
+}
+```
+
+SSRF from an edge proxy into internal services is how a content-site vulnerability turns into a cloud metadata credential leak. Treat this as high priority even though it needs a specific config shape.
+
+### CVE-2026-64649 — SSRF in Server Actions on custom servers
+
+When a Server Action forwards or redirects a request, an attacker who can control Host-associated headers can steer that outbound request to a malicious host.
+
+The mitigating precondition is header control, which usually means you're behind a proxy that passes `Host`, `X-Forwarded-Host`, or similar through unsanitized. If you run a custom server — and this one is specific to custom servers — check what your proxy layer forwards.
+
+This is the third time in eighteen months that Host-header trust has produced a Next.js CVE. If you take one architectural lesson from this release: **never derive an outbound destination from an inbound header.**
+
+### CVE-2026-64641 — DoS via Server Actions
+
+Crafted requests against an App Router app with at least one Server Action cause excessive CPU usage, blocking further requests in the same process.
+
+"At least one Server Action" means essentially every modern App Router app. There's no clever config to check — it applies to you. Serverless deployments limit the blast radius to a single instance; long-lived Node processes take the full hit.
+
+## The five medium-severity issues
+
+**CVE-2026-64643 — Server Function endpoint disclosure.** Server Action and `use cache` endpoint IDs can be globally disclosed. On its own it's reconnaissance, not compromise — but it's the map an attacker uses to find the other eight. Combined with the DoS above, it tells them exactly where to aim.
+
+**CVE-2026-64646 — unbounded Server Action payload on Edge.** Memory exhaustion via crafted request. Same broad precondition: App Router with any Server Action, Edge runtime.
+
+**CVE-2026-64644 — SVG DoS in Image Optimization.** Only affects self-hosted deployments using the default image loader *with remote image optimization configured* — not on by default. Malicious SVG content causes CPU exhaustion in `/_next/image`. If you allow remote images from anywhere users can influence, this is a cheap DoS.
+
+**CVE-2026-64648 and CVE-2026-64647 — cache confusion on fetch bodies.** These two are the most interesting from an engineering standpoint. A server-side `fetch` with a request body can return a **cached response body from a different request** to the same URL with a different body.
+
+The first has a specific shape:
+
+```ts
+fetch(new Request(init), aDifferentInit)
+```
+
+The second is worse in a subtle way: it triggers on request bodies containing **invalid UTF-8 byte sequences**. The advisory's example is that the UTF-16 byte sequences for `삃삃` and `섄섄` collide on the same cache key.
+
+Read that again. Two different request bodies, same cached response. If your app POSTs user-specific data through a cached server-side fetch, that's cross-user data leakage — one user receiving another's response. It's rated Medium because triggering it deliberately takes specific conditions, but the *impact* when it fires is exactly the kind of thing that ends up in a breach notification. This class of bug is also why the [Cache Components model's explicitness](/blog/react-cache-components-nextjs-16-caching-guide) matters beyond developer ergonomics.
+
+## The structural change: preannounced releases and LTS
+
+Now the part that changes how you manage Next.js going forward.
+
+**Historically:** ad-hoc patches, infrequent, no advance notice, disruptive when they landed.
+
+**Now:** roughly once a month, Vercel publishes advance notice on the Next.js blog. Each announcement includes the expected timeline and the **highest anticipated severity** in the batch — before the patch drops.
+
+That lead time does two things. It lets you plan an upgrade window instead of dropping everything. And it lets Vercel coordinate with hosting providers and platform partners to deploy mitigations like firewall rules that protect unpatched apps in the interim.
+
+Urgent disclosures and in-the-wild exploitation still get ad-hoc patches. That's how [React2Shell](/blog/cve-2025-55182-react2shell-rsc-security-postmortem) was handled last December, and Vercel explicitly cites it as the process working.
+
+### Active LTS vs Maintenance LTS
+
+The July release introduced the terminology into practice:
+
+| Line | Status | July patch |
+|---|---|---|
+| 16.2 | **Active LTS** | 16.2.11 |
+| 15.5 | **Maintenance LTS** | 15.5.21 |
+
+If you've been pinning to whatever minor you happened to land on, that strategy just got worse. The versions receiving security patches are the designated LTS lines. Being on 16.1 or 15.4 doesn't mean "slightly behind" — it means you are outside the line that gets fixes.
+
+The fixes also landed in `16.3.0-canary.92` and `16.3.0-preview.7`, and shipped in [stable 16.3](/blog/nextjs-16-3-instant-navigations-memory-guide) on August 3rd.
+
+**What I'd change in how you pin:**
+
+1. **Track an LTS line explicitly**, not an arbitrary minor. Know whether you're on Active or Maintenance.
+2. **Subscribe to the Next.js blog.** The pre-announcement is the whole point of the new program, and it's only useful if someone on your team reads it.
+3. **Put a monthly patch window on the calendar.** Roughly once a month is now the expected cadence. Treat it like Patch Tuesday.
+4. **Get off non-LTS minors.** Being on 16.0 today means the July fixes never reach you.
+
+## The thing nobody's saying out loud
+
+The Mozilla number is the story here, and it generalizes past Next.js.
+
+271 issues in one Firefox release, from one LLM-assisted research pass. That's a step change in the rate at which vulnerabilities get found in mature, heavily-audited codebases. Firefox has had professional security attention for twenty years. It still had 271 findable issues that nobody had found.
+
+Two consequences follow, and neither is comfortable.
+
+**Patch cadence is now a permanent operational cost.** Vercel moved to monthly because monthly is what the discovery rate demands. Other major frameworks will follow — they'll have to. If your deploy process makes a dependency bump a two-week project, that's now a security problem, not a productivity one.
+
+**The same tooling is available to attackers.** LLM-assisted vulnerability discovery isn't a defender-only capability. The window between "a bug exists in your dependency" and "someone finds it" is compressing on both sides simultaneously. The advantage goes to whoever patches faster, which is the one variable you actually control.
+
+That's the same conclusion I reached after the [Vercel breach](/blog/vercel-breach-supply-chain-security-audit-guide): supply-chain security is mostly an operational discipline, not a technical one. Nobody gets breached because they didn't know a patch existed. They get breached because upgrading was annoying and it slipped for six weeks.
+
+## Checklist for this week
+
+- [ ] `npm install next@16.2.11` or `next@15.5.21` — today, not this sprint
+- [ ] Check `config.i18n.locales`. Single entry + Turbopack = **your middleware auth is bypassable**
+- [ ] Audit every `rewrites()` / `redirects()` rule with a dynamic destination hostname
+- [ ] If you run a custom server: check what Host-associated headers your proxy forwards
+- [ ] Grep for `fetch(new Request(...), ...)` — the cache confusion shape
+- [ ] If self-hosting with remote image optimization: review your allowed remote patterns
+- [ ] Confirm which LTS line you're on and move if you're on neither
+- [ ] Add the Next.js blog to whatever your team actually reads
+- [ ] Schedule a monthly dependency patch window
+
+The middleware bypass is the one that keeps me up. An auth check that silently doesn't run is the worst failure mode in security — everything looks fine, your tests pass, your logs show nothing unusual, and the gate isn't there.
+
+## References
+
+### Sources
+- [July 2026 Security Release](https://nextjs.org/blog/july-2026-security-release) - all nine CVEs, severities, preconditions, and patched versions
+- [Next.js Security Release and Our Next Patch Release](https://nextjs.org/blog/next-security-release-program) - the preannounced release program, cadence, and the Mozilla/Mythos figure
+- [Mozilla: AI security and zero-day vulnerabilities](https://blog.mozilla.org/en/firefox/privacy-security/ai-security-zero-day-vulnerabilities/) - the 271-issue Firefox disclosure
+- [deepsec](https://github.com/vercel-labs/deepsec) - Vercel's own LLM-assisted security scanning tooling
+
+### Further Reading
+- [Vercel's Open Source Bug Bounty](https://hackerone.com/vercel-open-source) - scope and how to participate
+- [CVE-2026-64642 record](https://www.cve.org/CVERecord?id=CVE-2026-64642) - the middleware/proxy bypass, in full
+- [Next.js middleware documentation](https://nextjs.org/docs/app/api-reference/file-conventions/middleware) - what middleware is and isn't a safe place to enforce
+- [Server Actions security guide](/blog/nextjs-server-actions-security) - why every Server Action is a public HTTP endpoint, and how to harden them
+
+---
+
+~Seb 👊

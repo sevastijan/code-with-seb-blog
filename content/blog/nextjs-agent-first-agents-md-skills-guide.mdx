@@ -1,0 +1,257 @@
+---
+title: 'Next.js Is Now Agent-First: AGENTS.md, Skills, and the Dev Loop'
+date: '2026-08-04'
+category: 'Development'
+tags: ['nextjs', 'ai-agents', 'agents-md', 'claude-code', 'developer-workflow']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: "Next.js now writes a file into your repo that tells coding agents their training data is wrong. Vercel also deleted their own knowledge Skills after benchmarks showed always-available docs beat on-demand retrieval — a finding that contradicts most advice about how to feed context to agents."
+---
+
+Next.js 16.3 writes a file into your project that opens with this heading:
+
+> **# This is NOT the Next.js you know**
+>
+> This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` before writing any code.
+
+That's a framework shipping a warning addressed to a language model, telling it not to trust itself. It's in your repo now, `next dev` re-adds it if you delete it, and honestly it's one of the more clear-eyed things I've seen a framework do this year.
+
+Vercel has been asking "what would Next.js look like if it were designed primarily for agent-driven development?" across three releases now. 16.3 is where the answer stops being a demo. And buried in it is a finding that contradicts most of what people tell you about feeding context to agents.
+
+## The finding: always-available beats on-demand
+
+Vercel used to ship *knowledge* Skills — App Router conventions, caching APIs, the stuff you'd want an agent to know. In 16.3 they **retired them**. Not deprecated. Deleted, with a `npx skills update` to clean them out of your installed set.
+
+The reasoning, from their own docs:
+
+> Framework knowledge comes from the bundled docs, not from Skills. Benchmark results show that always-available context outperforms on-demand retrieval.
+
+That's measured, on [nextjs.org/evals](https://nextjs.org/evals), by the team with the most to gain from Skills being the answer. And it cuts against the reflex a lot of us have developed — package everything as a skill, let the model pull what it needs, keep the context window clean.
+
+The distinction they landed on is sharp and I think it generalizes:
+
+- **Knowledge** → always-available context. Docs, conventions, API shapes. Things the model needs to *not get wrong*, where a failure to retrieve means a confident hallucination.
+- **Workflows** → Skills. Multi-step procedures with checkpoints and ordering. Things the model needs to *do in sequence*.
+
+If you've been packaging reference material as [reusable skills](/blog/claude-code-skills-reusable-ai-workflows-guide), this is worth re-reading your setup against. A skill that's really a document probably belongs in `AGENTS.md` or a bundled file instead.
+
+## Bundled docs: the actual mechanism
+
+When you install `next`, the full documentation ships inside the package:
+
+```txt
+node_modules/next/dist/docs/
+├── 01-app/
+│   ├── 01-getting-started/
+│   ├── 02-guides/
+│   └── 03-api-reference/
+├── 02-pages/
+├── 03-architecture/
+└── index.mdx
+```
+
+Mirroring the docs site structure, version-matched to what you installed, no network request. Upgrade Next.js and the docs upgrade with it.
+
+`AGENTS.md` at your project root points agents at that directory. Claude Code, Codex, Cursor, and GitHub Copilot all read `AGENTS.md` automatically at session start.
+
+**New projects** get it free — `create-next-app` generates both `AGENTS.md` and `CLAUDE.md` (which is just `@AGENTS.md`). Opt out with `--no-agents-md`.
+
+**Existing projects on 16.3+**: run `next dev`. When it detects a coding agent in the environment and no managed block exists, it writes both files. Existing files are upserted — anything outside the markers is preserved.
+
+**On 16.1 or earlier**, run the codemod:
+
+```bash
+npx @next/codemod@canary agents-md
+```
+
+The managed block is delimited:
+
+```md
+<!-- BEGIN:nextjs-agent-rules -->
+...
+<!-- END:nextjs-agent-rules -->
+```
+
+Put your own project instructions *outside* those markers and they survive updates. If you already maintain a [carefully structured CLAUDE.md](/blog/claude-md-memory-persistent-context-guide), this composes with it rather than fighting it.
+
+Opting out entirely:
+
+```ts
+// next.config.ts
+const nextConfig: NextConfig = {
+  agentRules: false,
+};
+```
+
+I wouldn't. The docs literally say benchmarks show agents do better with it on, and the cost is a few lines in a file.
+
+**Commit the block.** The docs are unusually blunt about this: deleting it from a diff just re-creates the uncommitted change next time `next dev` runs. Fighting it produces a permanently dirty tree.
+
+### Docs over the network too
+
+For agents that fetch rather than read `node_modules`: append `.md` to any URL on `nextjs.org/docs` for plain Markdown. `Accept: text/markdown` works as well. There's an index at `/docs/llms.txt` and a single-file bundle at `/docs/llms-full.txt`, both following the `llms.txt` convention.
+
+This matters for the per-error pages under `/docs/messages`, which are **not** bundled and have to come over the network.
+
+## Runtime visibility: the framework's view and the browser's view
+
+Bundled docs fix "the agent doesn't know the API." They do nothing for "the agent doesn't know what its code did." 16.3 addresses that with two complementary views.
+
+**The framework's view** — the Next.js MCP server at `/_next/mcp`, exposing routes, server logs, and compilation issues from the *running* dev server. Two new tools in 16.3:
+
+- `get_compilation_issues` — whole project
+- `compile_route` — single route
+
+The problem these solve is one I'd noticed without naming: agents run `next build` constantly just to check whether the code compiles. That's a full production build to answer a question the dev server already knows. These tools answer it in a fraction of the time.
+
+Also new: `next dev` writes its PID, port, and URL to `.next/dev/lock`, and a second `next dev` prints the running server's URL instead of starting a duplicate. Small, but it kills a genuinely common agent failure — spawning a second dev server on port 3001 and then testing against the wrong one for twenty minutes.
+
+And `logging.browserToTerminal` forwards browser console errors and warnings to the terminal, so client-side failures land in the output agents already read.
+
+**The browser's view** — `agent-browser`, which absorbed the experimental `next-browser` from 16.2 and now works beyond Next.js. Version 0.27 adds React DevTools introspection:
+
+```bash
+npm install -g agent-browser@^0.27
+```
+
+The React commands need `--enable react-devtools` at launch:
+
+- `react tree` — list the component tree
+- `react inspect <fiberId>` — inspect a single component
+- `react renders start` / `stop` — profile re-renders
+- `react suspense --only-dynamic --json` — see what's holding a render
+
+That last one is the interesting one. An agent can now ask *"which Suspense boundaries are still pending and why"* and get a structured answer. That's the exact question you need answered when a navigation isn't instant, and it was previously only available by staring at a DevTools panel.
+
+This is the same category of capability as [Chrome DevTools for agents](/blog/chrome-devtools-agents-mcp-browser-debugging-guide), with a narrower and deeper focus: Chrome's tooling gives you traces, heap snapshots and Lighthouse across any site; `agent-browser` gives you the React tree. Different tools, and if you work in React you probably want both.
+
+## `next-dev-loop`: the one Skill everyone should install
+
+Four first-party Skills ship with 16.3. This is the foundational one:
+
+```bash
+npx skills add vercel/next.js --skill next-dev-loop
+```
+
+It combines both views — `/_next/mcp` for the framework, `agent-browser` for the browser — into a single inspect-edit-verify cycle. It launches `agent-browser` with React DevTools enabled so the React commands are available during verification. Requires `agent-browser` 0.27+.
+
+Then one line in your prompt or project instructions:
+
+```
+After every edit, verify the page still works at runtime using the next-dev-loop skill.
+```
+
+That sentence converts agent output from a claim into an observation, which is the same principle underneath [test-driven agentic development](/blog/test-driven-agentic-development-guide) — the machine has to prove it, not assert it.
+
+## The three workflow Skills
+
+Vercel groups the rest by workflow type: **interactive workflows** with user checkpoints, and **unattended loops** that work toward a verifiable goal.
+
+### `next-cache-components-adoption`
+
+Turns on Cache Components and works through your app one feature at a time, checking in at each feature boundary so you control scope. Two modes:
+
+- **Incremental** — lands one mechanical PR that opts every route out of validation, so you ship features in follow-ups
+- **Direct** — adopts every route on one branch
+
+The per-feature loop reads the actionable error, fetches the linked per-error docs page, applies the fix, then drives the browser through `next-dev-loop` to confirm the static shell renders the right content.
+
+```bash
+npx skills add vercel/next.js --skill next-cache-components-adoption
+```
+
+If you've been putting off the [Cache Components migration](/blog/react-cache-components-nextjs-16-caching-guide), this is the most credible "let the agent do it" story I've seen, precisely because it verifies each step in a browser instead of trusting the build.
+
+### `next-cache-components-optimizer`
+
+Makes a route instant by turning the goal into a **failing `instant()` test** and working it to green. It checks both paths a route reaches a user: initial load (does the static shell paint immediately on direct visit) and client-side navigation (does the next page render immediately on link click).
+
+The passing test stays with the route to catch regressions.
+
+```bash
+npx skills add vercel/next.js --skill next-cache-components-optimizer
+```
+
+Red test, agent iterates, green test, test stays. That's TDD, shipped as a framework skill. It's the single strongest signal in this release about where Vercel thinks agent workflows are heading.
+
+### `next-partial-prefetching-adoption`
+
+Added in the stable release. Turns on [Partial Prefetching](/blog/nextjs-16-3-instant-navigations-memory-guide) and works through the app until every link reuses a shared App Shell.
+
+```bash
+npx skills add vercel/next.js --skill next-partial-prefetching-adoption
+```
+
+## Actionable errors: the part I didn't expect
+
+With Cache Components on, an `await` on the server becomes a decision — stream, cache, or block. Next.js now presents that decision as an error with three **labeled fixes**, and packages each one for an agent.
+
+In the terminal, during both `next dev` and `next build`:
+
+```text
+Error: Route "/products/[slug]": Next.js encountered uncached data during prerendering or a navigation.
+
+Ways to fix this:
+  - [stream] Provide a placeholder with `<Suspense fallback={...}>` around the data access
+    https://nextjs.org/docs/messages/blocking-prerender-dynamic#wrap-in-or-move-into-suspense
+  - [cache] Cache the data access with `"use cache"` (does not apply to `connection()`)
+    https://nextjs.org/docs/messages/blocking-prerender-dynamic#cache-the-component-or-data
+  - [block] Set `export const instant = false` to silence this error and allow a blocking route
+    https://nextjs.org/docs/messages/blocking-prerender-dynamic#allow-blocking-route
+    at ProductPage (app/products/[slug]/page.tsx:52:32)
+```
+
+Structured, labeled, each linking to a specific section. An agent reading CI logs gets the same menu as one reading the dev overlay.
+
+In the overlay there's a **Copy prompt** button that packages the chosen fix into a paste-ready prompt. I read the generated prompt expecting boilerplate. It's not. It instructs the agent to verify in a browser before claiming success, to *check with the user* before expanding scope, to read the Gotchas section before editing, to check that a Suspense boundary placed too high hasn't left an empty shell, and to re-check sibling routes if the fix touched shared code.
+
+Someone at Vercel has clearly watched agents fail at this repeatedly and encoded the corrections. It's better prompt engineering than most teams write for themselves.
+
+### Error pages written for agents
+
+Every error gets a page under `/docs/messages`, and they follow a fixed shape: **Patterns** (canonical code), **Trade-offs** (against the other fixes), **Gotchas** (what an agent misses on the first attempt). Ten-plus of them.
+
+The "written for agents" framing sounds like marketing until you read one. The Gotchas sections read like a list of failure modes someone collected from watching real sessions — and that structure is copyable. If you maintain a library with confusing failure modes, this is a template worth stealing.
+
+One practical note: a production build minifies server code, so when a build error alone isn't enough, `next build --debug-prerender` turns on server source maps and continues past the first failure.
+
+## What to actually do
+
+**Everyone on 16.3:** run `next dev` once, let it write `AGENTS.md` and `CLAUDE.md`, commit them. Put your own instructions outside the managed markers.
+
+**If you use a React-aware agent:** install `agent-browser@^0.27` and the `next-dev-loop` Skill, then add "verify at runtime using next-dev-loop" to your project instructions. This is the highest-value change in the release and it takes two minutes.
+
+**If you're migrating to Cache Components:** use `next-cache-components-adoption` in incremental mode. Browser-verified, feature-by-feature, with checkpoints. Better than doing it by hand and better than doing it with an unstructured prompt.
+
+**If you built your own Next.js knowledge skills:** delete them. `npx skills update`. They're now competing with version-matched bundled docs and losing.
+
+**If you maintain any library:** steal the pattern. Bundle version-matched docs in your package. Give errors labeled fixes linking to per-error pages. Structure those pages as Patterns / Trade-offs / Gotchas. Vercel just published the playbook and the evals to justify it.
+
+## The bigger thing
+
+There's a claim underneath all of this that's worth naming: **the framework is treating agents as a user class with its own documentation surface, error format, and tooling.**
+
+Not "AI features." Not a chatbot in the dashboard. A file that tells the model its training data is wrong, errors written in a format a model can act on, docs shipped inside the package so version drift can't happen, and a dev loop the agent can drive itself.
+
+The uncomfortable implication is that the value of knowing a framework by heart just dropped, and the value of a framework being *legible to an agent* just went way up. Frameworks that don't do this will feel worse to work with in a year — not because they're worse frameworks, but because your agent will keep confidently writing 2024's API against them.
+
+Vercel got there first. I'd expect the rest to follow within two releases.
+
+## References
+
+### Sources
+- [Next.js 16.3: AI Improvements](https://nextjs.org/blog/next-16-3-ai-improvements) - AGENTS.md block, the four Skills, agent-browser React introspection, actionable errors and the full Copy prompt text
+- [How to set up your Next.js project for AI coding agents](https://nextjs.org/docs/app/guides/ai-agents) - the four-step setup, `agentRules`, bundled docs layout, and the always-available-vs-retrieval finding
+- [Next.js 16.3](https://nextjs.org/blog/next-16-3) - the stable release, including the fourth Skill and versioned docs for agents
+- [nextjs.org/evals](https://nextjs.org/evals) - the benchmark results behind retiring the knowledge Skills
+
+### Further Reading
+- [Next.js MCP Server guide](https://nextjs.org/docs/app/guides/mcp) - `get_compilation_issues`, `compile_route`, and `.mcp.json` setup
+- [agent-browser on GitHub](https://github.com/vercel-labs/agent-browser) - the CLI, its React DevTools commands, and session handling
+- [Next.js Skills on skills.sh](https://www.skills.sh/vercel/next.js) - all four first-party Skills with their source
+- [blocking-prerender-dynamic error page](https://nextjs.org/docs/messages/blocking-prerender-dynamic) - the Patterns / Trade-offs / Gotchas structure worth copying
+
+---
+
+~Seb 👊
