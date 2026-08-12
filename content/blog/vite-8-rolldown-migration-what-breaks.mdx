@@ -1,0 +1,319 @@
+---
+title: 'Vite 8 + Rolldown: The Migration Guide and What Actually Breaks'
+date: '2026-08-09'
+category: 'Development'
+tags: ['vite', 'rolldown', 'build-tools', 'performance', 'migration']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: "Linear went from 46 seconds to 6. Mercedes-Benz.io got 38%. The spread tells you more than the headline number does. Here's what the Vite 8 + Rolldown migration actually costs, which plugin hooks are gone, and why your chunk hashes will change."
+---
+
+Most Vite 8 migrations take an afternoon. The compat layer converts your config, the plugins keep working, the build gets dramatically faster, and you wonder what everyone was worried about.
+
+Then there's the other kind, where one plugin in your chain reaches into Rollup's module graph and you lose a week.
+
+The difference between the two isn't project size. It's whether anything in your dependency tree touched bundler internals instead of the documented hooks. Here's how to tell which one you are before you start, plus the changes that break quietly — the ones that pass CI and then surprise you in production.
+
+## What actually changed
+
+Vite 8 shipped March 12, 2026. The current line is 8.2.x, and it's the biggest architectural change since Vite 2.
+
+Before, Vite ran **two** bundlers: esbuild for dev-server transforms and dependency pre-bundling, Rollup for production builds. That split was always slightly uncomfortable — dev and prod resolved modules through different code paths, so "works in dev, breaks in build" was a genre of bug rather than an unusual event.
+
+Vite 8 collapses that into one pipeline:
+
+- **Rolldown** (Rust, Rollup-compatible plugin API) replaces both esbuild's bundling role and Rollup entirely
+- **Oxc** replaces esbuild for TypeScript stripping, JSX transform, minification and tree-shaking
+
+The pairing matters more than either piece. Oxc's transformer handles JSX, TypeScript and syntax lowering in a *single pass* instead of dispatching to separate tools, and because Oxc and Rolldown share a representation, there's no serialization boundary between transform and bundle. That's where a lot of the speed actually comes from — not just "Rust is fast."
+
+If the name Oxc rings a bell, it's the same toolchain behind oxlint. The JavaScript ecosystem is quietly consolidating on one Rust core for parsing, linting and bundling, which is a bigger story than any single release — and one that also shows up in [how type-aware linting is being rethought](/blog/advanced-linting-type-safety-eslint-typescript-guide).
+
+## The numbers, and the spread
+
+The published production results:
+
+| Project | Build time change |
+|---|---|
+| Linear | 46s → 6s (87%) |
+| Beehiiv | 64% reduction |
+| Ramp | 57% reduction |
+| Mercedes-Benz.io | up to 38% reduction |
+
+Official benchmark: 19,000 modules bundled in **1.61s** with Rolldown vs **40.10s** with Rollup.
+
+That spread — 87% down to 38% — is the useful part, and nobody talks about it. Your result depends almost entirely on what fraction of your build was actually *bundling*:
+
+- **You'll land near the top** if you have a large module graph, lots of TypeScript and JSX, minimal custom plugins, and your CI time is dominated by `vite build`.
+- **You'll land near the bottom** if your build is mostly type-checking (`tsc --noEmit` runs on its own clock), image processing, or a heavy custom plugin doing JS-land work. Rolldown doesn't make your JavaScript plugins faster — they still run in JavaScript, and now they run **sequentially**. More on that in a moment.
+
+Measure before you migrate. `time vite build` versus your total CI wall-clock tells you the ceiling immediately. If bundling is 20% of your pipeline, an 80% bundler improvement buys you 16% overall, and you should plan the work accordingly. That's the same arithmetic I applied to [CI pipeline optimization more broadly](/blog/optimizing-cicd-pipelines-dx-deploy-times-guide) — find the dominant term first.
+
+## The mechanical part: config renames
+
+This is the boring half, and the compat layer handles most of it automatically with deprecation warnings. Do the renames anyway; the auto-conversion is going away.
+
+| Vite 7 | Vite 8 |
+|---|---|
+| `build.rollupOptions` | `build.rolldownOptions` |
+| `worker.rollupOptions` | `worker.rolldownOptions` |
+| `optimizeDeps.esbuildOptions` | `optimizeDeps.rolldownOptions` |
+| `esbuild.*` | `oxc.*` |
+| `build.rollupOptions.watch.chokidar` | `build.rolldownOptions.watch.watcher` |
+
+```ts
+// vite.config.ts — after
+import { defineConfig } from 'vite'
+
+export default defineConfig({
+  oxc: {
+    jsx: { runtime: 'automatic' },
+    // note: esbuild.supported has no Oxc equivalent
+  },
+  build: {
+    target: 'es2022',
+    rolldownOptions: {
+      output: {
+        // object-form manualChunks is gone — see below
+        codeSplitting: {
+          groups: [
+            { name: 'vendor-react', test: /node_modules\/(react|react-dom)\// },
+            { name: 'vendor', test: /node_modules\// },
+          ],
+        },
+      },
+    },
+  },
+})
+```
+
+Node requirement is unchanged from Vite 7: **20.19+ or 22.12+**.
+
+Options that became no-ops or vanished:
+
+- `build.commonjsOptions` — no-op. CommonJS interop is now handled natively and consistently across dev and build.
+- `build.dynamicImportVarsOptions.warnOnError` — no-op.
+- `resolve.alias[].customResolver` — removed, use a `resolveId` hook.
+- `esbuild.supported` — no Oxc equivalent. If you were using it to force-disable a syntax transform, you now control this through `build.target`.
+
+And two output formats are simply gone: `format: 'system'` and `format: 'amd'`. If you ship a SystemJS bundle for legacy loaders, Vite 8 is a hard blocker, not a migration.
+
+## What actually breaks: the plugin API
+
+Here's the part that costs the week.
+
+**Four hooks were removed outright:**
+
+- `shouldTransformCachedModule`
+- `resolveImportMeta`
+- `renderDynamicImport`
+- `resolveFileUrl`
+
+Grep your entire dependency tree, not just your own config:
+
+```bash
+grep -rn "shouldTransformCachedModule\|resolveImportMeta\|renderDynamicImport\|resolveFileUrl" \
+  node_modules/*/dist node_modules/@*/*/dist vite.config.ts 2>/dev/null
+```
+
+If a plugin you don't maintain shows up in that output, check whether it has a Vite 8-compatible release *before* you start. That's the single highest-value thing you can do in the first ten minutes of this migration.
+
+**Parallel hooks now run sequentially.** In Rollup, `buildStart`, `buildEnd`, `renderStart` and friends ran in parallel across plugins. In Rolldown they don't. Two consequences:
+
+1. If two plugins raced and you'd accidentally come to depend on the winner, the behavior is now deterministic — possibly in the direction you didn't want.
+2. A plugin doing slow async work in a parallel hook (fetching a manifest, warming a cache) no longer overlaps with the others. Its cost is now additive. This is a real regression path: I've seen a build get *slower* in one workspace of a monorepo purely because three plugins each spent two seconds in `buildStart`.
+
+**Mutating `bundle` by assignment is unsupported.** The classic Rollup pattern:
+
+```js
+// ❌ no longer works in generateBundle
+generateBundle(options, bundle) {
+  bundle['extra-file.json'] = { type: 'asset', fileName: 'extra-file.json', source: '{}' }
+}
+```
+
+```js
+// ✅ use the documented emit API
+generateBundle() {
+  this.emitFile({ type: 'asset', fileName: 'extra-file.json', source: '{}' })
+}
+```
+
+**`moduleType` may be required.** If a `load` or `transform` hook returns non-JS content — YAML, GraphQL SDL, raw text you're about to convert — Rolldown wants to be told:
+
+```js
+transform(code, id) {
+  if (!id.endsWith('.graphql')) return null
+  return {
+    code: `export default ${JSON.stringify(code)}`,
+    moduleType: 'js', // ← be explicit
+  }
+}
+```
+
+**Object-form `manualChunks` is gone.** This is the one most teams hit, because manual chunking is how everyone hand-tunes their vendor splits:
+
+```js
+// ❌ Vite 7
+manualChunks: {
+  react: ['react', 'react-dom'],
+  charts: ['recharts', 'd3-scale'],
+}
+```
+
+```js
+// ✅ Vite 8
+codeSplitting: {
+  groups: [
+    { name: 'react', test: /node_modules\/(react|react-dom)\// },
+    { name: 'charts', test: /node_modules\/(recharts|d3-scale)\// },
+  ],
+}
+```
+
+The function form still works, but the semantics of what you're handed differ enough that you should verify the output rather than assume. If you've spent time getting your bundle under a size budget, this is exactly where that work can silently regress — re-run whatever measurement you used when you were [chasing a sub-200 kB bundle](/blog/dynamic-bundle-optimization-under-200kb-guide) rather than trusting the migration.
+
+## The quiet breakage: output determinism
+
+Chunk hashing and code splitting can differ from Rollup's output. Vite doesn't promise byte-identical builds, and Rolldown doesn't produce them.
+
+Everything downstream that assumed stable filenames now needs a look:
+
+- **Long-lived CDN cache rules** keyed to specific filenames
+- **Subresource Integrity** hashes pinned in a template or CSP
+- **Bundle-size CI gates** that compare per-chunk sizes rather than totals — these will fail on the first migration build for entirely legitimate reasons, and if you rubber-stamp that failure you lose the gate
+- **Service worker precache manifests**, if generated at a different point in your pipeline
+- **Source map upload steps** in Sentry/Datadog keyed by chunk name
+
+None of these are hard to fix. All of them are annoying to discover on the deploy that follows the migration rather than in the PR. Do a build-output diff as a deliberate step:
+
+```bash
+git stash                        # or check out the pre-migration commit
+npm ci && npm run build
+find dist -type f | sort > /tmp/before.txt
+du -sb dist | cut -f1 > /tmp/before-size.txt
+
+git stash pop
+npm ci && npm run build
+find dist -type f | sort > /tmp/after.txt
+du -sb dist | cut -f1 > /tmp/after-size.txt
+
+diff /tmp/before.txt /tmp/after.txt
+echo "size: $(cat /tmp/before-size.txt) → $(cat /tmp/after-size.txt)"
+```
+
+You want *total* size to be roughly flat or better. A meaningful increase usually means your chunking config didn't translate and everything collapsed into fewer, larger chunks.
+
+## Browser targets moved
+
+Easy to miss in the changelog and it changes shipped output:
+
+| Browser | Vite 7 | Vite 8 |
+|---|---|---|
+| Chrome | 107 | 111 |
+| Firefox | 104 | 114 |
+| Safari | 16.0 | 16.4 |
+
+If your support matrix includes Safari 16.0–16.3 — and if you serve any meaningful iOS traffic, it might — set `build.target` explicitly rather than accepting the new default:
+
+```ts
+build: {
+  target: ['chrome107', 'firefox104', 'safari16'],
+}
+```
+
+Also: `import.meta.url` is no longer polyfilled in UMD and IIFE output. If you ship a library in those formats and rely on it for asset resolution, test that path specifically.
+
+## Yarn PnP on Windows
+
+There's a known incompatibility between Vite 8 and Yarn Plug'n'Play on Windows, and the Vite team has signalled it may not actively support Yarn PnP going forward. If that's your stack, resolve it before scheduling the migration — either switch that workspace to `node-modules` linker or plan around it. This is a genuine "check first" item, not a footnote.
+
+## The staged path if you're nervous
+
+You don't have to take the bundler swap and the Vite 8 changes in one commit. The `rolldown-vite` package is Vite 7 with Rolldown underneath and none of the other Vite 8 changes:
+
+```bash
+# step 1 — bundler swap only, still on Vite 7 semantics
+npm i -D rolldown-vite
+```
+
+```json
+{
+  "overrides": {
+    "vite": "npm:rolldown-vite@latest"
+  }
+}
+```
+
+Ship that, let it bake for a sprint, confirm your plugins survive the new engine and your output is sane. Then take Vite 8 proper, which is now just the config renames and the removed options.
+
+For a small app this is over-engineering. For a monorepo with a dozen packages, each with its own plugin chain, splitting the risk in half is worth the extra week — same reasoning as staging any [workspace-wide toolchain change across a monorepo](/blog/monorepo-turborepo-nx-react-nextjs-guide) rather than landing it everywhere at once.
+
+## How to actually verify the migration
+
+A green build is not evidence. Four checks, in order of how often they catch something:
+
+**1. Diff the output** (above). Filenames will change; total size shouldn't move much.
+
+**2. Run the full e2e suite against the built artifacts**, not the dev server. Dev and build now share one pipeline, which is exactly why a dev-only smoke test proves less than it used to — the interesting failures are in the production chunking. If your Playwright setup only ever hits `vite dev`, point it at a `vite preview` build for this one; the [Playwright setup patterns I use for Next.js](/blog/testing-nextjs-16-vitest-playwright-server-actions) transfer directly.
+
+**3. Check for deprecation warnings and treat them as errors:**
+
+```bash
+vite build 2>&1 | grep -i "deprecat\|compat\|warning"
+```
+
+The compat layer is loud on purpose. Every warning is a thing that will break on a future minor.
+
+**4. Measure cold and warm builds separately.** Rolldown's advantage is largest on cold builds. If your CI has a warm cache, run both:
+
+```bash
+rm -rf node_modules/.vite dist && time npm run build   # cold
+time npm run build                                     # warm
+```
+
+## Debugging when it goes wrong
+
+Vite 8 ships an integrated devtools option that's genuinely useful here — it gives you the module graph and transform timings without bolting on a separate analyzer. Turn it on while migrating and off afterward.
+
+Three failure signatures and what they usually mean:
+
+- **"Module not found" only in build, fine in dev** — almost always a `resolveId` hook or an alias that used `customResolver`. The removed `customResolver` doesn't error; it's ignored.
+- **Output is one giant chunk** — your `manualChunks` didn't translate. Check for the object form.
+- **Build got slower** — a plugin doing async work in a now-sequential hook. Profile with the devtools panel; the additive cost shows up immediately.
+
+For plugin hunting, `registry.vite.dev` launched alongside Vite 8 as a searchable directory across Vite, Rolldown and Rollup plugins. It's the fastest way to find whether the plugin blocking you has a maintained successor.
+
+## Should you migrate?
+
+**Yes, soon:** large module graph, TypeScript-heavy, few or no custom plugins, build time is a real cost. This is the case the release was built for, and you'll get most of the headline win.
+
+**Yes, but staged:** monorepo, custom plugin chain, or a bundle-size budget you actively defend. Use `rolldown-vite` first.
+
+**Wait:** you ship SystemJS or AMD output, you're on Yarn PnP on Windows, or a critical plugin has no Vite 8 release. Vite 7.3 still gets important fixes.
+
+**It won't help much:** your build is dominated by type-checking or asset processing rather than bundling. Worth doing eventually for the unified dev/build pipeline alone, but don't sell it internally on speed you won't get. (If type-checking *is* your bottleneck, that's a different migration — [TypeScript 7's native compiler](/blog/typescript-7-ga-migration-blockers-readiness) is the lever there, not the bundler.)
+
+The honest summary: Vite 8 is the rare major where the default path is genuinely easy, and the hard path is narrow and identifiable in advance. Spend ten minutes grepping for the four removed hooks and checking your `manualChunks` form. If both come back clean, this is an afternoon. If they don't, you now know what week you're in for — which is a much better place to start from than finding out on Thursday.
+
+## References
+
+### Sources
+
+- [Vite 8.0 is out! — official announcement](https://vite.dev/blog/announcing-vite8) — March 12, 2026 release, Linear/Ramp/Mercedes-Benz.io/Beehiiv benchmark numbers, Node requirement, devtools and registry.vite.dev
+- [Migration from v7 — Vite docs](https://vite.dev/guide/migration) — the authoritative list of config renames, removed hooks, dropped output formats and browser target changes
+- [Vite Version 8: Unified Rust-Based Bundler — InfoQ](https://www.infoq.com/news/2026/05/vite-v8-rust/) — adoption context, the 19k-module benchmark, and the Yarn PnP on Windows caveat
+- [Rolldown and Oxc Integration — DeepWiki](https://deepwiki.com/vitejs/vite/3.3-rolldown-and-oxc-integration) — how the transform and bundle stages share a representation
+- [Vite 8 Beta: The Rolldown-powered Vite](https://vite.dev/blog/announcing-vite8-beta) — background on the dual-bundler problem Vite 8 set out to solve
+- [Vite Releases page](https://vite.dev/releases) — current support tiers: 8.2 gets regular patches, 7.3 and 8.1 get important fixes
+
+### Further Reading
+
+- [rolldown-vite migration docs — DeepWiki](https://deepwiki.com/vitejs/rolldown-vite/12-migration-and-legacy) — the staged path in detail, if you're splitting the risk
+- [Vite 8 Migration: Moving from esbuild to Oxc in Production React Apps — SitePoint](https://www.sitepoint.com/vite-8-migration-esbuild-oxc-production-react/) — a React-specific walkthrough of the transform-layer differences
+- [Rolldown documentation](https://rolldown.rs/) — worth reading directly if you maintain a plugin rather than just consume them
+
+---
+
+~Seb 👊

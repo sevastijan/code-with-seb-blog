@@ -1,0 +1,355 @@
+---
+title: 'Kill Install Scripts: npm and pnpm Hardening After the keyv Worm'
+date: '2026-08-07'
+category: 'Development'
+tags: ['security', 'supply-chain', 'npm', 'pnpm', 'ci-cd']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: "444 packages. 2,234 poisoned versions. Two billion monthly installs. Every one of them shipped with valid GitHub Actions provenance. Here's the install-script hardening you can roll out this afternoon — and the honest list of what it breaks."
+---
+
+The keyv worm shipped with valid provenance attestations. Signed by GitHub Actions, published through a trusted pipeline, green checkmark and all.
+
+That single fact should reset how you think about npm supply chain security. Provenance proves *where* a package was built. It says nothing about whether the code inside it was written by the maintainer or by someone holding their session cookie. On August 4, 2026, someone holding that cookie pushed straight to `main` on the keyv repo, cut a release, and let the ordinary CI pipeline sign the malware for them.
+
+You can't fix that from the consumer side. What you *can* fix is the mechanism that turned a poisoned tarball into code execution on your laptop and your build agents: **lifecycle scripts that run automatically on install**. That's a config change, it takes an afternoon, and almost nobody has it turned on.
+
+Here's the playbook, ordered by how much protection you get per hour of pain.
+
+## What actually happened, briefly
+
+An attacker compromised the GitHub account of the maintainer behind `keyv` (~127M weekly downloads) and the surrounding `cacheable` family — `flat-cache` (565M/month), `file-entry-cache` (557M/month), `cache-manager`, `ecto`, and dozens more. The worm published **2,234 poisoned versions across 444 package names**, with a combined install volume north of two billion per month.
+
+Every affected package got two new files and one line of `package.json`:
+
+```json
+{
+  "scripts": {
+    "preinstall": "node setup.mjs"
+  }
+}
+```
+
+`setup.mjs` downloaded the Bun runtime — Bun 1.3.13, specifically, on machines that had no Bun dependency — and used it to execute a 728 KB obfuscated payload named `Math_Symbol.js` (later waves renamed it `math_init.js`). The payload swept the host for `.npmrc` tokens, `gh` CLI tokens, AWS credentials, Vault tokens, kubeconfigs, database connection strings, SSH keys, and crypto wallets, then exfiltrated over HTTPS to `npm-cache[.]com/router`.
+
+If it found a GitHub Actions token (`ghs_`), it went self-propagating: committing autostart hooks into up to 50 branches per reachable repository. Which brings us to the part that makes this campaign different.
+
+### The part that doesn't need `npm install` at all
+
+The worm planted two cross-wired persistence hooks in every repo it could write to:
+
+- `.claude/settings.json` with a `SessionStart` hook pointing at `.vscode/setup.mjs`
+- `.vscode/tasks.json` with a `folderOpen` task pointing at `.claude/setup.mjs`
+
+Open the repo folder in VS Code — payload runs. Start a Claude Code session in it — payload runs. No install, no `node_modules`, no lockfile involvement. And because each config invokes the *other* tool's directory, a responder who cleans only `.claude/` walks away believing they're done while the VS Code path stays live.
+
+I'll come back to that in the agent-config section, because it's the layer most hardening guides skip entirely. But two of the three triggers bypass your package manager, so let's close the one that doesn't first.
+
+## Layer 1: block lifecycle scripts by default
+
+This is the highest-value change on the list. If `preinstall` never runs, the tarball is inert bytes sitting in `node_modules` until something imports it.
+
+The defaults vary wildly by package manager, and most people don't know where theirs sits.
+
+### pnpm 11
+
+pnpm is the only mainstream manager where you get this right out of the box. Since v11.0, `strictDepBuilds` is on: **no dependency runs build scripts unless you name it**. The five legacy settings (`onlyBuiltDependencies`, `onlyBuiltDependenciesFile`, `neverBuiltDependencies`, `ignoredBuiltDependencies`, `ignoreDepScripts`) are gone, replaced by a single map:
+
+```yaml
+# pnpm-workspace.yaml
+allowBuilds:
+  esbuild: true
+  sharp: true
+  '@parcel/watcher': true
+  core-js: false
+  ghooks: 'warn'
+```
+
+Keys are package names, values are `true`, `false`, or `'warn'`. Anything not listed that ships a `postinstall` produces an error rather than silently executing. If you're on pnpm 10, the `pnpm-v10-to-v11` codemod handles the config translation mechanically — the migration itself is boring, which is the best thing you can say about a security migration.
+
+Two more pnpm 11 defaults worth knowing about, because they cover adjacent attack paths: `blockExoticSubdeps` rejects git and tarball URLs appearing in *transitive* dependencies (a classic way to smuggle unreviewed code past a registry-only allowlist), and `verifyDepsBeforeRun` makes sure `node_modules` matches the lockfile before any script executes.
+
+### Yarn Berry
+
+Yarn has blocked third-party lifecycle scripts since v2. If you're on Berry you've been protected for years and probably didn't notice:
+
+```yaml
+# .yarnrc.yml
+enableScripts: false
+```
+
+Per-package exceptions go through `dependenciesMeta`:
+
+```json
+{
+  "dependenciesMeta": {
+    "esbuild": { "built": true },
+    "sharp": { "built": true }
+  }
+}
+```
+
+Yarn 4 also ships `enableHardenedMode`, which re-validates the lockfile against the registry — enabled by default on pull requests from public forks, which is exactly where you want it.
+
+### Bun
+
+Bun blocks dependency lifecycle scripts by default and has since day one. Exceptions are declared in `package.json`:
+
+```json
+{
+  "trustedDependencies": ["esbuild", "sharp"]
+}
+```
+
+If you've been weighing runtimes, this is one of the quieter arguments in Bun's favor — I went through the broader tradeoffs in the [Node vs Bun vs Deno comparison](/blog/nodejs-vs-bun-vs-deno-2026-runtime-comparison), but security defaults deserve more weight in that decision than they usually get.
+
+### npm
+
+npm is the worst position to be in, because it has no per-package allowlist. It's all or nothing:
+
+```ini
+# .npmrc
+ignore-scripts=true
+```
+
+Then rebuild the packages that genuinely need it, explicitly:
+
+```bash
+npm rebuild esbuild sharp --ignore-scripts=false
+```
+
+Yes, that's a manual step in every fresh install and every CI run. It's annoying. It's also the difference between "we read about the keyv worm" and "we spent a week rotating every credential in the organization."
+
+## The gotcha nobody warns you about
+
+A blanket `ignore-scripts=true` **will** break your build, and it breaks it in a way that looks like a dependency resolution bug rather than a config choice. The usual casualties:
+
+| Package | Failure mode |
+|---|---|
+| `esbuild` | `Cannot find module 'esbuild-linux-64'` — platform binary never downloaded |
+| `sharp` | libvips binary missing, fails at module load |
+| `bcrypt`, `canvas`, anything on `node-gyp` | Native compilation skipped entirely |
+| `cypress`, `playwright` | Browser/test-runner binaries never fetched |
+| `husky`, `simple-git-hooks` | Git hooks silently not registered |
+
+That last one is the sneaky one. Husky failing is *silent* — no error, your pre-commit hooks just stop running and nobody notices for three weeks.
+
+The right sequence is: turn scripts off, run a clean install in CI, collect the breakage, then add exactly those packages to the allowlist. Don't try to predict the list up front. In a monorepo you'll want to do this once at the root rather than per-workspace — the same centralization argument I made about [Turborepo and Nx tooling config](/blog/monorepo-turborepo-nx-react-nextjs-guide) applies here.
+
+For Playwright and Cypress specifically, prefer pinning browser binaries in your CI image over allowing their install scripts. It's faster *and* it removes a script from the allowlist. Two wins.
+
+## Layer 2: don't install versions the world hasn't seen yet
+
+Every Shai-Hulud wave — the TanStack compromise on May 11, `@antv` on May 19, keyv on August 4 — was caught by security researchers within hours. The poisoned versions were live for a short window. A **release-age cooldown** means you simply aren't in that window.
+
+This has become a default in most of the ecosystem during 2026, with maddeningly inconsistent units:
+
+```yaml
+# pnpm-workspace.yaml — pnpm 11 defaults to 1440 (24h)
+minimumReleaseAge: 10080          # minutes → 7 days
+minimumReleaseAgeStrict: true     # fail rather than silently resolving older
+minimumReleaseAgeExclude:
+  - '@my-org/*'                   # your own packages publish continuously
+```
+
+```yaml
+# .yarnrc.yml — Yarn 4.10 defaults to 3d
+npmMinimalAgeGate: '7d'
+npmPreapprovedPackages:
+  - '@my-org/*'
+```
+
+```ini
+# .npmrc — npm 11.10+, requires Node 24 LTS. Ships OFF.
+min-release-age=7
+```
+
+Note the units: **pnpm counts minutes, npm counts days.** Setting `minimumReleaseAge: 7` in pnpm gives you a seven-*minute* cooldown and a false sense of security. I have made this exact mistake.
+
+Set `minimumReleaseAgeStrict: true`. Without it, pnpm quietly falls back to an older satisfying version when the newest is too fresh, which is *usually* what you want but means your lockfile drifts in ways nobody reviews.
+
+The one place to break the rule: incident response. When a real CVE lands and the fix shipped twenty minutes ago, use the per-invocation escape hatch rather than editing config:
+
+```bash
+pnpm install --ignore-min-release-age
+```
+
+Escape hatches in flags leave a trace in CI logs. Escape hatches in config become permanent.
+
+## Layer 3: your lockfile is not a security boundary
+
+A lockfile pins versions. It does not tell you whether the pinned version is the one that existed when you reviewed it. Three things close that gap:
+
+**Verify signatures explicitly.** npm ships this and nobody runs it:
+
+```bash
+npm audit signatures
+```
+
+It verifies registry signatures for every resolved package. It is not automatic at install time on any package manager, so it belongs in CI as a blocking step.
+
+**Use pnpm's trust policy.** Since 10.21:
+
+```yaml
+trustPolicy: no-downgrade
+```
+
+This blocks a version whose trust level (provenance, trusted publishing) is *lower* than the version you were previously on. It wouldn't have stopped keyv — that malware had full provenance — but it catches the more common pattern where an attacker publishes from a stolen token instead of the CI pipeline.
+
+**Install with `--ignore-scripts` in CI regardless of local config.** Belt and braces:
+
+```yaml
+# .github/workflows/ci.yml
+- run: npm ci --ignore-scripts
+- run: npm rebuild esbuild sharp --ignore-scripts=false
+- run: npm audit signatures
+```
+
+And treat the CI runner's token scope as the real blast radius. The keyv payload went worm-mode specifically when it found a `ghs_` token with write access. A read-only `GITHUB_TOKEN` and short-lived OIDC credentials turn "organization-wide compromise" into "one poisoned build." If you haven't audited workflow permissions since you set them up, that's the same exercise I walked through in the [Vercel breach playbook](/blog/vercel-breach-supply-chain-security-audit-guide) — the entry point differs, the token hygiene doesn't.
+
+## Layer 4: the agent config files scanners never read
+
+This is the layer that makes 2026's attacks different from 2024's, and every hardening checklist I've read skips it.
+
+`.claude/settings.json` and `.vscode/tasks.json` are executable configuration. A `SessionStart` hook or a `folderOpen` task runs a command on your machine with your permissions, triggered by an action nobody thinks of as risky — opening a folder. They live in the repo. They're committed. They're rarely reviewed, because they look like editor preferences.
+
+Three defenses, in order of effort:
+
+**Review them like code.** Add both paths to `CODEOWNERS` so any change requires a security-aware reviewer:
+
+```
+# CODEOWNERS
+.claude/**        @your-org/security
+.vscode/**        @your-org/security
+.github/workflows/** @your-org/security
+```
+
+**Block them at the pre-commit boundary.** A three-line hook catches the worm's propagation step:
+
+```bash
+#!/usr/bin/env bash
+# .githooks/pre-commit — refuse silently-added agent autostart hooks
+if git diff --cached --name-only | grep -qE '^\.(claude|vscode)/'; then
+  echo "⚠️  Agent/editor config changed. Verify no SessionStart or folderOpen hooks were injected:"
+  git diff --cached -- .claude/ .vscode/
+  read -rp "Intentional? [y/N] " ok
+  [[ "$ok" == "y" ]] || exit 1
+fi
+```
+
+**Don't open untrusted clones in an agent-enabled editor.** If you're triaging a repo you don't control, `cat .claude/settings.json .vscode/tasks.json` before you `code .`. That's the whole mitigation. It costs two seconds.
+
+The broader point: as soon as your editor runs an agent, your editor config becomes an execution surface. I've written about [what Claude Code hooks can do for you](/blog/claude-code-hooks-custom-agents-ai-pipelines-guide) — this is the same mechanism pointed the other way, and it's why [agent permission boundaries](/blog/ai-agent-production-security-playbook) deserve the same scrutiny as any other privileged runtime.
+
+## Are you already hit? Detection commands
+
+Run these before you do anything else. The malicious/safe version boundary for the main packages:
+
+| Package | Malicious | Last safe |
+|---|---|---|
+| `keyv` | 6.0.0 | 5.6.0 |
+| `flat-cache` | 6.1.24 | 6.1.23 |
+| `file-entry-cache` | 11.1.6 | 11.1.5 |
+| `cacheable-request` | 13.0.20 | 13.0.19 |
+| `cacheable`, `@cacheable/utils` | 2.5.1 | 2.5.0 |
+| `@cacheable/memory` | 2.2.1 | 2.2.0 |
+| `@cacheable/node-cache` | 3.1.2 | 3.1.1 |
+| `@cacheable/net` | 2.1.1 | 2.1.0 |
+| `cache-manager` | 7.2.10 | 7.2.9 |
+| `ecto` | 5.0.1 | 5.0.0 |
+
+```bash
+# 1. What resolved in this tree?
+npm ls keyv flat-cache file-entry-cache cacheable cacheable-request \
+  cache-manager @cacheable/utils @cacheable/net @cacheable/node-cache \
+  @cacheable/memory ecto --all
+
+# 2. Lockfile check across every repo you own
+grep -rE "keyv@6\.0\.0|flat-cache@6\.1\.24|file-entry-cache@11\.1\.6" \
+  --include="*lock*" .
+
+# 3. Payload files on disk
+find . -name "setup.mjs" -o -name "Math_Symbol.js" -o -name "math_init.js" \
+  -o -name "router_runtime.js" 2>/dev/null
+
+# 4. Persistence hooks
+grep -rl "SessionStart" --include="settings.json" .
+grep -rl "folderOpen" --include="tasks.json" .
+
+# 5. Bun artifacts on hosts that don't use Bun
+find /tmp -maxdepth 1 -name "bun-dl-*" -type d
+ls -la ~/.local/share/gh-token-monitor.sh 2>/dev/null
+```
+
+Known file hashes, if you're feeding a scanner: `setup.mjs` wave one `54dc7ea5…350668`, later waves `fd3ca400…84b1eb`, payload `9fc2570b…cf1bcc`. Network side: outbound 443 to `npm-cache[.]com` (104.21.35.216) on path `/router`, user-agent `Bun/1.3.13` from environments with no Bun, and requests to `169.254.169.254` from build agents — that last one is an AWS instance-metadata grab and should be alerting already.
+
+If any of these hit: **rebuild the host, don't clean it.** Rotate npm tokens, GitHub tokens, cloud keys, Kubernetes service accounts, Vault tokens, database strings and SSH keys, in that order. Then `rm -rf node_modules`, `npm cache clean --force`, and reinstall from a pinned lockfile with `--ignore-scripts`. A cleaned machine that still has one autostart hook is an infected machine with better morale.
+
+## Verify the hardening actually works
+
+Don't trust the config — test it. Drop a canary package in a scratch workspace:
+
+```json
+{
+  "name": "canary-postinstall",
+  "version": "1.0.0",
+  "scripts": {
+    "postinstall": "node -e \"require('fs').writeFileSync('/tmp/CANARY_FIRED','1')\""
+  }
+}
+```
+
+```bash
+rm -f /tmp/CANARY_FIRED
+pnpm add ./canary-postinstall
+test -f /tmp/CANARY_FIRED && echo "❌ scripts still run" || echo "✅ blocked"
+```
+
+Wire that assertion into CI as a test. Config drifts — someone adds `--no-strict-deps` to unblock a deploy at 11pm and it never comes back out. A failing test is the only thing that notices. This is the same reasoning behind putting security gates in the pipeline rather than in a wiki, which I covered when setting up [CodeQL and free scanning alternatives](/blog/github-code-scanning-codeql-setup-free-alternatives).
+
+## The honest cost
+
+I'm not going to pretend this is free.
+
+**Cold installs get slower to set up.** The first CI run after enabling `ignore-scripts` will fail. Budget an afternoon for the allowlist, and expect one more failure a month later when someone adds a native dependency.
+
+**Release-age cooldowns delay legitimate fixes.** A seven-day gate means you're seven days behind on patch releases. Seven days is a reasonable default for application dependencies; use 24–48 hours if you ship security patches aggressively, and exclude your own scoped packages so internal publishing stays fast.
+
+**Someone will fight you about husky.** Git hooks registered via install script are genuinely convenient. Allowlist it explicitly rather than disabling the whole policy — that's what the allowlist is *for*.
+
+**None of this stops a compromised package you actually import.** Install-script blocking stops execution *at install time*. If the malware is in the module body and you `import` it, it runs. That's what release-age cooldowns and signature verification are for, and it's why these are layers rather than alternatives.
+
+## Rollout order
+
+If you do nothing else, do these four, in this order:
+
+1. **Block lifecycle scripts.** pnpm 11 `allowBuilds`, Yarn `enableScripts: false`, Bun `trustedDependencies`, npm `ignore-scripts=true` + explicit `npm rebuild`.
+2. **Set a release-age cooldown.** 7 days, `strict: true`, exclude your own scope. Check the units.
+3. **Grep for the keyv IOCs** across every repo and every developer machine — including `.claude/settings.json` and `.vscode/tasks.json`, which no dependency scanner reads.
+4. **Shrink the token blast radius.** Read-only `GITHUB_TOKEN` by default, OIDC over long-lived npm automation tokens, `npm audit signatures` as a blocking CI step.
+
+The keyv worm was caught in hours and still burned two billion installs' worth of trust, because the thing standing between a poisoned tarball and your AWS keys was a line in `package.json` that every package manager was happy to execute. Provenance was never going to save you. A config file might.
+
+## References
+
+### Sources
+
+- [Inside the keyv npm Supply Chain Compromise — Snyk](https://snyk.io/blog/inside-keyv-npm-compromise-preinstall-malware-trusted-provenance-ide-hooks/) — payload analysis, the preinstall→Bun→`Math_Symbol.js` chain, and the provenance angle
+- [keyv and friends compromised in npm supply chain attack — Aikido](https://www.aikido.dev/blog/keyv-and-friends-compromised-in-npm-supply-chain-attack) — first-wave timeline and affected package inventory
+- [keyv Supply Chain Attack: IOCs and First-Hour Response Runbook — Kodem](https://www.kodemsecurity.com/resources/keyv-supply-chain-attack-shai-hulud-npm-worm-affected-versions-iocs-and-first-hour-response-runbook) — malicious/safe version table, file hashes and network IOCs
+- [No Install Required: The npm Worm That Weaponized AI Coding Agents — Cycode](https://cycode.com/blog/keyv-cacheable-npm-worm-ai-coding-agents/) — the cross-wired `.claude` / `.vscode` persistence mechanism
+- [npm Supply Chain Security in 2026 — Mondoo](https://mondoo.com/blog/npm-supply-chain-security-package-manager-defenses-2026) — package-manager defaults comparison across npm, pnpm, Yarn and Bun
+- [pnpm 11.0 release notes](https://pnpm.io/blog/releases/11.0) — `allowBuilds`, `strictDepBuilds`, `blockExoticSubdeps`, `minimumReleaseAge` defaults
+- [The npm attack that turned provenance attestations into camouflage — The New Stack](https://thenewstack.io/npm-supply-chain-worm-attack/) — why trusted publishing signed the malware
+
+### Further Reading
+
+- [pnpm Build Settings reference](https://pnpm.io/settings/build) — the full `allowBuilds` semantics, including `'warn'` and workspace inheritance
+- [Generating provenance statements — npm Docs](https://docs.npmjs.com/generating-provenance-statements/) — what an attestation does and does not assert, straight from the source
+- [npm Security Best Practices — Liran Tal](https://github.com/lirantal/npm-security-best-practices) — a maintained checklist that goes well past install scripts
+- [Worm compromises hundreds of popular npm packages — Datadog Security Labs](https://securitylabs.datadoghq.com/articles/npm-worm-compromises-popular-npm-packages/) — detection engineering perspective if you're writing the alerts
+
+---
+
+~Seb 👊

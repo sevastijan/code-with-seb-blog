@@ -1,0 +1,273 @@
+---
+title: 'Agent Observability: The Failure Modes Your Dashboard Misses'
+date: '2026-08-12'
+category: 'AI'
+tags: ['ai-agents', 'observability', 'opentelemetry', 'production', 'sre']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: "A health check stopped running for six days and the dashboard stayed green. An agent started 70 times in 3.5 hours. Forty invocations acted on comments that never existed. Agent failures are absence-shaped, and your existing monitoring is built to see presence."
+---
+
+A health-check monitor stopped running on July 22 and nobody noticed until July 28. The dashboard was green the whole time.
+
+Not green because the checks passed. Green because there were no checks, and "no failures recorded" renders identically to "everything is fine." Cloudflare had started blocking Python's default `urllib` user agent, the script crashed before it could log anything, and the automation was tolerant of failures by design — so the last-success timestamp just went stale and sat there looking like success.
+
+This is the shape of agent failure, and it's why the observability stack you already have doesn't catch it. Services fail loudly: a 500, a spike in latency, a pod restarting. Agents fail by **not happening**, or by happening seventy times, or by acting on something that isn't there. Absence doesn't page anyone.
+
+Here's the failure taxonomy from real production agent systems, what each one actually requires you to instrument, and the honest state of the tooling as of August 2026.
+
+## Why this is different from service observability
+
+An agent pipeline has three properties that break the usual playbook.
+
+**The unit of work is long and stateful.** A request lives for milliseconds. An agent session lives for minutes to hours, spans dozens of tool calls, and carries state that isn't in any database. Your p99 latency histogram is measuring something meaningless.
+
+**Failure is frequently a non-event.** A ticket that should have been picked up and wasn't emits nothing. There's no error to count, no span to sample, no log line. You have to instrument the *expectation*, not the execution.
+
+**The agent can be confidently wrong.** It ran, it succeeded, it reported success, and it did the wrong thing. No amount of infrastructure telemetry catches that — it needs evaluation, which is a different discipline that has to run in production, not just in CI.
+
+Keep those three in mind, because every failure below is one of them wearing a costume.
+
+## Failure 1: the watchdog that stopped watching
+
+Already described above. Six days of silence read as six days of health.
+
+The generalizable rule, and it's the most useful sentence I've read about agent ops all year:
+
+> Monitoring has two outputs: the thing it measures, and proof that it is still measuring.
+
+Almost nobody emits the second one. The fix has three parts:
+
+1. **Write a record on crash, not just on failure.** A check that throws before logging produces nothing; wrap it so an exception writes an error record and paints the dashboard red.
+2. **Add a freshness watchdog** — something that alerts on the *age* of the last record, independent of its contents.
+3. **Make the freshness check part of a different system** than the thing it watches, or you've just moved the problem up one level.
+
+The alert you want is the one nobody writes:
+
+```promql
+# Alert when the pipeline has produced no result at all, regardless of outcome
+time() - max(agent_last_run_timestamp_seconds) > 3600
+```
+
+Every scheduled agent needs one of these. If you run [Claude Code routines](/blog/claude-code-routines-scheduled-automation-guide) or any cron-driven agent, the freshness of its output is the only signal that distinguishes "nothing to do" from "hasn't run since Tuesday."
+
+## Failure 2: stranded work (edge-triggered, consumed on failure)
+
+A ticket moved into a `SecurityCheck` column. The security agent was dispatched, hit a spending limit, and failed. The ticket then sat there for **16 hours with zero retry attempts**.
+
+The cause is an architecture choice, not a bug. The automation was **edge-triggered**: it fired on the `statusChange` transition and consumed that event on first dispatch. Once consumed, the edge was gone. A failed run left nothing to retry, because the thing that would have triggered a retry had already been marked as handled.
+
+The fix is to move when you commit the transition snapshot: **only a successful run advances it.** A failed dispatch leaves the work eligible.
+
+```ts
+// ❌ consumes the edge before knowing the outcome
+await markTransitionHandled(ticket.id, transition)
+await dispatchAgent(ticket)
+
+// ✅ the edge survives failure
+const result = await dispatchAgent(ticket)
+if (result.ok) {
+  await markTransitionHandled(ticket.id, transition)
+}
+```
+
+What to alert on: **age of work in an actionable state.** Not "did the dispatch fail" — the dispatch may have failed silently — but "how long has something been sitting in a column where an agent should have picked it up."
+
+```promql
+max(agent_work_item_age_seconds{state=~"pending|actionable"}) > 1800
+```
+
+## Failure 3: the retry storm (level-triggered, no cap)
+
+The mirror image, and the one that costs money. A level-based trigger kept finding the same ticket eligible because it was still sitting in a matching column. The agent started **70 times in three and a half hours. Sixty-nine of them failed.**
+
+Level-triggering solves stranded work — the condition stays true, so the retry happens naturally. But without a cap it becomes an unbounded loop, and each iteration is a paid model invocation. This is the single most expensive failure mode on the list, and it's invisible on a dashboard that only tracks success rate, because 69 failures out of 70 attempts on *one ticket* barely moves an aggregate.
+
+You need three things:
+
+- **A consecutive-failure cap.** After N runs with no status change and no new comment, move the item to `Blocked` and write a diagnostic comment explaining why. Escalate to a human rather than looping.
+- **Exponential backoff between attempts**, so a transient upstream failure doesn't get hammered.
+- **Per-entity attempt counters, not global ones.** The aggregate hides this completely.
+
+```promql
+# One work item burning attempts — the aggregate will never show you this
+max by (work_item_id) (
+  increase(agent_invocations_total[1h])
+) > 10
+```
+
+Pair that with a spend alert. If you're tiering models across an agent fleet, the cost of a retry storm scales with whatever tier that particular agent runs on — which is a good argument for the cheap-model-first approach I laid out in [big agent vs micro agents](/blog/big-agent-vs-micro-agents-model-tiering-guide), if only because the blast radius of a loop is smaller.
+
+The general principle: **edge-triggering strands work, level-triggering loops.** Use level-triggering with a cap and an escalation path. That's the only combination that's safe.
+
+## Failure 4: phantom events
+
+Roughly **40 agent invocations received owner-feedback prompts for tickets that had zero comments.**
+
+The mechanism: after a failed run, events were *reconstructed* rather than consumed idempotently, and the reconstructed trigger text was treated as authoritative. The agent was told "the owner left feedback," believed it, and went looking for feedback that had never existed.
+
+This is the LLM-specific one. A conventional worker handed a bad message would fail on a null. An agent handed a bad premise **improvises around it** — and produces plausible output that looks like success.
+
+Two fixes, and you need both:
+
+1. **Idempotency at the dispatch layer.** Put a stable event identifier in every dispatch and persist consumed state. Reconstruction then becomes a no-op rather than a duplicate.
+2. **Revalidation at the worker.** Treat trigger text as a *hint*, never as fact. Before acting, fetch the underlying entity and confirm the claimed condition actually holds.
+
+```ts
+// Agent-side guard: the trigger says there's feedback. Verify it.
+const ticket = await ticketApi.get(ticketId)
+const comments = ticket.comments.filter(c => c.createdAt > lastProcessedAt)
+if (trigger.reason === 'owner_feedback' && comments.length === 0) {
+  return { skipped: 'phantom_trigger', ticketId }   // ← and emit a metric for this
+}
+```
+
+Emit a counter on that skip. A rising `phantom_trigger` rate is a direct signal that your event plumbing is reconstructing things it shouldn't, and it's the kind of bug that otherwise surfaces as "the agent is acting weird lately."
+
+## Failure 5: drift
+
+A publisher enforced a rolling 24-hour gap between posts, polling every ten minutes. Over eight days, publication time drifted from 13:43 UTC to 16:43 UTC — three hours — putting it on course to skip a calendar day entirely.
+
+Nothing failed. Every individual run was correct. The *semantics* were wrong: "at least 24 hours apart" and "once per editorial day" are different policies, and the first one accumulates drift by construction.
+
+The fix was a policy change — at most once per calendar day in a named timezone, preserving the allowed publishing windows.
+
+The observability lesson: **monitor the invariant, not the mechanism.** The mechanism (24-hour gap) was working perfectly. What you actually cared about (one post per day) had no check on it at all. For any scheduled agent, ask what business-level invariant it's supposed to maintain and alert on *that*.
+
+## What to actually instrument
+
+Four layers, in the order they pay off:
+
+**1. Liveness of the loop.** Last-run timestamp per agent. Freshness alert. This is the cheapest and catches Failure 1.
+
+**2. Work-item lifecycle.** Age in state, attempts per item, terminal outcome. Catches Failures 2 and 3, and these are *your* metrics — no framework gives them to you, because they're about your domain.
+
+**3. Session traces.** The span tree of one agent run: the plan, each tool call, each model request. This is where OpenTelemetry comes in, with caveats.
+
+**4. Output evaluation.** Did it do the right thing? Runs in production, sampled, scored. Most teams skip this and then wonder why their agent "used to be better."
+
+Layers 1 and 2 catch most incidents. Layer 3 is what you need to debug them. Do not build 3 before 1.
+
+## The honest state of OpenTelemetry GenAI conventions
+
+Short version: **useful, standardizing, and not stable.**
+
+The conventions now model a whole agent execution as a span tree rather than isolated LLM calls, which is the right abstraction. `gen_ai.operation.name` covers the lifecycle: `create_agent`, `invoke_agent`, `invoke_workflow`, `execute_tool`, `retrieval`, `plan`, plus memory operations.
+
+But as of mid-2026, **every single `gen_ai.*` attribute, span, metric and event carries the "Development" stability badge.** Not one is Stable. And the surface has been churning:
+
+- `gen_ai.system` → `gen_ai.provider.name` (v1.37.0)
+- `prompt_tokens` / `completion_tokens` → `gen_ai.usage.input_tokens` / `gen_ai.usage.output_tokens` (v1.27.0)
+- `invoke_agent` split into client and internal spans (v1.41.0)
+- Cache token attributes (v1.40.0), reasoning-token fields (v1.41.0)
+
+The whole `gen_ai.*` surface was deprecated out of the main semantic-conventions repo in **v1.42.0 (June 2026)** and removed in **v1.43.0 (July 2026)**, moving to a dedicated GenAI repository — which, at time of writing, **has no releases or tags**. There is no versioned schema URL to pin against.
+
+Three practical consequences:
+
+**Write dual-field queries.** Frameworks emitting for compatibility publish the same value under both old and new names. Coalesce them:
+
+```sql
+coalesce(gen_ai_provider_name, gen_ai_system)                       AS provider,
+coalesce(gen_ai_usage_input_tokens, gen_ai_usage_prompt_tokens)     AS input_tokens
+```
+
+**Document your version matrix.** Framework version, instrumentation version, OTel SDK and exporter versions, backend version, and your `OTEL_SEMCONV_STABILITY_OPT_IN` setting, with the date you tested. A minor framework bump can rename attributes underneath you. (`OTEL_SEMCONV_STABILITY_OPT_IN=gen_ai_latest_experimental` selects the newest experimental conventions where supported — but not every framework honors it identically.)
+
+**Keep your own schema.** Maintain a versioned internal representation for providers, models, messages and evaluations, and map to `gen_ai.*` at the edge. Binding your dashboards directly to a Development-status convention means your dashboards break on someone else's release cadence. This is the same architectural instinct as putting an adapter between your app and any external contract — the reasoning I applied to [OpenTelemetry in Next.js](/blog/nextjs-opentelemetry-observability-guide) transfers directly, it's just that the contract here is moving faster.
+
+## A concrete stack: what Claude Code emits
+
+Useful as a worked example, because it's a production agent you can point at a collector this afternoon.
+
+```bash
+export CLAUDE_CODE_ENABLE_TELEMETRY=1
+export OTEL_METRICS_EXPORTER=otlp
+export OTEL_LOGS_EXPORTER=otlp
+export OTEL_EXPORTER_OTLP_PROTOCOL=grpc
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
+```
+
+**Metrics:** `claude_code.session.count`, `claude_code.token.usage`, `claude_code.cost.usage`, `claude_code.lines_of_code.count`, `claude_code.commit.count`, `claude_code.pull_request.count`, `claude_code.code_edit_tool.decision`, `claude_code.active_time.total`.
+
+**Events:** `claude_code.user_prompt`, `claude_code.tool_result`, `claude_code.api_request`, `claude_code.api_error`, `claude_code.api_refusal`, `claude_code.tool_decision`, `claude_code.mcp_server_connection`, `claude_code.internal_error`, `claude_code.skill_activated`, and more.
+
+**Traces** are in beta behind a second flag:
+
+```bash
+export CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1
+export OTEL_TRACES_EXPORTER=otlp
+export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://localhost:4318/v1/traces
+```
+
+Spans: `claude_code.interaction` (root, one per prompt), `claude_code.llm_request`, `claude_code.tool`, `claude_code.tool.blocked_on_user`, `claude_code.tool.execution`.
+
+That `blocked_on_user` span is quietly the most interesting one in the list. It separates *the agent is thinking* from *the agent is waiting for a human to approve something*, and if you're trying to work out why your agent pipeline has a 40-minute p50, that distinction is the entire answer. It's also the metric that tells you honestly whether your agents are actually running unattended or just [appearing to](/blog/ai-agents-work-24-7-reality-check).
+
+Trace context propagates further than you'd expect: Bash and PowerShell subprocesses inherit `TRACEPARENT`, a W3C `traceparent` header goes out to the Anthropic API and to outbound HTTP MCP requests, and `-p` sessions accept an inbound `TRACEPARENT` so you can correlate an agent run with whatever CI job dispatched it. That last one is what makes agent traces useful in a [headless CI pipeline](/blog/claude-code-headless-mode-cicd-automation-playbook) rather than an isolated island.
+
+### Cardinality is a real bill
+
+The cost and token counters carry `model`, `agent.name`, `skill.name`, `plugin.name`, `mcp_server.name`, and `mcp_tool.name` as attributes. Multiply those out across a team and you have a lot of series. Worse, **every custom key in `OTEL_RESOURCE_ATTRIBUTES` becomes a label on every metric series**, and `session.id` is included on metrics by default.
+
+```bash
+# Turn these down before your metrics bill turns up
+export OTEL_METRICS_INCLUDE_SESSION_ID=false
+export OTEL_METRICS_INCLUDE_RESOURCE_ATTRIBUTES=false
+```
+
+Do this on day one, not after the invoice. It's the observability sibling of the token-side accounting in [cutting a Claude Code bill](/blog/claude-code-token-optimization-bill-cut-guide) — same lesson, different vendor.
+
+### Content logging is a privacy decision
+
+`OTEL_LOG_USER_PROMPTS`, `OTEL_LOG_ASSISTANT_RESPONSES`, `OTEL_LOG_TOOL_DETAILS`, `OTEL_LOG_TOOL_CONTENT` and `OTEL_LOG_RAW_API_BODIES` control whether actual conversation content lands in your telemetry backend. Turning them on makes debugging dramatically easier and turns your observability store into a system of record for source code and possibly secrets.
+
+Default off. Turn on selectively, per environment, with the same access controls you'd apply to production logs — and note that `OTEL_LOG_RAW_API_BODIES=file:<dir>` writes *untruncated* bodies to disk. That's a great debugging tool and a terrible thing to leave enabled on a shared runner, for the reasons covered in the [agent security playbook](/blog/ai-agent-production-security-playbook).
+
+## Agent SLOs worth promising
+
+Most agent "SLOs" I've seen are success-rate percentages, which is close to meaningless when the failure mode is a confident wrong answer. Four that actually work:
+
+| SLO | Why |
+|---|---|
+| **Freshness** — every scheduled agent produced a result within its interval | Catches the silent watchdog. The single highest-value one. |
+| **Time-to-pickup** — p95 age of a work item before an agent claims it | Catches stranded work without needing dispatch to report failure |
+| **Attempts per completion** — p99 invocations per finished item | Catches retry storms while the aggregate success rate still looks fine |
+| **Escalation rate** — fraction of items that hit the cap and went to a human | Trend line for whether the agent is actually getting better |
+
+Notice none of them is "uptime." The runner being alive tells you nothing; a health endpoint that returns 200 whenever the process is up detects a dead agent, not a stuck one. Self-hosted Claude Code runners make the same distinction explicitly — `/healthz` for liveness, `last_poll_age_seconds` for actual progress — which I went through in the [self-hosted runners guide](/blog/claude-code-self-hosted-runners-network-guide). Alert on progress.
+
+## The checklist
+
+Where I'd start on any agent system going to production:
+
+1. **Freshness alert per scheduled agent.** Age of last result, from a system that isn't the agent.
+2. **Crash-writes-a-record.** Wrap every entry point so an exception produces telemetry rather than silence.
+3. **Level-triggered with a cap.** N consecutive failures → move to blocked, write a diagnostic, notify a human.
+4. **Idempotent dispatch + worker-side revalidation.** Stable event IDs, persisted consumed state, and never trust trigger text as fact.
+5. **Work-item age and attempts-per-item metrics.** Per entity, not aggregated.
+6. **Invariant monitoring, not mechanism monitoring.** Alert on the business rule, not the implementation of it.
+7. **Traces last**, with cardinality controls set before you enable them and content logging off by default.
+
+Most agent postmortems I've read come down to the same thing: the system was built to report what it did, not what it failed to do. Getting that backwards is what turns a six-hour incident into a six-day one. Instrument the absence — that's the whole job. If your agent programme is stalling for reasons that feel bigger than any single bug, the observability gap is usually the second item in [why agent projects fail](/blog/why-ai-agent-projects-fail-5-step-framework), right after unclear scope.
+
+## References
+
+### Sources
+
+- [A month of AI agents in production: July 2026 — silence, retries, and phantom events](https://dev.to/lainagent_ai/a-month-of-ai-agents-in-production-july-2026-silence-retries-and-phantom-events-1i8o) — the field report behind the failure taxonomy: six-day silent watchdog, 16-hour stranded ticket, 70 invocations in 3.5 hours, ~40 phantom-event runs, and the calendar drift
+- [The state of the OpenTelemetry GenAI semantic conventions (July 2026) — John Hodge](https://john-hodge.com/blog/opentelemetry-genai-semantic-conventions/) — attribute renames by version, the v1.42/v1.43 repo split, dual-field query advice and the pinning problem
+- [Monitoring — Claude Code docs](https://code.claude.com/docs/en/monitoring-usage) — exact metric, event and span names, every telemetry environment variable, cardinality warnings and the beta tracing flags
+- [OpenTelemetry's GenAI semantic conventions are NOT stable yet — DEV](https://dev.to/azena-ai/opentelemetrys-genai-semantic-conventions-are-not-stable-yet-heres-what-actually-shipped-in-2026-3mke) — the Development-status audit across the registry
+- [OpenTelemetry GenAI Semantic Conventions: Tracing AI Agents in Production](https://veraexmachina.com/tech/opentelemetry-genai-agent-observability-production/) — the agent-as-span-tree model and `gen_ai.operation.name` lifecycle values
+
+### Further Reading
+
+- [Claude Code Monitoring with OpenTelemetry — SigNoz](https://signoz.io/blog/claude-code-monitoring-with-opentelemetry/) — an end-to-end collector and dashboard walkthrough if you want a working setup today
+- [claude-code-otel — ColeMurray](https://github.com/ColeMurray/claude-code-otel) — a ready-made observability stack for Claude Code usage, performance and cost
+- [OpenTelemetry GenAI conventions repository](https://github.com/open-telemetry/semantic-conventions-genai) — worth watching directly, since this is where the schema stabilizes (or doesn't)
+
+---
+
+~Seb 👊

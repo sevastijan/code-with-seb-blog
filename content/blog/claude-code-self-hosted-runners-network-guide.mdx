@@ -1,0 +1,305 @@
+---
+title: 'Self-Hosted Claude Code: What Still Leaves Your Network'
+date: '2026-08-11'
+category: 'AI'
+tags: ['claude-code', 'enterprise-security', 'devops', 'compliance', 'kubernetes']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: "Anthropic opened self-hosted Claude Code runners on August 6. Your code stays put; your prompts, tool results and transcripts still go to api.anthropic.com. And any member of your org can execute model-directed code on your runner hosts. Here's the precise boundary, and the hardening the docs bury."
+---
+
+"Run Claude Code sessions on your own compute" is accurate. So is "prompts, model responses, tool results, and session transcripts still travel to Anthropic."
+
+Both sentences describe the same feature, and the gap between them is exactly what your security reviewer is going to ask about. Anthropic opened the public beta of self-hosted environments on **August 6, 2026** for Team and Enterprise plans, and the marketing framing and the compliance reality are further apart than usual — not because anyone is being dishonest, but because "self-hosted" means something specific here and it isn't what most people assume.
+
+I went through the docs line by line. Here's the actual boundary, the security posture that isn't in the announcement, and the one finding that should change how you scope a rollout.
+
+## What it actually is
+
+Three pieces:
+
+- **Environment** — a named destination created in claude.ai admin settings. Sessions get routed to an environment, not to a specific machine.
+- **Runner** — a long-lived process you run on your hosts. Conceptually identical to a self-hosted CI runner: it registers, polls a queue, claims work.
+- **Session** — one Claude Code task, spawned as a child process of the runner.
+
+Only **cloud sessions** are affected — sessions started from claude.ai, the mobile and desktop apps, [scheduled routines](/blog/claude-code-routines-scheduled-automation-guide), or the terminal via `claude --cloud`. Sessions you run in your own terminal or IDE have always executed on your machine; there's nothing to configure there. If what you actually want is to drive your own always-on machine from your phone, that's [Remote Control](/blog/claude-code-remote-control-dispatch-guide), which is a different feature and available on Pro and Max too.
+
+The traffic model is clean: **everything is outbound.** The runner polls `api.anthropic.com` for work (the poll doubles as the heartbeat), each session child holds its own event stream out, and git goes to your host directly. Anthropic never connects into your network. No inbound firewall holes, which is the single best thing about the design.
+
+What stays Anthropic-hosted is the **control plane**: queueing, session orchestration, and the claude.ai interface. Self-hosting moves execution, not coordination.
+
+## The data boundary, precisely
+
+| Stays on your infrastructure | Goes to `api.anthropic.com` |
+|---|---|
+| Repository checkouts | Prompts |
+| Build artifacts | Model responses |
+| Secrets your wrapper script mints | Tool results |
+| Files the session creates or modifies | Session transcripts (stored, so you can resume from another surface) |
+| Network access to internal services | Session queueing and orchestration metadata |
+
+That right-hand column is the whole conversation. Every file the agent read and quoted back, every command output it saw, every diff it produced — that's tool results, and it goes out. If your threat model is "our source code must never transit a third party," self-hosting does not solve it, because the agent reads your source and puts it in the conversation.
+
+What it *does* solve, honestly and well:
+
+- **Network reach.** Sessions run inside your perimeter and can hit internal databases, registries, and services without you exposing anything publicly. This is the real reason to do it.
+- **Toolchain.** You control the image, so compilers, SDKs and internal CLIs are pre-installed and every session starts ready to build.
+- **Artifact custody.** Checkouts and build outputs never land on someone else's disk.
+
+## Four things that disqualify you before you start
+
+Check these first. Each one is a hard stop, not a workaround:
+
+**1. Zero Data Retention.** Self-hosted environments are unavailable to organizations with ZDR enabled. If you turned ZDR on for compliance reasons, you can't have this.
+
+**2. No third-party inference.** Sessions authenticate to the Anthropic API with a session-scoped OAuth token delivered by the control plane. Inference **cannot** be routed through Amazon Bedrock, Google Cloud's Agent Platform, Microsoft Foundry, or an [LLM gateway](/blog/claude-code-token-optimization-bill-cut-guide). If your procurement story is "all model traffic goes through our Bedrock account," self-hosted environments break it — which is a genuinely odd trade, since the teams most likely to want self-hosted execution are exactly the teams already on Bedrock.
+
+**3. Surface gaps.** Claude Tag, Claude Security, and Code Review sessions don't route to self-hosted environments yet.
+
+**4. GitHub only.** Sessions check out from GitHub or GitHub Enterprise. And a repository added *after* a session starts won't be cloned with credentials — the add just fails. Pick every repo up front.
+
+Billing is unchanged: self-hosted sessions consume your organization's Claude Code usage exactly as hosted ones do. You're paying for the inference and the infrastructure.
+
+## The finding that should shape your rollout
+
+Buried in the hardening page, stated plainly and easy to skim past:
+
+> Any member of your Anthropic organization can dispatch a session to any of its environments, and there's no per-environment access control on dispatch.
+
+Read that again with your infrastructure in mind. **Every runner host is a code-execution endpoint reachable by every member of your Anthropic org.** Sessions run arbitrary, model-directed code. The default pre-approved tool set already includes `Bash`.
+
+So a runner sitting in your production VPC with reach to internal databases is, functionally, a shell that any org member can dispatch into. Not maliciously — a well-meaning developer asking Claude to "check why staging is slow" gets a session with network reach you may not have intended for them.
+
+`--lock-to-account` bounds which account's sessions a given *host* executes, which helps. But dispatch into the environment stays organization-wide. The practical implications:
+
+- Treat runner network placement as an access-control decision, not an infrastructure one. One environment per trust boundary.
+- Don't put data or credentials on a runner host that any org member shouldn't be able to read.
+- Your organization's IP allowlist **does not cover runner traffic** by default. Don't count it as a control here.
+
+This is the same category of mistake as assuming a CI runner is safe because it's "internal." It isn't a flaw in the design — it's a documented property that most rollout plans will miss because it lives in bullet six of a hardening list.
+
+## The environment secret is readable by every session
+
+Second-order version of the same problem. The environment secret can register runners and pick up **any** org member's queued sessions. On a fixed fleet it lives on every runner host — where any session's code can read the file.
+
+Session code is model-directed. `cat /etc/claude/environment-secret` is not an exotic exploit; it's a file read.
+
+The documented answer is **on-demand runners**: run `claude self-hosted-runner orchestrator` on a separate host that never executes user code. The orchestrator holds the secret and issues each runner a single-use work order good for exactly one runner registration. The secret never touches a session-running host.
+
+If you're on a fixed fleet, the docs are blunt about it: treat the environment-secret file as readable by every session, and rotate after any suspected session compromise. Rotation is create-new → roll out → revoke old; runners holding a revoked secret fail their next poll, log `poll auth failed`, and exit for your orchestrator to restart.
+
+The secret is shown once at environment creation and expires 365 days later. Put that expiry in a calendar now, because a fleet that silently stops registering in a year is a genuinely miserable thing to debug.
+
+## Hardening: the parts that actually matter
+
+Working through the list in the order I'd implement it:
+
+### Ephemeral, one session per container
+
+```bash
+claude self-hosted-runner \
+  --environment-secret-file /etc/claude/environment-secret \
+  --base-dir /workspace \
+  --capacity 1 \
+  --drain-grace-sec 0
+```
+
+`--capacity 1` plus the default `--drain-grace-sec 0` means the runner exits as soon as its session finishes, and your orchestrator restarts it with a fresh disk. Anything higher and one container serves multiple sessions from the same locked account, sharing a filesystem.
+
+Note that the sample Kubernetes and Compose recipes in the docs use `--capacity 4`. They're written for evaluation, and the docs say so — but they're also the thing people copy into production. Don't.
+
+### Block the metadata endpoint inside the container
+
+This one is easy to get wrong in a way that feels correct:
+
+> subnet-level egress policies don't intercept link-local metadata traffic, so block it in the container itself
+
+Your VPC egress rules will not stop a session from reaching `169.254.169.254`. You need one of:
+
+- IMDSv2 with hop limit 1
+- GKE Workload Identity with metadata concealment
+- An explicit deny for `169.254.169.254` in the session container's network namespace
+
+Otherwise a session inherits the host's cloud identity, and your careful least-privilege wrapper script is decoration. Worth noting: the keyv worm's payload probed exactly this endpoint from build agents, so it's not a theoretical attack path — it's the one already in the wild, and I covered the detection side in the [install-script hardening playbook](/blog/npm-install-scripts-hardening-keyv-playbook).
+
+The block applies to your wrapper script and lifecycle hooks too — they share the container. Authenticate token exchange with the [session JWT](https://code.claude.com/docs/en/self-hosted-environments-identity) against your own token service over allowlisted egress, or use IRSA-style file-based web identity.
+
+### Default-deny egress, with a real allowlist
+
+Always required:
+
+| Host | Port | For |
+|---|---|---|
+| `api.anthropic.com` | 443 (WSS only for the SCM connector) | Control plane, session streaming, inference, JWKS, commit signing, git proxy |
+| Your git host | 443 or 22 | Clone and push (not needed with `--use-anthropic-git-proxy`) |
+
+Conditionally required, depending on what you enable:
+
+| Host | When |
+|---|---|
+| `downloads.claude.ai` | Install/update; marketplace plugin installs at runtime |
+| `registry.npmjs.org` | Plugin installs, `npx`-launched MCP servers |
+| `storage.googleapis.com` | Plugin catalog fetches, Artifact publishing |
+| `code.claude.com`, `claude.com` | Docs lookups and pre-approved WebFetch |
+| `*.frame.claudeusercontent.com` | Only if the Artifact tool is enabled — `CLAUDE_CODE_DISABLE_ARTIFACT=1` to force it off |
+| `raw.githubusercontent.com` | Release-notes fetch — `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` suppresses it |
+| Datadog intake hosts | Only with `CLAUDE_CODE_BYOC_ENABLE_DATADOG=1` (off by default) or error reporting on |
+
+Useful negative result: the runner does **not** reach `statsig.anthropic.com`, `*.sentry.io`, `claude.ai`, `platform.claude.com`, or `mcp-proxy.anthropic.com`. Those show up in older enterprise checklists and you can leave them denied. Two host-side flows do need `claude.ai` — the one-line installer and interactive `claude auth login` — so run those from a host with wider egress rather than widening the session containers.
+
+### The repo-settings guard defaults to permissive
+
+`--confine-repo-settings` scans each repository's committed settings for grants that reach outside the session's workspace: `additionalDirectories`, `Edit`/`Write`/`NotebookEdit` rules in `permissions.allow`, `sandbox.filesystem` entries, a non-empty `env` block, or an operator-posture override like `sandbox.enabled: false`.
+
+The default mode is **`warn`** — it logs the violation and spawns the session anyway. Set it to `enforce`.
+
+```bash
+--confine-repo-settings enforce
+```
+
+And know its limits: the guard does **not** cover repository hooks, `.mcp.json`, or Bash rules. Which brings us back to a theme — committed agent configuration is executable content, and it needs the same review discipline as code. Put `.claude/**` in CODEOWNERS.
+
+## Ops realities the announcement skips
+
+### One user per runner
+
+The first session a runner claims **locks it to that user's account**. It then serves only that account, up to `--capacity`, and the lock is how user checkouts stay isolated without wiping disk between sessions.
+
+The consequence is a fleet-sizing rule that surprises people:
+
+> minimum replicas = number of concurrently active users
+
+`--capacity` buys parallelism *within* one user's sessions, never across users. Ten developers each running one session need ten runners, no matter how small those sessions are. If sessions sit queued, the usual cause is that every online runner is locked to someone else — check the `claude_code_self_hosted_runner_locked_account` metric.
+
+### Kubernetes' default grace period will kill you mid-drain
+
+The full drain path is `--session-stop-grace-sec` + `--drain-wait-sec` + `--post-session-hook-timeout-sec`, plus 15 seconds of fixed cleanup, plus 30 more with `--push-outcome-on-release`. **That's 80 seconds at defaults**, and the runner logs the total at startup.
+
+Kubernetes defaults `terminationGracePeriodSeconds` to 30. Your pod gets SIGKILLed mid-cleanup, and a cgroup-wide kill reaches the `post-session` hook too — process-group isolation doesn't protect against it. Set 90:
+
+```yaml
+spec:
+  template:
+    spec:
+      terminationGracePeriodSeconds: 90
+      containers:
+        - name: runner
+          image: <your-registry>/claude-runner:latest
+          args:
+            - self-hosted-runner
+            - --environment-secret-file
+            - /etc/claude/environment-secret
+            - --capacity
+            - "1"
+            - --confine-repo-settings
+            - enforce
+          ports:
+            - { name: health, containerPort: 8080 }
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+```
+
+One caveat on those probes: `/healthz` returns 200 whenever the process is alive. It detects a dead runner, not a stuck one. To catch a runner that stopped polling, alert on `last_poll_age_seconds` from `/metrics`.
+
+### Resumed sessions lose unpushed work
+
+When a session is released — idle timeout, runner restart, rolling deploy — and the user sends another message, it resumes on a **fresh** runner that re-clones from the starting branch. Uncommitted and unpushed work is gone.
+
+`--push-outcome-on-release` makes a best-effort push of outcome branches first. It preserves committed work, not a dirty tree. And it carries its own risk that deserves a full sentence: on resume, the runner fetches the previously pushed branch **without verifying who pushed it**. Anyone with push access to `claude/*` refs can place content into a resumed workspace. Restrict those refs with a branch ruleset before you enable the flag.
+
+Also: at the default `--drain-wait-sec 0`, a rolling restart interrupts in-flight turns. Set it, and raise the grace period to match, if you'd rather let turns finish.
+
+### Connector traffic leaves your network anyway
+
+Connectors — GitHub, Slack, Linear, the rest — are called from Anthropic's side, not from your runner. So a self-hosted session using a connector routes that traffic through `api.anthropic.com`, outside your perimeter.
+
+If "tool traffic stays inside our network" is the requirement that drove the project, you need local MCP servers baked into the runner image instead of connectors, and you need to filter the delivered ones with `allowedMcpServers` / `deniedMcpServers` policy settings. Which is its own hardening exercise — the [NSA's MCP guidance](/blog/nsa-mcp-hardening-ai-agent-security-guide) is the right starting point for that half of the problem.
+
+## Minimum viable setup
+
+Prerequisites worth checking before anything else: **Claude Code v2.1.224+** (the `self-hosted-runner` subcommand doesn't exist before it), **git 2.24+** (2.34+ for signing, 2.32+ for the git proxy), Linux or macOS host (Windows unsupported — use a Linux container), and a clock within five minutes of real time. Skew over five minutes fails authentication, and the error doesn't say "clock."
+
+```bash
+# 0. Confirm the host is ready
+claude self-hosted-runner --help   # should list --environment-secret-file
+
+# 1. Guided setup — creates the environment, starts a runner, writes a cheat sheet
+claude self-hosted-runner setup
+```
+
+Manually instead: create the environment on the Cloud environments admin page, copy the environment key (shown once), then:
+
+```bash
+mkdir -p /etc/claude
+(umask 077 && cat > /etc/claude/environment-secret)   # paste, Enter, Ctrl-D
+
+claude self-hosted-runner \
+  --environment-secret-file /etc/claude/environment-secret \
+  --base-dir /workspace \
+  --capacity 1 \
+  --confine-repo-settings enforce
+```
+
+There's no published runner image; you build your own:
+
+```dockerfile
+FROM debian:bookworm-slim
+ARG CLAUDE_CODE_VERSION
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      git curl ca-certificates openssh-client \
+ && rm -rf /var/lib/apt/lists/*
+RUN curl -fsSL "https://downloads.claude.ai/claude-code-releases/${CLAUDE_CODE_VERSION:?}/linux-x64/claude" \
+      -o /usr/local/bin/claude && chmod +x /usr/local/bin/claude
+RUN git config --system user.name "Claude" \
+ && git config --system user.email "noreply@anthropic.com" \
+ && git config --system --add safe.directory '*'
+ENTRYPOINT ["claude"]
+```
+
+Two things to get right in the image: **git identity** (without it, `git commit` fails with "Please tell me who you are" and sessions can't make progress) and **no broad credentials**. Don't bake a push token into a shared image — it's available to every session from every org member. Mint short-lived, least-scoped tokens per session from a wrapper script using the session creator's identity from the JWT, or use `--use-anthropic-git-proxy` so the image needs no git credentials at all.
+
+Keep `--base-dir` and `--capacity` **identical across every runner in an environment**. If a runner dies mid-session, another picks it up and derives the checkout path from its own flags — mismatched values mean absolute paths the agent recorded earlier point at directories that no longer exist. Never use per-host values like hostname or instance ID.
+
+When something breaks, there's a purpose-built diagnostic that reads the runner's logs and state:
+
+```bash
+claude self-hosted-runner doctor
+```
+
+Sign in with `claude auth login` on that host first, or it's limited to the local health endpoint and metrics.
+
+## Should you self-host?
+
+**Yes** if sessions genuinely need to reach internal services — databases, private registries, internal APIs — that you're not willing to expose. That's the case this feature was built for, and nothing else solves it.
+
+**Yes** if your runner image needs a toolchain that would take ten minutes to install at the start of every hosted session.
+
+**Probably not** for pure compliance theatre. The conversation still leaves your network. If your auditor's concern is source code transiting a third party, self-hosting changes where the checkout lives, not where the code goes. Be precise with them about which column of that table matters.
+
+**No** if you're on ZDR, need Bedrock/Vertex/Foundry inference, or don't have someone who will own a runner fleet. Anthropic says this plainly, and it's the right advice: self-hosting requires dedicated engineering staff for setup and maintenance, and most organizations are better served by hosted environments. You're taking on image builds, egress policy, fleet scaling, secret rotation and an on-call surface, in exchange for network reach.
+
+If you do roll it out, the order that matters: on-demand runners so the secret stays off session hosts, `--capacity 1` with ephemeral containers, metadata endpoint blocked in the container, default-deny egress, `--confine-repo-settings enforce`, and a 90-second grace period. Then treat every runner host as reachable by every person in your org — because it is. The rest of the [Claude Code enterprise hardening surface](/blog/claude-code-security-hardening-enterprise-guide) still applies on top; self-hosting adds infrastructure to defend, it doesn't remove any.
+
+## References
+
+### Sources
+
+- [Self-hosted environments — Claude Code docs](https://code.claude.com/docs/en/self-hosted-environments) — architecture, the environment/runner/session model, network paths, and the exact "what stays on your infrastructure" language
+- [Deploy self-hosted environments to production — Claude Code docs](https://code.claude.com/docs/en/self-hosted-environments-deploy) — the hardening list, full egress allowlist, git credential options, K8s/Compose recipes, shutdown timing and known issues
+- [Self-hosted environments quickstart — Claude Code docs](https://code.claude.com/docs/en/self-hosted-environments-quickstart) — prerequisites, version floors, and the exact runner commands
+- [Self-hosted environments for Claude Code — Anthropic](https://claude.com/blog/run-claude-code-sessions-on-your-own-compute) — the August 6, 2026 announcement and its framing
+- [Claude Code Sessions Can Now Run on Infrastructure Your Team Controls — Unite.AI](https://www.unite.ai/claude-code-sessions-can-now-run-on-infrastructure-your-team-controls/) — outside read on the beta's scope
+- [Anthropic opens self-hosted Claude Code beta — ETIH](https://www.edtechinnovationhub.com/news/anthropic-opens-self-hosted-claude-code-sessions-to-team-and-enterprise-customers) — plan availability and default-off enablement path
+
+### Further Reading
+
+- [Verify session identity — Claude Code docs](https://code.claude.com/docs/en/self-hosted-environments-identity) — validating the session JWT from your own services, which is how per-session credential minting should work
+- [Customize sessions — Claude Code docs](https://code.claude.com/docs/en/self-hosted-environments-configuration) — wrapper scripts, lifecycle hooks, on-demand runners and MCP server config
+- [Self-hosted environments reference](https://code.claude.com/docs/en/self-hosted-environments-reference) — every CLI flag, environment variable and Prometheus metric, including the `pool`/environment naming overlap
+
+---
+
+~Seb 👊
