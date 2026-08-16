@@ -1,0 +1,214 @@
+---
+title: 'Claude Code Frontend Design: The Figma-to-React Loop, Assessed'
+date: '2026-08-16'
+category: 'Development'
+tags: ['claude-code', 'frontend', 'design-systems', 'accessibility', 'ui']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: "The most useful thing in Anthropic's frontend-design plugin is a list of three specific aesthetics it is forbidden to produce — including the exact hex code of the cream background every AI-generated landing page uses. That list tells you more about the state of AI design than any demo."
+---
+
+Somewhere in Anthropic's frontend-design skill is a hex code: `#F4F1EA`.
+
+It's there because it's banned. That warm cream background, paired with a high-contrast serif display face and a terracotta accent, is one of three clustered looks the skill explicitly instructs Claude to avoid — because it's what every model reaches for when asked to make something look designed. The other two: near-black background with an acid-green or vermilion accent, and the broadsheet layout with hairline rules, zero border-radius and dense columns.
+
+You have seen all three this week. Probably on a landing page for an AI startup.
+
+That list is the most honest artifact I've found in any AI design tooling, and it's a better lens on this plugin than any before/after screenshot. Here's what the plugin actually does, what pairs with it, and where the loop still breaks.
+
+## First: it's a skill, not a slash command
+
+Worth clearing up, because most write-ups get it wrong.
+
+The official `frontend-design` plugin ships **a skill**, and Claude activates it automatically when you're working on frontend projects. There's nothing to invoke:
+
+```text
+"Create a dashboard for a music streaming app"
+"Build a landing page for an AI security startup"
+"Design a settings panel with dark mode"
+```
+
+You'll find community posts describing a `/frontend-design` command alongside `/baseline-ui` and `/fixing-accessibility`. Those come from community skill packs, not the Anthropic plugin. Both approaches are legitimate — just check `/plugin` to see what you actually have installed rather than assuming a command exists. If you're building your own, the mechanics are the same ones I covered in [reusable skills](/blog/claude-code-skills-reusable-ai-workflows-guide) and [publishing to the marketplace](/blog/claude-code-plugin-marketplace-publish-guide).
+
+## The framing that does the work
+
+The skill's core instruction:
+
+> Approach this as the design lead at a small studio known for giving every client a visual identity that could not be mistaken for anyone else's.
+
+And then, crucially: **take one real aesthetic risk you can justify.**
+
+That second clause is doing something specific. "Be creative" produces noise. "Take *one* risk you can *justify*" produces a decision you can argue about — which is what design direction actually is. It's a prompt-engineering pattern worth stealing wholesale: bound the boldness to one place and require a rationale.
+
+## The two-pass workflow
+
+This is the part I'd copy into my own process whether or not I use the plugin.
+
+**Pass 1 — brainstorm a compact token system before writing any code:**
+
+- **Color**: 4–6 named hex values describing the palette
+- **Type**: at least two typeface roles — a characterful display face, a complementary body face, a utility face for captions and data
+- **Layout**: one-sentence descriptions plus ASCII wireframes
+- **Signature**: the single unique element that embodies the brief
+
+**Pass 2 — critique and revise before building:**
+
+Review the plan against the brief. If any element reads like a generic default, revise it. **State what changed and why.** Only start coding after confirming relative uniqueness.
+
+The self-critique pass is the whole trick. A model asked to generate a design produces its highest-probability output, which is by definition the average of everything it has seen. A model asked to *look at its own plan and find the parts that look average* is doing a different task, and it's much better at that one. Same reason a separate reviewer agent beats asking the writer to grade itself.
+
+The ASCII wireframe requirement is quietly smart too. It forces layout commitment at a resolution where changing your mind is cheap — before the plan is entangled with 400 lines of Tailwind.
+
+## The principles that transfer
+
+Four ideas here are worth internalizing independent of any tool.
+
+**Ground it in the subject.** Name one concrete subject, its audience, and the page's *single job* before designing. Then use that subject's own world — materials, instruments, artifacts, vernacular — as the source of distinctive choices. Design for a mastering studio should borrow from mastering studios, not from Dribbble.
+
+**Typography carries personality.** Pair display and body faces deliberately. Set a clear type scale with intentional weights, widths and spacing. Make the type treatment itself memorable rather than a neutral delivery vehicle for the words.
+
+**Structure is information.** This one has the best example in the whole document:
+
+> Numbered markers (01 / 02 / 03) are only appropriate if the content actually is a sequence where order carries information the reader needs.
+
+Every structural device — numbering, eyebrows, dividers, labels — should encode something true about the content rather than decorate it. Half the "designed" pages I review fail exactly this test: numbered steps that aren't steps, eyebrow labels that categorize nothing.
+
+**Restraint, and it's explicit:**
+
+> Spend your boldness in one place. Let the signature element be the one memorable thing, keep everything around it quiet and disciplined, and cut any decoration that does not serve the brief.
+
+Plus a direct Chanel reference — before leaving the house, look in the mirror and remove one accessory. There's a matching note on motion: *"sometimes less is more, and extra animation contributes to the feeling that the design is AI-generated."* The skill knows what its own failure mode looks like, which is more self-awareness than most tooling manages.
+
+If you work in a design system rather than one-off pages, this is the tension to watch: the skill optimizes for *distinctiveness per brief*, and a design system optimizes for *consistency across briefs*. Those pull opposite directions. Point it at a new marketing page, not at a component that has to live inside an existing [atomic design hierarchy](/blog/from-components-to-systems-scalable-frontend-with-atomiec-design).
+
+## The quality floor
+
+Three non-negotiables, stated as a floor rather than a nice-to-have:
+
+- Responsive down to mobile
+- Visible keyboard focus
+- Reduced motion respected
+
+That's a small list, and it's the right small list — those are the three things that generated UI most reliably gets wrong, and all three are invisible in a screenshot. Visible focus in particular disappears the moment someone adds `outline: none` to make a button look cleaner.
+
+It's a floor, not compliance. If you're shipping into the EU, [the EAA and WCAG obligations](/blog/web-accessibility-2026-eaa-ada-wcag-guide) go considerably further, and no generation-time skill is going to satisfy an audit. But having a model that *refuses to ship without keyboard focus* removes a whole category of rework.
+
+## The writing guidance is better than the design guidance
+
+Genuinely unexpected. The skill treats UI copy as design material:
+
+> Words appear in a design for one reason: to make it easier to understand, and therefore easier to use. They are design material, not decoration.
+
+The rules:
+
+- **Write from the end user's perspective.** Name things by what people control and recognize, not how the system is built — "Manage notifications," not "webhook config."
+- **Active voice.** "Save changes," not "Submit." A button states exactly what happens.
+- **Consistency across the flow.** A "Publish" button produces a "Published" toast. Not "Successfully submitted."
+- **Failure is direction, not mood.** Errors explain what went wrong and how to fix it, without apology or vagueness.
+- **Empty states are invitations.** Direction to act, not atmosphere.
+- **Single responsibility.** "A label labels, an example demonstrates, and nothing quietly does double duty."
+
+I'd hand that list to a human team. The "webhook config" example alone would fix a meaningful percentage of the admin panels I've used this year.
+
+## One concrete engineering warning
+
+Buried at the end, and it's the kind of thing you only write after being burned:
+
+> Be careful of structuring your CSS selector specificities. It's easy to generate CSS classes that cancel each other out (especially with a type-based selector like `.section` and an element-based selector like `.cta`). This can happen often with paddings/margins between sections.
+
+That's a real generated-CSS failure mode: the model produces two plausible selectors at similar specificity, they fight, and the spacing between sections goes subtly wrong in a way that's maddening to debug because both rules look correct in isolation.
+
+The modern answer is to not have the fight at all — `@scope` and cascade layers exist precisely for this, and I went through the practical setup in the [modern CSS guide](/blog/modern-css-2026-has-scope-container-queries-guide). If you're generating CSS, generate it into a layer.
+
+## The other half: the in-app browser
+
+Design generation without visual verification is just fancy autocomplete. The in-app browser is what closes the loop.
+
+It's part of Claude Code's default agentic toolkit — no setup. Check what your session has:
+
+```text
+/tools
+```
+
+You should see browser capabilities: navigation, screenshots, interaction (clicking, scrolling, form filling), and the interesting one — **visual annotation, identifying elements by appearance rather than HTML structure.**
+
+That last capability is the actual advance. "The third card in the stats row is misaligned" is a sentence about pixels. Previously you had to translate it into a DOM query before an agent could act on it. Now the agent looks at the render and works backwards to the component.
+
+Three workflows that earn their keep:
+
+```text
+Visit my local app at http://localhost:3000. Point to the navigation bar.
+I want the spacing between nav items to match what you see at https://reference-site.com.
+```
+
+```text
+My site at https://myapp.com/dashboard is showing a broken layout on the stats cards.
+Take a screenshot and tell me what's happening visually.
+```
+
+```text
+Check the current Next.js docs for the App Router data fetching pattern
+and write a server component that follows the current recommended approach.
+```
+
+That third one matters more than it looks: it reads the docs *as they are now* rather than as they were at training time.
+
+### Where the browser stops
+
+Honest limitations, all three of which you will hit:
+
+- **No session cookies.** The browser doesn't have your logged-in session. Anything behind auth — which is most of a real application — is invisible to it unless you build a path in.
+- **Bot detection.** CAPTCHAs and paywalls block it, as they block any automated browser.
+- **Canvas and dense layouts.** Canvas-rendered content resists annotation entirely, and very dense layouts degrade accuracy.
+
+The first is the one that shapes your workflow. Verifying a marketing page is trivial; verifying a logged-in dashboard means seeding a session, using a test account with a bypass, or pointing it at a Storybook instance instead. For deeper debugging against a real app state, the [Chrome DevTools MCP route](/blog/chrome-devtools-agents-mcp-browser-debugging-guide) gets you further, because it attaches to a browser you're already driving.
+
+## The loop, and where it breaks
+
+Put together, the working cycle is:
+
+1. **Plan** — two-pass token system, self-critique, then approve
+2. **Build** — generate the components
+3. **Screenshot** — browser renders the running app
+4. **Annotate** — point at what's wrong, in visual language
+5. **Fix** — agent traces the annotation back to the component and edits
+
+Steps 3–5 are the genuinely new part. Steps 1–2 have existed for a year; what changed is that the model can now *check its own output against reality* rather than against its expectations.
+
+Three places it still breaks:
+
+**It doesn't know your design system.** It optimizes for a distinctive identity per brief. Your existing tokens, spacing scale and component API are not in the brief unless you put them there. Feed them in explicitly — this is a [context engineering](/blog/context-engineering-claude-code-guide) problem, and a `CLAUDE.md` section listing your tokens does more for output quality than any prompt phrasing.
+
+**Screenshot verification is not visual regression testing.** "Looks right in this screenshot" and "didn't change from last week" are different claims. You still need real snapshot tests.
+
+**Figma screenshots are references, not specs.** The skill accepts them as pixel references, and it does a good job, but a screenshot carries no tokens, no states, no breakpoints. You'll get the hero right and the hover states wrong.
+
+## How I'd actually use it
+
+- **Install the plugin and let it run** on greenfield marketing pages and prototypes. That's its home ground, and the anti-default list alone justifies it.
+- **Steal the two-pass workflow** for everything else. Plan the token system, critique the plan, then build. It works whether the builder is Claude or you.
+- **Put your design tokens in `CLAUDE.md`** if you have a system. Otherwise you're fighting the skill's distinctiveness bias on every component.
+- **Use the browser for the tight loop**, not for QA. Screenshot-and-annotate during development, real tests before merge.
+- **Read the writing guidance and apply it by hand.** It's the highest-value part of the document and it needs no tooling at all.
+
+The plugin's real contribution isn't that it generates better UI — it's that someone sat down and wrote out, in specific hex codes, what "AI-generated" looks like, then built a process designed to avoid it. That's a more useful admission than another demo, and it's the part that'll still be true when the models change.
+
+## References
+
+### Sources
+
+- [frontend-design SKILL.md — anthropics/claude-code](https://github.com/anthropics/claude-code/blob/main/plugins/frontend-design/skills/frontend-design/SKILL.md) — the design principles, the three banned aesthetics including `#F4F1EA`, the two-pass workflow, quality floor, writing guidance and the CSS specificity warning
+- [frontend-design plugin directory — anthropics/claude-code](https://github.com/anthropics/claude-code/tree/main/plugins/frontend-design) — plugin structure, automatic skill activation and usage examples
+- [Claude Code In-App Browser: Web Research and Visual Editing — MindStudio](https://www.mindstudio.ai/blog/claude-code-in-app-browser-web-research-visual-editing) — the browser toolset, `/tools` verification, workflow examples and the session-cookie, bot-detection and canvas limitations
+- [Claude Code Skills: install UI Skills + build a /frontend-design workflow — DEV](https://dev.to/blamsa0mine/claude-code-skills-install-ui-skills-build-a-frontend-design-workflow-claude-code-cursorvs-4n43) — the community slash-command workflow, which is distinct from the official plugin
+- [I Tried Claude Code's New Browser — Joe Njenga](https://medium.com/@joe.njenga/i-tried-claude-code-new-browser-every-frontend-developer-needs-this-23df10e8da0f) — hands-on account of element selection and annotation in practice
+
+### Further Reading
+
+- [Prompting for Frontend Aesthetics — Anthropic Cookbook](https://github.com/anthropics/claude-cookbooks/blob/main/coding/prompting_for_frontend_aesthetics.ipynb) — the longer-form guidance the skill compresses, worth reading if you write design prompts by hand
+- [Claude Code Frontend Design Toolkit — wilwaldon](https://github.com/wilwaldon/Claude-Code-Frontend-Design-Toolkit) — a community collection of skills, plugins, MCP servers and CLAUDE.md patterns aimed at the same problem
+
+---
+
+~Seb 👊

@@ -1,0 +1,273 @@
+---
+title: 'Claude Security: What the Multi-Agent Scanner Actually Catches'
+date: '2026-08-13'
+category: 'Development'
+tags: ['security', 'claude-code', 'sast', 'code-review', 'devsecops']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: "Anthropic reports 30–40% fewer security comments on PRs. It still won't find the bug that costs you the most money. The interesting part isn't the detection — it's that the verification tally is computed in Python, not asserted by the model."
+---
+
+Most AI security tools fail the same way: the model finds something, the model decides it's real, the model tells you how confident it is. Three steps, one judge, and the judge has an incentive to look useful.
+
+The Claude Security plugin does something different, and it's buried in the implementation rather than the announcement. Findings survive a **three-voter adversarial panel**, each voter using a different lens, with a keep quorum of 2 of 3 — and the tally is **computed in Python by the report renderer, not asserted by the model**. A unanimous 3/3 permits high confidence. A split 2/3 caps confidence at medium, whatever the model thinks of itself.
+
+That's the design decision worth copying regardless of whether you ever run this plugin. Everything else — what it catches, what it misses, where it belongs in your stack — follows from it.
+
+It went into open beta on July 22, 2026. Here's the honest assessment.
+
+## What it is, and what it isn't
+
+The plugin runs a multi-agent vulnerability scan of your codebase **inside a Claude Code session**, locally, using the inference you're already paying for. A team of agents maps your architecture, builds a threat model, hunts for vulnerabilities, independently reviews every finding, then writes a report. You can turn findings you select into patch files that you review and apply yourself.
+
+Three things it is not:
+
+- **Not the managed product.** [Claude Security](https://claude.com/product/claude-security) as a hosted service monitors connected repositories and is Enterprise-only. The plugin runs on your machine, which means it reaches code the managed product can't — GitLab, Bitbucket, or anything on a network that doesn't accept inbound connections.
+- **Not `/security-review`.** That's a single pass over your current branch. This is a multi-agent deep scan of a repository or diff.
+- **Not a replacement for SAST.** The docs say so directly, and they're right. It reasons about code the way a human researcher would, which complements deterministic rules rather than superseding them.
+
+## Install
+
+```text
+/plugin install claude-security@claude-plugins-official
+```
+
+If that errors with `Marketplace "claude-plugins-official" not found`:
+
+```text
+/plugin marketplace add anthropics/claude-plugins-official
+```
+
+And if the install summary says `Run /reload-plugins to activate.`, do that instead of restarting.
+
+Prerequisites that will actually bite you:
+
+- **Claude Code v2.1.154+ on a paid plan.** The scan orchestrates its agents through [dynamic workflows](/blog/claude-code-dynamic-workflows-parallel-subagents-guide), so on Pro you have to switch them on from the Dynamic workflows row in `/config`. This is the most common "why doesn't it work" answer.
+- **Python 3.9.6+ on `PATH` as `python3`.** Standard library only — nothing gets installed. If the first `python3` on your `PATH` is older, the menu warns you and names the version it found.
+- **Git**, for change scans and patch generation. A full scan works in any directory, versioned or not.
+
+If you're building your own plugins, this one is worth reading as a reference implementation — same territory as [publishing to the plugin marketplace](/blog/claude-code-plugin-marketplace-publish-guide), just with a much more interesting orchestration layer inside.
+
+## The six-phase pipeline
+
+The scan runs as **Inventory → Threat Model → Research → Sweep → Panel → Adversarial**.
+
+Inventory maps what exists. Threat Model reasons about what an attacker would want and how they'd get it. Research works four fixed categories:
+
+| Category | Covers |
+|---|---|
+| `injection-and-input` | SQLi, command injection, XSS, deserialization, path traversal |
+| `auth-and-access` | AuthN/AuthZ gaps, session handling, privilege boundaries |
+| `memory-and-unsafe` | Buffer issues, unsafe pointers — **skipped entirely on memory-safe codebases** |
+| `crypto-and-secrets` | Weak primitives, hardcoded credentials, key handling |
+
+That skip is a nice touch: on a pure TypeScript repo the memory phase doesn't run, so you're not paying tokens for a category with no possible findings.
+
+Sweep does the broad pass. Then Panel and Adversarial do the part that makes the output readable.
+
+## The verification mechanic
+
+Every candidate finding faces three independent voters, each assigned a distinct lens:
+
+- **REACHABILITY** — can an attacker actually get here from an entry point?
+- **IMPACT** — if they do, what breaks?
+- **DEFENSES** — is something upstream already stopping this?
+
+Keep quorum is **2 of 3**. Findings that don't clear it never reach the report. Findings that clear it unanimously may be marked high confidence; findings that squeak through 2/3 are **capped at medium** regardless of how certain the prose sounds.
+
+The detail I keep coming back to: **the tally is computed in Python by the report renderer, not asserted by the model.** A model asked "how confident are you" produces a number that correlates with fluency more than correctness. A model asked "is this reachable, yes or no" three times, with the arithmetic done outside the model, produces something you can actually calibrate against.
+
+This is the same shape as the adversarial verification I've come to rely on in [multi-agent bug hunting](/blog/claude-code-ultrareview-cloud-bug-hunting-guide): perspective-diverse voters, a mechanical quorum, and the aggregation kept out of the model's hands. If you're building any kind of LLM-judge pipeline, steal this pattern.
+
+The trade-off is real, though: **scans are nondeterministic.** Two scans of the same commit can surface different findings. That's a property of the approach, not a bug, and it means "the scan came back clean" is a much weaker statement than it sounds.
+
+## Running it
+
+One command, three jobs:
+
+```text
+/claude-security
+```
+
+The menu offers **Scan codebase**, **Scan changes**, and **Suggest patches**. You can also skip it and ask directly — `/claude-security scan my branch`, or plain language like "scan commit abc1234".
+
+The plugin reads your repository first, then offers scopes with **file counts and relative cost stated up front**. Answer "I don't know" and it picks a sensible default for your repo size. Nothing runs until you confirm, because a scan can take a while, burn a significant number of tokens, and needs the session left open the whole time.
+
+It works best in **auto mode** — the scan's agents otherwise stop for a permission prompt at every step, which turns a background task into babysitting.
+
+### Scanning only changes
+
+When your branch has commits its base doesn't, the menu offers to scan just that diff. You can also scan an open pull request or a single commit.
+
+The constraint that catches people: **only committed changes are scanned.** Commit or stash your in-progress edits first, or run a full scan, which reads the working tree instead. Change scans need git; full scans of an unversioned directory still work.
+
+Finding your open PRs is the one step that touches the network, and it's only offered when your session already has permission to run `gh` and you're signed in.
+
+### Large repositories
+
+Don't scan the whole tree. Pick one of the focused scopes — API layer, auth code — and the run sizes itself to what you chose. The report's coverage section states explicitly what was and wasn't examined, which is the part that makes partial scanning defensible rather than sloppy. Run another scan on a different area whenever.
+
+## The output contract
+
+Every scan writes into a timestamped directory in your repository:
+
+```
+CLAUDE-SECURITY-<timestamp>/
+├── CLAUDE-SECURITY-RESULTS.md              # findings: ID, impact, exploit scenario, severity, confidence, recommendation
+├── CLAUDE-SECURITY-RESULTS.jsonl           # same findings, one JSON object per line
+├── CLAUDE-SECURITY-REVISION-<commit>.json  # revision stamp
+├── .gitignore                              # ignores itself
+└── patches/                                # after you run "Suggest patches"
+    ├── F1.patch
+    └── F1.note.md
+```
+
+Three things here are better designed than they need to be.
+
+**The revision stamp.** It records which commit was scanned, at what effort, whether uncommitted changes were part of the scanned tree, and how thoroughly the run was verified. A report is therefore always tied to the exact code it describes — and a scan outside version control stamps `UNVERSIONED` rather than pretending. Given nondeterminism, this stamp is what makes a report auditable at all.
+
+**It gitignores itself.** A stray `git add .` can't sweep a security report into a commit. If you *want* the report in history for an audit trail, delete that one `.gitignore` and commit the directory normally.
+
+**The JSONL.** One object per line means you can pipe findings into whatever you already use for triage without parsing markdown. If you're feeding a dashboard, that's your integration point.
+
+## Patches, and why they're careful
+
+Pick **Suggest patches**, or say "fix finding F3", then choose which findings to address.
+
+Each patch is drafted in a **scratch copy** of your repository — your source files stay untouched until you apply something yourself. Then an agent *independent of the one that wrote the patch* reviews it: it runs your project's tests against the change when the code has them, and reads the diff on its own terms looking for anything new the patch might introduce.
+
+A patch is only written when that reviewer can vouch for three things:
+
+1. The change addresses that one finding
+2. It introduces no new vulnerability
+3. Behavior is otherwise unchanged
+
+When it can't vouch for all three, **you get a short note explaining why instead of a patch.** That's an unusual amount of restraint for a product feature, and it's the right call — a security patch you have to reverse-engineer is worse than no patch.
+
+Two constraints worth knowing:
+
+- Patches are built against **committed** code, and the report has to still describe the code you have. Findings whose code has since changed are skipped with a note, and you're offered a fresh scan rather than a patch from a stale report.
+- **When the patched code has no tests, the note says so**, so you know the review ran without a test pass. Read those ones properly.
+
+Applying is always your decision:
+
+```bash
+git apply CLAUDE-SECURITY-20260813-1042/patches/F1.patch
+```
+
+One patch, one pull request. They're independent findings; bundling them means one bad patch blocks four good ones.
+
+## What it catches, and what it doesn't
+
+This is the section the vendor posts skip.
+
+**Reliably catches** — the classes where the vulnerability is visible in the code:
+
+- Hardcoded credentials and API keys
+- Command injection, `eval`-family dynamic execution
+- XSS and unsafe DOM sinks
+- Unsafe deserialization
+- Obviously weak crypto primitives
+
+**Reliably misses** — the classes where the vulnerability is in what the code *means*:
+
+- A permission check that runs, passes, and checks the wrong account
+- Payment flows that let one customer use another's saved card
+- A RAG or search endpoint returning documents the requester shouldn't see
+- Storage misconfigured so objects are world-readable
+
+The pattern is clean: **it finds bugs in the code and misses bugs in the business logic.** It cannot know that `require_role("admin")` should have been `require_role("owner")` for this one route, because nothing in your repository says so.
+
+Which is exactly why the extension point on its sibling plugin matters — you can *tell* it. More on that in a moment.
+
+Anthropic's own number from internal rollout: a **30–40% decrease in security-related comments on PRs** opened using the tooling. Read that carefully. It measures reviewer burden, not vulnerabilities found or missed. It's a real and useful result — fewer "you're logging the token here" comments means human reviewers spend their attention on the logic bugs the scanner can't reach — but it is not a detection rate, and nobody has published one.
+
+## Where it sits in the stack
+
+Six layers, and the boundaries are unusually well defined:
+
+| Stage | Tool | Covers |
+|---|---|---|
+| In session | security-guidance plugin | Vulnerabilities in code Claude writes, fixed in the same session |
+| On demand, single pass | `/security-review` | One pass over the current branch |
+| On demand, deep scan | **Claude Security plugin** | Multi-agent scan of repo or diff, verified findings, patches |
+| On pull request | Code Review (Team/Enterprise) | Multi-agent correctness + security with full codebase context |
+| Managed | Claude Security product (Enterprise) | Hosted scanning of connected repositories |
+| In CI | Semgrep, CodeQL, dependency scanners | Language rules, supply chain, policy enforcement |
+
+The one most people conflate with this plugin is **security-guidance**, and they're genuinely different tools:
+
+```text
+/plugin install security-guidance@claude-plugins-official
+```
+
+It's built entirely on [hooks](/blog/claude-code-hooks-custom-agents-ai-pipelines-guide) and runs three layers automatically with nothing to invoke:
+
+- **Per edit** — a deterministic pattern match on `eval(`, `new Function`, `os.system`, `child_process.exec`, `pickle`, `dangerouslySetInnerHTML`, `.innerHTML =`, edits under `.github/workflows/`. **No model call, no cost.** Fires once per pattern per file per session.
+- **End of turn** — a background model review of the turn's full git diff, covering up to 30 changed files, firing at most three times in a row. Catches authz bypass, IDOR, SSRF, weak crypto.
+- **On commit or push Claude makes** — a deeper agentic review that reads callers, sanitizers and related files before deciding a finding is real. Capped at 20 per rolling hour, and it **only fires on commits Claude makes through its Bash tool** — your own shell commits, including the `!` escape, are not reviewed.
+
+Both model-backed layers default to Opus 4.7, overridable with `SECURITY_REVIEW_MODEL` and `SG_AGENTIC_MODEL`. And crucially: the reviewer is a **separate Claude call with fresh context and a security-focused prompt** — the code's author doesn't grade its own homework.
+
+That plugin also has the extension point that partly answers the business-logic gap:
+
+```markdown
+<!-- .claude/claude-security-guidance.md -->
+# Security guidance for this repo
+
+- Do not log `customer_id` or `account_number` at INFO level or above.
+- All routes under `/admin` must call `require_role("admin")` before any database read.
+- Use `crypto.timingSafeEqual` for token comparison instead of `===`.
+```
+
+Plus deterministic custom patterns:
+
+```yaml
+# .claude/security-patterns.yaml
+patterns:
+  - rule_name: tenant_unfiltered_query
+    regex: "\\.objects\\.all\\(\\)"
+    paths: ["**/src/tenants/**"]
+    reminder: "Multi-tenant code must filter by org_id."
+```
+
+Note the honest caveat in the docs: guidance is **additive only**. A rule saying "ignore this vulnerability class" doesn't suppress findings, and none of these layers block a write or a commit. For hard enforcement you need a hook that blocks the edit, or a CI check — the same conclusion I reached when wiring up [CodeQL and free scanning alternatives](/blog/github-code-scanning-codeql-setup-free-alternatives). Advisory tooling advises; gates gate.
+
+## Cost and operational notes
+
+Scans count against your plan's usage like any other request, and there's no per-scan price published. Practical guidance: the plugin states relative cost per scope before you confirm, so use that rather than guessing, and scope large repositories by area.
+
+The per-edit pattern layer in security-guidance costs nothing at all, which makes it the highest ratio of value to spend in the whole stack. Install that one today regardless of whether you ever run a deep scan.
+
+One quirk worth knowing so it doesn't alarm you mid-run: on Fable 5 you may see **"Fable 5's safeguards flagged this message."** Its cybersecurity safety classifiers block certain activities, and the work is automatically downgraded to Opus. Expected behavior; the scan still completes.
+
+## How I'd actually wire it
+
+1. **security-guidance, user scope, today.** Free pattern layer, automatic model reviews, no workflow change. Add `.claude/claude-security-guidance.md` with your three or four real invariants — the ones a scanner can't infer.
+2. **Custom patterns for your domain.** Tenant filtering, internal key prefixes, whatever your team gets wrong twice a year. Deterministic, cheap, and it's the only part of this stack that behaves the same way every run.
+3. **Claude Security plugin on a cadence**, scoped by area, not on every PR. Monthly on auth, monthly on the API layer, and always before a release that touches either. Commit the report directory when you need the audit trail.
+4. **Keep your CI scanners.** Dependency and supply-chain scanning is a different problem entirely, and it's the one that actually bit the ecosystem this month — the [install-script hardening after keyv](/blog/npm-install-scripts-hardening-keyv-playbook) is orthogonal to anything an AI reads your source with.
+5. **Don't treat a clean scan as a clean bill of health.** Nondeterministic, no published detection rate, blind to business logic. It reduces the volume of easy findings so your reviewers can spend attention on the hard ones. That's the actual product.
+
+The verification architecture is the part I'd take to any team building LLM-driven review: independent voters with distinct lenses, a mechanical quorum, confidence capped by the vote rather than claimed by the model, and the tally computed outside the model entirely. That design generalizes far past security scanning — it's how you make any agent's output trustworthy enough to act on. And if you're auditing code that an agent wrote in the first place, this plugin pairs naturally with the [vibe-coding security checklist](/blog/vibe-coding-security-audit-checklist), which covers the categories it can't see.
+
+## References
+
+### Sources
+
+- [Scan your codebase for vulnerabilities — Claude Code docs](https://code.claude.com/docs/en/claude-security) — install commands, prerequisites, the three jobs, output directory contract, revision stamps, patch review criteria and the tool-stack table
+- [Catch security issues as Claude writes code — Claude Code docs](https://code.claude.com/docs/en/security-guidance) — the three-layer sibling plugin, hook events, pattern categories, custom rule schema, model overrides and disable flags
+- [Anthropic Releases Claude Security Plugin for Claude Code in Beta — MarkTechPost](https://www.marktechpost.com/2026/07/22/anthropic-releases-claude-security-plugin-for-claude-code-in-beta-a-multi-agent-vulnerability-scanner-that-runs-in-your-terminal/) — the July 22 launch, six-phase pipeline names, the 2-of-3 adversarial quorum and REACHABILITY/IMPACT/DEFENSES lenses
+- [Claude Code Security Plugin: What It Catches and Misses — VibeAudits](https://vibeaudits.com/blog/claude-code-security-plugin-what-it-catches-and-misses) — the business-logic blind spots and a fair reading of the 30–40% figure
+- [Anthropic's Claude Security emerges from closed preview — The New Stack](https://thenewstack.io/anthropics-claude-security-beta/) — beta positioning and the managed-product boundary
+
+### Further Reading
+
+- [claude-code-security-review — Anthropic on GitHub](https://github.com/anthropics/claude-code-security-review) — the GitHub Action version, if you want this in CI rather than in a session
+- [security-guidance plugin source](https://github.com/anthropics/claude-plugins-official/tree/main/plugins/security-guidance) — a working example of running a separate model call from a hook and feeding the result back into the session
+- [Claude Security product page](https://claude.com/product/claude-security) — the managed Enterprise service, for the comparison you'll inevitably have to make
+
+---
+
+~Seb 👊
