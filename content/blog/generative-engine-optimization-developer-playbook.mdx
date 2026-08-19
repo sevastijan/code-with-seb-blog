@@ -1,0 +1,337 @@
+---
+title: 'Getting Cited by ChatGPT and Claude: A GEO Playbook'
+date: '2026-08-19'
+category: 'Development'
+tags: ['seo', 'geo', 'ai-search', 'content-strategy', 'llms-txt']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: 'Cloudflare measured Anthropic crawling 4,580 pages for every visitor it sends back. That number kills the most common pitch for generative engine optimization — and it also tells you exactly what GEO is actually for. Here is the engineering version, with the vendor hype stripped out.'
+---
+
+Cloudflare Radar put Anthropic's crawl-to-refer ratio at roughly **4,580:1** in June 2026. Four and a half thousand pages fetched for every single human sent back. OpenAI sat at 848:1, Perplexity at 186:1, Google at 5:1.
+
+If you came to generative engine optimization looking for a replacement for the search traffic AI Overviews took from you, stop here. It isn't one. The arithmetic doesn't work and no amount of schema markup fixes it.
+
+What GEO actually buys you is something different, and worth understanding before you spend a sprint on it.
+
+## First, an honest expectation reset
+
+The traffic loss is real and it isn't your fault. Ahrefs measured a **58% CTR reduction** on the top-ranking page for keywords that trigger AI Overviews. Google referral traffic to publishers fell 38% year over year. Small publishers are down roughly 60% over two years.
+
+The replacement channel is small. AI referrals are still around 1% of total visits for most sites. So if you're modelling GEO as "recover the 58%", you will be disappointed, and the disappointment will arrive about four months after you started.
+
+Here's the case that does hold up:
+
+**AI-referred visitors convert far better than organic.** Reported figures range from 4.4x organic conversion to absolute rates near 15.9% for ChatGPT referrals against ~1.76% for organic search. Treat the exact numbers with suspicion — nearly all of them come from vendors selling GEO tooling — but the direction is consistent across independent reports. Someone who arrives after an assistant explicitly recommended you is deep in the funnel already.
+
+**Citation is brand distribution even without the click.** When Claude answers "how should I structure state in a React app in 2026" and quotes your post, you got the impression whether or not the user clicks. That's not measurable in GA4, which is exactly why it's underpriced right now.
+
+**ChatGPT dominates the referral share that does exist.** It drives roughly 87% of trackable AI referral traffic. If you optimize for one engine, that's the one.
+
+So: GEO is a brand and high-intent-lead play, not a traffic-volume play. Budget it accordingly. What follows is ordered by evidence quality, strongest first — which is not the order most GEO guides use.
+
+## What the actual research says moves the needle
+
+There is exactly one serious peer-reviewed study here, and most blog posts about GEO cite it without reading it.
+
+"GEO: Generative Engine Optimization" (Aggarwal et al., KDD 2024, [arXiv 2311.09735](https://arxiv.org/abs/2311.09735)) tested six content modification strategies across roughly 10,000 queries and nine datasets. The findings that matter:
+
+| Technique | Measured visibility lift |
+| --- | --- |
+| Adding statistics | +41% |
+| Adding quotations | +28% |
+| Citing external sources | +115% (for content ranked lower) |
+| Keyword stuffing | Negligible to negative |
+
+Two caveats the marketing posts drop. The famous "up to 40%" headline is a **maximum, not an average** — the three strongest methods landed at 30–40% relative improvement on a position-adjusted word count metric. And the study predates the current generation of retrieval stacks, so treat it as direction rather than gospel.
+
+But the direction is unambiguous and it's genuinely useful: **generative engines preferentially surface content that carries its own evidence**. A paragraph containing a number, a source, and a date is more liftable than a paragraph containing an opinion. That's the whole trick, and it happens to also be how you write a good technical post.
+
+Concretely, this rewrites:
+
+```markdown
+<!-- Weak: nothing here can be quoted standalone -->
+Zustand has become very popular lately and many developers
+prefer it over Redux because it's much simpler and lighter.
+```
+
+into:
+
+```markdown
+<!-- Liftable: number, comparison, source, all in one chunk -->
+Zustand ships at roughly 3KB minified and gzipped against
+Redux Toolkit's ~15KB. In a 1,000-subscriber render benchmark,
+Zustand completed in 12ms and Redux Toolkit in 18ms.
+```
+
+The second version can be pulled out of your article and dropped into an answer without any surrounding context. That property — **standalone liftability** — is the single most important thing on this page.
+
+## Write in chunks, because that's how retrieval works
+
+Retrieval systems don't read your article. They split it into chunks, embed the chunks, and retrieve chunks. Your page competes at the passage level, not the document level.
+
+Practical target: **self-contained segments of roughly 100–300 words**, bounded by a heading, that make sense in isolation.
+
+The failure mode is pronoun and context dependency across section boundaries. This is fine for a human reading top to bottom and fatal for a retrieved chunk:
+
+```markdown
+## Configuring the client
+
+As we saw above, this needs to run before the provider mounts.
+Otherwise it won't pick up the changes we made earlier.
+```
+
+Retrieved alone, that chunk means nothing. "This", "above", "earlier" all point outside the chunk. Rewrite so each section re-establishes its own subject:
+
+```markdown
+## Configuring the TanStack Query client
+
+The QueryClient must be instantiated before QueryClientProvider
+mounts, otherwise the defaultOptions set in step 2 are ignored.
+```
+
+A quick test I now run on every post: **copy any single H2 section into a blank file and read it.** If you can't tell what technology it's about and what problem it solves, the chunk is dead weight for retrieval.
+
+Some structural rules that follow from this:
+
+- **One topic per paragraph.** Paragraph breaks are chunk boundaries.
+- **Descriptive headings, not clever ones.** `## Configuring the TanStack Query client` beats `## Wiring it all up`. The heading is often the strongest signal in the chunk. This is the same discipline that a [proper heading hierarchy](/blog/web-accessibility-2026-eaa-ada-wcag-guide) demands for screen readers, which is a pleasant coincidence: the structure that makes your content accessible is the structure that makes it retrievable.
+- **Front-load the answer.** Put the conclusion in the first sentence of the section, then justify it. Inverted pyramid, same as journalism.
+- **Tables and lists chunk cleanly.** A comparison table is close to ideal retrieval food — dense, self-describing, quotable.
+- **Define acronyms on every use in a new section.** The chunk that gets retrieved may be the only one retrieved.
+
+## Structured data: worth doing, oversold in the numbers
+
+JSON-LD is what every major engine parses. Article, FAQPage, HowTo, BreadcrumbList, Organization. The commonly cited figures — "2.5x higher chance of appearing in AI answers", "up to 40% more AI Overview appearances with complete schema" — are **vendor-measured correlations, not controlled experiments**, and I'd treat them as motivation rather than forecast.
+
+That said, the cost is near zero in a Next.js app, and the downside is nil. Here's what I ship on article pages:
+
+```tsx
+// src/app/blog/[slug]/page.tsx
+import type { Post } from '@/lib/mdx'
+
+function ArticleJsonLd({ post }: { post: Post }) {
+  const schema = {
+    '@context': 'https://schema.org',
+    '@type': 'TechArticle',
+    headline: post.title,
+    description: post.excerpt,
+    datePublished: post.date,
+    dateModified: post.updatedAt ?? post.date,
+    author: {
+      '@type': 'Person',
+      name: 'Sebastian Sleczka',
+      url: 'https://codewithseb.com/about',
+    },
+    publisher: {
+      '@type': 'Organization',
+      name: 'Code With Seb',
+      url: 'https://codewithseb.com',
+    },
+    // Signals which passage is the most citable one.
+    speakable: {
+      '@type': 'SpeakableSpecification',
+      cssSelector: ['.article-summary'],
+    },
+    keywords: post.tags.join(', '),
+    proficiencyLevel: 'Expert',
+    mainEntityOfPage: {
+      '@type': 'WebPage',
+      '@id': `https://codewithseb.com/blog/${post.slug}`,
+    },
+  }
+
+  return (
+    <script
+      type="application/ld+json"
+      dangerouslySetInnerHTML={{ __html: JSON.stringify(schema) }}
+    />
+  )
+}
+```
+
+Two details worth calling out. `TechArticle` rather than `Article` — it carries `proficiencyLevel` and `dependencies`, which is a more honest description of a developer post. And `speakable` marks the passage you most want lifted; without it the engine infers which section to quote, and it will not always pick the one you'd choose.
+
+If your post answers discrete questions, add `FAQPage` too — question-shaped content maps directly onto the way people prompt assistants.
+
+## The llms.txt verdict nobody wants to give you
+
+You will read a lot of posts telling you llms.txt is essential. Here is what the data actually shows.
+
+**Adoption is low.** An SE Ranking survey of 300,000 domains found a 10.13% adoption rate.
+
+**Usage is far lower than adoption.** One 90-day measurement recorded 62,100 AI bot visits, of which **84 requests — 0.1% — touched llms.txt at all**.
+
+**Google explicitly declined.** Gary Illyes confirmed in July 2025 that Google does not support llms.txt and has no plans to.
+
+**It is not a standard.** No W3C, no IETF, no standards body. It's a community convention.
+
+**But two engines do confirm using it.** Anthropic has stated Claude respects llms.txt in retrieval workflows, and Perplexity has confirmed it fetches the file and uses it to prioritize page selection.
+
+So the honest recommendation: **ship it, spend twenty minutes on it, and expect nothing.** It's cheap insurance on two engines that confirmed support, and it costs you a single generated route:
+
+```ts
+// src/app/llms.txt/route.ts
+import { getAllPosts } from '@/lib/mdx'
+
+export const dynamic = 'force-static'
+
+export async function GET() {
+  const posts = getAllPosts() // already filters drafts
+
+  const body = [
+    '# Code With Seb',
+    '',
+    '> Frontend architecture, React/Next.js, and AI agent engineering.',
+    '',
+    '## Published content',
+    '',
+    ...posts.map(
+      (p) =>
+        `- [${p.title}](https://codewithseb.com/blog/${p.slug}): ${p.excerpt}`
+    ),
+  ].join('\n')
+
+  return new Response(body, {
+    headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+  })
+}
+```
+
+Generating it beats hand-maintaining it, which is the mistake I made first — a hand-written llms.txt drifts out of sync with the content within about three posts.
+
+The convention overlaps with the [AGENTS.md and agent-first documentation](/blog/nextjs-agent-first-agents-md-skills-guide) pattern that framework teams have adopted — Next.js serves `/docs/llms.txt` and `/docs/llms-full.txt` alongside plain-Markdown versions of every docs page. If you maintain a library, that's the higher-value application of the idea: agents reading your docs to write code against your API is a far more concrete win than an assistant maybe citing your blog post.
+
+What matters far more than llms.txt is the next section, which almost nobody writes about.
+
+## robots.txt is the actual lever, and most sites have it wrong
+
+AI crawlers split into two categories that people routinely conflate:
+
+**Training crawlers** — GPTBot, ClaudeBot, Google-Extended, CCBot, Bytespider, Applebot-Extended, Meta-ExternalAgent. These ingest your content into model weights. They will never send you a visitor or a citation.
+
+**Search and retrieval crawlers** — OAI-SearchBot, ChatGPT-User, Claude-SearchBot, Claude-User, PerplexityBot, Perplexity-User. These fetch pages to answer a live query, and **these are the ones that can produce a citation with a link back to you.**
+
+This distinction is the whole game. You can opt out of training while staying fully eligible for citation. Most sites either block everything (and disappear from AI answers entirely) or allow everything (and donate their archive to model training for nothing).
+
+Cloudflare's May 2026 breakdown found search-purpose crawling made up **under 10% of all AI crawler requests**. The other 90% was training and answer generation. That's the 4,580:1 ratio explained.
+
+If you want citations but not training:
+
+```
+# robots.txt
+
+# Training crawlers — no.
+User-agent: GPTBot
+User-agent: ClaudeBot
+User-agent: Google-Extended
+User-agent: CCBot
+User-agent: Bytespider
+User-agent: Applebot-Extended
+User-agent: Meta-ExternalAgent
+Disallow: /
+
+# Search and retrieval crawlers — yes. These can cite you.
+User-agent: OAI-SearchBot
+User-agent: ChatGPT-User
+User-agent: Claude-SearchBot
+User-agent: Claude-User
+User-agent: PerplexityBot
+User-agent: Perplexity-User
+Allow: /
+
+User-agent: *
+Allow: /
+
+Sitemap: https://codewithseb.com/sitemap.xml
+```
+
+One thing worth checking before you tune any of this: **most AI crawlers don't execute JavaScript.** If your content only exists after hydration, retrieval crawlers see an empty shell, and no robots.txt tuning fixes that. This is the indexability argument for [server-rendered HTML](/blog/client-side-react-is-dead-why-server-components-are-the-future-you-cant-ignore) reappearing in a new form — and it's a much bigger deal than schema markup for anyone still shipping a client-rendered SPA.
+
+Two caveats. Blocking `Google-Extended` does **not** remove you from Google AI Overviews — Overviews are fed by regular Googlebot indexing, and opting out of that means opting out of Google Search entirely. And robots.txt is voluntary: Bytespider and some Perplexity crawlers have both been documented ignoring it. If you need enforcement rather than a request, that's a WAF rule or Cloudflare's AI Crawl Control, not a text file.
+
+## Where citations actually come from
+
+Worth calibrating against, because it explains why some content will never win here.
+
+Across engines, Reddit, Wikipedia, YouTube, LinkedIn and Forbes plus about ten more domains capture roughly 68% of all citations. In the US, Wikipedia (13.15%) and Reddit (11.97%) alone exceed 25% of ChatGPT citations. Major newspapers — WSJ, NYT, Bloomberg — don't crack the top 20.
+
+Engine behaviour diverges sharply. ChatGPT pulls ~12% of citations from Wikipedia; Claude pulls **0.1%**; Perplexity effectively doesn't cite it at all.
+
+There's a further surface opening up here that's worth watching if you run a product rather than a blog: [WebMCP exposes your site's actual functionality to agents](/blog/webmcp-website-ai-agent-tools-guide) as callable tools, rather than leaving them to scrape your rendered HTML. Being cited is passive; being *usable* is the next tier, and almost nobody has built for it yet.
+
+The lesson for a technical blog isn't "go write Wikipedia articles." It's that assistants heavily favour content with visible community corroboration. A post that also exists as a well-received Reddit or Hacker News discussion has a materially better shot than the same post published in isolation. Distribution and GEO are the same activity now, which is uncomfortable if you were hoping this was a purely technical fix.
+
+## Measuring it without fooling yourself
+
+GA4 added an **AI Assistant** channel to the Default Channel Group on May 13, 2026, which handles the basics. If you want it broken out by engine, build a custom channel group matching referrers:
+
+```
+chatgpt.com, chat.openai.com   → ChatGPT
+claude.ai                      → Claude
+perplexity.ai                  → Perplexity
+gemini.google.com              → Gemini
+copilot.microsoft.com          → Copilot
+```
+
+Then add **Landing page** as a secondary dimension. That single view — which of your URLs assistants are actually citing — is the most actionable number in the whole exercise, and it will surprise you. In my case it was consistently the posts with the densest tables, not the ones I considered my best writing.
+
+Now the part that ruins clean measurement: **dark AI traffic**. Native mobile apps strip the referrer. In-app browsers drop it. Plenty of people copy a cited URL and paste it into a fresh tab. All of that lands in Direct. If your Direct traffic has been climbing without explanation, a meaningful slice of it is uncredited AI referral, and no GA4 configuration recovers it.
+
+The complementary measurement is to check citation directly: prompt the assistants with the queries you're targeting, on a schedule, and record whether you appear. Crude, but it measures the impression rather than the click — and the impression is most of the value.
+
+One trap if you're replatforming while you do this: broken URLs cost you accumulated citations, not just rankings. Assistants cite specific URLs and those citations persist in conversations and caches long after your redirect table changes. The [redirect discipline that any migration demands](/blog/migrate-nextjs-blog-to-astro-guide) matters more now, not less.
+
+Server logs are the third signal. Grep for the retrieval user agents specifically, since those visits correlate with live citations in a way training crawler hits never will:
+
+```bash
+grep -E 'OAI-SearchBot|Claude-SearchBot|PerplexityBot|ChatGPT-User' \
+  access.log \
+  | awk '{print $7}' \
+  | sort | uniq -c | sort -rn | head -20
+```
+
+## What I'd actually do, in order
+
+If you have one afternoon:
+
+1. **Fix robots.txt.** Split training from retrieval. Highest leverage, lowest effort, and most sites have it wrong.
+2. **Add JSON-LD** to article pages. `TechArticle`, plus `FAQPage` where it fits.
+3. **Set up the GA4 AI channel** with Landing page as a secondary dimension, so you have a baseline before you change anything else.
+
+If you have a sprint:
+
+4. **Audit your top 20 posts for chunk independence.** Copy each H2 section into a blank file. Rewrite the ones that don't stand alone. This is tedious and it's the work that actually matters.
+5. **Add evidence to your claims.** Every assertion that could carry a number, a date, or a source should carry one. That's the Princeton finding and it's also just better writing.
+6. **Generate llms.txt** from your content source. Twenty minutes, low expectations.
+
+If you have a quarter:
+
+7. **Treat distribution as part of the job.** Corroboration across community platforms appears to matter more than any on-page tactic.
+
+And throughout: hold the expectation line. If someone promises GEO will restore your pre-AI-Overview traffic, they're selling something. The realistic outcome is a small, unusually high-intent channel plus brand presence inside answers you can't fully measure. That's worth building for. It just isn't what you lost.
+
+## References
+
+### Sources
+
+- [GEO: Generative Engine Optimization (Aggarwal et al., KDD 2024)](https://arxiv.org/abs/2311.09735) — the only peer-reviewed study here; source of the statistics/quotation/citation lift figures and the "up to 40%" number that everyone misquotes as an average
+- [Cloudflare Radar](https://radar.cloudflare.com/) — crawl-to-refer ratios by platform and the share of crawling that is retrieval vs training
+- [Publishers are losing Google traffic as AI answers replace links (Axios)](https://www.axios.com/2026/07/31/google-search-publishers-seo-geo-llms-ai) — the 38% YoY referral decline
+- [Google AI Overviews and CTR data (Ahrefs analysis)](https://ahrefs.com/blog/ai-overviews-reduce-clicks/) — the 58% CTR reduction on position one
+- [OpenAI crawler documentation](https://platform.openai.com/docs/bots) — the GPTBot vs OAI-SearchBot vs ChatGPT-User split
+- [Anthropic crawler documentation](https://support.anthropic.com/en/articles/8896518-does-anthropic-crawl-data-from-the-web-and-how-can-site-owners-block-the-crawler) — ClaudeBot vs Claude-SearchBot vs Claude-User
+- [llms.txt specification](https://llmstxt.org/) — the proposal itself, for context on what it does and doesn't claim to be
+- [Google Analytics 4 channel groups documentation](https://support.google.com/analytics/answer/9756891) — the AI Assistant channel added May 2026
+
+### Further Reading
+
+- [schema.org TechArticle](https://schema.org/TechArticle) — the properties worth setting on a developer post, including `proficiencyLevel` and `dependencies`
+- [Google structured data guidelines](https://developers.google.com/search/docs/appearance/structured-data/intro-structured-data) — what's actually supported versus what schema.org defines
+- [Cloudflare AI Crawl Control](https://developers.cloudflare.com/ai-crawl-control/) — enforcement for crawlers that ignore robots.txt, plus per-crawler analytics
+- [Kevin Indig's newsletter](https://www.growth-memo.com/) — the most consistently non-hype writing on how AI search is changing content strategy
+
+---
+
+~Seb 👊

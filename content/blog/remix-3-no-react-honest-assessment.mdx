@@ -1,0 +1,146 @@
+---
+title: 'Remix 3 Threw Out React. Who Is It Actually For?'
+date: '2026-08-17'
+category: 'Development'
+tags: ['remix', 'react', 'web-standards', 'meta-frameworks', 'react-router']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: 'Remix 3 has no React, no virtual DOM, no hooks, and — this is the part people keep missing — no migration path from Remix 2. The interesting question is not whether the new component model is good. It is who is supposed to adopt a framework whose own users were already told to migrate somewhere else.'
+---
+
+Remix 3 doesn't use React. It also doesn't use Remix 2's code, doesn't offer a migration path from it, and arrives after the Remix team told existing Remix users to move to React Router v7 instead.
+
+That's three separate discontinuities in one release, and most coverage only discusses the first one. The component model is genuinely interesting and I'll get to it. But the adoption question is the one that actually determines whether any of this matters, and it deserves to go first.
+
+**Upfront on my sourcing:** this is an assessment of the beta preview, its documentation and its API surface — not a production postmortem. Remix 3 is explicitly not production ready and the team says so. Anyone claiming months of battle-tested experience with it is telling you a story.
+
+## The naming disaster is the context you need
+
+The timeline matters here because it explains the community reaction better than any technical argument.
+
+What would have been Remix v3 shipped instead as **React Router v7**. Loaders, actions, route-based data fetching — the parts people actually loved about Remix — were folded into React Router, which meant existing Remix apps had a real upgrade path to something stable. Good outcome, confusing branding.
+
+Then the "Wake up, Remix!" announcement repurposed the Remix name for an entirely new framework built on a Preact fork. So the sequence a Remix adopter experienced was: adopt Remix, get told to migrate to React Router, then watch the Remix name reappear on something unrelated with a hint that it might come back around later.
+
+One GitHub comment summarised the resulting mood better than I can:
+
+> I feel so confused by this decision. What's even more confusing is that the plan is to later return to the Remix name at some future date? So you're asking Remix adopters to migrate Remix → React Router → Remix at some future date?
+
+There's older baggage feeding this too. React Router has a long-standing reputation for breaking changes — the Hacker News line that stuck was "I have never, in my entire career, seen a library change in large, completely non-backward-compatible ways as many times as React Router." Fair or not, that history sets the prior people bring to a new major version.
+
+**The practical consequence:** Remix 3 is not competing for Remix 2 users, because there is nothing to migrate. It's a new framework competing for greenfield projects against Next.js, Astro, SvelteKit and React Router v7. Judge it on those terms.
+
+## What the component model actually does
+
+Now the interesting part, because the technical bet is real and worth understanding even if you never adopt it.
+
+Remix 3 keeps JSX and throws out almost everything else React put behind it. No virtual DOM. No hooks. No reactive state that triggers re-renders when you assign to it.
+
+Instead: **plain JavaScript variables for state, and explicit `this.update()` when you want the DOM to reflect them.**
+
+```jsx
+// Illustrative of the documented model — the beta API is still moving.
+function Counter() {
+  let count = 0
+
+  const increment = () => {
+    count++
+    this.update() // Nothing happens until you say so.
+  }
+
+  return () => (
+    <button onClick={increment}>
+      Clicked {count} times
+    </button>
+  )
+}
+```
+
+If you've spent years in React this feels wrong for about ten minutes and then becomes clarifying. There's no dependency array, because there's no dependency tracking. There's no stale closure problem, because `count` is just a variable in scope and reads the current value. There's no `useCallback`, because the function identity never mattered to a reconciler that doesn't exist.
+
+The tradeoff is equally obvious: **you can forget to call `update()`.** React's model buys you correctness-by-default at the cost of a reconciler, memoization rules and a compiler to work around the memoization rules. Remix 3 buys you a smaller runtime and a mental model that maps to the browser, at the cost of manual invalidation. That's a real engineering tradeoff, not a strictly better answer.
+
+Reuse works through **mixins** composed onto the component's `this` context rather than through hooks. Async work is abortable as a first-class concern, which is the right call — cancellation is one of the things React handles least gracefully.
+
+## HTML over the wire, and DOM morphing
+
+The rendering story is the other half of the bet, and it's a bigger departure than the state model.
+
+When a section of the page needs to update, the server returns **new HTML** rather than JSON, and Remix morphs the existing DOM to match. No client-side reconciliation of a virtual tree, no serialization format to reason about, no separate client render of the same markup.
+
+If that sounds familiar, it should. It's the same family as htmx, Phoenix LiveView, and Turbo. What's new is a JSX authoring experience sitting on top of it, which is a genuinely appealing combination — the ergonomics developers actually like from React, without the runtime cost of shipping a reconciler to render server-owned content.
+
+It also puts Remix 3 in direct philosophical conflict with React Server Components, which solve a similar problem by sending a serialized component tree rather than HTML. Both are attempts to stop shipping a rendering engine for content the server already knows. They just disagree about the wire format. [The RSC bet](/blog/client-side-react-is-dead-why-server-components-are-the-future-you-cant-ignore) keeps React's component model intact across the boundary; the Remix 3 bet discards it in favour of the browser's own primitives.
+
+This is the year several frameworks independently decided the virtual DOM was the wrong abstraction — [Vue's Vapor mode compiles it away](/blog/vue-4-vapor-mode-no-virtual-dom-guide), signals-based frameworks never had it, and Remix 3 just doesn't ship one. If you want to understand what's being given up, [React Fiber's scheduling and reconciliation work](/blog/deep-dive-into-react-fiber-the-engine-behind-modern-react) is the thing being replaced, and it does more than people credit.
+
+## Preact underneath, sort of
+
+Worth being precise, because this gets garbled in coverage: Remix 3 uses a **forked Preact** for parts of the frontend. It is not "Preact instead of React" in the drop-in-replacement sense, and you can't expect Preact ecosystem compatibility.
+
+Practically this means: **your React component library does not work.** Not Radix, not MUI, not your internal design system, not the shadcn/ui components you generated last month. Anything that imports from `react` or `react-dom` is out. For most teams this single fact is the decision, and everything else in this article is academic.
+
+## The ecosystem question, asked honestly
+
+New frameworks die of ecosystem, not of technical merit. So:
+
+**Component libraries:** none. You're building your own or porting.
+
+**Auth, payments, analytics SDKs:** anything shipping React components is unavailable. Anything shipping a plain JS SDK is fine, which covers more than you'd think — Stripe, most analytics, most auth providers all have framework-agnostic paths.
+
+**AI coding assistance:** this is the underrated one in 2026. Every model was trained on an enormous corpus of React. Ask an assistant for a Remix 3 component and you'll get plausible React with the serial numbers filed off, because there is almost no Remix 3 in the training data. Anyone whose workflow depends on agents writing large amounts of code should weigh this seriously — a framework's adoption curve now includes how well models know it, and that's a slow-moving disadvantage for anything new.
+
+**Hiring:** "we use a framework with its own component model and no React compatibility" is a real constraint on your candidate pool.
+
+None of this is fatal for a framework aimed at people who like building things from primitives. All of it is fatal for a team that needs to ship a dashboard next quarter.
+
+## Where it's genuinely attractive
+
+I don't want to be dismissive, because the technical direction has a real constituency:
+
+**Content-heavy sites with sprinkles of interactivity.** The HTML-over-the-wire model is close to ideal here and the payload savings are real. Though this is also exactly where [Astro already has a mature answer](/blog/astro-vs-nextjs-16-2026-decision) with an ecosystem you can actually use.
+
+**Teams that were already fighting React's model.** If your codebase is a mess of `useEffect` synchronisation, memoization guesswork and stale closure bugs, a model where state is a variable and updates are explicit will feel like relief.
+
+**Anyone who values a small, comprehensible runtime.** You can read Remix 3's rendering layer. You cannot read React's, and [the compiler that now papers over its memoization ergonomics](/blog/react-compiler-deep-dive-automatic-memoization-guide) is itself a significant piece of machinery. There's an honest argument that the whole stack got too big to reason about.
+
+**Learning.** Genuinely — building something in a framework that makes updates explicit will teach you more about what React does for you than another year of using React.
+
+## What I'd actually tell you to do
+
+**If you're on Remix 2:** go to React Router v7. That's the supported path, it preserves your loaders and actions and mental model, and it's the recommendation the Remix team themselves make. Remix 3 is not your upgrade, despite the name. This is the single most important sentence in this article.
+
+**If you're starting something new and commercially serious:** not yet. Not because the ideas are bad, but because "explicitly not production ready" plus "no component ecosystem" plus "models don't know it" compounds into a lot of self-inflicted work. Next.js, Astro or React Router v7 depending on how much interactivity you need.
+
+**If you're building a side project and want to learn something:** genuinely yes. This is the most interesting mainstream-adjacent framework design in a while and a weekend with it will change how you think about React.
+
+**If you're a framework author or library maintainer:** read the source. The mixin-based reuse model and the abortable-async-by-default decision are both worth stealing regardless of what you think of the rest.
+
+## The thing worth watching
+
+Set the naming mess aside and there's a real question underneath, one that several frameworks are now answering at once: **how much runtime should a web app ship to render content its server already knows?**
+
+React's answer is RSC — keep the component model, serialize the tree, ship a reconciler for the interactive parts. Remix 3's answer is: don't ship a component runtime at all, send HTML, morph the DOM, keep JSX purely as an authoring convenience. Vue's answer is to compile the abstraction away. Signals-based frameworks answer by tracking dependencies precisely enough that reconciliation never needs to happen.
+
+Four credible answers to the same question in the same year is a strong signal the question is real. Remix 3 might not be the framework that wins it. It's a clear enough statement of one position to be worth understanding either way — and if you're picking a stack this quarter, knowing which of those four bets your framework is making tells you more than any benchmark will.
+
+## References
+
+### Sources
+
+- [Remix 3 Beta Preview (official blog)](https://remix.run/blog/remix-3-beta-preview) — the component model, the `this.update()` pattern, mixins, and the explicit "not production ready" status
+- [Remix 3 Beta Preview Ditches React for a Web-Standards Full-Stack Framework (InfoQ)](https://www.infoq.com/news/2026/07/remix-3-beta-preview/) — the forked Preact detail and HTML-over-the-wire rendering
+- [Remix 3 ditched React: Should you stick with it? (LogRocket)](https://blog.logrocket.com/remix-3-ditched-react/) — the no-migration-path analysis and React Router v7 guidance
+- [remix-run/remix Discussion #10333](https://github.com/remix-run/remix/discussions/10333) — the community reaction to the naming decision, source of the quoted comment
+- [Remix 3: what's changing and why it matters (Appwrite)](https://appwrite.io/blog/post/remix-3-whats-changing-and-why-it-matters) — walkthrough of the state model and how it differs from hooks
+
+### Further Reading
+
+- [React Router v7 documentation](https://reactrouter.com/) — where Remix 2's ideas actually live now, and the upgrade path if you're on Remix today
+- [Thoughts on Remix 3 (Alex Kotliarskyi)](https://frantic.im/remix-3/) — the most thoughtful independent critique of the design, worth reading alongside the official post
+- [htmx essays](https://htmx.org/essays/) — the intellectual lineage behind HTML-over-the-wire, and the clearest articulation of why anyone would want it
+
+---
+
+~Seb 👊

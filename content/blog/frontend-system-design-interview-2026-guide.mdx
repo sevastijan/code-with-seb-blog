@@ -1,0 +1,225 @@
+---
+title: 'Frontend System Design Interviews in 2026: The AI-Era Rules'
+date: '2026-08-12'
+category: 'Career'
+tags: ['career', 'interviews', 'system-design', 'frontend', 'architecture']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: 'Meta now runs a 60-minute AI-enabled coding round where you are expected to use the assistant. Anthropic runs interviews with no AI at all. Preparing for "the frontend interview" stopped being a coherent activity — here is the framework that survives both formats, with a worked example.'
+---
+
+Meta added a 60-minute coding round in CoderPad with a built-in AI assistant that candidates are **expected** to use. Anthropic runs live interviews that are explicitly "all you," no assistance unless they say otherwise. Canva insists on Copilot, Cursor or Claude and redesigned its questions to be more ambiguous and realistic as a result. Shopify allows AI and grades how well you drive the architecture and verify the model's output.
+
+Four companies, four incompatible formats. "Preparing for the frontend interview" is no longer a single activity, and advice written before 2026 quietly assumes a format that half the industry abandoned.
+
+What survived intact is the **system design round** — and it got more important, not less, for a reason that follows directly from the above.
+
+## Why this round grew while others shrank
+
+The market context first, because it explains the incentive. Software developer listings sit around 35% below pre-2020 levels and roughly 70% below the 2022 peak, though they've recovered about 15% since mid-2025. Fewer openings, more applicants per opening, and companies optimising hard against false positives.
+
+Meanwhile the thing that's cheap to fake went to zero. A candidate can produce a competent autocomplete component in ninety seconds with an assistant. So the signal moved to what an assistant is still bad at: **deciding what to build, defending the tradeoff, and knowing which failure modes matter.**
+
+Meta, Netflix and Amazon run dedicated frontend system design rounds for senior UI roles and increasingly for mid-level too. At Airbnb and Uber the prompts often mirror architectural decisions those teams actually faced. This is the round that's growing.
+
+There's a real paradox worth naming: the 2026 baseline expectation is that engineers use AI daily, but a candidate who is excellent at AI-assisted engineering can interview as merely good on a no-AI whiteboard, because that format penalises exactly the habit the job rewards. If you hit the Anthropic-style format, budget practice time for working without the tool you use every day. It's a real skill that atrophies.
+
+## What a frontend system design round actually tests
+
+The most common way to fail this round is to answer a backend question. Nobody is asking you to shard a database. The subject is **client-side architecture for a complex product surface**, judged on user experience, performance, and maintainability simultaneously.
+
+The prompt is almost always one of these:
+
+- Design an autocomplete / typeahead
+- Design a news feed (Twitter, Facebook)
+- Design a collaborative document editor (Google Docs)
+- Design a video player (YouTube)
+- Design an e-commerce checkout flow
+- Design a real-time chat application
+- Design a photo gallery with infinite scroll
+- Design a drag-and-drop interface
+
+Eight prompts. They recur across companies with minimal variation, which means the preparation is genuinely tractable — unlike backend system design, where the surface area is enormous.
+
+And the differentiator between mid and senior is consistently reported as the same three things: **performance, accessibility, and internationalisation.** Those are the topics candidates skip because they feel like polish. They're what the interviewer is listening for.
+
+## The framework
+
+Most published frameworks are a variation on requirements → architecture → data → interface → optimisation. Here's the version I use, with the timings that matter for a 45-minute round.
+
+**1. Scope the requirements (5 minutes).** Not optional and not a formality. The prompt is deliberately underspecified and narrowing it is graded.
+
+Ask: How many items? Real-time or eventually consistent? Mobile web, desktop, or both? Which browsers? Offline support? Authenticated? Internationalised, and does that include RTL? Accessibility target?
+
+Then state your scope out loud: *"I'll design for a mobile-first authenticated feed, 100k DAU, near-real-time updates, WCAG 2.1 AA, English and Arabic so RTL matters. I'm treating native apps as out of scope."*
+
+That single sentence separates senior candidates from everyone else more reliably than anything you'll say in the next forty minutes.
+
+**2. Draw the architecture (10 minutes).** Component tree, data flow, and where state lives. Name the boundaries: what's server-rendered, what's client, what's cached where.
+
+**3. Design the data layer (10 minutes).** The API shape you want, why, pagination strategy, caching and invalidation, optimistic updates.
+
+**4. Define the component interfaces (5 minutes).** The props of the two or three components that carry the design. Real TypeScript.
+
+**5. Optimise, and name the failure modes (15 minutes).** Performance, accessibility, i18n, error states, and what breaks under bad conditions. This is where the round is won and where most candidates run out of time — which is why the earlier steps are timeboxed tightly.
+
+## Worked example: the news feed
+
+Let's run it properly, because a framework without a worked example is a listicle.
+
+**Prompt:** design the frontend for a social news feed.
+
+### Scope
+
+*"Mobile-first web, authenticated, 100k DAU. Feed items are text plus optional images and video. New posts appear without a reload but I'll treat a few seconds of staleness as acceptable rather than building for hard real-time. WCAG 2.1 AA. LTR and RTL. Offline is out of scope but I'll design so it could be added."*
+
+### Architecture
+
+```
+AppShell (server-rendered, no auth-dependent content)
+└── FeedPage (server component — prefetches page 1)
+    ├── FeedFilters          (URL state: ?sort=, ?topic=)
+    └── FeedList (client)    (virtualized, infinite scroll)
+        ├── FeedItem         (memoized, pure)
+        │   ├── MediaBlock   (lazy, aspect-ratio boxed)
+        │   └── ActionBar    (like/repost — optimistic)
+        └── NewPostsBanner   (poll or SSE, non-intrusive)
+```
+
+Say why: the shell renders without waiting for auth so first paint isn't blocked; page one is prefetched server-side so the feed isn't a spinner; everything below is client-side because it's interactive and paginated.
+
+**State classification, out loud:** feed data is server cache state, so it goes in a query cache, not a store. Sort and topic filters go in the URL so a shared link reproduces the view. Composer draft is client state. This is the [classify-before-you-pick discipline](/blog/react-state-management-2026-decision-guide), and articulating it is worth real points — most candidates say "Redux" and move on.
+
+### Data layer
+
+**Cursor-based pagination, not offset.** Have the reason ready: with offset pagination, a new post inserted at the head shifts every subsequent item by one, so page 2 re-serves an item the user already saw at the bottom of page 1. On a feed that updates constantly this is guaranteed, not theoretical.
+
+```ts
+type FeedPage = {
+  items: FeedItem[]
+  nextCursor: string | null  // opaque; encodes (created_at, id)
+}
+
+// Client
+useInfiniteQuery({
+  queryKey: ['feed', { sort, topic }],
+  queryFn: ({ pageParam }) => fetchFeed({ cursor: pageParam, sort, topic }),
+  getNextPageParam: (last) => last.nextCursor,
+  staleTime: 30_000,
+})
+```
+
+**New posts:** poll a lightweight count endpoint, or SSE if the interviewer wants real-time. Critically, **do not inject new items into the viewport** — show a "12 new posts" banner. Injecting content above the scroll position moves what the user is reading. That's a CLS regression and an accessibility failure at the same time, and noticing it unprompted is a strong signal.
+
+**Optimistic likes with rollback**, and mention the detail most people miss: debounce or dedupe rapid toggles so a double-tap doesn't fire two mutations that resolve out of order and leave the UI wrong.
+
+If asked about the API shape, this is where you discuss [REST versus GraphQL versus tRPC](/blog/graphql-vs-rest-vs-trpc-data-layer-guide) — a feed with heterogeneous item types and per-client field needs is one of the few places GraphQL's argument is genuinely strong. Or a [BFF that composes several services](/blog/bff-the-frontends-best-friend-in-the-microservices-world) into one feed-shaped response, which is what most companies running this interview actually do.
+
+### Component interface
+
+```ts
+interface FeedItemProps {
+  item: FeedItem
+  // Callbacks, not a store subscription — keeps the component
+  // pure and trivially testable.
+  onLike: (id: string) => void
+  onRepost: (id: string) => void
+  // Rendered inside a virtualized list, so height must be
+  // knowable before paint to avoid measurement thrash.
+  estimatedHeight: number
+}
+```
+
+The comments are the point. Explain *why* the interface is shaped that way and you're designing; list props and you're describing.
+
+### Optimisation and failure modes
+
+**Virtualization.** A 10,000-item feed cannot hold 10,000 DOM nodes. Windowing keeps it to what's visible plus overscan. Name the cost honestly: it breaks native in-page find, and screen reader users lose the ability to navigate the full list. The mitigation is `aria-setsize` and `aria-posinset` on rendered items so assistive tech knows the real list size.
+
+That tradeoff — *here is the cost of my own optimisation and here is what I'd do about it* — is the single highest-value move available in this round.
+
+**Images.** Explicit `width`/`height` or `aspect-ratio` so nothing shifts. `loading="lazy"` below the fold, eager for the first two. Responsive `srcset`. Modern formats with fallbacks.
+
+**Interaction latency.** Feed interactions are the classic [INP](/blog/inp-interaction-to-next-paint-core-web-vital-guide) problem: a like button that runs an expensive re-render blocks the next paint and feels broken. Keep handlers cheap, move heavy work off the interaction path, use transitions for anything non-urgent.
+
+**Bundle.** State a [performance budget](/blog/performance-budgets-frontend-engineers-guide) with a number — "150KB gzipped for the feed route" — and how you'd hold it. Route-level splitting, lazy video player, no moment.js. Vague answers about "code splitting" score nothing; a number scores.
+
+**Accessibility.** Feed items as `article` elements in a `feed` role container. Every action button has an accessible name — "Like post by Sarah", not "Like". Focus must not be lost when new content loads. Announce the new-posts banner via a polite live region. This is where [real WCAG knowledge](/blog/web-accessibility-2026-eaa-ada-wcag-guide) separates people who have shipped accessible products from people who ran Lighthouse once.
+
+**i18n.** RTL is not `direction: rtl` and done — it's logical properties (`margin-inline-start`, not `margin-left`), mirrored icons, and text expansion of 30–40% in German breaking your fixed-width buttons. `Intl.RelativeTimeFormat` for timestamps, not a hand-rolled "2h ago" that only works in English.
+
+**Failure modes.** Empty feed. Failed page load mid-scroll (retry that specific page, don't blow away the list). Offline. Slow 3G. A single malformed item — does it break the whole feed, or does an error boundary contain it to one card?
+
+## Adapt the answer to the prompt
+
+The framework holds; the emphasis shifts.
+
+**Autocomplete** is about latency and race conditions. Debounce, cancel in-flight requests on new input, and handle out-of-order responses — the classic bug is a slow response for "re" landing after a fast one for "react" and overwriting it. Full keyboard support with `aria-activedescendant`. Cache by query string.
+
+**Collaborative editor** is about conflict resolution. This is where you name [CRDTs versus operational transforms](/blog/local-first-web-apps-sync-engines-crdt-guide) and say which you'd pick and why. CRDTs for offline-first and simpler infrastructure; OT for lower memory on long-lived documents. Presence, cursor rendering, and what happens on reconnect after ten minutes offline.
+
+**Video player** is about adaptive bitrate, buffering strategy, and — the part people forget — captions and keyboard controls. `MediaSource`, HLS/DASH, quality switching on bandwidth change.
+
+**Checkout** is about correctness over cleverness. Idempotency keys so a double-submit doesn't double-charge. Server-side validation as truth. Recovery from a failed payment without losing the cart. [Model it as a state machine](/blog/state-machines-react-xstate-patterns-guide) — a checkout with five booleans has 32 states, most of which are impossible, and the bugs live there.
+
+**Drag-and-drop** is about pointer events, accessibility (keyboard reordering is mandatory, not a nice-to-have), and optimistic reordering with rollback.
+
+## The AI-enabled round
+
+If you're interviewing at a company that expects assistant use, the grading rubric is different and mostly unstated. From what these companies describe, they're watching for:
+
+**Do you drive, or do you accept?** Candidates who paste the prompt, take the output, and move on score badly regardless of whether the code works. Candidates who specify constraints up front, reject a first attempt with a reason, and iterate score well.
+
+**Do you verify?** Shopify explicitly grades how you verify the model's work. Read the generated code aloud, notice the missing error case, name the assumption it made about your API. Trusting output visibly is a fail.
+
+**Can you explain code you didn't write?** Expect "why does this work?" about a line the assistant produced. "It's what the model gave me" ends the interview.
+
+**Do you know when not to use it?** Reaching for an assistant to write a five-line reducer is slower than typing it. So is a debugging session where you don't yet understand the failure.
+
+The [honest limits of what these tools do well](/blog/uncomfortable-truths-ai-coding-agents-2026) are worth having a considered opinion about — it's a likely follow-up question, and "it's amazing, I use it for everything" is a worse answer than a specific account of where it wastes your time.
+
+## How people fail
+
+The recurring ones, in rough order of frequency:
+
+1. **Building before scoping.** Straight into components without asking a single question. Interviewers read this as someone who ships the wrong thing quickly.
+2. **Answering a backend question.** Database schemas and load balancers in a frontend round.
+3. **Silence.** This round is graded on articulated reasoning. Thinking quietly for two minutes produces no signal.
+4. **No tradeoffs.** Every choice presented as obviously correct. Senior engineers say "I'd pick X, and the cost is Y."
+5. **Skipping a11y and i18n.** The two topics most reliably reported as the senior differentiator, and the two most reliably skipped.
+6. **Vague performance talk.** "We'd optimise the bundle" versus "150KB budget, route-split, lazy player, measured in CI."
+7. **Running out of time in step 2.** Twenty minutes on the component tree leaves nothing for the section that's actually graded.
+
+## A four-week prep plan
+
+**Week 1 — foundations.** Rendering strategies: [SSR, SSG, ISR and RSC and when each applies](/blog/ssr-vs-ssg-vs-isr-vs-rsc-nextjs-strategies). Refresh browser fundamentals — the [JavaScript internals](/blog/deep-javascript-interview-guide-for-2025–2026) still come up in the same loop.
+
+**Week 2 — the eight prompts.** Write out an answer to each. Not code — the architecture, the data layer, three tradeoffs, three failure modes. Two hours each.
+
+**Week 3 — the differentiators.** Actually learn the accessibility patterns for lists, dialogs and live regions. Actually learn logical properties and `Intl`. This is where the marginal hour pays most, because it's what everyone else skipped.
+
+**Week 4 — out loud, on a timer.** With a person if possible, into a recording if not. The gap between knowing this and articulating it under time pressure is larger than anyone expects. And do at least one session with no assistant, because if you land the Anthropic-style format, that muscle needs to not be cold.
+
+The good news in an otherwise ugly market: eight prompts, one framework, and a differentiator list that's public knowledge and still routinely ignored. That's a tractable problem, which is more than you can say for most of hiring right now.
+
+## References
+
+### Sources
+
+- [Front End Interview Handbook — System Design](https://www.frontendinterviewhandbook.com/front-end-system-design) — the most complete free framework, and the source most interviewers have also read
+- [GreatFrontEnd — System Design questions](https://www.greatfrontend.com/questions/system-design) — the recurring prompt set, with reference solutions
+- [Engineering Interview Trends in 2026 (Karat)](https://karat.com/engineering-interview-trends-2026/) — hiring data behind the format shift, and the move back toward live rounds
+- [Junior Developer Jobs in 2026](https://www.danilchenko.dev/posts/junior-developer-jobs-2026/) — the posting-volume figures quoted above
+- [WCAG 2.2 — feed role and list semantics](https://www.w3.org/WAI/ARIA/apg/patterns/feed/) — the `feed` pattern, `aria-setsize` and `aria-posinset` used in the virtualization answer
+
+### Further Reading
+
+- [MDN — CSS logical properties](https://developer.mozilla.org/en-US/docs/Web/CSS/CSS_logical_properties_and_values) — the actual RTL answer, rather than the `direction: rtl` answer
+- [web.dev — Core Web Vitals](https://web.dev/vitals/) — the vocabulary interviewers expect when you discuss performance
+- [TanStack Virtual](https://tanstack.com/virtual/latest) — worth building with once so the virtualization tradeoffs are lived rather than recited
+- [Designing Data-Intensive Applications](https://dataintensive.net/) — for the collaborative editor prompt; the consistency chapters are the ones that transfer
+
+---
+
+~Seb 👊

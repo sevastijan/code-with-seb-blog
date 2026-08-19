@@ -1,0 +1,295 @@
+---
+title: 'A Video Player With Zero JavaScript State (Chrome 152)'
+date: '2026-08-11'
+category: 'Development'
+tags: ['css', 'media', 'progressive-enhancement', 'chrome', 'accessibility']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: 'Every custom video player on the web maintains a shadow copy of the media element state in JavaScript, syncing it into class names via event listeners. Chrome 152 makes that layer unnecessary with seven new pseudo-classes — and combined with :has(), it deletes more code than it first appears.'
+---
+
+Here is the code every custom video player contains, in some form:
+
+```js
+video.addEventListener('play', () => player.classList.add('is-playing'))
+video.addEventListener('pause', () => player.classList.remove('is-playing'))
+video.addEventListener('waiting', () => player.classList.add('is-buffering'))
+video.addEventListener('playing', () => player.classList.remove('is-buffering'))
+video.addEventListener('volumechange', () => {
+  player.classList.toggle('is-muted', video.muted)
+})
+```
+
+It's a shadow copy of state the browser already has, maintained by hand, and it desynchronises the moment you miss an event. `waiting` without a matching `playing`. A `pause` fired during seek. Autoplay policies changing the state before your listeners attach.
+
+Chrome 152 ships seven pseudo-classes that make this layer unnecessary:
+
+`:playing` · `:paused` · `:seeking` · `:buffering` · `:stalled` · `:muted` · `:volume-locked`
+
+**Status, up front:** Chrome 152 hits stable on **August 25, 2026**. It's in beta now. This is a **Chrome-only feature today** and explicitly not Baseline — MDN flags it as such. It is an [Interop 2026](https://web-platform-tests.org/interop/) focus area, which means Firefox and Safari have committed to working on it this year, but "committed" is not "shipped." Everything below includes the fallback path, because you cannot ship this bare in 2026.
+
+## The trick is `:has()`, not the pseudo-classes
+
+This is the part that isn't obvious from the release notes, and it's what makes the feature actually usable.
+
+The pseudo-classes match the **media element itself**. `video:paused` styles the video. But you almost never want to style the video — you want to style the play button, the overlay, the buffering spinner, all of which are siblings.
+
+`:has()` bridges that gap, and unlike the media pseudo-classes, `:has()` has been Baseline for years:
+
+```css
+/* Not very useful on its own */
+video:paused { opacity: 0.8; }
+
+/* This is the real pattern */
+.player:has(video:paused) .play-icon  { display: block; }
+.player:has(video:playing) .play-icon { display: none;  }
+```
+
+The container queries the state of its own descendant and styles anything inside it. That's the whole technique, and it's why this feature is more than a curiosity.
+
+## The player
+
+Markup first. Note that there is no state in it — no `data-playing`, no class toggling target:
+
+```html
+<div class="player">
+  <video
+    src="/video.mp4"
+    poster="/poster.jpg"
+    preload="metadata"
+    playsinline
+  ></video>
+
+  <div class="controls">
+    <button class="toggle" type="button" aria-pressed="false">
+      <svg class="icon-play" aria-hidden="true"><use href="#play" /></svg>
+      <svg class="icon-pause" aria-hidden="true"><use href="#pause" /></svg>
+      <span class="sr-only">Play</span>
+    </button>
+
+    <button class="mute" type="button" aria-pressed="false">
+      <svg class="icon-sound" aria-hidden="true"><use href="#sound" /></svg>
+      <svg class="icon-muted" aria-hidden="true"><use href="#muted" /></svg>
+      <span class="sr-only">Mute</span>
+    </button>
+  </div>
+
+  <div class="spinner" aria-hidden="true"></div>
+</div>
+```
+
+Now the CSS that would otherwise be five event listeners:
+
+```css
+.player {
+  position: relative;
+  container-type: inline-size;
+}
+
+/* --- Play / pause icon swap --- */
+.icon-play,
+.icon-pause {
+  display: none;
+}
+.player:has(video:paused)  .icon-play  { display: block; }
+.player:has(video:playing) .icon-pause { display: block; }
+
+/* --- Mute state --- */
+.icon-sound,
+.icon-muted {
+  display: none;
+}
+.player:has(video:muted)      .icon-muted { display: block; }
+.player:has(video:not(:muted)) .icon-sound { display: block; }
+
+/* Volume locked by the OS or platform — iOS does this.
+   Don't show a control the user cannot operate. */
+.player:has(video:volume-locked) .mute { display: none; }
+
+/* --- Buffering spinner --- */
+.spinner {
+  opacity: 0;
+  transition: opacity 150ms;
+  pointer-events: none;
+}
+.player:has(video:buffering) .spinner { opacity: 1; }
+
+/* Stalled is different from buffering: the network stopped
+   delivering entirely. Worth distinguishing in the UI. */
+.player:has(video:stalled) .spinner {
+  opacity: 1;
+  animation-play-state: paused;
+}
+
+/* --- Seeking: dim the frame so the scrub reads as intentional --- */
+.player:has(video:seeking) video {
+  filter: brightness(0.7);
+}
+
+/* --- Controls auto-hide during playback, return on hover/focus --- */
+.controls {
+  opacity: 1;
+  transition: opacity 200ms;
+}
+.player:has(video:playing) .controls { opacity: 0; }
+.player:has(video:playing):hover .controls,
+.player:has(video:playing):focus-within .controls { opacity: 1; }
+```
+
+That last rule is the one I like most. Auto-hiding controls during playback normally requires a timer, a mousemove listener, and a cleanup path — and it's a common source of leaked intervals. Here it's four lines of CSS with `:focus-within` handling keyboard users for free, which the JavaScript version usually forgets.
+
+## What this does *not* delete
+
+Be clear about the scope, because "zero JavaScript" is a headline and not a description.
+
+Deleted: **the state-mirroring layer.** Every listener whose only job was to reflect media state into a class name.
+
+Still required:
+
+- **Actions.** `video.play()` and `video.pause()` are JavaScript. There's no CSS for "start playing."
+- **Progress and time display.** No pseudo-class exposes `currentTime`. That's still `timeupdate` and a DOM write.
+- **Seeking.** Reading a click position on a scrubber and setting `currentTime`.
+- **Accessible state.** `aria-pressed` on the toggle must be updated in JS. CSS can't set ARIA attributes, and a screen reader user needs to hear the button's state, not see an icon.
+
+So the honest accounting on a real player is roughly this:
+
+```js
+const video = player.querySelector('video')
+const toggle = player.querySelector('.toggle')
+
+// Actions — irreducible.
+toggle.addEventListener('click', () => {
+  video.paused ? video.play() : video.pause()
+})
+
+// Accessible state — CSS cannot do this, and it matters more
+// than the visual state does.
+const syncA11y = () => {
+  toggle.setAttribute('aria-pressed', String(!video.paused))
+  toggle.querySelector('.sr-only').textContent =
+    video.paused ? 'Play' : 'Pause'
+}
+video.addEventListener('play', syncA11y)
+video.addEventListener('pause', syncA11y)
+```
+
+Two listeners instead of eight or ten, and none of them touch presentation. That's a real reduction, particularly because the deleted ones were the ones that desynchronised.
+
+## The fallback you have to ship
+
+One browser has this. Here's the pattern that degrades cleanly.
+
+`@supports selector()` tests support for a selector, so you can scope the CSS-only path and only load the polyfill where it's needed:
+
+```css
+/* Baseline path: driven by data attributes set from JS. */
+.player[data-state='paused']  .icon-play  { display: block; }
+.player[data-state='playing'] .icon-pause { display: block; }
+.player[data-buffering='true'] .spinner   { opacity: 1; }
+
+/* Enhanced path: let CSS read the real state directly. */
+@supports selector(video:playing) {
+  .player:has(video:paused)    .icon-play  { display: block; }
+  .player:has(video:playing)   .icon-pause { display: block; }
+  .player:has(video:buffering) .spinner    { opacity: 1; }
+}
+```
+
+```js
+// Only attach the mirroring listeners where the browser needs them.
+if (!CSS.supports('selector(video:playing)')) {
+  const setState = () => {
+    player.dataset.state = video.paused ? 'paused' : 'playing'
+  }
+  video.addEventListener('play', setState)
+  video.addEventListener('pause', setState)
+  video.addEventListener('waiting', () => {
+    player.dataset.buffering = 'true'
+  })
+  video.addEventListener('playing', () => {
+    player.dataset.buffering = 'false'
+  })
+  setState()
+}
+```
+
+This is the correct shape for the next year or two: **both paths in the codebase, the JS one deleted when Interop 2026 lands.** You get the reduced runtime for most of your Chrome traffic today and lose nothing elsewhere.
+
+Two things to watch. In the enhanced block, the data-attribute rules and the `:has()` rules can both match if you leave stale attributes around — keep the data attributes unset when the polyfill doesn't run, as above. And `@supports selector()` itself needs support; it's Baseline, but browsers that don't understand the whole at-rule skip its contents, which fails in the safe direction.
+
+## The accessibility warning
+
+This deserves its own section because it's the way a CSS-only player goes wrong.
+
+**Visual state is not accessible state.** Swapping an icon with `:has(video:playing)` tells a sighted user what's happening and tells a screen reader user nothing. The `aria-pressed` attribute and the accessible name still need updating in JavaScript, which is why `syncA11y` above isn't optional.
+
+Related traps:
+
+- **The buffering spinner needs an announcement**, not just an animation. A polite live region saying "Loading" — and, importantly, not re-announcing on every buffer event.
+- **Keyboard operation is mandatory.** Space to toggle, arrows to seek, M to mute. The native controls give you this free; the moment you build custom controls you own it.
+- **`prefers-reduced-motion`** should stop your spinner animating and disable any transition on the frame during seek.
+
+```css
+@media (prefers-reduced-motion: reduce) {
+  .spinner { animation: none; }
+  .player:has(video:seeking) video { filter: none; }
+}
+```
+
+None of this is new — it's the same [WCAG obligation any custom control carries](/blog/web-accessibility-2026-eaa-ada-wcag-guide). It's just easier to forget when the state handling looks like it moved entirely into CSS.
+
+## Is a media player a state machine?
+
+Worth asking, since I've argued elsewhere that anything with a defined lifecycle should be [modelled as an explicit state machine](/blog/state-machines-react-xstate-patterns-guide) rather than a pile of booleans. A player has *playing*, *paused*, *seeking*, *buffering*, *stalled*, *ended*, *error* — that's textbook.
+
+The answer is that these pseudo-classes **read** a state machine the browser already runs. The media element has a spec-defined state model with defined transitions; the pseudo-classes expose it to CSS instead of making you rebuild it. That's strictly better than maintaining a parallel machine and hoping the two agree.
+
+Where you'd still reach for XState is anything *around* the media element — playlist advance, ad insertion, retry-with-backoff after a stall, DRM licence acquisition. The pseudo-classes cover the element; the machine covers your product logic on top of it.
+
+Which is a nice illustration of the general point that [most state doesn't need a store once you classify it correctly](/blog/react-state-management-2026-decision-guide). Play/pause was never application state. It was a fact about a DOM element, and we were copying it into application state because there was no way to read it declaratively.
+
+## Also in Chrome 152
+
+Two smaller things shipped alongside, both relevant if you're styling a player:
+
+**Relative alpha colors** — the CSS Color 5 `alpha()` function lets you take an existing colour and modify only its alpha channel:
+
+```css
+.controls {
+  /* Take the theme colour, keep the hue, change only opacity. */
+  background: alpha(var(--surface) / 80%);
+}
+```
+
+Previously this meant either a second variable or an `oklch()` relative-colour dance. Useful for exactly the semi-transparent control bars a player needs, and it composes with [the rest of the modern CSS toolkit](/blog/modern-css-2026-has-scope-container-queries-guide).
+
+**`window-drag`** standardises and renames the non-standard `app-region` property, letting installed desktop web apps designate draggable titlebar regions. Irrelevant to a page-embedded player, relevant if you ship a PWA media app.
+
+## Should you use it
+
+**Today, behind `@supports`: yes.** The fallback costs you nothing you weren't already writing, and the enhanced path removes real, historically buggy code for a large share of your users. There's no downside case here.
+
+**As your only implementation: no.** One engine, not Baseline, and a media player is not the place to make users on Safari your beta testers.
+
+**The thing to actually take away** is smaller than the feature: a whole category of JavaScript exists purely to copy platform state into class names so CSS can read it. Media state was one instance. `:has()` plus state pseudo-classes is the general shape of the fix, and it'll keep showing up. Every listener you delete is a listener that can't desynchronise.
+
+## References
+
+### Sources
+
+- [Chrome 152 beta (Chrome for Developers)](https://developer.chrome.com/blog/chrome-152-beta) — the seven media pseudo-classes, relative alpha colors, and `window-drag`
+- [`:playing` (MDN)](https://developer.mozilla.org/en-US/docs/Web/CSS/Reference/Selectors/:playing) — semantics, including why buffering and stalled still count as "playing"
+- [`:paused` (MDN)](https://developer.mozilla.org/en-US/docs/Web/CSS/Reference/Selectors/:paused) — and the non-Baseline support note quoted above
+- [`:stalled` (MDN)](https://developer.mozilla.org/en-US/docs/Web/CSS/Reference/Selectors/:stalled) — the distinction from `:buffering` used in the spinner rules
+- [web-platform-tests/interop issue #510](https://github.com/web-platform-tests/interop/issues/510) — the Interop 2026 proposal that put these on the other engines' roadmaps
+
+### Further Reading
+
+- [`@supports` selector() (MDN)](https://developer.mozilla.org/en-US/docs/Web/CSS/@supports) — the feature-detection mechanism the fallback depends on
+- [ARIA Authoring Practices — custom media controls](https://www.w3.org/WAI/ARIA/apg/) — keyboard and state expectations once you replace the native controls
+- [HTML spec — media element state model](https://html.spec.whatwg.org/multipage/media.html#media-elements) — the state machine these pseudo-classes expose, worth reading once to see how many states you were flattening
+
+---
+
+~Seb 👊

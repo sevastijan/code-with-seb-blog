@@ -1,0 +1,427 @@
+---
+title: 'React State Management in 2026: Classify First, Then Pick'
+date: '2026-08-18'
+category: 'Development'
+tags: ['react', 'state-management', 'zustand', 'tanstack-query', 'nextjs']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: '34% of React developers now ship without any state management library at all. That is not laziness — it is the correct answer once you notice that most of what teams call "global state" is four different problems wearing the same name. Here is how to tell them apart, and what to reach for in each case.'
+---
+
+The most interesting number in the State of React data isn't Zustand's growth. It's that **34% of respondents use no state management library at all** — `useState` and `useContext` are enough for them.
+
+For years that would have been read as "small projects" or "not serious apps." In 2026 it's mostly a signal that the problem moved. Between TanStack Query owning server cache, the URL owning navigation state, and React 19's Actions owning form state, the residue that actually needs a global client store got small. Sometimes it hits zero.
+
+So the useful question isn't "Zustand or Redux." It's **"what kind of state is this?"** — because four different things get filed under "app state" and each has a different correct answer.
+
+## First, distrust the survey numbers
+
+You'll see two contradictory-looking claims quoted everywhere, and both are real:
+
+- Redux (plain) still shows **75.5% usage** in State of React, down from 80.5% in 2023
+- Redux dropped from **57% to 38%** among React Native developers between 2023 and 2026
+
+These don't conflict — they measure different things. Survey "usage" typically means *ever used*, which is a ratchet that barely goes down for a library that's been the default for a decade. It tells you about accumulated legacy, not about what people choose for new work.
+
+The numbers that actually describe current choices:
+
+| Library | Trend | Notes |
+| --- | --- | --- |
+| Zustand | 28% → 41% → 50% (2023–2025) | Crossed half of respondents |
+| Redux Toolkit | flat at ~54% | Not dying, not growing |
+| Jotai | 13% → 19% | Niche but accelerating |
+| No library at all | 34% | The quiet plurality |
+
+The top reported pain points across every library are **excessive complexity (20%)** and **boilerplate (15%)**. That's the whole story of the last three years in two numbers.
+
+## The four kinds of state
+
+Here's the taxonomy I use. Almost every "which library" argument I've sat through dissolved once someone drew this on a whiteboard.
+
+**1. Server cache state.** Data that lives in a database and you're holding a copy. Users, orders, posts. Its defining property: **it can become stale without your app doing anything.** Someone else edited it.
+
+**2. URL state.** Filters, pagination, active tab, search query, selected item. Defining property: **a user should be able to share the link and get the same view.**
+
+**3. Form state.** Field values, validation errors, submission status, optimistic results. Defining property: **it's ephemeral and scoped to one interaction.**
+
+**4. Client UI state.** Sidebar open, theme, active modal, multi-step wizard progress, unsaved draft. Defining property: **it exists only in this browser tab and nowhere else.**
+
+Putting server cache state into Redux is the single most common architectural mistake I still see, and it's the source of most "state management is too complicated" complaints. You end up hand-writing cache invalidation, loading flags, retry logic and race condition handling that a dedicated library solved years ago.
+
+Let's take them in order.
+
+## Server cache state: TanStack Query, and RSC didn't kill it
+
+The most persistent misconception in the App Router era is that Server Components made client-side data fetching obsolete. They didn't. They moved the *initial* fetch to the server, which is a real win, but they don't help with anything that happens after the page loads: refetching on window focus, polling, mutation-driven invalidation, optimistic updates with rollback, pagination that doesn't re-run the whole page.
+
+The pattern that actually works is both — fetch on the server, hydrate into the client cache:
+
+```tsx
+// app/orders/page.tsx  (Server Component)
+import {
+  dehydrate,
+  HydrationBoundary,
+  QueryClient,
+} from '@tanstack/react-query'
+import { OrdersTable } from './orders-table'
+import { fetchOrders } from '@/lib/orders'
+
+export default async function OrdersPage() {
+  const queryClient = new QueryClient()
+
+  // Runs on the server, no client waterfall, no loading spinner on first paint.
+  await queryClient.prefetchQuery({
+    queryKey: ['orders', { status: 'open' }],
+    queryFn: () => fetchOrders({ status: 'open' }),
+  })
+
+  return (
+    <HydrationBoundary state={dehydrate(queryClient)}>
+      <OrdersTable />
+    </HydrationBoundary>
+  )
+}
+```
+
+```tsx
+// app/orders/orders-table.tsx  (Client Component)
+'use client'
+
+import { useQuery } from '@tanstack/react-query'
+import { fetchOrders } from '@/lib/orders'
+
+export function OrdersTable() {
+  // Hits the hydrated cache immediately — no fetch on mount.
+  // Then behaves like a normal query: refetch on focus, invalidate on mutate.
+  const { data, isFetching } = useQuery({
+    queryKey: ['orders', { status: 'open' }],
+    queryFn: () => fetchOrders({ status: 'open' }),
+    staleTime: 30_000,
+  })
+
+  return <Table rows={data} busy={isFetching} />
+}
+```
+
+Server-rendered first paint, client-managed freshness afterwards. The [caching and invalidation details are worth a deeper read](/blog/tanstack-query-advanced-caching-rsc-guide) if you're setting the boundary between `staleTime`, `gcTime` and Next.js's own cache, because those three interact in ways that surprise people.
+
+**The rule:** if the data has a server as its source of truth, it belongs in a query cache, not in a store. Always. This is the least controversial claim in the whole article and also the most frequently violated.
+
+## URL state: the store you already have and aren't using
+
+This is the most under-used option in React and it costs nothing.
+
+Filters, sort order, pagination, the open tab, the selected row — all of these belong in the URL. You get shareable links, working back buttons, and free persistence across reloads. And in an App Router app, `searchParams` on a Server Component means the server can read them and render accordingly, which no client store can do.
+
+Hand-rolling this is tedious enough that people skip it, which is why [nuqs](https://nuqs.47ng.com/) is worth the dependency:
+
+```tsx
+'use client'
+
+import { useQueryState, parseAsInteger, parseAsStringEnum } from 'nuqs'
+
+type Status = 'open' | 'closed' | 'all'
+
+export function OrderFilters() {
+  // Reads and writes ?status= and ?page= — typed, with defaults,
+  // and without a re-render storm on every keystroke.
+  const [status, setStatus] = useQueryState(
+    'status',
+    parseAsStringEnum<Status>(['open', 'closed', 'all']).withDefault('open')
+  )
+  const [page, setPage] = useQueryState(
+    'page',
+    parseAsInteger.withDefault(1)
+  )
+
+  return (
+    <Toolbar>
+      <StatusSelect
+        value={status}
+        onChange={(next) => {
+          setStatus(next)
+          setPage(1) // resetting page on filter change: the classic bug
+        }}
+      />
+      <Pagination page={page} onChange={setPage} />
+    </Toolbar>
+  )
+}
+```
+
+Before you add any store, go through your proposed global state and ask of each field: *should a link to this view reproduce it?* Every yes moves to the URL and out of your state management problem entirely.
+
+## Form state: React 19 took most of this back
+
+`useActionState` and `useOptimistic` genuinely removed a category of code. The old shape — `useState` for values, another for loading, another for errors, a `useEffect` to reset, plus Redux middleware if you wanted optimistic updates — collapses:
+
+```tsx
+'use client'
+
+import { useActionState, useOptimistic } from 'react'
+import { addComment } from './actions'
+
+export function Comments({ initial }: { initial: Comment[] }) {
+  const [optimistic, addOptimistic] = useOptimistic(
+    initial,
+    (state, pending: string) => [
+      ...state,
+      { id: 'pending', body: pending, pending: true },
+    ]
+  )
+
+  // state holds the action's return value; isPending replaces a loading flag.
+  const [state, formAction, isPending] = useActionState(addComment, null)
+
+  return (
+    <>
+      <ul>
+        {optimistic.map((c) => (
+          <li key={c.id} data-pending={c.pending}>
+            {c.body}
+          </li>
+        ))}
+      </ul>
+
+      <form
+        action={(formData) => {
+          addOptimistic(formData.get('body') as string)
+          formAction(formData)
+        }}
+      >
+        <textarea name="body" required />
+        <button disabled={isPending}>Post</button>
+      </form>
+
+      {state?.error && <p role="alert">{state.error}</p>}
+    </>
+  )
+}
+```
+
+Rollback on failure is automatic — `useOptimistic` discards the optimistic value when the action settles and the real state re-renders. That's the part people miss, and it's [worth understanding precisely how the rollback behaves](/blog/useoptimistic-react-19-server-actions-guide) before you rely on it in anything financial.
+
+Two limits to be honest about. For genuinely complex forms — cross-field validation, dynamic arrays, wizards — React Hook Form still wins, and pairing it with [Zod for schema validation](/blog/zod-typescript-validation-complete-guide) remains the strongest setup available. And Server Actions are a public POST endpoint, so [validate and authorize inside the action](/blog/nextjs-server-actions-security), not in the component that calls it.
+
+## What's actually left for a client store
+
+After the first three categories are routed correctly, the remainder is usually: theme, sidebar and modal state, a multi-step flow's progress, feature-flag overrides, an unsaved draft, and maybe a websocket connection status.
+
+That's a small, low-frequency, non-async pile. Which is why the winning libraries are the small ones.
+
+**Context is fine — until it isn't.** The failure mode is well known: every consumer re-renders when any part of the value changes. For a theme that flips twice a session, that's irrelevant. For anything that updates on a timer or on input, it's a problem. The [React Compiler's automatic memoization](/blog/react-compiler-deep-dive-automatic-memoization-guide) softens the blast radius but doesn't change the subscription model — consumers still wake up.
+
+**Zustand** is the default recommendation and deserves it. Roughly 3KB, no provider required, and selector-based subscriptions so components only re-render on the slice they read:
+
+```ts
+// stores/ui-store.ts
+import { create } from 'zustand'
+
+type UiState = {
+  sidebarOpen: boolean
+  activeModal: string | null
+  toggleSidebar: () => void
+  openModal: (id: string) => void
+  closeModal: () => void
+}
+
+export const useUiStore = create<UiState>()((set) => ({
+  sidebarOpen: true,
+  activeModal: null,
+  toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
+  openModal: (id) => set({ activeModal: id }),
+  closeModal: () => set({ activeModal: null }),
+}))
+```
+
+```tsx
+// Subscribes to one boolean. Modal changes don't re-render this.
+const sidebarOpen = useUiStore((s) => s.sidebarOpen)
+
+// Actions are stable references — safe in deps, no re-render on state change.
+const toggleSidebar = useUiStore((s) => s.toggleSidebar)
+```
+
+Since v5, Zustand uses React's native `useSyncExternalStore` rather than a shim, which is what keeps it tear-free under concurrent rendering. The practical consequence: it requires React 18+, and it behaves correctly with transitions instead of showing you half-updated state mid-render.
+
+**Jotai** is the right call for a different shape of problem: many small values that derive from each other. Where a Zustand store is one object you select slices from, Jotai is a dependency graph:
+
+```ts
+import { atom } from 'jotai'
+
+const itemsAtom = atom<CartItem[]>([])
+const taxRateAtom = atom(0.23)
+
+// Derived — recomputes only when its own dependencies change.
+const subtotalAtom = atom((get) =>
+  get(itemsAtom).reduce((sum, i) => sum + i.price * i.qty, 0)
+)
+const totalAtom = atom((get) => get(subtotalAtom) * (1 + get(taxRateAtom)))
+```
+
+A component reading `totalAtom` doesn't re-render when an unrelated atom changes. If you find yourself writing lots of derived selectors over a Zustand store, that's the signal to switch — it's the same insight that drives [signals-based fine-grained reactivity](/blog/signals-fine-grained-reactivity-2026-guide) in other frameworks.
+
+**Valtio** (same author as Zustand) if immutable update syntax genuinely bothers your team — proxy-based mutation, `state.count++` works. **TanStack Store** if you're already deep in Router and Table and want API consistency; standalone it doesn't yet clear the bar against Zustand.
+
+## The benchmark numbers, with the caveat they need
+
+The figures circulating are:
+
+| Library | Bundle (min+gzip) | 1,000 subscribers |
+| --- | --- | --- |
+| Zustand | ~3KB | 12ms |
+| Jotai | ~4KB | 14ms |
+| Redux Toolkit | ~15KB | 18ms |
+| Signals (framework-native) | — | 3ms |
+
+Read the render column carefully: **6ms separates the React options.** In an app with 1,000 components subscribed to one store — which is not a normal app — you'd save six milliseconds. That is not a reason to migrate anything.
+
+The bundle column is more defensible, though 12KB is roughly one mid-sized icon import. Choose on ergonomics, boilerplate, and how well the mental model fits your team. The performance argument for switching state libraries is almost always motivated reasoning applied after the decision.
+
+## The Next.js gotcha that will bite you
+
+This is the one production bug in this article, and it catches people who did everything else right.
+
+A module-level store is a **module-level singleton on the server too**. In the App Router, that module is shared across requests in the same server process. Put user data in it and you have a cross-request data leak — user A's state served to user B.
+
+```ts
+// 🔴 Dangerous if this store ever holds request-scoped data
+export const useSessionStore = create<Session>()((set) => ({
+  user: null,
+  setUser: (user) => set({ user }),
+}))
+```
+
+For UI-only state (sidebar, theme) this is harmless because the server never writes to it. For anything derived from a request, create the store per request and pass it through context:
+
+```tsx
+'use client'
+
+import { createContext, useContext, useRef } from 'react'
+import { createStore, useStore } from 'zustand'
+
+type SessionState = { user: User | null }
+
+const createSessionStore = (initial: SessionState) =>
+  createStore<SessionState>()(() => initial)
+
+type SessionStore = ReturnType<typeof createSessionStore>
+const SessionStoreContext = createContext<SessionStore | null>(null)
+
+export function SessionStoreProvider({
+  initial,
+  children,
+}: {
+  initial: SessionState
+  children: React.ReactNode
+}) {
+  // useRef, not useState — one store instance per mount, created lazily.
+  const storeRef = useRef<SessionStore>()
+  if (!storeRef.current) {
+    storeRef.current = createSessionStore(initial)
+  }
+
+  return (
+    <SessionStoreContext.Provider value={storeRef.current}>
+      {children}
+    </SessionStoreContext.Provider>
+  )
+}
+
+export function useSessionStore<T>(selector: (s: SessionState) => T): T {
+  const store = useContext(SessionStoreContext)
+  if (!store) throw new Error('Missing SessionStoreProvider')
+  return useStore(store, selector)
+}
+```
+
+The related failure is hydration mismatch: a store initialised from `localStorage` renders differently on server and client. Gate persisted state behind a mounted check, or accept a flash. Zustand's `persist` middleware has `skipHydration` for exactly this.
+
+While we're on leaks — subscriptions that outlive their components are a classic source of [memory growth in long-lived React apps](/blog/debugging-memory-leaks-react-nextjs-guide). If you subscribe to a store outside a component (`store.subscribe(...)`), you own the unsubscribe.
+
+## Where Redux is still the right answer
+
+Redux Toolkit isn't legacy and I'd push back on anyone calling it that. It's the right pick when:
+
+- **You need time-travel debugging.** Nothing else comes close. For a complex editor or anything with undo/redo semantics, the DevTools are worth the boilerplate on their own.
+- **You have a large team that benefits from enforced ceremony.** Zustand's freedom means twelve developers invent twelve patterns. Redux's rigidity is a feature at that headcount.
+- **Your state transitions are genuinely complex** and you want them centralised, serialisable and auditable.
+- **You already have it and it works.** Migrating a working Redux app to Zustand to save 12KB is not an engineering decision.
+
+What I would stop doing is using RTK Query as the reason to keep Redux. It's competent, but if server cache is your main use for Redux, TanStack Query does that job better and lets you delete the rest.
+
+## When it's not state at all: workflows
+
+If you're tracking `isLoading`, `isError`, `isSubmitting`, `hasRetried` and `isConfirmed` as separate booleans, you don't have a state management problem — you have an unmodelled state machine. Five booleans encode 32 combinations, most of which are impossible, and the bugs live in the impossible ones.
+
+Multi-step checkouts, onboarding flows, media players, anything with a defined lifecycle: [model it explicitly with a state machine](/blog/state-machines-react-xstate-patterns-guide) and the store question mostly disappears, because the machine *is* the store.
+
+## Testing
+
+A practical benefit of the small-store approach that rarely gets mentioned: stores are plain objects and test without React.
+
+```ts
+import { useUiStore } from '@/stores/ui-store'
+
+// Zustand stores are testable outside components entirely.
+beforeEach(() => {
+  useUiStore.setState({ sidebarOpen: true, activeModal: null })
+})
+
+it('closes the sidebar', () => {
+  useUiStore.getState().toggleSidebar()
+  expect(useUiStore.getState().sidebarOpen).toBe(false)
+})
+```
+
+The `beforeEach` reset matters — module-level stores persist between tests in the same file and produce order-dependent failures that are miserable to debug.
+
+For server cache, don't mock TanStack Query. Mock the network with MSW and let the real cache run, or you're testing your mocks.
+
+## The decision tree
+
+Run each piece of state through this in order:
+
+1. **Does a server own it?** → TanStack Query. Stop.
+2. **Should a shared link reproduce it?** → URL, via `searchParams` or nuqs. Stop.
+3. **Is it a form field or submission status?** → `useActionState` / `useOptimistic`, or React Hook Form for complex cases. Stop.
+4. **Is it used by exactly one component subtree?** → `useState`, lifted as far as necessary and no further.
+5. **Is it a defined lifecycle with transitions?** → State machine.
+6. **Still here, and genuinely global?** → Zustand. Jotai if it's a graph of derived values.
+7. **Do you need time travel, or enforce ceremony across a large team?** → Redux Toolkit.
+
+Most state never reaches step 6. That's why 34% of developers ship without a library — not because their apps are simple, but because the other five steps absorbed everything.
+
+## Migrating without a rewrite
+
+If you're on Redux and want out, don't do a big-bang migration. The incremental path that works:
+
+1. **Move server cache to TanStack Query first, one resource at a time.** This is usually 60–80% of a legacy Redux store and the highest-value step. Both can coexist indefinitely.
+2. **Move filters and pagination to the URL.** Deletes more Redux than you'd expect, and improves the product at the same time.
+3. **Convert forms to Actions or React Hook Form.**
+4. **Whatever's left is your actual client state.** Usually small enough that a single Zustand store replaces it in an afternoon — or small enough that you leave it in Redux and stop thinking about it.
+
+Step 4 being anticlimactic is the point. If you get to the end and there's barely anything left, you didn't waste the migration — you found out that the library was never the problem. It was the classification.
+
+## References
+
+### Sources
+
+- [State of React survey results](https://stateofreact.com/) — usage trends for Zustand, Redux Toolkit and Jotai, and the 34% no-library figure
+- [Announcing Zustand v5 (Poimandres)](https://pmnd.rs/blog/announcing-zustand-v5/) — the move to native `useSyncExternalStore` and the React 18 requirement
+- [React 19 release notes](https://react.dev/blog/2024/12/05/react-19) — `useActionState`, `useOptimistic`, and the Actions model
+- [TanStack Query — Advanced SSR](https://tanstack.com/query/latest/docs/framework/react/guides/advanced-ssr) — the prefetch + `HydrationBoundary` pattern used above
+- [Jotai documentation](https://jotai.org/) — atom composition and derived atoms
+- [nuqs](https://nuqs.47ng.com/) — typed URL search param state for the App Router
+
+### Further Reading
+
+- [Redux Toolkit — Style Guide](https://redux.js.org/style-guide/) — the official position on what Redux is and isn't for, more measured than most takes about it
+- [useSyncExternalStore (React docs)](https://react.dev/reference/react/useSyncExternalStore) — the primitive every external store library sits on, and why tearing matters under concurrent rendering
+- [Zustand persist middleware](https://zustand.docs.pmnd.rs/integrations/persisting-store-data) — including `skipHydration`, the fix for the SSR mismatch described above
+- [TkDodo's blog](https://tkdodo.eu/blog/) — the most rigorous writing on server-state patterns anywhere, by a TanStack Query maintainer
+
+---
+
+~Seb 👊

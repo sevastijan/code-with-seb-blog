@@ -1,0 +1,304 @@
+---
+title: 'shadcn/ui in 2026: Private Registries, Base UI, Agent Skills'
+date: '2026-08-14'
+category: 'Development'
+tags: ['shadcn', 'design-systems', 'component-libraries', 'monorepo', 'tailwind']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: 'shadcn/ui stopped being a pile of components you copy and became a distribution protocol for design systems — private registries with auth, namespaced installs, a whole system shipped as one payload, and skills so agents stop guessing at your API. Here is how to publish your own.'
+---
+
+The most common thing I hear about shadcn/ui is still "it's not a library, you own the code." That was the 2023 pitch. It's now roughly a third of the story.
+
+What shadcn became in 2026 is a **distribution protocol**. You can publish your company's design system to a private, authenticated registry and have any project install from it with `npx shadcn add @acme/button`. You can ship an entire system — components, dependencies, CSS variables, fonts, config — as a single install. And you can ship skills alongside it so coding agents stop inventing props your components don't have.
+
+That last one turns out to matter more than expected, and I'll come back to it.
+
+## The shift, in one command
+
+The old model was one public registry and a copy operation:
+
+```bash
+npx shadcn@latest add button
+```
+
+The current model is namespaced, and the namespace can be yours:
+
+```bash
+# The public registry, unchanged
+npx shadcn@latest add button
+
+# A community registry
+npx shadcn@latest add @v0/dashboard
+
+# Your company's private registry, behind auth
+npx shadcn@latest add @acme/data-table
+```
+
+Namespaced registries arrived with shadcn 3.0. Everything below builds on that one syntax change, which is a good sign for a design decision — it composed rather than replaced.
+
+## Anatomy of a registry
+
+A registry is a static `registry.json` plus the files it references. No server, no publish pipeline, no npm account. If you can host JSON, you can host a registry.
+
+```json
+{
+  "$schema": "https://ui.shadcn.com/schema/registry.json",
+  "name": "acme",
+  "homepage": "https://design.acme.com",
+  "items": [
+    {
+      "name": "data-table",
+      "type": "registry:ui",
+      "title": "Data Table",
+      "description": "Sortable, filterable table wired to TanStack Table.",
+      "dependencies": ["@tanstack/react-table"],
+      "registryDependencies": ["button", "checkbox", "@acme/pagination"],
+      "files": [
+        {
+          "path": "registry/acme/data-table/data-table.tsx",
+          "type": "registry:ui"
+        },
+        {
+          "path": "registry/acme/data-table/use-data-table.ts",
+          "type": "registry:hook"
+        }
+      ],
+      "cssVars": {
+        "light": { "table-stripe": "oklch(0.97 0 0)" },
+        "dark": { "table-stripe": "oklch(0.24 0 0)" }
+      }
+    }
+  ]
+}
+```
+
+Two fields carry most of the weight.
+
+**`registryDependencies`** is the dependency graph. Entries without a namespace resolve against the public shadcn registry (`button`, `checkbox`); entries with one resolve against that namespace (`@acme/pagination`). Installing `data-table` pulls the whole tree transitively. This is what makes a registry a system rather than a folder of snippets.
+
+**`cssVars`** get merged into the consuming project's stylesheet, which is how theming survives the copy. Combined with [Tailwind v4's CSS-first configuration](/blog/tailwind-css-4-whats-new-migration-guide), your design tokens travel with the component instead of living in a config file the consumer has to remember to update.
+
+## `registry:base` — the whole system in one install
+
+This is the March 2026 CLI v4 addition and the most useful one if you're distributing internally.
+
+A `registry:base` item bundles components, npm dependencies, CSS variables, fonts and config into a single payload. Instead of onboarding a new project with a twelve-step setup doc, you ship:
+
+```bash
+npx shadcn@latest add @acme/base
+```
+
+```json
+{
+  "name": "base",
+  "type": "registry:base",
+  "title": "Acme Design System",
+  "dependencies": ["tailwindcss", "class-variance-authority", "lucide-react"],
+  "registryDependencies": [
+    "@acme/button",
+    "@acme/input",
+    "@acme/data-table",
+    "@acme/toast"
+  ],
+  "cssVars": {
+    "theme": {
+      "font-sans": "var(--font-inter)",
+      "radius": "0.625rem"
+    },
+    "light": {
+      "primary": "oklch(0.55 0.22 264)",
+      "primary-foreground": "oklch(0.98 0 0)"
+    },
+    "dark": {
+      "primary": "oklch(0.70 0.19 264)",
+      "primary-foreground": "oklch(0.20 0 0)"
+    }
+  },
+  "css": {
+    "@layer base": {
+      "body": { "font-feature-settings": "'cv11', 'ss01'" }
+    }
+  }
+}
+```
+
+The practical effect is that "set up a new internal app with our design system" goes from a half-day of drift-prone copying to one command. If you maintain multiple products, this is the feature that justifies the whole exercise.
+
+## Private registries and authentication
+
+Registries support auth headers with environment variable expansion, configured in `components.json`:
+
+```json
+{
+  "$schema": "https://ui.shadcn.com/schema.json",
+  "style": "new-york",
+  "tailwind": { "css": "src/app/globals.css", "baseColor": "neutral" },
+  "aliases": {
+    "components": "@/components",
+    "ui": "@/components/ui",
+    "hooks": "@/hooks"
+  },
+  "registries": {
+    "@acme": {
+      "url": "https://design.acme.com/r/{name}.json",
+      "headers": {
+        "Authorization": "Bearer ${ACME_REGISTRY_TOKEN}"
+      }
+    },
+    "@premium": {
+      "url": "https://vendor.example.com/r/{name}.json",
+      "headers": {
+        "X-API-Key": "${VENDOR_LICENSE_KEY}"
+      }
+    }
+  }
+}
+```
+
+`${VAR}` expands from the environment at install time, so `components.json` stays committable and the token doesn't. `{name}` is replaced with the item being installed.
+
+A few things worth knowing before you build this into your CI:
+
+- **CI needs the token too.** Any pipeline running `shadcn add` needs the env var. If your Dockerfile installs components at build time, that's a build secret — and a build secret in a layer is a leaked secret. Install at development time and commit the output; that's the model shadcn is built around anyway.
+- **You're serving static JSON behind auth.** Any origin that can check a header works — a Next.js route handler, a Worker, S3 behind CloudFront with a Lambda@Edge check.
+- **Rotate tokens like any other credential.** A registry token is read access to your entire internal component source.
+
+The `registry include` addition from May 2026 solves the file-size problem that shows up around thirty components: you can compose the registry from multiple `registry.json` files instead of maintaining one enormous hand-edited document. And `shadcn registry validate` checks the whole thing before you publish, which catches the classic failure — a `registryDependencies` entry pointing at an item that doesn't exist, discovered by a colleague at 4pm.
+
+Wire both into CI:
+
+```yaml
+# .github/workflows/registry.yml
+- name: Validate registry
+  run: npx shadcn@latest registry validate
+
+- name: Build registry
+  run: npx shadcn@latest registry build
+
+- name: Deploy
+  run: npx wrangler deploy
+```
+
+This is structurally the same problem as [publishing a Claude Code plugin marketplace](/blog/claude-code-plugin-marketplace-publish-guide) — a manifest, a dependency graph, a validation step and a static host. The industry has quietly converged on this shape for distributing developer-facing artifacts.
+
+## Base UI is the new default, and Radix isn't dead
+
+On **July 3, 2026**, shadcn changed the primitive layer under every component. New installs come wired to Base UI, maintained by the MUI team, rather than Radix.
+
+The reasoning came from a community proposal opened back in January 2025: long-standing Radix bugs, weak combobox support, awkward form integration. Base UI 1.0.0 shipped in December 2025 and became viable.
+
+**What matters for existing projects: migration is optional.** Radix is not deprecated. Every new shadcn component ships for both primitive layers simultaneously, and the shadcn team still runs Radix in production. If you have an app on Radix, you can ignore this entirely and keep receiving new components.
+
+If you do migrate, three things actually break:
+
+**`asChild` doesn't translate one-to-one.** Base UI uses `render` instead. Most call sites convert cleanly with the JSX form; wrappers doing custom prop merging on top of `asChild` are simpler under the function form.
+
+```tsx
+// Radix
+<Tooltip.Trigger asChild>
+  <Button variant="ghost">Help</Button>
+</Tooltip.Trigger>
+
+// Base UI — JSX form, the common case
+<Tooltip.Trigger render={<Button variant="ghost">Help</Button>} />
+
+// Base UI — function form, when you need the props
+<Tooltip.Trigger
+  render={(props) => <Button {...props} variant="ghost">Help</Button>}
+/>
+```
+
+**Tooltip `sideOffset` default changed from 0 to 4.** Harmless in most apps, visible everywhere in a design-system-heavy one. Pin `sideOffset={0}` during migration if pixel alignment is design-critical, then decide deliberately.
+
+**Custom positioning needs real porting** to `@floating-ui/react`. This is the only part that's actual work rather than a find-and-replace.
+
+The shadcn team shipped a **skill** for the migration that goes one component and its call sites at a time, keeping the project shippable throughout. That's the right shape for this kind of change, and it's a better answer than the usual "here's a codemod, good luck" — a codemod can't tell whether your tooltip alignment was intentional.
+
+## The part nobody talks about: skills for agents
+
+`shadcn/skills` gives coding agents the context to use your components and registry correctly — covering both Radix and Base UI primitives, current APIs, component patterns and registry workflows. There's also an official MCP server for browsing and installing from registries.
+
+This matters more than it sounds, for a reason that's easy to miss: **models were trained on years of shadcn code, most of it now outdated.** Ask an assistant for a shadcn dialog and there's a good chance you get Radix-era `asChild` on a Base UI install, or props from a version two majors back. The failure is quiet — it compiles, it looks right, it's subtly wrong.
+
+Shipping a skill with your internal registry is the fix, and it's the highest-leverage thing you can do for a design system in 2026:
+
+```markdown
+---
+name: acme-design-system
+description: Use when building UI in any Acme product — component APIs, tokens, and the rules for when to compose versus extend.
+---
+
+# Acme Design System
+
+## Installing
+Components come from the `@acme` registry: `npx shadcn@latest add @acme/<name>`.
+Never copy component source between repos — install from the registry so
+updates and CSS variables stay in sync.
+
+## Rules
+- Use `@acme/button`, never a raw `<button>` with Tailwind classes.
+- Spacing uses the `--spacing-*` scale. Arbitrary values like `p-[13px]`
+  fail review.
+- Every interactive component must have a visible focus ring. Do not
+  remove `focus-visible:ring-*` to satisfy a design comp.
+- Primitives are Base UI. Use `render`, not `asChild` — `asChild` is Radix
+  and will not work here.
+
+## Composition
+Prefer composing existing primitives over adding a variant. Add a variant
+to `@acme/button` only when three or more products need it.
+```
+
+That file is worth more than a Storybook nobody opens. It's read by the thing actually writing your code now, and it enforces conventions at the point of authorship rather than at review. If you're not familiar with the format, the [skills mechanism generalises well beyond components](/blog/claude-code-skills-reusable-ai-workflows-guide).
+
+## Where this fits versus a component package
+
+The honest comparison, because a registry isn't automatically the right answer.
+
+**Publish an npm package when:** you need semver, you want consumers on a version they explicitly upgrade, or your components genuinely shouldn't be edited by consumers. A design system for a large org with compliance requirements usually wants this.
+
+**Use a registry when:** consumers need to own and adapt the code, you want updates to be a deliberate re-install rather than an automatic bump, or your components are thin enough that vendoring them beats a dependency. Most product teams are here, whether they admit it or not — the number of npm design system packages with a `// @ts-expect-error` and a wrapper component next to them is not small.
+
+**Use a monorepo package when** everything lives in one repo anyway. If your products already share a [Turborepo or Nx workspace](/blog/monorepo-turborepo-nx-react-nextjs-guide), an internal package is simpler than standing up a registry and you should not build one.
+
+The registry's real edge is the middle case: **separate repos, shared design language, consumers who need to adapt.** That's where npm packages have always been painful and copy-paste has always drifted.
+
+One caveat on ownership. "You own the code" cuts both ways — when you fix a bug in `@acme/button`, every project that installed it before the fix still has the old copy. There's no automatic propagation. You need a discipline for re-installs, and the honest version is that most teams don't have one. The [atomic design boundaries](/blog/from-components-to-systems-scalable-frontend-with-atomiec-design) you draw determine how bad this gets: small, stable primitives drift slowly; large composed blocks drift fast.
+
+## A weekend plan
+
+If you want to ship this:
+
+1. **Move your existing shared components into a `registry/` directory** in whatever repo owns them. No changes to the code itself.
+2. **Write `registry.json`.** Start with three components and their real `registryDependencies`. Run `shadcn registry validate` until it's clean.
+3. **`shadcn registry build`, then host the output.** Static files. A Worker, a Next.js route, an S3 bucket.
+4. **Add auth** if it's internal. One header check, env var on the consumer side.
+5. **Add a `registry:base` item** that pulls the whole system plus your tokens and fonts.
+6. **Write the skill.** Twenty lines of rules beats a hundred pages of docs, because the thing reading it is the thing writing your components.
+7. **Consume it from one real project** before you tell anyone it exists. Every registry has at least one broken `registryDependencies` path that only shows up on a clean install.
+
+Step 7 is not optional. Ask me how I know.
+
+## References
+
+### Sources
+
+- [shadcn/ui registry documentation](https://ui.shadcn.com/docs/registry) — `registry.json` schema, item types and the build/validate commands
+- [Registry namespaces](https://ui.shadcn.com/docs/registry/namespace) — the `@namespace/item` syntax and resolution rules
+- [Registry authentication](https://ui.shadcn.com/docs/registry/authentication) — auth headers and `${VAR}` environment expansion
+- [July 2026 — Base UI as the Default (changelog)](https://ui.shadcn.com/docs/changelog/2026-07-base-ui-default) — the switch, the migration skill, and confirmation Radix stays supported
+- [Comprehensive Guide to Migrate from Radix UI to Base UI (GitHub Discussion #10619)](https://github.com/shadcn-ui/ui/discussions/10619) — `asChild` → `render`, the `sideOffset` change, and the Floating UI porting work
+- [shadcn/ui MCP server](https://ui.shadcn.com/docs/mcp) — registry browsing and installation for agents
+- [components.json reference](https://ui.shadcn.com/docs/components-json) — the `registries` block used above
+
+### Further Reading
+
+- [Base UI documentation](https://base-ui.com/) — the primitive layer itself; worth reading the `render` prop docs before migrating anything
+- [shadcn/ui changelog](https://ui.shadcn.com/docs/changelog) — the only reliable way to track this project, which moves faster than its blog posts suggest
+- [Tailwind v4 theme configuration](https://tailwindcss.com/docs/theme) — how `cssVars` from a registry item land in a consuming project
+
+---
+
+~Seb 👊
