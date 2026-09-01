@@ -19,7 +19,6 @@ const SCRAMBLE_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ@#$%&*';
 export function ArticleHero({ title, excerpt, category, date, readTime, author, basePath = '' }: ArticleHeroProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
-  const [isRevealed, setIsRevealed] = useState(false);
   const [backText, setBackText] = useState('BLOG');
   const [isBackHovered, setIsBackHovered] = useState(false);
   const scrambleRef = useRef<NodeJS.Timeout | null>(null);
@@ -75,12 +74,6 @@ export function ArticleHero({ title, excerpt, category, date, readTime, author, 
     return () => window.removeEventListener('mousemove', handleMouseMove);
   }, []);
 
-  // Trigger reveal animation
-  useEffect(() => {
-    const timer = setTimeout(() => setIsRevealed(true), 100);
-    return () => clearTimeout(timer);
-  }, []);
-
   return (
     <section ref={containerRef} className="article-hero">
       {/* Animated background layers */}
@@ -126,7 +119,7 @@ export function ArticleHero({ title, excerpt, category, date, readTime, author, 
       {/* Content */}
       <div className="container relative z-10">
         {/* Top bar with back link and category */}
-        <div className={`article-hero-topbar ${isRevealed ? 'revealed' : ''}`}>
+        <div className="article-hero-topbar">
           {/* Back link - glitch style */}
           <Link
             href={`${basePath}/blog`}
@@ -162,8 +155,8 @@ export function ArticleHero({ title, excerpt, category, date, readTime, author, 
           {titleWords.map((word, index) => (
             <span key={index} className="article-hero-word-wrapper">
               <span
-                className={`article-hero-word ${isRevealed ? 'revealed' : ''}`}
-                style={{ transitionDelay: `${index * 50 + 200}ms` }}
+                className="article-hero-word"
+                style={{ animationDelay: `${index * 40}ms` }}
               >
                 {word}
               </span>
@@ -173,12 +166,12 @@ export function ArticleHero({ title, excerpt, category, date, readTime, author, 
         </h1>
 
         {/* Excerpt */}
-        <p className={`article-hero-excerpt ${isRevealed ? 'revealed' : ''}`}>
+        <p className="article-hero-excerpt">
           {excerpt}
         </p>
 
         {/* Meta information */}
-        <div className={`article-hero-meta ${isRevealed ? 'revealed' : ''}`}>
+        <div className="article-hero-meta">
           {author && (
             <Link href={`${basePath}/about`} className="article-hero-author">
               <div className="article-hero-author-avatar">

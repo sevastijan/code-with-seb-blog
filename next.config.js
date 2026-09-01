@@ -40,6 +40,32 @@ const nextConfig = {
   async redirects() {
     return polishRedirects();
   },
+  // Next's default for prerendered pages is `max-age=0, must-revalidate`, so a
+  // returning reader pays a full round trip for HTML it already has. Articles
+  // change rarely, so let the browser reuse them briefly and refresh in the
+  // background. An edit is picked up on the next navigation at the latest.
+  async headers() {
+    return [
+      {
+        source: '/',
+        headers: [
+          {
+            key: 'Cache-Control',
+            value: 'public, max-age=60, stale-while-revalidate=86400',
+          },
+        ],
+      },
+      {
+        source: '/blog/:path*',
+        headers: [
+          {
+            key: 'Cache-Control',
+            value: 'public, max-age=60, stale-while-revalidate=86400',
+          },
+        ],
+      },
+    ];
+  },
 };
 
 module.exports = nextConfig;

@@ -43,7 +43,7 @@ export default function HomePagePl() {
       <ScrollProgress />
 
       {/* Hero - Blog First */}
-      <section className="min-h-screen relative overflow-hidden">
+      <section className="min-h-screen supports-[height:100svh]:min-h-[100svh] relative overflow-hidden">
         {/* 3D </> symbol */}
         <HeroCodeSymbol />
 
@@ -51,7 +51,7 @@ export default function HomePagePl() {
         <div className="blob w-[600px] h-[600px] bg-[var(--c-accent)] top-0 right-0 opacity-10" />
 
         <div className="container pt-32 md:pt-40 pb-20 relative z-10">
-          <div className="max-w-4xl min-h-[70vh] flex flex-col justify-center">
+          <div className="max-w-4xl min-h-[70vh] supports-[height:100svh]:min-h-[70svh] flex flex-col justify-center">
             {/* Dark gradient backdrop for readability */}
             <div className="hero-text-backdrop" />
 
