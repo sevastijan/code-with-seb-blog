@@ -1,0 +1,235 @@
+---
+title: 'Scroll-Driven Animations: Why 85% Support Is Already Enough'
+date: '2026-08-28'
+category: 'Development'
+tags: ['css', 'animation', 'performance', 'frontend', 'core-web-vitals']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: 'I traced 1.5 seconds of LCP on this blog to a hero animation that started at opacity zero. Scroll-driven animations avoid that entire class of bug — if you author them in the right direction.'
+---
+
+Last week I found 1.5 seconds of Largest Contentful Paint hiding in a hero animation. The heading on every article page was authored at `opacity: 0`, waiting for React to hydrate and hand it a class that revealed it. The browser could not paint the largest text on the page because I had explicitly told it not to, and it had no way to know I only meant "for a moment."
+
+That bug is not really about React. It is about which state you treat as the default. Scroll-driven animations make that choice explicit, run off the main thread, and need no JavaScript at all — and at 85% support they are ready for production, provided you author them in the direction that degrades correctly.
+
+## What they actually are
+
+Two CSS properties replace an entire category of `IntersectionObserver` and scroll-listener code:
+
+- `animation-timeline: scroll()` drives an animation by a scroll container's position.
+- `animation-timeline: view()` drives it by an element's progress through the viewport.
+
+The keyframes are ordinary `@keyframes`. What changes is the clock: instead of time, the animation is driven by position. It belongs to the same shift as [everything else modern CSS took back from JavaScript](/blog/modern-css-2026-has-scope-container-queries-guide).
+
+A reading progress bar, with no JavaScript:
+
+```css
+@keyframes grow-progress {
+  from { transform: scaleX(0); }
+  to   { transform: scaleX(1); }
+}
+
+.reading-progress {
+  position: fixed;
+  inset-block-start: 0;
+  inset-inline: 0;
+  height: 3px;
+  background: var(--accent);
+  transform-origin: left center;
+
+  animation: grow-progress linear;
+  animation-timeline: scroll(root block);
+}
+```
+
+That is the whole feature. `scroll(root block)` means "the root scroller, block axis." No listener, no `requestAnimationFrame`, no cleanup on unmount.
+
+Compare it to what it replaces — a scroll handler that fires constantly, does layout reads, and competes with everything else on the main thread. The CSS version runs on the compositor, which is why it stays smooth while JavaScript is busy. That is a direct [Interaction to Next Paint](/blog/inp-interaction-to-next-paint-core-web-vital-guide) win, not just a code-size one.
+
+## The support situation, precisely
+
+You will see 82% quoted in a lot of places. caniuse currently reports **85.43% global support** for `animation-timeline`.
+
+| Engine | Status |
+| --- | --- |
+| Chrome / Edge | Supported |
+| Safari | Supported |
+| Firefox ≤ 156 | Not supported |
+| Firefox 157 | Supported |
+
+Firefox is the entire gap, and it is closing — scroll-driven animations are a [named Interop 2026 focus area](/blog/interop-2026-browser-features-safe-to-use), which is the browsers collectively committing to make this behave the same everywhere.
+
+But you should not be waiting for 100% anyway, because the correct authoring pattern makes the gap irrelevant.
+
+## The one rule
+
+**Author the finished state as your default. Layer motion on top.**
+
+A browser that does not understand `animation-timeline` ignores that declaration and runs your animation on the normal time-based clock instead — which, for a `linear` animation with no duration, effectively means it snaps to its end state. That is fine. What is not fine is when the end state is the only readable state and your default was the hidden one.
+
+Here is the inversion that cost me those 1.5 seconds, translated into CSS terms:
+
+```css
+/* Wrong. If the enhancement never applies, the content is invisible. */
+.card {
+  opacity: 0;
+  animation: reveal linear both;
+  animation-timeline: view();
+}
+```
+
+```css
+/* Right. Content is readable by default; motion is additive. */
+.card {
+  opacity: 1;
+}
+
+@supports (animation-timeline: view()) {
+  .card {
+    animation: reveal linear both;
+    animation-timeline: view();
+    animation-range: entry 0% entry 100%;
+  }
+}
+
+@keyframes reveal {
+  from { opacity: 0; transform: translateY(24px); }
+  to   { opacity: 1; transform: none; }
+}
+```
+
+The `@supports` guard is not strictly required in every case, but it makes the intent explicit and protects you when `animation-fill-mode: both` would otherwise pin an unsupported browser to the `from` state.
+
+### Never do this to your LCP element
+
+Worth stating separately because it is the expensive mistake: **do not put a reveal animation on the element that is your Largest Contentful Paint candidate.**
+
+Chrome does not consider an element with `opacity: 0` to be contentful. Any entry animation that starts from transparent delays your LCP by however long it takes to become visible. With a scroll-driven animation on above-the-fold content this is usually fine — the element is already inside the scrollport, so it starts partway through its range — but combine `animation-fill-mode: both` with `animation-range: entry` on a hero and you have rebuilt the exact bug in pure CSS.
+
+Hero content should be visible at first paint. Save the reveals for what is below the fold, where they are also the only place they make sense visually.
+
+## `view()` and ranges
+
+`view()` is the one you will use most. It tracks an element's own journey through the scrollport, and `animation-range` selects which part of that journey drives the animation.
+
+The named ranges:
+
+- `entry` — from the element first touching the viewport edge to fully entering
+- `exit` — from starting to leave to fully gone
+- `cover` — the entire time any part is visible
+- `contain` — while the element is fully contained in the viewport
+
+```css
+/* Fade in as it enters, and only during the first 40% of that entry. */
+.stat {
+  animation: reveal linear both;
+  animation-timeline: view();
+  animation-range: entry 0% entry 40%;
+}
+
+/* A parallax layer driven by the whole visible pass. */
+.parallax-layer {
+  animation: drift linear both;
+  animation-timeline: view();
+  animation-range: cover 0% cover 100%;
+}
+
+@keyframes drift {
+  from { transform: translateY(-8%); }
+  to   { transform: translateY(8%); }
+}
+```
+
+For a sticky image that animates while pinned, `contain` is the range you want — it starts when the element is fully in view and ends when it starts to leave.
+
+## Naming timelines across the tree
+
+`scroll()` and `view()` are anonymous — they attach to the nearest applicable scroller or the element itself. When you need one element's scroll position to drive an animation on a different element, name the timeline:
+
+```css
+.gallery {
+  overflow-x: auto;
+  scroll-timeline: --gallery-scroll x;
+}
+
+.gallery-indicator {
+  animation: grow-progress linear;
+  animation-timeline: --gallery-scroll;
+}
+```
+
+If the two elements are not siblings or descendants, `timeline-scope` lifts the name to a common ancestor:
+
+```css
+.section {
+  timeline-scope: --gallery-scroll;
+}
+```
+
+This is the part that most tutorials skip, and it is where people conclude the feature "does not work" — the timeline name simply was not in scope.
+
+## Respect reduced motion
+
+Scroll-linked motion is a common migraine and nausea trigger. This is not optional politeness.
+
+```css
+@media (prefers-reduced-motion: reduce) {
+  .card,
+  .parallax-layer {
+    animation: none;
+  }
+}
+```
+
+Because your default state is the finished state, `animation: none` leaves the content perfectly readable. That is the pattern paying you back a second time — the accessible path and the unsupported-browser path are the same path.
+
+## Debugging
+
+Chrome DevTools has a dedicated **Animations** panel that shows scroll-driven timelines and lets you scrub them, which is far more useful than scrolling repeatedly and squinting.
+
+The three failures I hit most:
+
+**Nothing happens at all.** Usually the scroller is not what you think. `scroll()` walks up to the nearest ancestor that actually scrolls. If your layout scrolls a wrapper `div` rather than the document, `scroll(root)` finds nothing. Be explicit about the axis too — `scroll(root block)` rather than bare `scroll()`.
+
+**The animation is stuck at its end state.** The timeline name is out of scope, so the animation falls back to a time-based clock and finishes immediately. Check `timeline-scope`.
+
+**It works but jitters.** You are animating a property that triggers layout. Scroll-driven animations only stay on the compositor for `transform`, `opacity` and `filter`. Animating `height` or `top` drops you back onto the main thread and undoes the reason you used this feature.
+
+## When you still need JavaScript
+
+Scroll-driven CSS replaces most scroll animation, not all of it. Reach for JavaScript when you need to:
+
+- fire a one-time side effect at a threshold, such as analytics or lazy initialisation — that is `IntersectionObserver`, and it always was
+- animate something that is not a CSS property, like canvas or WebGL state
+- coordinate motion across independent scroll containers with custom easing between them
+
+For anything that is "move, fade or scale this element as the page scrolls," CSS now wins on performance, code size and correctness under load.
+
+## What I would do on an existing codebase
+
+1. Find every scroll listener that only sets `transform` or `opacity`. Those are pure deletions.
+2. Check whether any of them touch content above the fold. If they set a starting state of `opacity: 0`, that is an LCP bug regardless of whether you migrate — fix it first.
+3. Rewrite the remainder as `view()` animations with the finished state as the CSS default.
+4. Add the `prefers-reduced-motion` block once, covering all of them.
+5. Measure LCP and INP before and after, against [a performance budget you agreed on in advance](/blog/performance-budgets-frontend-engineers-guide). The INP improvement comes from removing main-thread work; the LCP improvement comes from step 2, and it is usually the bigger number.
+
+That ordering matters. The performance win people expect from this feature comes from deleting scroll handlers, but the win I actually measured came from fixing which state was the default. You get that one even if you never write `animation-timeline` at all.
+
+## References
+
+### Sources
+
+- [Can I use: animation-timeline](https://caniuse.com/mdn-css_properties_animation-timeline) - the 85.43% global figure and the Firefox 157 cutover
+- [Interop 2026: Continuing to improve the web for developers](https://web.dev/blog/interop-2026) - confirmation that scroll-driven animations are a named 2026 focus area
+- [MDN: animation-timeline](https://developer.mozilla.org/en-US/docs/Web/CSS/animation-timeline) - the `scroll()` and `view()` syntax and named timeline behaviour
+- [MDN: animation-range](https://developer.mozilla.org/en-US/docs/Web/CSS/animation-range) - the `entry`, `exit`, `cover` and `contain` range definitions
+
+### Further Reading
+
+- [Scroll-driven Animations demos](https://scroll-driven-animations.style) - Bramus Van Damme's collection, the fastest way to build intuition for what ranges do
+- [MDN: prefers-reduced-motion](https://developer.mozilla.org/en-US/docs/Web/CSS/@media/prefers-reduced-motion) - the accessibility side, worth reading properly rather than copying a snippet
+
+---
+
+~Seb 👊

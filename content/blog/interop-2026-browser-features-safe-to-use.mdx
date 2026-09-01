@@ -1,0 +1,188 @@
+---
+title: 'Interop 2026: What Browsers Agreed to Fix, and What You Can Ship Now'
+date: '2026-08-26'
+category: 'Development'
+tags: ['css', 'web-platform', 'browsers', 'baseline', 'frontend']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: 'Half the posts about Interop 2026 claim features shipped everywhere in a single quarter. They did not. Here is the real focus list, the verified support numbers, and which ones I would actually put in production today.'
+---
+
+I went looking for a straight answer on what Interop 2026 covers and found an article confidently claiming the browsers "shipped cross-document View Transitions, popover anchor positioning and a usable WebGPU baseline to all major browsers inside a single calendar quarter."
+
+That is wrong in an instructive way. WebGPU is not an Interop 2026 focus area at all. And a focus area is not a shipped feature — it is a commitment to make an already-specified feature behave the same everywhere, measured by Web Platform Tests pass rates over the year.
+
+Confusing those two is how you end up shipping `anchor-name` with no fallback and breaking Safari for a chunk of your users. So here is the actual list, with support numbers I checked rather than repeated.
+
+## What Interop actually is
+
+Interop is a yearly agreement between the people who build browsers — Apple, Google, Igalia, Microsoft and Mozilla — on which parts of the web platform they will make behave identically. Interop 2026 was announced on 12 February 2026.
+
+The unit of progress is the Web Platform Tests pass rate, not a release note. When a feature enters a focus area, it means every participating vendor has agreed to drive their score on that test suite up over the year. Some features start the year already widely shipped and just behave inconsistently at the edges. Others are genuinely new in one or more engines.
+
+If you have been tracking [what modern CSS already replaced in your JavaScript](/blog/modern-css-2026-has-scope-container-queries-guide), Interop is the mechanism that turns those wins from Chrome-only tricks into cross-browser guarantees.
+
+**This is the mental model that matters:** Interop tells you where the rough edges are being sanded down. [Baseline](https://web.dev/baseline) and caniuse tell you whether you can ship. They answer different questions, and the SEO posts collapse them into one.
+
+## The 2026 list
+
+Nineteen focus areas, plus three cleanup areas and four investigation areas.
+
+**HTML**
+
+- Dialogs and popovers — `<dialog closedby>`, the `:open` pseudo-class, `popover="hint"`
+
+**CSS (eleven)**
+
+- Anchor positioning (carried over from 2025)
+- View transitions (carried over from 2025, now expanded to cross-document) — the [same-document API is already shippable](/blog/view-transitions-api-native-page-animations-guide)
+- CSS `zoom` (carried over from 2025)
+- Advanced `attr()` — returning attribute values as typed values, not just strings
+- Container style queries
+- `contrast-color()` — picking a foreground with guaranteed contrast
+- Custom highlights — styling arbitrary text ranges without wrapper elements
+- Media pseudo-classes — `:playing`, `:paused`, `:seeking`, `:buffering`, `:stalled`, `:muted`, `:volume-locked`. These are the primitives behind [a video player with no JavaScript at all](/blog/css-media-pseudo-classes-zero-js-video-player)
+- Scroll-driven animations — `animation-timeline`, `scroll-timeline`, `view-timeline`
+- Scroll snap
+- `shape()` — a readable basic-shape function for `clip-path` and `shape-outside`
+
+**JavaScript and Web APIs (seven)**
+
+- Fetch uploads and ranges — `ReadableStream` bodies, `FormData`, `Range` headers
+- IndexedDB — `getAllRecords()` for batch reads
+- JSPI for Wasm — JavaScript Promise Integration
+- Navigation API, including the `precommitHandler` option
+- Scoped custom element registries
+- WebRTC
+- WebTransport
+
+**Web compatibility (three)**
+
+- ESM module loading
+- Timing of scroll events relative to animation events
+- Unprefixing `-webkit-user-select`
+
+**Investigation areas (four):** accessibility testing, JPEG XL, mobile testing, WebVTT. The accessibility item matters more than its low profile suggests, given [the compliance deadlines already in force](/blog/web-accessibility-2026-eaa-ada-wcag-guide). These have no pass-rate target — they are areas where the vendors do not yet agree on how to even measure conformance.
+
+## The support numbers, verified
+
+Focus areas tell you nothing about shipping. Here is what caniuse actually says for the ones you are most likely to reach for.
+
+| Feature | Global support | The catch |
+| --- | --- | --- |
+| `<dialog>` | 96.11% | Effectively safe. Chrome 37+, Firefox 98+, Safari 15.4+ |
+| Container style queries | 90.15% | Only Firefox 151+ is *full*; Chrome, Safari, Edge are partial |
+| Navigation API | 88.72% | Safari 26.2+, Firefox 147+ — both very recent |
+| Scroll-driven animations | 85.43% | Firefox ships in 157; 156 and earlier have nothing |
+| Anchor positioning | 84.12% | Chrome 125+, Safari 26+, Firefox 147+ |
+
+Two things jump out of that table.
+
+**Container style queries invert the usual pattern.** Firefox is the only engine with complete support; Chrome and Safari are partial. If your mental model is "Chrome ships first, Firefox lags," this is the case that breaks it — and it is exactly the kind of inconsistency Interop exists to fix.
+
+**Everything interesting landed in Safari 26 and Firefox 147+.** Anchor positioning, the Navigation API and scroll-driven animations all depend on browser versions released within roughly the last year. The headline percentages look comfortable, but they are carried by users who update aggressively. Check your own analytics before trusting an 85% that assumes everyone is on the newest Safari.
+
+## What I would ship today
+
+**Ship without hesitation:** `<dialog>`. At 96% it is past the point where a polyfill earns its bytes for most projects.
+
+**Ship with a fallback:** anchor positioning. At 84% with every major engine supporting it, this is the sweet spot for progressive enhancement — the feature is real, the holdouts are old versions, and the fallback is a positioned element rather than a broken layout.
+
+```css
+/* Baseline: the tooltip works, just positioned conventionally. */
+.tooltip {
+  position: absolute;
+  top: 100%;
+  left: 0;
+}
+
+/* Enhancement: anchored, with real collision handling. */
+@supports (anchor-name: --trigger) {
+  .trigger {
+    anchor-name: --trigger;
+  }
+
+  .tooltip {
+    position: fixed;
+    position-anchor: --trigger;
+    position-area: block-end span-inline-end;
+    position-try-fallbacks: flip-block, flip-inline;
+    top: auto;
+    left: auto;
+  }
+}
+```
+
+The `@supports` guard is doing real work here: it keeps the conventional positioning intact for the 16% who would otherwise get an element pinned to the wrong corner.
+
+**Ship carefully:** container style queries. The percentage is high but the partial implementations differ in *which* properties are queryable, so test the specific query you need rather than trusting the headline number.
+
+**Wait, or enhance only:** scroll-driven animations. Firefox 157 closes the gap, but until your Firefox users have rolled forward you are authoring for two behaviours. That is fine — the correct pattern makes it fine — but it is not a drop-in. I go into the pattern in depth in [the progressive enhancement approach to scroll-driven animations](/blog/scroll-driven-animations-progressive-enhancement-guide).
+
+## The pattern that makes all of this safe
+
+There is one rule that covers nearly every feature on the Interop list:
+
+**Author the finished state as your default, then layer the enhancement on top.**
+
+A browser that does not understand `animation-timeline` ignores the declaration entirely. That is only safe if your content already looks correct with the enhancement stripped out. The failure mode is authoring the *starting* state as the default — `opacity: 0`, waiting for something to reveal it — because then an unsupported browser shows nothing at all.
+
+```css
+/* Wrong: content is invisible if the enhancement never applies. */
+.card {
+  opacity: 0;
+  animation: reveal linear both;
+  animation-timeline: view();
+}
+
+/* Right: content is visible by default, motion is additive. */
+.card {
+  opacity: 1;
+}
+
+@supports (animation-timeline: view()) {
+  .card {
+    animation: reveal linear both;
+    animation-timeline: view();
+  }
+}
+```
+
+This is not a hypothetical. I recently traced 1.5 seconds of Largest Contentful Paint on this blog to exactly this inversion — a heading authored at `opacity: 0` that waited for JavaScript to reveal it. The browser cannot paint what you have hidden, and it does not care why you hid it.
+
+The same instinct applies to `contrast-color()`, `shape()` and `attr()`: declare a working value, then let the new function override it where supported.
+
+## How to check for yourself
+
+Three sources, in the order I trust them:
+
+1. **caniuse** for the raw numbers and per-version detail. Fetch the actual page rather than trusting a blog's summary of it — this is where the SEO posts diverge from reality.
+2. **The Interop dashboard** for the direction of travel. A low score climbing fast means "safe soon"; a low flat score means "not this year."
+3. **`@supports` in the browser** for the thing you specifically need, because partial implementations are common and the headline percentage hides them.
+
+What I would not do is trust a percentage quoted in an article without a link to its source. The 82% figure for scroll-driven animations is circulating widely; caniuse says 85.43%. Small gap, same lesson.
+
+## The takeaway
+
+Interop 2026 is a commitment to consistency, not a release announcement. Nineteen focus areas mean nineteen places where cross-browser behaviour is being actively hammered flat over the year — which is genuinely great, and completely separate from whether you can ship the feature next Tuesday.
+
+Look up the number yourself, put the working state in the default, and put the new thing behind `@supports`. That is the whole discipline, and it survives every future Interop list too.
+
+## References
+
+### Sources
+
+- [Interop 2026: Continuing to improve the web for developers](https://web.dev/blog/interop-2026) - the complete focus area list with descriptions of what each covers
+- [Interop 2026 Focus Areas Announced — Igalia](https://www.igalia.com/news/interop-2026.html) - the grouping by specification area and the count of cleanup and investigation areas
+- [Announcing Interop 2026 — WebKit](https://webkit.org/blog/17818/announcing-interop-2026/) - Apple's framing of the effort and the participating organisations
+- [Can I use](https://caniuse.com) - every support percentage in this article, checked individually rather than quoted secondhand
+
+### Further Reading
+
+- [Launching Interop 2026 — Mozilla Hacks](https://hacks.mozilla.org/2026/02/launching-interop-2026/) - the proposal and selection process, useful if you want to understand why a feature did or did not make the list
+- [Baseline on web.dev](https://web.dev/baseline) - the framework for deciding when a feature is safe, and how it differs from what Interop measures
+
+---
+
+~Seb 👊

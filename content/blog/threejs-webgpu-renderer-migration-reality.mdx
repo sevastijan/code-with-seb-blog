@@ -1,0 +1,303 @@
+---
+title: 'Three.js on WebGPU: The One-Line Migration That Isn''t'
+date: '2026-08-24'
+category: 'Development'
+tags: ['threejs', 'webgpu', 'graphics', 'performance', 'webgl']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: 'Every migration guide tells you to swap WebGLRenderer for WebGPURenderer and you are done. Then you discover ShaderMaterial does not work at all. Here is what the three.js WebGPU migration actually costs.'
+---
+
+Every guide says the same thing: swap `WebGLRenderer` for `WebGPURenderer`, three.js handles the rest, enjoy your 30% frame time. I believed it for about forty minutes — which is how long it took to discover that `ShaderMaterial` is not supported on the WebGPU renderer. At all. Not deprecated, not partially working. Unsupported.
+
+If your scene is a spinning cube with `MeshStandardMaterial`, the one-line migration is real. If your scene is anything you actually shipped, the three.js WebGPU migration is a rewrite of your material and post-processing layers, and you should budget for it honestly.
+
+## What is actually true
+
+Let me separate the marketing from the docs, because a lot of what is being written about WebGPU in 2026 is wrong.
+
+**WebGLRenderer is still the default.** The three.js documentation describes `WebGPURenderer` as "the new alternative" to `WebGLRenderer`. There is no version where three.js silently switched your renderer. `WebGLRenderer` remains maintained and is still the recommended choice for pure WebGL 2 applications — though the project has said it is not adding larger new features to it, since the focus is now on `WebGPURenderer`.
+
+**The renderer picks its own backend.** This is the part people garble into "three.js ships WebGPU by default." What is true is narrower:
+
+> By default, the renderer tries to use a WebGPU backend if the browser supports WebGPU. If not, `WebGPURenderer` falls back to a WebGL 2 backend.
+
+That fallback is genuinely good news, and it is why adopting `WebGPURenderer` is not a browser-support gamble. It is a codebase gamble.
+
+**The status is "experimental but improving."** That is the docs' own wording, not mine.
+
+## The browser numbers nobody quotes correctly
+
+I keep seeing "WebGPU hit Baseline in every major browser." It did not.
+
+Per caniuse, WebGPU sits at roughly **85% global support**, and the composition matters more than the headline:
+
+| Browser | Status |
+| --- | --- |
+| Chrome / Edge | Supported since 113 |
+| Opera | Supported since 99 |
+| Safari iOS | Supported since 26.0 |
+| Safari macOS | Partial support, 26.0+ |
+| Samsung Internet | Supported since 24 |
+| **Firefox** | **Disabled by default** |
+
+Firefox being off by default is the detail that gets rounded away, and it is the one that decides your testing matrix. Roughly one in seven of your users will be running the WebGL 2 fallback path, so that path is not a nicety you can leave untested — it is a first-class code path.
+
+The practical consequence: you are now maintaining **two backends** through one API. Anything that behaves differently between WebGPU and WebGL 2 is a bug you will only see on some machines.
+
+## Breakage 1: ShaderMaterial does not exist here
+
+This is the big one, and it is why "one line" is a lie for any non-trivial project.
+
+The official comparison is blunt: custom `ShaderMaterial` is **not supported** on `WebGPURenderer`. Node materials are **required**.
+
+So this, the backbone of most custom three.js work:
+
+```javascript
+const material = new THREE.ShaderMaterial({
+  uniforms: {
+    uTime: { value: 0 },
+    uColor: { value: new THREE.Color(0xff3d00) },
+  },
+  vertexShader: `
+    uniform float uTime;
+    varying vec2 vUv;
+
+    void main() {
+      vUv = uv;
+      vec3 pos = position;
+      pos.y += sin(pos.x * 4.0 + uTime) * 0.2;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
+    }
+  `,
+  fragmentShader: `
+    uniform vec3 uColor;
+    varying vec2 vUv;
+
+    void main() {
+      gl_FragColor = vec4(uColor * vUv.y, 1.0);
+    }
+  `,
+});
+```
+
+becomes this — a different language, a different mental model:
+
+```javascript
+import * as THREE from 'three/webgpu';
+import { uniform, vec3, vec4, positionLocal, uv, sin, time } from 'three/tsl';
+
+const uColor = uniform(new THREE.Color(0xff3d00));
+
+const material = new THREE.MeshBasicNodeMaterial();
+
+// Vertex displacement, expressed as a node graph rather than GLSL.
+const displaced = positionLocal.toVar();
+displaced.y.addAssign(sin(displaced.x.mul(4).add(time)).mul(0.2));
+material.positionNode = displaced;
+
+// Fragment output.
+material.colorNode = vec4(uColor.mul(uv().y), 1);
+```
+
+TSL — the three.js shading language — is JavaScript that transpiles to WGSL or GLSL depending on the active backend. That platform independence is the entire point, and it is what makes the WebGL 2 fallback work at all.
+
+It is also a real rewrite. GLSL knowledge transfers conceptually but not syntactically. Everything that made your shader clever — a hand-tuned noise function, a packing trick, a `#define` branch — needs rethinking as a node graph. Developers who have ported non-trivial scenes describe it taking weeks to months, and the node system frequently has no one-to-one replacement for a given WebGL feature; it takes a different path instead.
+
+Budget for that. Do not budget for a line.
+
+### The uniform update loop changes too
+
+A detail that bites during the port: TSL uniforms are objects you mutate directly, not entries in a `uniforms` dictionary.
+
+```javascript
+// WebGLRenderer / ShaderMaterial
+material.uniforms.uTime.value = clock.getElapsedTime();
+
+// WebGPURenderer / TSL
+uTime.value = clock.getElapsedTime();
+```
+
+The built-in `time` node from `three/tsl` removes the need for a manual clock uniform in most cases, which is genuinely nicer once you stop fighting it.
+
+## Breakage 2: EffectComposer is gone
+
+If you use post-processing, this is your second rewrite.
+
+`EffectComposer` and its passes do not run on `WebGPURenderer`. The replacement is a node-based `PostProcessing` stack where effects are TSL compositions rather than render passes.
+
+The old setup:
+
+```javascript
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+composer.addPass(
+  new UnrealBloomPass(new THREE.Vector2(width, height), 1.5, 0.4, 0.85)
+);
+
+function animate() {
+  requestAnimationFrame(animate);
+  composer.render();
+}
+```
+
+The node-based equivalent:
+
+```javascript
+import * as THREE from 'three/webgpu';
+import { pass } from 'three/tsl';
+import { bloom } from 'three/addons/tsl/display/BloomNode.js';
+
+const postProcessing = new THREE.PostProcessing(renderer);
+
+const scenePass = pass(scene, camera);
+const bloomPass = bloom(scenePass, 1.5, 0.4, 0.85);
+
+// Composition is arithmetic on nodes, not an ordered list of passes.
+postProcessing.outputNode = scenePass.add(bloomPass);
+
+renderer.setAnimationLoop(() => {
+  postProcessing.renderAsync();
+});
+```
+
+The conceptual shift is worth naming: passes were an ordered pipeline, nodes are an expression graph. Combining effects becomes composition rather than sequencing, and multiple render targets are supported natively.
+
+The docs state all common effects have been ported, and the node stack adds effects with no `EffectComposer` equivalent at all — SSGI, subsurface scattering, and a better depth of field. That is a real upside. It is still a rewrite of every custom pass you wrote yourself.
+
+## Breakage 3: initialization is asynchronous
+
+WebGPU device acquisition is async, and this changes your bootstrap in a way that is easy to miss because it fails intermittently.
+
+If you use `setAnimationLoop`, three.js handles initialization on the first frame and you can ignore this:
+
+```javascript
+const renderer = new THREE.WebGPURenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setAnimationLoop(render); // init handled for you
+document.body.appendChild(renderer.domElement);
+```
+
+If you drive your own loop with `requestAnimationFrame`, or you touch the renderer during setup — computing a render target, warming a texture, reading capabilities — you must await initialization first:
+
+```javascript
+const renderer = new THREE.WebGPURenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+document.body.appendChild(renderer.domElement);
+
+await renderer.init();
+
+// Only now is it safe to use the renderer in your own init routine.
+function animate() {
+  requestAnimationFrame(animate);
+  renderer.render(scene, camera);
+}
+animate();
+```
+
+Skipping `await renderer.init()` produces the worst class of bug: it works on your fast machine where the device resolves before the first frame, and fails on slower hardware. If you are migrating a React or Next.js scene, this interacts badly with effect cleanup — an unmounted component can resolve `init()` after teardown, so guard it.
+
+## Breakage 4: the third-party ecosystem
+
+Many popular three.js utilities reach into `WebGLRenderer` internals. Those break the moment WebGPU is in charge, and they break in ways that are hard to attribute because the error surfaces deep in someone else's code.
+
+Before committing to the migration, audit every dependency that touches the renderer, not just the ones that obviously render. Anything doing custom passes, readback, render target juggling, or material patching is suspect.
+
+## What you actually gain
+
+Having spent this long on the costs, the benefits are real and worth stating precisely.
+
+**Frame time on dense scenes.** Reported gains land in the 30–50% range on draw-call-heavy content, driven mostly by lower CPU overhead in command submission. Scenes bottlenecked on fragment shading or fill rate see much less. If you do not know which one you are, measure before you migrate — this is the single most common way teams spend months for nothing.
+
+**Compute shaders.** This is the capability that has no WebGL 2 equivalent and the best reason to migrate. Particle simulation, physics, culling, and image processing move to the GPU instead of burning main-thread JavaScript — the same motivation behind [pushing heavy compute into WebAssembly](/blog/webassembly-practical-guide-when-javascript-isnt-enough), applied to work that is already parallel:
+
+```javascript
+import { Fn, instanceIndex, storage } from 'three/tsl';
+
+const positions = new THREE.StorageBufferAttribute(count, 3);
+
+const updateParticles = Fn(() => {
+  const position = storage(positions, 'vec3', count).element(instanceIndex);
+  position.addAssign(vec3(0, -0.01, 0));
+})().compute(count);
+
+renderer.computeAsync(updateParticles);
+```
+
+Note the honest catch: compute has no WebGL 2 fallback. Anything you build on it needs a separate path for the roughly 15% of users who will not get WebGPU, Firefox users very much included.
+
+## The migration strategy I would actually use
+
+Do not do a big-bang port.
+
+1. **Measure first.** Profile whether you are CPU-bound on draw calls. If you are not, the migration will not give you the number you are hoping for.
+2. **Move to node materials while still on WebGL.** Node materials have limited support planned for `WebGLRenderer`, and doing this step first decouples the material rewrite from the renderer swap. This is the single highest-leverage sequencing decision.
+3. **Swap the renderer with `forceWebGL: true`.** This runs `WebGPURenderer` against its WebGL 2 backend, so you validate the API surface without changing the graphics backend underneath you:
+
+```javascript
+const renderer = new THREE.WebGPURenderer({
+  antialias: true,
+  forceWebGL: true, // Same renderer API, familiar backend.
+});
+```
+
+4. **Port post-processing.** Expect this to take longer than the material work if you wrote custom passes.
+5. **Flip `forceWebGL` off** and start testing the actual WebGPU path.
+6. **Test the fallback deliberately.** Firefox is your fallback test environment for free.
+
+Steps 2 and 3 are what turn an all-or-nothing rewrite into something you can ship incrementally.
+
+## Debugging across two backends
+
+The failure mode that will cost you the most time is a scene that renders correctly on one backend and wrongly on the other. A few things that helped me:
+
+```javascript
+// Which backend actually got selected?
+console.log(renderer.backend.isWebGPUBackend ? 'webgpu' : 'webgl2');
+
+// Inspect generated shader code when output looks wrong.
+console.log(material.fragmentNode?.build?.());
+```
+
+Watch for leaked resources while you are in here too — the disposal rules differ between backends, and the symptoms look exactly like [the memory leaks that plague long-lived React scenes](/blog/debugging-memory-leaks-react-nextjs-guide). Force each backend explicitly and compare screenshots rather than trusting your memory of what the scene looked like. Chrome's `chrome://gpu` tells you whether WebGPU is genuinely active or silently unavailable, which is the first thing to check when "nothing changed" after migrating.
+
+## When not to migrate
+
+Skip it, for now, if any of these hold:
+
+- Your scene is fragment-bound rather than draw-call-bound.
+- You lean heavily on custom `ShaderMaterial` and the visual result is already what you want.
+- You depend on third-party libraries that patch `WebGLRenderer`.
+- You ship to an audience with meaningful Firefox share and cannot afford to maintain two visual paths.
+- Your bottleneck is asset loading or main-thread JavaScript, which is more common than people admit. [Getting the bundle under control](/blog/dynamic-bundle-optimization-under-200kb-guide) usually moves the number further than a renderer swap. A 3D hero section that costs two seconds of LCP does not get faster because you changed renderer — the fix there is [a performance budget](/blog/performance-budgets-frontend-engineers-guide) and smaller assets, not a new graphics API.
+
+## The honest summary
+
+`WebGPURenderer` is where three.js is going, the automatic WebGL 2 fallback makes adoption safe from a browser-support perspective, and compute shaders are a genuine new capability rather than an incremental win.
+
+But the migration is not a line of code. It is a material system rewrite, a post-processing rewrite, an async bootstrap change, and a dependency audit. Sequence it — node materials first, `forceWebGL` second, WebGPU last — and it becomes a series of shippable steps instead of a branch that rots for three months.
+
+Start by profiling. If you are not CPU-bound on draw calls, close the migration guide and go optimize something that is actually your bottleneck.
+
+## References
+
+### Sources
+
+- [WebGPURenderer – three.js docs](https://threejs.org/docs/pages/WebGPURenderer.html) - the "new alternative" framing, backend selection, and the `forceWebGL` option
+- [Three.js WebGPURenderer manual](https://threejs.org/manual/en/webgpurenderer.html) - import specifiers, `await renderer.init()` guidance, and the feature comparison confirming `ShaderMaterial` and `EffectComposer` are unsupported
+- [Can I use: WebGPU](https://caniuse.com/webgpu) - the ~85% global support figure and Firefox being disabled by default
+- [three.js webgpu postprocessing bloom example](https://threejs.org/examples/webgpu_postprocessing_bloom.html) - reference for the node-based `PostProcessing` stack
+
+### Further Reading
+
+- [Is there a migration guide on WebGLRenderer to WebGPURenderer?](https://discourse.threejs.org/t/is-there-a-migration-guide-on-webglrenderer-to-webgpurenderer/69005) - the three.js forum thread where maintainers and users discuss real migration experiences
+- [WebGPU is now supported in major browsers](https://web.dev/blog/webgpu-supported-major-browsers) - background on the rollout, useful for understanding what the fallback path is actually covering
+
+---
+
+~Seb 👊

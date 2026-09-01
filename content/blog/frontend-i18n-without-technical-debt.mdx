@@ -1,0 +1,200 @@
+---
+title: 'Frontend i18n Debt: I Shipped 126 Translations, Then Redirected Them Away'
+date: '2026-08-30'
+category: 'Architecture'
+tags: ['i18n', 'nextjs', 'architecture', 'seo', 'content']
+draft: false
+featured: false
+author: 'Sebastian'
+excerpt: 'Adding a second locale to a Next.js blog took an afternoon. Removing it took 135 permanent redirects and a lesson about which half of i18n is actually hard.'
+---
+
+There are 126 Polish translations sitting in this repository right now that nobody can read. Every `/pl` URL returns a redirect to its English original. Three megabytes of content, translated, reviewed, deployed — and switched off.
+
+The routing worked perfectly the entire time. That was never the problem. The problem is that i18n is a content pipeline dressed up as a routing feature, and I only found that out after I had 126 files that needed maintaining.
+
+## The part everyone writes tutorials about
+
+Locale routing in the App Router is genuinely straightforward. The built-in `i18n` config from the Pages Router is gone; you compose it from a dynamic segment, a proxy, and Server Components.
+
+```
+app/
+  [locale]/
+    layout.tsx
+    page.tsx
+    blog/
+      [slug]/
+        page.tsx
+```
+
+The proxy detects a locale and rewrites, translations load in Server Components so they add zero bytes to the client bundle, and `next-intl` handles the plumbing in about two kilobytes. Every guide you will find covers this, they all agree, and they are all correct.
+
+You can have this working before lunch. That is exactly what makes it dangerous — the easy part is front-loaded and the expensive part shows up six months later.
+
+## The part that actually costs you
+
+Here is what my setup looked like once it was real.
+
+Every Polish article carried a frontmatter field pointing at its English counterpart:
+
+```yaml
+---
+title: 'Abstrakcja w programowaniu: praktyczny przewodnik'
+enSlug: 'abstraction-in-programming-a-practical-guide'
+---
+```
+
+That field existed because **slugs do not translate**. `abstraction-in-programming-a-practical-guide` and `abstrakcja-w-programowaniu-praktyczny-przewodnik` have no algorithmic relationship. If you want a language switcher that lands on the *same article* rather than dumping the reader on a listing page, something has to hold that mapping.
+
+So I built the mapping:
+
+```typescript
+export function getBlogSlugMap(): { enToPl: Record<string, string>; plToEn: Record<string, string> } {
+  const enToPl: Record<string, string> = {};
+  const plToEn: Record<string, string> = {};
+
+  for (const plSlug of getPostSlugs('pl')) {
+    const post = getPostBySlug(plSlug, 'pl');
+    const en = post?.enSlug;
+    if (en) {
+      enToPl[en] = plSlug;
+      plToEn[plSlug] = en;
+    }
+  }
+
+  return { enToPl, plToEn };
+}
+```
+
+And then I made the mistake that is the actual subject of this article. I called it here:
+
+```tsx
+export default function RootLayout({ children }: { children: React.ReactNode }) {
+  const blogSlugMap = getBlogSlugMap();   // reads and parses 126 files
+  return (
+    <html>
+      <body>
+        <Header blogSlugMap={blogSlugMap} />
+        {children}
+      </body>
+    </html>
+  );
+}
+```
+
+The root layout. Which means every single page in the application — the contact form, the services pages, all 185 English articles — reads 126 files off disk and runs them through a frontmatter parser, so that a language switcher in the header can offer one link.
+
+**The lesson generalises past i18n:** anything you put in the root layout runs for every route. A translation map is exactly the kind of cross-cutting data that feels like it belongs there and absolutely does not. Build it once, cache it, or scope it to the routes that need it.
+
+## Why the translations rotted
+
+The technical debt was not the map. It was the drift.
+
+An English article gets a correction. A code sample gets updated for a new API version. A link rots and gets replaced. Now the Polish version is subtly wrong, and nothing in the system knows.
+
+This is a content modelling failure, and it is the reason [typed content layers](/blog/astro-content-layer-type-safe-content-guide) exist. There is no type error for "this translation is four months behind its source." The build passes. The page renders. A reader gets outdated code and no indication that a fresher version exists one language away.
+
+Multiply by 126 articles, several of them covering fast-moving tooling where a six-month-old claim is actively misleading, and you do not have a localisation feature — you have a second blog that you are not maintaining.
+
+That is the calculation nobody puts in the tutorials: **each locale multiplies your editorial workload by the number of locales, forever.** Not your routing complexity. Your editorial workload. Translation is the cheap part; keeping translations true is the expensive part, and it never ends.
+
+## What removing it cost
+
+Turning the locale off is not deleting a folder. Every one of those URLs was indexed, linked and shared, and returning 404s for them is how you throw away accumulated authority — including the [authority that increasingly feeds AI answer engines](/blog/generative-engine-optimization-developer-playbook).
+
+So `next.config.js` now generates a redirect for every translated article:
+
+```javascript
+function polishRedirects() {
+  const redirects = [];
+  const plDir = path.join(__dirname, 'content', 'blog', 'pl');
+
+  for (const file of fs.readdirSync(plDir)) {
+    if (!file.endsWith('.mdx') && !file.endsWith('.md')) continue;
+    const raw = fs.readFileSync(path.join(plDir, file), 'utf8');
+    const match = raw.match(/^enSlug:\s*['"]?([^'"\n]+)['"]?\s*$/m);
+    if (!match) continue;
+
+    redirects.push({
+      source: `/pl/blog/${file.replace(/\.(md|mdx)$/, '')}`,
+      destination: `/blog/${match[1].trim()}`,
+      permanent: false,
+    });
+  }
+
+  // Static pages map one-to-one; everything else falls back to the homepage.
+  for (const p of ['/blog', '/about', '/contact', '/work', '/services']) {
+    redirects.push({ source: `/pl${p}`, destination: p, permanent: false });
+  }
+  redirects.push({ source: '/pl/:path*', destination: '/', permanent: false });
+
+  return redirects;
+}
+```
+
+That produces **135 redirect rules**, evaluated in the routing layer on every request to the site. Note `permanent: false` — a 307 rather than a 301, deliberately, because a permanent redirect is aggressively cached by browsers and would make restoring the locale genuinely painful. If you are switching a locale off and there is any chance you bring it back, do not use 301.
+
+The `enSlug` field is now load-bearing for something it was never designed for: it is the only record of which Polish URL corresponded to which English article. Delete the `pl` folder and the redirects vanish with it.
+
+## What I would do differently
+
+**Use stable IDs, not slug mappings.** The `enSlug` approach couples every translation to its source article's URL. Rename an English slug and the mapping silently breaks. A stable `contentId` in frontmatter that never changes, with slugs derived per locale, decouples the two entirely — and it survives the article being renamed in either language.
+
+```yaml
+---
+contentId: 'abstraction-practical-guide'
+locale: 'pl'
+slug: 'abstrakcja-w-programowaniu-praktyczny-przewodnik'
+---
+```
+
+**Track translation freshness in the content itself.** A `sourceUpdatedAt` field compared against the source article's `date` turns drift into something a build step can warn about, or a badge can disclose to the reader:
+
+```typescript
+const isStale = (translation: Post, source: Post) =>
+  new Date(translation.sourceUpdatedAt) < new Date(source.updatedAt);
+```
+
+A "this translation may be out of date, read the original" notice is not an admission of failure. It is vastly better than silently serving stale technical content.
+
+**Treat partial translation as normal.** The instinct is to translate everything or nothing. Both are wrong. Translate the ten articles that actually get traffic in that language, let the rest resolve to the source, and make the fallback a designed state rather than a 404. Most of my 126 translations served almost no one.
+
+**Never build the locale map in the root layout.** Covered above, but it is the most portable lesson here. Cross-cutting data belongs behind a cached accessor, not in the layout that wraps every route.
+
+**Decide the exit before the entrance.** Ask the question up front: if this locale does not work out in a year, what happens to the URLs? If you do not have an answer, you are not ready to ship the locale. I did not have one, which is why the answer arrived as 135 generated redirects.
+
+## When a second locale is actually worth it
+
+I am not arguing against internationalisation. I am arguing against doing it by default because the routing was easy.
+
+It is worth it when you have a named audience in that language and evidence they are underserved in it — search volume, support tickets, analytics. When someone owns the content in that language, not just the initial translation batch. When the content is stable enough that drift is slow: marketing pages and evergreen documentation age gracefully, and posts about a framework's latest release do not.
+
+For a technical blog covering fast-moving tooling, the honest answer was that my Polish readers already read English documentation daily and were being served *worse* by a translation that lagged the original. That was the actual argument for switching it off, and it had nothing to do with the code.
+
+## The takeaway
+
+If you are adding a locale to a Next.js app, the routing question is the one you can answer in an afternoon and the one that matters least. Ask these instead:
+
+- Who maintains this content in twelve months?
+- How does the system know a translation has drifted from its source?
+- What is the identifier that links a translation to its original, and does it survive a rename?
+- If we switch this off, what do the old URLs do?
+
+Get those right and the [routing architecture](/blog/nextjs-server-first-architecture-backend-folder) is a detail. Get them wrong and you end up where I did: with three megabytes of good work behind a redirect, and a config file that generates 135 rules to be polite about it.
+
+## References
+
+### Sources
+
+- [Next.js: Internationalization](https://nextjs.org/docs/app/guides/internationalization) - the App Router locale routing approach that replaced the Pages Router `i18n` config
+- [Next.js: redirects](https://nextjs.org/docs/app/api-reference/config/next-config-js/redirects) - the `permanent` flag semantics behind the 307-versus-301 decision
+- [next-intl](https://next-intl.dev) - the routing and Server Component integration referenced in the setup section
+
+### Further Reading
+
+- [Lessons From Linguistics: i18n Best Practices for Front-End Developers](https://shopify.engineering/internationalization-i18n-best-practices-front-end-developers) - Shopify on the linguistic assumptions that break at scale, the part most i18n guides skip entirely
+- [Google Search Central: Managing multi-regional and multilingual sites](https://developers.google.com/search/docs/specialty/international/managing-multi-regional-sites) - `hreflang`, canonical handling, and what actually happens to your index when locales change
+
+---
+
+~Seb 👊
