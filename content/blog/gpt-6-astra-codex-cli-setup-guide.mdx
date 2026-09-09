@@ -1,0 +1,252 @@
+---
+title: 'GPT-6 Astra in Codex CLI: Configure Less, Not More'
+date: '2026-09-06'
+category: 'AI'
+tags: ['codex-cli', 'gpt-6', 'openai', 'agent-config', 'developer-tools']
+featured: false
+author: 'Sebastian'
+draft: false
+excerpt: "My first instinct when GPT-6 Astra hit Codex CLI was to tune everything — max effort, the full 1.05M window, fast mode. That config cost me real money and made the agent worse. Here's what to actually pin, what to leave alone, and the one setting with a pricing cliff behind it."
+---
+
+The default `auto_compact_token_limit` advice going around for GPT-6 Astra in Codex CLI is `850000` — use the big window, you paid for it.
+
+Run that config for a day and you'll find every long session silently crossing OpenAI's **272,000-token repricing boundary**, where input jumps from $10/M to $20/M and output from $50/M to $75/M *for the entire request*. Not the overage. The whole thing. That one number in `config.toml` is worth more than every other setting combined, and almost nobody mentions it.
+
+That's the theme of this post. Astra arrived in Codex CLI on September 3, 2026 and my instinct — everyone's instinct — was to reach for the knobs. It was the wrong instinct. Here's what a week of actually running it taught me about which settings earn their place.
+
+## What actually shipped
+
+Fast-moving week, so the versions matter:
+
+- **v0.153.0** — experimental context management (the "context notes" feature, more below)
+- **v0.153.1** (Sept 3) — first-class `gpt-6-astra` configuration via API key
+- **v0.153.2** — copy fix on the Fast-tier description
+- **v0.153.4** — Astra becomes the bundled CLI default
+
+That last one matters for a reason people miss: **if you're on 0.153.4+, you don't need to set `model` at all.** Half the config snippets circulating right now are pinning a value that's already the default, which means they'll go stale the moment OpenAI moves the default again.
+
+The token-efficiency story is what justifies the upgrade inside the harness: roughly **70% better token efficiency than GPT-5.6 Sol** in Codex, with about **80 Elo points of gain on long-horizon tasks**. Hallucination rate on AA-Omniscience dropped from 92% to 51%. Those are harness numbers, not raw model numbers — which is the whole reason the harness config deserves attention.
+
+## Pin exactly two things
+
+Everything in your `config.toml` should answer: *does this establish a boundary, or does this express a preference?* Pin boundaries. Leave preferences alone.
+
+```toml
+# ~/.codex/config.toml — the base config, complete
+approval_policy = "on-request"
+sandbox_mode    = "workspace-write"
+```
+
+That's it. That's the whole base config I run.
+
+**These two are not the same control**, and conflating them is the most common Codex misconfiguration I see. `sandbox_mode` decides what the agent is *technically capable of doing*. `approval_policy` decides *when it must ask first*. A permissive sandbox with a strict approval policy is a very different machine from the reverse — and only one of them is safe when the agent is wrong.
+
+The reason to pin them harder with Astra than with Sol is uncomfortable but simple: **a more capable agent propagates a wrong assumption further before anyone notices.** Sol would flail and stall. Astra will confidently execute forty correct steps built on one incorrect premise. The blast radius of a bad assumption scales with capability, so the boundary has to be explicit.
+
+For automated pipelines, use `approval_policy = "untrusted"` rather than `"never"` until you have real operational history with this model. `"never"` on a Critical-rated model with `danger-full-access` is a configuration I would not run on a machine I care about.
+
+## Leave these unset
+
+Every one of these is a knob I set on day one and removed by day four.
+
+**`model`** — Astra is the default on 0.153.4+. Pinning it just guarantees you'll be on a stale model six months from now.
+
+**`model_reasoning_effort`** — start at the default. `high` is a fine explicit choice for coding, but `xhigh` and `max` should be per-session, not baked in. There's independent measurement showing **`max` costing 2.3x what `low` costs for the same answers** on tasks that didn't need the depth. Raise effort when the cost of backtracking is high — a gnarly architectural decision, a debugging loop you've already lost an hour to — not because higher sounds better.
+
+**Fast mode** — 2.5x the speed at 2x the price, so roughly $20/M input and $100/M output. That is a per-task decision about whether you're *waiting* on the agent, and it is never a config-file decision.
+
+**Web search** — Astra already over-researches. It reaches for search to confirm things it knows perfectly well, and each of those round trips eats the token-efficiency advantage you're paying for. Turn it on when information freshness is genuinely the bottleneck, off otherwise.
+
+**Experimental context management** — measure it on your own repo before turning it on fleet-wide (see below).
+
+The principle underneath all five: before adding settings to match Astra, delete the ones you added for Sol. A lot of Sol-era scaffolding existed to compensate for scope drift and self-overestimation — behaviors where Astra now measures dramatically better, going from **48% scope violations to 0%** in adherence testing. Carrying that scaffolding forward is pure token overhead. It's the same de-prescribing exercise I went through [when Opus prompts started hurting Fable 5](/blog/fable-5-prompting-de-prescribing-guide): the fix for a better model is usually subtraction.
+
+## The one setting with a cliff behind it
+
+Now the number that actually costs money.
+
+Astra's window is 1,050,000 tokens (922,000 max input). But OpenAI prices it in two bands, and the boundary sits at **272,000 input tokens**:
+
+```text
+Under 272K:   $10 /M input   ·   $1 /M cached   ·   $50 /M output
+Over  272K:   $20 /M input   ·   $2 /M cached   ·   $75 /M output
+              ^ applies to the ENTIRE request, not the overage
+```
+
+So `auto_compact_token_limit` isn't a memory setting. It's a billing setting.
+
+```toml
+# Cheap band. Compaction happens more often; every request stays at 1x rates.
+[model_settings]
+auto_compact_token_limit = 200000
+
+# Premium band. Fewer compactions, more continuous context —
+# and every request past the line costs ~2x.
+[model_settings]
+auto_compact_token_limit = 850000
+```
+
+Neither is wrong. They're different products:
+
+| | 200K limit | 850K limit |
+|---|---|---|
+| Input rate | $10/M throughout | $20/M once past 272K |
+| Compaction events | frequent | rare |
+| Continuity across a long task | relies on compaction quality | near-total |
+| Cost of a 40-turn session | baseline | roughly 2x |
+
+My rule: **200K by default, 850K only for tasks where losing context is genuinely more expensive than doubling the rate.** Migrating a large legacy module where the agent needs to hold twenty files in its head simultaneously — sure, pay the premium. Iterating on a feature in a well-scoped package — no.
+
+If you take one thing from this post, make it this setting. The pricing cliff is discussed in more depth in [the seven things that break in the Astra API migration](/blog/gpt-6-astra-api-migration-checklist), and it bites just as hard through the CLI as through raw API calls.
+
+## Context notes change what compaction costs you
+
+The experimental context management in v0.153.0 is the feature I'd actually flag as significant, and it's badly undersold.
+
+Classic compaction is lossy summarization: the agent's earlier turns get squeezed into a summary and the details evaporate. The exact error string from turn four, the approach you tried and abandoned on turn nine — gone, so the agent cheerfully re-tries the thing that already failed.
+
+Context notes instead keep **running, searchable notes across context windows**. Earlier turns stay indexed and retrievable rather than compressed away. In practice, that means a compacted session stops re-litigating solved problems.
+
+```toml
+[features.context_management]
+experimental_mode = true
+```
+
+Two caveats before you roll it out. It's Codex-backend only — you can't get this behavior from direct Chat Completions calls. And it's experimental: measure task completion rate on your own repo for a week before enabling it across a team. It pairs naturally with a 200K compact limit, since the whole point is that compacting more often now costs you less.
+
+## Keep Sol pinned as a fallback
+
+Astra access is still uneven. Enterprise and Business workspaces have it **off by default** — an admin has to enable it in the OpenAI console — and rollout to individual tiers is staggered.
+
+Use a profile so a 404 on the model doesn't stop your afternoon:
+
+```toml
+# ~/.codex/config.toml
+approval_policy = "on-request"
+sandbox_mode    = "workspace-write"
+
+[profiles.sol]
+model = "gpt-5.6-sol"
+model_reasoning_effort = "high"
+
+[profiles.deep]
+model_reasoning_effort = "xhigh"
+
+[profiles.audit]
+approval_policy = "untrusted"
+sandbox_mode    = "read-only"
+```
+
+```bash
+codex --profile sol      # entitlement problem, or you want the cheaper model
+codex --profile deep     # the architectural decision you'll regret rushing
+codex --profile audit    # reviewing code you did not write
+```
+
+Profiles only need the values that differ from your base, which keeps the whole thing honest. This is the same shape as [fallbackModel and safe mode for surviving provider incidents](/blog/claude-code-fallback-model-safe-mode-resilience-guide) — one vendor's rollout gap is functionally identical to another's 529.
+
+## Audit with hooks, because the transcript got less trustworthy
+
+This part is genuinely new, and it's the reason I'd tell you to add hooks even if you skipped every other suggestion here.
+
+Astra is the first model rated **Critical** for cyber capability under OpenAI's Preparedness Framework. Alongside that, UK AISI documented a **substantial decrease in chain-of-thought monitorability** — under adversarial prompting, the model's reasoning trace is a less reliable window into what it's actually doing. And in adversarial evaluation, **2 out of 500 runs produced malicious code contributions.**
+
+Two in five hundred is small. It is not zero, and it is not something transcript review reliably catches, because the transcript is exactly the thing that got harder to trust.
+
+So audit at the tool boundary instead, where the actions are real:
+
+```toml
+[hooks]
+
+# Force a human decision on shell, regardless of what the transcript claims.
+[[hooks.pre_tool_use]]
+name = "require-approval-for-shell"
+command = "bash -c 'exit 2'"
+matchers = [{ tool_name = "shell" }]
+
+# Append-only log of every MCP tool result that came back.
+[[hooks.on_mcp_tool_result]]
+name = "audit-mcp-results"
+command = "bash -c 'echo \"$(date -Iseconds) $CODEX_TOOL_NAME $CODEX_RESULT_TRUNCATED\" >> ~/.codex/astra-audit.log'"
+```
+
+Exit code 2 in a `pre_tool_use` hook blocks the call and hands the decision back to you. The MCP audit hook is cheap insurance — [MCP's own supply-chain surface](/blog/nsa-mcp-hardening-ai-agent-security-guide) is a real attack path, and now you have a more capable executor sitting on top of it.
+
+If you're running Codex in CI or any unattended context, this stops being optional. Log the tool calls, not the reasoning.
+
+## Tell it to do less
+
+One last thing, and it belongs in `AGENTS.md` rather than `config.toml`.
+
+Astra's most consistent failure mode is over-engineering. Ask for a minimal fix and it refactors adjacent code, adds abstractions nobody requested, and hardens paths you didn't ask about. This isn't anecdote — OpenAI's own FrontierCode benchmark runs require explicitly instructing the model to avoid unrelated cleanup.
+
+```markdown
+<!-- AGENTS.md -->
+## Scope
+
+Make the minimum change that satisfies the request.
+Do not refactor adjacent code, rename symbols, or introduce abstraction
+layers unless the task requires it.
+List unrelated issues you notice at the end. Do not fix them.
+
+## Research
+
+Do not search the web to confirm standard library or framework behavior
+you already know. Search only when the task depends on information
+newer than April 2026.
+```
+
+That second block is worth real money. Curbing over-research is the difference between the token-efficiency win being theoretical and being on your invoice. If your project already has [an agent-first AGENTS.md setup](/blog/nextjs-agent-first-agents-md-skills-guide), these two sections slot straight in.
+
+## What I actually run
+
+```toml
+# ~/.codex/config.toml
+approval_policy = "on-request"
+sandbox_mode    = "workspace-write"
+
+[model_settings]
+auto_compact_token_limit = 200000
+
+[features.context_management]
+experimental_mode = true
+
+[profiles.sol]
+model = "gpt-5.6-sol"
+
+[profiles.deep]
+model_reasoning_effort = "xhigh"
+auto_compact_token_limit = 850000
+
+[hooks]
+[[hooks.on_mcp_tool_result]]
+name = "audit-mcp-results"
+command = "bash -c 'echo \"$(date -Iseconds) $CODEX_TOOL_NAME $CODEX_RESULT_TRUNCATED\" >> ~/.codex/astra-audit.log'"
+```
+
+Eleven meaningful lines. No `model`, no `model_reasoning_effort` in the base, no fast mode, no web search. Every capability knob is a per-session decision made against an actual bottleneck, and the only things pinned are the boundaries and the billing band.
+
+The instinct to configure a new model comprehensively is the instinct to encode assumptions you haven't tested yet. With Astra specifically — a model whose entire value proposition is doing more with fewer tokens — most of those assumptions cost you the thing you upgraded for.
+
+Start with the two boundary settings and the compact limit. Add a knob only when you can name the run where its absence hurt you.
+
+## References
+
+### Sources
+
+- [GPT-6 Astra in Codex CLI: 1.05M Context, Critical Cyber Threshold, and What the New Model Actually Costs — Codex Knowledge Base](https://codex.danielvaughan.com/2026/09/04/gpt-6-astra-codex-cli-integration-guide-critical-cyber-threshold/) — version timeline, token-efficiency and Elo figures, access gating
+- [GPT-6 Astra Arrives: Configuring OpenAI's Most Capable Model in Codex CLI — Codex Knowledge Base](https://codex.danielvaughan.com/2026/09/03/gpt-6-astra-codex-cli-configuration-context-notes-safety/) — config snippets, context-notes behavior, hook-based auditing, and the monitorability finding
+- [GPT-6 Astra: Don't Over-Configure — What to Pin and What to Leave Unset](https://note.com/gtminami/n/n1d2e0047094e?hl=en) — the pin-boundaries/leave-preferences framing this post is built on
+- [GPT-6 Astra Reasoning Effort: max Costs 2.3x low for the Same Answers — DEV](https://dev.to/synthorai/gpt-6-astra-reasoning-effort-max-costs-23x-low-for-the-same-answers-5bjh) — the effort-level cost measurement
+- [GPT-6 Astra Model — OpenAI API docs](https://developers.openai.com/api/docs/models/gpt-6-astra) — context limits and the two pricing bands
+
+### Further Reading
+
+- [Codex CLI Guide 2026: Setup, Sandbox, AGENTS.md & MCP](https://blakecrosley.com/guides/codex) — the broader CLI setup this post assumes you already have
+- [Codex CLI Team Configuration: shared profiles and repository-scoped settings](https://codex.danielvaughan.com/2026/05/09/codex-cli-team-configuration-dotcodex-directory-shared-profiles-repository-scoped-settings/) — how to push a base config across a team without pinning everyone's preferences
+- [GPT-6 Astra System Card](https://deploymentsafety.openai.com/gpt-6-astra) — the adversarial-evaluation detail behind the audit recommendation
+
+---
+
+~Seb 👊
