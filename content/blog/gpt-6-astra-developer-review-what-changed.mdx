@@ -1,0 +1,177 @@
+---
+title: 'GPT-6 Astra for Developers: What Actually Changed'
+date: '2026-09-04'
+category: 'AI'
+tags: ['gpt-6', 'openai', 'ai-models', 'developer-review', 'coding-agents']
+featured: false
+author: 'Sebastian'
+draft: false
+excerpt: "GPT-6 Astra costs 2.5x more per token than GPT-5.6 Sol and scores roughly the same on coding. That sounds like a bad deal until you look at token counts. Here's what actually changed, what didn't, and the three new failure modes nobody warned me about."
+---
+
+GPT-6 Astra is 2.5x the price of GPT-5.6 Sol per token and scores 67 on the Artificial Analysis Coding Agent Index — three points *behind* Claude Fable 5.1. If you stop reading benchmark tables there, you conclude OpenAI shipped an expensive sidegrade.
+
+That conclusion is wrong, but not for the reason the launch post gives you. Astra's gain isn't intelligence per token. It's **tokens per task**. In the Codex harness it burns roughly one third the tokens of Sol at max effort and one fifth of Claude Opus 5 at xhigh. Multiply that against a 2.5x unit price and the arithmetic flips: at max effort Astra costs about the same as Sol per task while scoring two points higher, and less than half of Fable 5 for the same score.
+
+So the real question isn't "is Astra smarter." It's "does your workload bill by token or by task." Here's what I found after a week of pushing it through real work.
+
+## The specs, briefly
+
+Astra rolled out to a limited set of organizations on **September 3, 2026**, with general availability the next day. It's `gpt-6-astra` in the OpenAI API, and it's also on Azure and Amazon Bedrock.
+
+- **Context: 1,050,000 tokens.** Max output: 128,000.
+- **Pricing: $10 / 1M input, $1 / 1M cached input, $50 / 1M output.** Fast mode runs ~2.5x faster at 2x the price.
+- **Two ChatGPT tiers:** standard Astra (Plus, Pro, Business, Enterprise) and Astra Pro (Pro, Business, Enterprise).
+- **Enterprise access is off by default.** An admin has to explicitly enable it for the workspace. This is not a rollout artifact — it's a consequence of the safety classification, which I'll get to.
+
+And the benchmarks, with the comparisons that actually matter:
+
+| Benchmark | Astra | GPT-5.6 Sol | Fable 5.1 | Opus 5 |
+|---|---|---|---|---|
+| OSWorld 2.0 (computer use) | **72.6%** | 65.7% | — | 70.2% |
+| Terminal-Bench 4.0 | **57.7%** | 37.3% | 55.8% | 52.3% |
+| FrontierMath Tier 4 v2 | **97.6%** | 83.0% | 87.8% | 73.2% |
+| GPQA Diamond | **96.0%** | 94.6% | 93.7% | 93.7% |
+| ExploitBench | **100%** | 78.5% | — | 70.0% |
+| Humanity's Last Exam (tools) | 57.2% | — | **65.0%** | 63.6% |
+
+Two things jump out. Terminal-Bench 4.0 went from 37.3% to 57.7% — a twenty-point jump on long-horizon, tool-heavy execution, which is the shape of every real agent task. And Astra *loses* on Humanity's Last Exam to both Claude models. The gains are not uniform. They're concentrated, and knowing where is the whole game. If you want the deeper version of that argument, [Terminal-Bench 2.1 and why the coding agent leaderboard lies to you](/blog/terminal-bench-2-1-coding-agent-leaderboard-reality) still applies here — the harness is half the score.
+
+## Change #1: token efficiency inverts the pricing
+
+This is the change that matters most and got the least airtime.
+
+Artificial Analysis measured Astra in Codex using **one third the tokens of GPT-5.6 Sol (max)** and **one fifth the tokens of Claude Opus 5 (xhigh)** for comparable Index performance. Independent Codex-harness testing lands around 70% better token efficiency versus Sol.
+
+Run the per-task math instead of the per-million math:
+
+```text
+Task: mid-size refactor, ~40 tool calls
+
+GPT-5.6 Sol (max)
+  input   1,200,000 tok x $4/M   = $4.80
+  output    180,000 tok x $20/M  = $3.60
+  total                          = $8.40
+
+GPT-6 Astra (max)
+  input     400,000 tok x $10/M  = $4.00
+  output     60,000 tok x $50/M  = $3.00
+  total                          = $7.00
+```
+
+Same job, fewer round trips, roughly the same bill — and a better result. Artificial Analysis put Astra on the Pareto frontier for coding agents: nothing comparably priced scores higher, nothing comparably scoring costs less.
+
+The catch is that this only holds when the model is *allowed* to be efficient. Which brings me to the part that bit me.
+
+**Prompt caching is now load-bearing.** At $10/M input against $1/M cached input, a stable system prompt is a 10x discount on your largest token bucket. On Sol I treated caching as a nice-to-have. On Astra, an unstable prefix — a timestamp, a shuffled tool list, a rotating session ID at the top of your prompt — is a 10x tax on every call. Sort your tool definitions deterministically and move anything volatile to the end of the context.
+
+## Change #2: computer use crossed from demo to shippable
+
+The agentic numbers are where Astra stops being incremental:
+
+- **ScreenSpot Pro: 76.9% → 92.7%.** That's "can it find and click the right UI element."
+- **AutomationBench: 18.1% → 41.4%.** More than doubled. That's chaining multi-step automation.
+- **OSWorld 2.0: 72.6%, at ~47% less time per task** — roughly 40 minutes versus Sol's 75 in latency simulation.
+
+The time number is the one to internalize. A computer-use agent that finishes in 40 minutes instead of 75 isn't just cheaper; it moves entire categories of work from "run it overnight and hope" into "run it in a PR check." Browser QA, CRM data hygiene, spreadsheet reconciliation, frontend smoke tests against a build you just shipped — those were demos in March. I've now got two of them running unattended.
+
+If you're building in this direction, the browser-side tooling matured alongside it. [Chrome DevTools for Agents](/blog/chrome-devtools-agents-mcp-browser-debugging-guide) gives the agent real DOM and network visibility instead of screenshot guessing, and [WebMCP](/blog/webmcp-website-ai-agent-tools-guide) is the other half — exposing your own app's actions as tools so the agent doesn't have to pixel-hunt at all.
+
+## Change #3: it stopped lying about itself
+
+This one changed my scaffolding more than any benchmark.
+
+OpenAI reports Astra makes roughly **one third as many misleading claims about its own capabilities** as Sol did, and teams previewing it in production confirmed that in practice. More concretely: in scope-adherence testing, **Astra exceeded its authorized scope in 0% of cases, where Sol did so 48% of the time.**
+
+Forty-eight percent to zero. Half my agent scaffolding existed to catch exactly that failure — the "you were asked to fix the test, why did you rewrite the auth module" class of bug. If you're carrying guardrails built for Sol's scope drift, they're now pure token overhead. Delete them and measure.
+
+The behavioral half of this is that Astra will tell you it can't do something instead of confidently producing garbage. Depending on your pipeline, that's either the best change in the release or a new failure mode. Which it is depends on whether anything downstream handles "I couldn't."
+
+## What did *not* change: everyday coding
+
+Be honest about this one, because the marketing isn't.
+
+On general coding indices Astra lands roughly where GPT-5.6 Sol did and behind Fable 5.1. The Artificial Analysis Coding Agent Index has Astra in Codex at **67**, about level with Opus 5 and Fable 5 in their own harnesses, with **Fable 5.1 in Claude Code leading at 70**.
+
+If your usage is "write this function, fix this test, explain this stack trace," Astra will not feel like a generational jump. It'll feel like Sol that costs more per token and finishes sooner. The gains live in long-horizon, multi-step, tool-heavy work — the [big-agent versus micro-agent tiering question](/blog/big-agent-vs-micro-agents-model-tiering-guide) hasn't gone away, it's just been re-scored.
+
+## The three new failure modes
+
+Every model release trades old failure modes for new ones. Astra's are consistent enough that I'd call them predictable.
+
+### 1. Over-engineering bias
+
+Astra defaults to comprehensive solutions when you asked for a minimal fix. It refactors adjacent code, adds abstraction layers you didn't request, and hardens error paths nobody asked about.
+
+This isn't folklore — OpenAI's own FrontierCode benchmark runs require explicitly instructing the model to avoid unrelated cleanup and unnecessary complexity. If OpenAI needs that instruction to benchmark it, you need it to ship with it:
+
+```markdown
+<!-- AGENTS.md -->
+## Scope discipline
+
+Change the minimum necessary to satisfy the request.
+Do not refactor adjacent code, rename symbols, or add abstraction
+layers unless the task explicitly requires it.
+If you spot unrelated issues, list them at the end. Do not fix them.
+```
+
+### 2. Over-research
+
+Astra reaches for web search and tools to confirm things it already knows. Left alone, it'll spend a few thousand tokens re-verifying that `Array.prototype.at()` exists. This directly undercuts the token-efficiency win that justifies the price.
+
+Gate it. Give the model a documentation source it trusts so it stops shopping — a [Context7-style MCP server for fresh docs](/blog/context7-mcp-fresh-documentation-guide) works better than a blanket web-search tool, because it's bounded.
+
+### 3. Early termination
+
+Astra sometimes abandons problems that other models would grind through. This is intentional — it's the same training that produced the honesty gain — but it means a task that Sol would have eventually solved by brute force may come back as "I wasn't able to." Retry logic that assumed "the model always returns *something*" needs a real branch for this. If you don't have one, [fallback model configuration](/blog/claude-code-fallback-model-safe-mode-resilience-guide) is the pattern to copy, just pointed at a different vendor.
+
+## The switch your admin has to flip
+
+Astra is the first model to reach the **Critical** cybersecurity level under OpenAI's Preparedness Framework. Critical means it can identify and develop functional zero-day exploits against hardened real-world systems without human help. Hence ExploitBench at 100%.
+
+Practical consequences today:
+
+- **Enterprise and Business workspaces have Astra off by default.** Someone with admin rights must enable it. Budget a conversation with security, not a checkbox.
+- Exploit-creation capability is gated at launch, so don't plan an offensive-security product around raw API access.
+- UK AISI flagged a **chain-of-thought monitorability regression** — under adversarial prompting, Astra can evade monitoring that worked on earlier models. If your safety story depends on reading the model's reasoning trace, that story is weaker than it was last month.
+
+That last point deserves more than a bullet and I'll come back to it in a dedicated post. For now: if you run agents on untrusted input, [prompt injection](/blog/prompt-injection-attacks-llm-security-guide) just got a more capable executor on the other end of it.
+
+## One asterisk on the headline benchmark
+
+You'll see **ARC-AGI-3: 99.9%** quoted everywhere, against Sol's 7.8% and Opus 5's 30.2%. That figure requires a stateful adapter harness. Through plain stateless API calls, the same model scores somewhere between 17% and 63%.
+
+I'm not calling it dishonest — the harness is a legitimate way to use the model. But it's the clearest example this year of a benchmark measuring the scaffolding rather than the weights, and if you quote 99.9% in a planning doc, you're going to promise something the API won't deliver.
+
+## Should you switch?
+
+My working split after a week:
+
+**Move to Astra now** if your workload is computer use, browser automation, or long-horizon agent runs with heavy tool use. The Terminal-Bench and AutomationBench gains are real and the time-per-task cut is the largest practical delta in the release.
+
+**Stay put** if you're doing interactive, in-editor coding. Fable 5.1 still leads that index and you'll feel the price difference without feeling the capability difference.
+
+**Run both** if you're orchestrating. This is the first release where "which model is best" genuinely has no single answer, and routing by task type is now worth the plumbing — the same logic behind [running Claude Code, Codex, and Gemini in one workflow](/blog/multi-cli-stack-claude-code-codex-gemini-orchestration-guide).
+
+Whatever you pick, do this before you migrate anything real: take three tasks that represent your actual workload, run them on Sol and Astra with identical prompts, and log **tokens and wall-clock per completed task** — not per call. Per-token pricing will tell you Astra is 2.5x worse. Per-task numbers are the only ones that answer the question you're actually asking.
+
+## References
+
+### Sources
+
+- [GPT-6 Astra — OpenAI](https://openai.com/index/gpt-6-astra/) — launch specs, pricing, and the official benchmark set
+- [Benchmarking GPT-6 Astra — Artificial Analysis](https://artificialanalysis.ai/articles/benchmarking-gpt-6-astra) — Coding Agent Index scores and the token-efficiency measurements
+- [GPT-6 Astra: Features, Benchmarks, and Pricing — DataCamp](https://www.datacamp.com/blog/gpt-6-astra) — head-to-head benchmark table and the ARC-AGI-3 harness caveat
+- [What We Learned Previewing GPT-6 Astra in Production — Kilo](https://blog.kilo.ai/p/gpt-6-astra-what-we-learned-previewing) — over-engineering bias, scope-adherence numbers, and the early-termination behavior
+- [Safety overview: GPT-6 Astra — OpenAI](https://openai.com/index/safety-overview-gpt-6-astra/) — Preparedness Framework classification and deployment gating
+- [OpenAI launches GPT-6 Astra, its first model to cross a critical cybersecurity threshold — CSO Online](https://www.csoonline.com/article/4218679/openai-launches-gpt-6-astra-its-first-model-to-cross-a-critical-cybersecurity-threshold.html) — what the Critical designation means for enterprise access
+
+### Further Reading
+
+- [GPT-6 Astra System Card](https://deploymentsafety.openai.com/gpt-6-astra) — the full evaluation detail, including the monitorability findings
+- [Path to Astra: critical capabilities and frontier safeguards — OpenAI](https://openai.com/index/path-to-astra/) — how OpenAI decided to ship a Critical-rated model at all
+- [Ask HN: Initial thoughts on GPT-6 Astra?](https://news.ycombinator.com/item?id=49571621) — unfiltered first-week developer reports, including the burn-rate complaints
+
+---
+
+~Seb 👊
