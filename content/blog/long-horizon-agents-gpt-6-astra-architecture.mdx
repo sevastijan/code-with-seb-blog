@@ -1,0 +1,206 @@
+---
+title: "Long-Horizon Agents Work Now. Your Scaffolding Doesn't"
+date: '2026-09-13'
+category: 'AI'
+tags: ['ai-agents', 'gpt-6', 'benchmarks', 'orchestration', 'agent-architecture']
+featured: false
+author: 'Sebastian'
+draft: false
+excerpt: "Terminal-Bench 4.0 went from 37.3% to 57.7%. AutomationBench more than doubled. Scope violations went from 48% to 0%. Most of the guardrails you built for long-running agents were designed for failure modes that no longer happen — and none for the three that replaced them."
+---
+
+Half the code in my agent harness exists to catch a model wandering off-task. It watches for scope drift, re-anchors the goal every few turns, and aborts when the agent starts editing files nobody asked about.
+
+On GPT-6 Astra, **scope violations went from 48% to 0%** in adherence testing. That code now does nothing except consume tokens and add latency.
+
+Meanwhile the model acquired three failure modes I had no guardrails for at all. That's the actual story of long-horizon agents in September 2026: they got dramatically better, and the scaffolding most of us built is calibrated to the wrong problems.
+
+## The gains are specifically long-horizon
+
+Astra's improvements aren't uniform — they cluster hard in multi-step, tool-heavy work:
+
+| Benchmark | Astra | GPT-5.6 Sol | What it measures |
+|---|---|---|---|
+| Terminal-Bench 4.0 | **57.7%** | 37.3% | 66 multi-step terminal tasks: SWE, ML, science, ops |
+| AutomationBench-AA | **41.4%** | 18.1% | Agentic workflow automation, private test set |
+| Agents' Last Exam | **59.3** | 53.6 | Agent reasoning and planning |
+| OSWorld 2.0 | **72.6%** | 65.7% | Desktop automation, end to end |
+| DeepSWE v1.1 | 74.1% | 72.7% | 113-task agentic coding |
+
+Look at the spread. DeepSWE — closest to conventional coding — moves 1.4 points. Terminal-Bench 4.0 moves **twenty**. AutomationBench more than doubles.
+
+The two that moved most share a property: they're graded on *completing long chains under constraint*. AutomationBench-AA in particular scores the share of a task's objectives completed **without guardrail violations** — so it rewards finishing and staying inside the rules simultaneously, which is exactly the combination that used to break down past step thirty.
+
+This is why "Astra isn't better at coding" and "Astra is a big deal for agents" are both true. Ten to twenty points of gain on long-horizon execution, roughly nothing on single-turn work.
+
+## Delete these
+
+Three things you can probably remove today. Measure before and after — but I'd bet on the direction.
+
+**Scope-drift guards.** 48% → 0%. If you have re-anchoring prompts, goal-restatement every N turns, or a watcher checking whether the agent has strayed, that's overhead now. This was the single biggest chunk of my harness.
+
+**Self-report skepticism layers.** Astra makes roughly **one third as many misleading claims about its own capabilities** as Sol. The "are you sure? verify that" round trips you added because the model over-claimed are mostly buying you a second inference pass for a problem that shrank.
+
+**Heavy `AGENTS.md` scaffolding.** Teams running Astra in production report needing substantially less instruction file to hold agent performance steady. A lot of what's in those files is compensating for behaviors that improved.
+
+The general principle, which held when Fable 5 shipped and holds again here: **the correct response to a better model is usually subtraction.** I went through the same exercise in [the Opus-prompts-are-hurting-Fable de-prescribing guide](/blog/fable-5-prompting-de-prescribing-guide), and it's the same shape — guardrails outlive the failures that justified them, and nobody ever schedules time to remove them.
+
+## Add these
+
+Now the three that replaced them.
+
+### Over-engineering
+
+Astra defaults to comprehensive solutions when you asked for a minimal fix. It refactors adjacent code, adds abstractions, hardens paths nobody mentioned. Over a long run this compounds — step forty is elaborating on an abstraction invented at step twelve that the task never needed.
+
+This isn't folklore. OpenAI's own FrontierCode benchmark runs require explicitly instructing the model to avoid unrelated cleanup and unnecessary complexity.
+
+```markdown
+<!-- AGENTS.md -->
+## Scope
+
+Make the minimum change that satisfies the request.
+Do not refactor adjacent code, rename symbols, or introduce abstraction
+layers unless the task requires it.
+List unrelated issues you notice at the end. Do not fix them.
+```
+
+### Over-research
+
+The model reaches for web search and tools to confirm things it already knows. On a 2,000-step overnight run, "let me just verify this API exists" repeated a few hundred times is real money — and it directly cancels the token-efficiency gain that justifies Astra's price.
+
+```markdown
+## Research
+
+Do not search to confirm standard library or framework behaviour you
+already know. Search only when the task depends on information newer
+than April 2026, or when a previous attempt failed for a reason you
+cannot explain.
+```
+
+### Early termination
+
+Astra sometimes abandons problems that other models would grind through. It's a deliberate consequence of the honesty training — the model would rather say it couldn't than fabricate — but it means a task Sol would have brute-forced comes back as "I wasn't able to."
+
+If your orchestrator assumes every run produces *something*, this is a silent gap. Handle it as a real outcome:
+
+```python
+class Outcome(str, Enum):
+    COMPLETED = "completed"
+    FAILED = "failed"          # crashed, timed out, tool error
+    DECLINED = "declined"      # the model says it can't — a real answer
+
+def handle(run: AgentRun) -> None:
+    match classify(run):
+        case Outcome.DECLINED:
+            # Do NOT retry identically — it will decline again.
+            # Escalate: more context, a decomposed task, or a human.
+            escalate(run, reason=run.decline_reason)
+        case Outcome.FAILED:
+            retry_with_backoff(run)
+        case Outcome.COMPLETED:
+            verify_and_accept(run)
+```
+
+Retrying a `DECLINED` run with the same prompt is the most common mistake here. The model isn't flaky; it's telling you something. Escalation means changing the input — decompose the task, add the missing context, or hand it to a person.
+
+## Three architecture changes
+
+### Runs outlive requests
+
+An overnight Astra run can consume around **2,000 steps**. Nothing about a request/response cycle survives that.
+
+```python
+resp = client.responses.create(
+    model="gpt-6-astra",
+    input=task.prompt,
+    tools=TOOLS,
+    background=True,           # returns immediately with a response_id
+)
+store.put(task.id, resp.id, status=resp.status)   # queued | thinking
+```
+
+Collect out of band — webhook, poller, deferrable operator. And note that **mid-turn steering** over the Responses WebSocket caps at 60 minutes, so structure long work as resumable segments rather than one heroic connection. A 2,000-step run that can't resume from step 1,400 is a 2,000-step run you get to pay for twice.
+
+### Budget by step, not by token
+
+Token budgets are the wrong instrument for long-horizon work — they tell you a run was expensive after it already was.
+
+```python
+@dataclass
+class RunBudget:
+    max_steps: int = 400
+    max_cost_usd: float = 25.0
+    max_wall_clock_s: int = 7200
+    # Kill a run making no progress rather than one that's merely long.
+    max_steps_without_progress: int = 25
+
+def should_continue(run: AgentRun, b: RunBudget) -> bool:
+    return (
+        run.steps < b.max_steps
+        and run.cost_usd < b.max_cost_usd
+        and run.elapsed_s < b.max_wall_clock_s
+        and run.steps_since_progress < b.max_steps_without_progress
+    )
+```
+
+`max_steps_without_progress` is the one that earns its keep. A long run is fine. A run that's made forty tool calls without changing a file, closing a subtask, or passing a test is stuck, and it will stay stuck.
+
+Define "progress" concretely for your domain — a test that flipped green, a file written, a checklist item closed. Anything you can assert on. This is [agent observability](/blog/ai-agent-observability-production-failure-modes) with a kill switch attached.
+
+### Let agents finish early
+
+One finding from production previews I didn't expect: **agent swarms with real-time inter-agent communication reduced total cost**, because agents could terminate early once another agent established the answer.
+
+That inverts the usual assumption that more agents means more spend. If your fan-out pattern is "launch five, wait for all five, pick the best," you're paying for four wasted runs. If they can signal each other, four of them stop as soon as one succeeds.
+
+Worth knowing before you build the fan-out — it changes the [nested subagent and hierarchy design](/blog/claude-code-nested-subagents-agent-hierarchies-guide) from a pure cost multiplier into something closer to a race.
+
+## Read the benchmarks skeptically
+
+These numbers are good. They're also presented in the most favorable possible light, and it's worth naming how.
+
+**They're max-effort runs.** Every headline score reflects maximum reasoning effort, which inflates both cost and latency versus what you'd sanely run in production. There's [measured evidence that `max` costs 2.3x `low` for identical answers](/blog/gpt-6-astra-pricing-cost-control-guide) on tasks that don't need the depth.
+
+**DeepSWE's uncertainty ranges overlap.** Astra at 74.1% against Sol's 72.7%, with competitors within the error bars. That's a tie reported as a win.
+
+**FrontierMath had OpenAI funding**, with exclusive access provisions. A 97.6% on a benchmark your vendor helped fund deserves an asterisk, whether or not anything improper happened.
+
+**The gains genuinely go both directions.** Astra gained about **80 Elo on AA-Briefcase** and lost about **80 Elo on GDPval-AA v2** — same model, same evaluation suite, opposite signs. Any single number you pick is a choice about which story to tell.
+
+None of that unmakes the twenty-point Terminal-Bench jump. It does mean you shouldn't plan capacity against a max-effort score you'll never run. The broader case is in [why the coding agent leaderboard lies to you](/blog/terminal-bench-2-1-coding-agent-leaderboard-reality) — the harness does as much work as the weights, which is exactly why these are reported as "Astra in Codex" rather than as model scores.
+
+## Find out whether it's true for you
+
+An afternoon's work, and it beats every number above:
+
+1. Take **three long-horizon tasks** you actually run — the kind with twenty-plus tool calls.
+2. Run them on your current model with the harness as it stands. Record: **completion rate, steps to completion, cost, wall clock, and how often the scaffolding fired.**
+3. Run them on Astra with the **scope-drift guards removed**.
+4. Compare completion rate and cost per completed task.
+
+Step 3 is the one people skip, and it's where the finding lives. Running Astra with Sol-era scaffolding measures your guardrails, not the model — you'll conclude Astra is marginally better and expensive, and you'll be measuring the cost of code that no longer does anything.
+
+If the guardrails were load-bearing, removing them will show up immediately as a completion-rate drop. That's a cheap experiment with a clear signal, which is more than most model-migration decisions get.
+
+Long-horizon agents did just get meaningfully better. Whether that reaches your pipeline depends on whether you're willing to delete the code that was protecting you from last year's model.
+
+## References
+
+### Sources
+
+- [GPT-6 Astra Benchmarks Explained — Vellum](https://www.vellum.ai/blog/gpt-6-astra-benchmarks-explained) — what each agentic benchmark measures, Agents' Last Exam scores, and the max-effort and funding caveats
+- [Artificial Analysis Intelligence Index v4.3](https://artificialanalysis.ai/articles/artificial-analysis-intelligence-index-v4-3) — Terminal-Bench 4.0 and AutomationBench-AA methodology and scoring rules
+- [What We Learned Previewing GPT-6 Astra in Production — Kilo](https://blog.kilo.ai/p/gpt-6-astra-what-we-learned-previewing) — 2,000-step runs, reduced scaffolding needs, over-engineering and early-termination behavior, and the swarm cost finding
+- [Benchmarking GPT-6 Astra — Artificial Analysis](https://artificialanalysis.ai/articles/benchmarking-gpt-6-astra) — token efficiency and the AA-Briefcase / GDPval-AA divergence
+- [GPT-6 Astra — OpenAI](https://openai.com/index/gpt-6-astra/) — official long-horizon claims and scope-adherence figures
+
+### Further Reading
+
+- [Terminal-Bench v4.0 leaderboard — Artificial Analysis](https://artificialanalysis.ai/evaluations/terminalbench-v4-0) — current standings if you want to check these numbers as models ship
+- [AA-Briefcase: Agentic Knowledge Work Benchmark](https://artificialanalysis.ai/evaluations/aa-briefcase) — the spreadsheet-and-documents evaluation where Astra gained most
+- [Artificial Analysis Intelligence Benchmarking Methodology](https://artificialanalysis.ai/methodology/intelligence-benchmarking) — how the composites are constructed, which is worth reading before quoting one
+
+---
+
+~Seb 👊
