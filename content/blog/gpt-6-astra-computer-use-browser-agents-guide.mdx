@@ -1,0 +1,236 @@
+---
+title: 'GPT-6 Astra Computer Use: The 27% That Fails'
+date: '2026-09-09'
+category: 'AI'
+tags: ['gpt-6', 'computer-use', 'browser-automation', 'ai-agents', 'openai']
+featured: false
+author: 'Sebastian'
+draft: false
+excerpt: "GPT-6 Astra scores 72.6% on OSWorld 2.0 and finishes in 40 minutes where its predecessor took 75. That's the release that makes computer-use agents shippable. It also means one task in four fails — and the ones that cost you money are the ones that fail silently."
+---
+
+72.6% on OSWorld 2.0 is the number that made computer use real. It's also a 27% failure rate, and if you ship an agent on that number without thinking hard about the other 27%, you'll find out the expensive way that **the failures that hurt aren't the ones that crash.**
+
+An agent that can't find the button throws an error and you retry it. An agent that confidently pulls the wrong month's revenue, updates the wrong CRM record, and reports success — that one costs real money, and nothing in your logs says anything went wrong.
+
+GPT-6 Astra genuinely crossed the line from demo to shippable for browser and desktop automation. Here's what changed, and how to build on it so the 27% is survivable.
+
+## What actually got better
+
+The three numbers that matter, all against GPT-5.6 Sol:
+
+| Benchmark | Astra | Sol | What it measures |
+|---|---|---|---|
+| **ScreenSpot Pro** | 92.7% | 76.9% | Can it find and click the right UI element |
+| **OSWorld 2.0** | 72.6% | 65.7% | End-to-end desktop tasks: apps, file systems, forms |
+| **AutomationBench** | 41.4% | 18.1% | Chaining long multi-step action sequences |
+
+ScreenSpot Pro at 92.7% is the foundational one. Visual grounding — "which pixel do I click" — was the thing that made every previous generation of computer-use agent feel like a party trick. At 76.9%, roughly one in four clicks lands wrong, and in a twenty-step task that's a guaranteed derailment. At 92.7% it's a different machine.
+
+AutomationBench more than doubling is the second-order effect: better grounding compounds across a chain. And Astra completes OSWorld tasks in about **40 minutes against Sol's 75** — a 47% cut in time per task.
+
+That last number is the one that changes what's schedulable. A browser agent that finishes in 40 minutes instead of 75 moves from "kick it off and check tomorrow" to "run it in a nightly job and read the report at standup." Two of mine now run unattended on that basis.
+
+## The tool shape
+
+Computer use is a Responses API tool. Not Chat Completions — this is one of the paths that [forces the Responses migration](/blog/gpt-6-astra-api-migration-checklist).
+
+```python
+resp = client.responses.create(
+    model="gpt-6-astra",
+    instructions=SYSTEM_PROMPT,
+    input="Pull September revenue by region from the finance dashboard.",
+    tools=[{
+        "type": "computer_use",
+        "runtime": "sandbox_v1",
+        "provision": {
+            "image": "ubuntu-data-science-latest",
+            "storage": "10gb",
+        },
+        "permissions": ["filesystem_read_write", "shell_restricted"],
+    }],
+    reasoning={"effort": "medium"},
+)
+```
+
+Two things to notice.
+
+**The environment is persistent.** This isn't a stateless call per screenshot. A session launched at step one is still alive at step ten — files written, browser tabs open, state intact. That's what makes multi-step work possible, and it's also why a mid-run failure leaves real artifacts behind that you need to clean up.
+
+**Permissions are scoped in the tool definition.** `filesystem_read_write` and `shell_restricted` are separate grants. Scope them down per task. Astra is the first model rated **Critical** for cyber capability under OpenAI's Preparedness Framework — 100% on ExploitBench — and elevated terminal capability is gated behind trusted-access tiers precisely because of that. Give a computer-use agent the narrowest permission set the task tolerates, every time.
+
+## Three failure classes, ranked by what they cost you
+
+### Hard failure — cheap
+
+The agent can't find the element, the page never loads, the session dies. You get an error, you retry, life goes on. This is what your existing retry logic already handles and it is not the problem.
+
+### Silent wrong result — expensive
+
+The agent completes the task, reports success, and the answer is wrong. Wrong row. Wrong month. Right-looking dashboard, filtered to the wrong region.
+
+Nothing in your telemetry distinguishes this from a correct run. This is where the 27% actually lives, and it's why the *result* is not the thing you should be checking.
+
+### Scope and security — rare, unbounded
+
+The agent does something it shouldn't have — writes where it should have read, touches a record outside the task. Astra measures dramatically better here than its predecessor: **0% scope violations in adherence testing where Sol was at 48%.** But "measures better" isn't "cannot," and with the permissions a computer-use agent needs, the ceiling on this class is high.
+
+## Verify the trail, not the answer
+
+This is the single most useful practice I've adopted, and it directly addresses the silent-failure class: **make the agent produce a receipt, and judge the receipt.**
+
+```markdown
+## Output contract
+
+Before your final answer, output an ACTION LOG: a numbered list of every
+page you visited (full URL) and every action you took (click target, text
+typed, filter applied, row selected), in order.
+
+Then output the RESULT.
+
+If any step did not go as expected — an element you could not find, a page
+that looked different from what you expected, a value you inferred rather
+than read directly — say so explicitly in the log. Do not smooth it over.
+```
+
+Then check the log mechanically, not by reading it:
+
+```python
+def validate_receipt(action_log: list[dict], task: TaskSpec) -> list[str]:
+    """Assert the agent did what the task required. Cheap, and catches the
+    failure class that reading the RESULT never will."""
+    problems = []
+
+    visited = {a["url"] for a in action_log if a.get("url")}
+    if not visited & task.expected_domains:
+        problems.append(f"never visited any of {task.expected_domains}")
+
+    applied = {a["value"] for a in action_log if a["type"] == "filter"}
+    for required in task.required_filters:
+        if required not in applied:
+            problems.append(f"required filter not applied: {required}")
+
+    writes = [a for a in action_log if a["type"] in ("submit", "save", "delete")]
+    if writes and task.read_only:
+        problems.append(f"write actions on a read-only task: {writes}")
+
+    return problems
+```
+
+A dashboard extraction where the agent never applied the date filter is a wrong answer *no matter how plausible the number looks*. The receipt catches it. The result never will.
+
+This is the same instinct as [test-driven agentic development](/blog/test-driven-agentic-development-guide) — make the agent prove it worked rather than asserting it did — applied to a domain where there's no test suite to lean on.
+
+## Start read-only, with a throwaway account
+
+Two guardrails that cost nothing and prevent the worst outcomes:
+
+**Read-only until proven.** Run the agent in collect-only mode for a week. No submits, no saves, no deletes. You get the same visibility into whether it works, with none of the blast radius while you're still learning its confusion patterns.
+
+**A limited-access account, never production credentials.** View-only logins, test tenants, sandbox environments. A computer-use agent authenticates as whoever you gave it, and it does not have the judgment to notice that a page it's about to click looks unusual. If your agent's session can drain a bank account, that's a design decision you made, not a model risk.
+
+And watch the first few runs. Not the summaries — the actual screen. You'll learn more about where it gets confused in twenty minutes of watching than from a week of reading logs.
+
+## What to hand it, and what to keep
+
+The filter I use is one question: **does this system already have a proper API?**
+
+If the answer is yes, use the API. It's faster, cheaper, deterministic, and testable. A computer-use agent is what you reach for when the door is locked — not a general-purpose replacement for integration work.
+
+**Good candidates**, all sharing the same shape — repetitive, screen-bound, no shortcut available:
+
+- Price or inventory comparison across retailers with wildly different layouts
+- Booking and scheduling on systems that never shipped an API
+- Data entry across disconnected internal portals
+- Extracting numbers from dashboards that only exist behind a login
+- Driving legacy software nobody maintains and nobody can extend
+- Frontend QA against a build — clicking through real flows in a real browser
+
+That last one is where I've gotten the most value, and it pairs well with [Chrome DevTools for Agents](/blog/chrome-devtools-agents-mcp-browser-debugging-guide): the agent drives the UI while DevTools gives it real DOM and network visibility instead of pure screenshot inference. If you control the app, [exposing your own actions as tools via WebMCP](/blog/webmcp-website-ai-agent-tools-guide) is better still — you replace pixel-hunting with a typed interface and the reliability question mostly evaporates.
+
+**Keep away from it:**
+
+- **Your codebase.** Code belongs with a coding agent, where changes are diffed, reviewed, and reversible. A computer-use agent editing files in a VM is a worse version of a solved problem.
+- **Anything high-stakes.** Banking, billing, customer records, anything with a compliance obligation attached.
+- **Write and delete on systems you haven't watched it use yet.**
+
+## Architecture for runs that outlive a request
+
+A 40-minute task doesn't fit in a request/response cycle. Your load balancer will kill it long before the agent finishes.
+
+The Responses API returns a `response_id` with a status (`queued`, `thinking`), so build around that rather than around a held-open connection:
+
+```python
+# Kick off, persist the handle, return immediately.
+resp = client.responses.create(
+    model="gpt-6-astra",
+    input=task.prompt,
+    tools=[COMPUTER_USE_TOOL],
+    background=True,
+)
+redis.setex(f"run:{task.id}", 86400, resp.id)
+return {"run_id": task.id, "status": resp.status}
+```
+
+Then collect results out-of-band — a webhook callback, a poller, an Airflow deferrable operator. Anything that doesn't hold a socket open for 40 minutes.
+
+**Async tools** are the other half. Mark a tool `async` and the model keeps working while your background job runs instead of blocking the turn:
+
+```python
+{"type": "function", "name": "run_visual_diff", "async": True, ...}
+```
+
+For a QA agent that kicks off a screenshot diff and continues clicking through the next flow while it runs, this is a straight wall-clock win.
+
+**Mid-turn steering** lets you inject context into a running response over the Responses WebSocket without cancelling it. Two constraints worth designing around: it can't undo output already delivered or cancel a tool that already started, and the WebSocket caps at 60 minutes. Structure long runs as resumable segments rather than one heroic connection — the same [long-running agent failure modes](/blog/ai-agent-observability-production-failure-modes) apply here, just with a screen attached.
+
+## What it costs
+
+At $10/M input and $50/M output, computer use is input-heavy by nature — every step feeds a screenshot back in.
+
+Three things keep it sane:
+
+**Effort at `medium`.** Computer use is not where `max` earns its keep; the bottleneck is visual grounding, not reasoning depth. Higher effort mostly buys you more reasoning tokens per screenshot.
+
+**Watch the 272K boundary.** A long session accumulating screenshots crosses 272,000 input tokens faster than you'd think, and crossing it reprices the *entire* request at 2x input and 1.5x output. Segment long runs. This is [one of five places an Astra bill leaks](/blog/gpt-6-astra-pricing-cost-control-guide).
+
+**Batch the unattended stuff.** Nightly agents at 50% off is the easiest saving available.
+
+The offsetting factor is the 47% time cut. Fewer steps to completion means fewer screenshots means fewer input tokens — which is why the per-task economics work out better than the per-token rate suggests.
+
+## The checklist
+
+```text
+[ ] Does this system have an API? If yes, use it instead.
+[ ] Scope tool permissions to the minimum the task tolerates
+[ ] Limited-access account — never production credentials
+[ ] Read-only mode for the first week
+[ ] Require an ACTION LOG receipt; validate it mechanically
+[ ] Assert on the trail, never on the plausibility of the result
+[ ] Watch the first 3 runs on screen, not in logs
+[ ] background=True + webhook or poller — never a held-open request
+[ ] Segment sessions to stay under 272K input tokens
+[ ] Effort at medium; batch anything unattended
+```
+
+Astra made computer use good enough to ship. It did not make it good enough to trust, and those are different milestones. Build for the 27% and you get an agent that saves real hours. Build for the 72.6% and you get a very confident, very fast machine for producing wrong answers.
+
+## References
+
+### Sources
+
+- [GPT-6 Astra's Computer Use Skills: What the Agentic Benchmarks Show — MindStudio](https://www.mindstudio.ai/blog/gpt-6-astra-computer-use-agentic) — OSWorld, ScreenSpot Pro and AutomationBench figures and what each measures
+- [GPT-6 Astra Computer Use: What To Hand It And What To Keep — WithPT](https://withpt.ai/blog/gpt-6-astra-computer-use) — the task-selection filter, guardrails, and the action-receipt practice
+- [OpenAI GPT-6 Astra: Architecting for Native Computer Use — Pradeep Bhandari](https://pradeepbhandari.com/blog/openai-gpt-6-astra-architecting-guide) — tool definition shape, persistent sessions, permission scoping, and async patterns
+- [GPT-6 Astra — OpenAI](https://openai.com/index/gpt-6-astra/) — computer-use capability claims and the 47% time-per-task reduction
+- [GPT-6 Astra API Brings Computer Use to Developers — StartupHub](https://www.startuphub.ai/ai-news/technology/2026/gpt-6-astra-api-brings-computer-use-to-developers) — async tool calling and mid-turn steering in the Responses API
+
+### Further Reading
+
+- [GPT-6 Astra API Tutorial: Build an Agent in Python — DataCamp](https://www.datacamp.com/tutorial/gpt-6-astra-api-tutorial) — a full worked agent build if you want the end-to-end scaffolding
+- [GPT-6 Astra System Card](https://deploymentsafety.openai.com/gpt-6-astra) — the scope-adherence and safety evaluations behind the permission guidance
+- [OSWorld benchmark](https://os-world.github.io/) — what the 72.6% is actually measured against, task by task
+
+---
+
+~Seb 👊
