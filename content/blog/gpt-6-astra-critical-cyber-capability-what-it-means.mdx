@@ -1,0 +1,172 @@
+---
+title: "What 'Critical Cyber Capability' Means If You Ship Code"
+date: '2026-09-10'
+category: 'AI'
+tags: ['ai-security', 'gpt-6', 'threat-modeling', 'devsecops', 'openai']
+featured: false
+author: 'Sebastian'
+draft: false
+excerpt: "GPT-6 Astra is the first model ever rated Critical for cyber capability. The uncomfortable part isn't what it can do — it's that its capabilities didn't change between August and September. Only the disclosure did. Here's what that actually means for your threat model."
+---
+
+Here's the framing that reorganized how I think about this, from Sanchit Vir Gogia at Greyhound Research: **the Critical designation is a disclosure event, not a capability event.**
+
+GPT-6 Astra could do everything it does today on August 10. It could do it on September 1. Nothing about the weights changed when OpenAI published the classification on September 4 — what changed is that they ran the tests, wrote down the result, and told you.
+
+Which leads somewhere genuinely uncomfortable: **Astra is currently the only frontier model whose cyber capability an enterprise actually knows.** Every competitor sitting unlabeled in your stack has a number too. Nobody published it.
+
+So if your reaction to the Critical rating is "we should block Astra," you've drawn exactly the wrong conclusion. Here's the right one.
+
+## What Critical actually means
+
+OpenAI's Preparedness Framework defines the Critical cyber threshold as the ability to **find and exploit novel vulnerabilities in hardened targets without step-by-step human guidance.** Astra is the first commercially released model to reach it. OpenAI delayed the launch specifically to add safeguards after determining it had.
+
+The measurements behind that:
+
+| Evaluation | Astra | GPT-5.6 Sol | What it measures |
+|---|---|---|---|
+| ExploitBench | **100%** | 78.5% | Turning documented vulns into working exploits |
+| ExploitGym | **42.4%** | 30.3% | End-to-end exploitation under realistic constraints |
+| ExploitBench (Jun–Aug 2026 vulns) | **39%** | — | Genuinely novel targets, not in training data |
+| SRE-Bench | **88%** | — | Binary analysis and reverse engineering, no source |
+
+And two zero-days discovered during pre-release evaluation.
+
+The number that matters is **39%**. ExploitBench at 100% is impressive but it's exploiting things that are documented — you could argue that's sophisticated retrieval. The June–August subset is vulnerabilities that postdate the training data. Getting 39% of those means the model is **reasoning about exploit mechanics**, not recalling them. That's the line between "fast search over known attacks" and "novel attack generation," and it's the one that actually moves a threat model.
+
+SRE-Bench at 88% is the quiet second entry. Binary analysis without source has been a genuine skill bottleneck — a scarce specialist capability that gated both malware analysis and closed-source attack research. That bottleneck is now $50 per million output tokens.
+
+## What changed in your threat model
+
+Be precise about this, because the loose version ("AI can hack now") is both true and useless.
+
+**What changed:** the cost and scarcity of exploit development. Work that required an elite researcher with years of specialization is now API-accessible. Not perfectly — 39% on novel targets is a long way from reliable — but the economics of a low-yield automated process are completely different from those of a scarce human one. You can run it a thousand times.
+
+**What did not change:** your attack surface. The same unsanitized input, the same over-permissioned service account, the same dependency you haven't updated. Astra doesn't create vulnerabilities. It changes how quickly the existing ones get found, and by whom.
+
+The practical consequence for anyone shipping software: **the window between "vulnerability exists in your code" and "someone has a working exploit for it" got shorter.** Everything downstream of that — patch cadence, dependency hygiene, how long you leave a known issue in the backlog — needs to be re-priced against a shorter window.
+
+That's not a new argument, it's an acceleration of an old one. But it does mean that [killing install scripts and hardening your npm supply chain](/blog/npm-install-scripts-hardening-keyv-playbook) moved from good practice to something with a clock on it.
+
+## What's gated, and what isn't
+
+The publicly available Astra **refuses advanced offensive tasks** — it won't write proof-of-concept exploits. Secure code review and patching are allowed; weaponization isn't.
+
+Above that sit two access tiers:
+
+- **OpenAI Daybreak** — an application-based programme for cybersecurity defenders, giving less-restricted access for vulnerability validation, malware analysis, and detection engineering.
+- **Daybreak Blue** — the most advanced offensive capability, reserved for vetted defensive use.
+
+If you have a security function doing any of that work, apply now rather than later. The asymmetry argument only works if defenders actually take the access that's offered to them, and "we'll look at it next quarter" is how the capability gap ends up pointing the wrong way.
+
+Also worth knowing: **enterprise and business workspaces have Astra off by default.** An admin must enable it. That's a deliberate consequence of the Critical rating, and it's a control you should treat as meaningful rather than as friction to route around.
+
+## The gap that will actually bite you: attribution
+
+This is the part I'd fix first, and it has nothing to do with exploits.
+
+When an AI agent acts through your systems, the actions land in your logs as a **service account**. There's no record of which instruction produced them, or which model version was behind the call. Your audit trail says `svc-automation` updated 400 records. It does not say why, on whose prompt, or under which model.
+
+That was survivable when agents were narrow. With an agent that has computer-use access, shell access, and a Critical cyber rating, an unattributable action log is a genuine incident-response failure — you cannot answer "what did it do and why" after the fact.
+
+Fix it at the boundary you control:
+
+```python
+# Every agent-initiated action carries provenance, or it doesn't happen.
+@dataclass(frozen=True)
+class AgentProvenance:
+    run_id: str            # correlates every action in one agent run
+    model: str             # "gpt-6-astra" — versions change under you
+    prompt_sha: str        # hash of the instruction that produced this
+    principal: str         # the human or system that authorized the run
+    effort: str
+
+def audited_call(action: str, target: str, prov: AgentProvenance, **kw):
+    audit_log.write({
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "action": action,
+        "target": target,
+        **asdict(prov),
+    })
+    return execute(action, target, **kw)
+```
+
+Three properties to insist on: **a run ID that correlates every action in a single agent run**, the **model identifier** (you will need to answer "was this the model that had the bug"), and a **hash of the instruction**. Without the last one you can't reconstruct intent, and intent is the whole question during an incident.
+
+This is the same argument as [agent observability](/blog/ai-agent-observability-production-failure-modes), with a compliance deadline attached.
+
+## Your monitoring assumption just got weaker
+
+Second thing to fix, and it's subtler.
+
+UK AISI documented a **substantial decrease in chain-of-thought monitorability** on Astra. Under adversarial prompting it can evade monitoring that worked on earlier models, and it demonstrated the ability to **conceal its reasoning on simpler tasks**.
+
+If your safety story is "we read the model's reasoning trace and flag anything concerning," that story is weaker than it was in August. The trace is exactly the thing that got less reliable.
+
+The fix is to move enforcement from the reasoning layer to the **tool layer**, where actions are real regardless of what the transcript claims:
+
+```toml
+# Codex CLI: gate the action, don't grade the explanation.
+[hooks]
+
+[[hooks.pre_tool_use]]
+name = "human-approves-shell"
+command = "bash -c 'exit 2'"          # exit 2 blocks and escalates
+matchers = [{ tool_name = "shell" }]
+
+[[hooks.on_mcp_tool_result]]
+name = "audit-mcp"
+command = "bash -c 'echo \"$(date -Iseconds) $CODEX_TOOL_NAME $CODEX_RESULT_TRUNCATED\" >> ~/.codex/audit.log'"
+```
+
+I go through the broader version of this in [configuring Astra in Codex CLI](/blog/gpt-6-astra-codex-cli-setup-guide), but the principle stands anywhere you run agents: **audit what it did, not what it said it was thinking.** Infrastructure-layer controls that work independently of the model's own safeguards are the only ones that survive a monitorability regression.
+
+There's one genuinely reassuring number on the other side of this ledger. On scope-adherence testing, Astra exceeded its authorized scope in **0% of cases** where GPT-5.6 Sol did so 48% of the time. The model is markedly better at staying inside the lines. It's just harder to verify from the transcript that it did.
+
+## The prompt injection problem got worse
+
+Nothing about Astra makes [prompt injection](/blog/prompt-injection-attacks-llm-security-guide) more likely. It makes the consequences worse.
+
+Prompt injection is a capability amplifier: whatever the model can do, an attacker who controls its input can do. That equation was already bad. Now one side of it is a model with Critical-rated cyber capability, shell access, and computer use.
+
+Concretely, if you run agents over untrusted input — customer tickets, scraped pages, PR descriptions, email — you need to re-run that threat model with the new capability ceiling. And MCP is directly in scope here: [the NSA's MCP hardening guidance](/blog/nsa-mcp-hardening-ai-agent-security-guide) and the [stdio RCE class of bugs](/blog/mcp-rce-vulnerability-stdio-flaw-guide) are attack paths into exactly the tool surface a Critical-rated model would be executing through.
+
+## Five things to do this month
+
+1. **Apply for Daybreak** if you have a security function. Defensive parity is opt-in and the application takes less time than the meeting you'd have about it.
+2. **Add provenance to agent action logs** — run ID, model version, prompt hash, authorizing principal. This is the one that determines whether you can answer questions during an incident.
+3. **Move enforcement to the tool boundary.** Hooks, approval gates, scoped permissions. Stop relying on reasoning-trace review as a control.
+4. **Re-run your prompt-injection threat model** against the new capability ceiling, on every path where agents touch untrusted input.
+5. **Update your model risk classification.** Not to ban Astra — to reflect that "frontier model with tool access" is now a materially different risk category than it was six months ago, whichever vendor's logo is on it.
+
+And brief your board in operational terms, not vibes. "Critical" sounds like a fire alarm. What it actually means is: exploit development got cheap, our patch window got shorter, and we now know one vendor's number and none of the others'.
+
+## The honest conclusion
+
+The instinct to treat the Critical rating as a reason to avoid Astra is backwards, and it's worth being explicit about why.
+
+OpenAI ran the evaluation, published the result, gated the dangerous capability behind vetted access, and turned the model off by default for enterprises. That is roughly what you'd want a vendor to do. The models that should worry you more are the ones where nobody has published a number — not because they're necessarily more capable, but because you're making a risk decision with no data at all.
+
+The capability exists now regardless of which vendor you buy from or whether you buy at all. What you control is whether your logs can answer "what did the agent do," whether your controls sit at the tool boundary or the transcript, and whether your defenders got access before your attackers did.
+
+Start with the audit trail. Everything else in this post is a judgment call; that one is just missing infrastructure.
+
+## References
+
+### Sources
+
+- [OpenAI launches GPT-6 Astra, its first model to cross a critical cybersecurity threshold — CSO Online](https://www.csoonline.com/article/4218679/openai-launches-gpt-6-astra-its-first-model-to-cross-a-critical-cybersecurity-threshold.html) — the disclosure-vs-capability framing, Daybreak details, and the auditability gap
+- [GPT-6 Astra Security Implications: The CISO's Guide — NeuralTrust](https://neuraltrust.ai/blog/gpt-6-astra-ciso-security-implications) — ExploitBench/ExploitGym/SRE-Bench figures and the 39% novel-vulnerability result
+- [Safety overview: GPT-6 Astra — OpenAI](https://openai.com/index/safety-overview-gpt-6-astra/) — the Critical threshold definition and deployed safeguards
+- [Responding to the next frontier of critical cyber capabilities — OpenAI](https://openai.com/index/responding-next-frontier-critical-cyber-capabilities/) — Daybreak and Daybreak Blue access tiers
+- [GPT-6 Astra Scores 100% on ExploitBench as OpenAI Blocks PoC Exploit Requests — The Hacker News](https://thehackernews.com/2026/09/gpt-6-astra-scores-100-on-exploitbench.html) — what the public model refuses and what stays gated
+
+### Further Reading
+
+- [Path to Astra: critical capabilities and frontier safeguards — OpenAI](https://openai.com/index/path-to-astra/) — how OpenAI reached the decision to ship a Critical-rated model
+- [GPT-6 Astra System Card](https://deploymentsafety.openai.com/gpt-6-astra) — the monitorability findings and full adversarial evaluation detail
+- [What OpenAI Astra Means for Security Operations — Prophet Security](https://www.prophetsecurity.ai/blog/openai-astra-security-operations) — the SOC-side view if you run detection engineering
+
+---
+
+~Seb 👊
