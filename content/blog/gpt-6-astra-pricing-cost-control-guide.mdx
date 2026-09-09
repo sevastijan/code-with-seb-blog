@@ -1,0 +1,225 @@
+---
+title: 'GPT-6 Astra Pricing: 5 Places Your Money Leaks'
+date: '2026-09-07'
+category: 'AI'
+tags: ['gpt-6', 'openai-api', 'cost-optimization', 'ai-economics', 'llm']
+featured: false
+author: 'Sebastian'
+draft: false
+excerpt: "Someone measured GPT-6 Astra at max effort costing 2.3x what low costs — for identical correct answers. That's one of five ways this model quietly drains a budget. Here's the real pricing math, the 272K cliff, and the November 21 deadline nobody is talking about."
+---
+
+Eleven verified tasks. Seven effort levels. Three runs each. Every rung from `low` upward got **100% of the answers right** — and `max` cost **2.3x more than `low`** to do it.
+
+That's the shape of GPT-6 Astra pricing in a sentence. The model isn't expensive because OpenAI charges $10/$50 per million tokens. It's expensive because there are at least five settings where the default, or the intuitive choice, quietly costs you double for nothing. I found four of them the hard way.
+
+Here's the rate card first, so the rest of this has numbers to hang on:
+
+| Tier | Input | Cached input | Cache write | Output |
+|---|---|---|---|---|
+| Standard (≤272K input) | $10 | $1 | $12.50 | $50 |
+| Long context (>272K input) | $20 | $2 | $25 | $75 |
+| Batch / Flex | $5 | — | — | $25 |
+| Fast mode | $20 | — | — | $100 |
+
+Fast mode is 2.5x the speed at 2x the price. Batch and Flex are half price. Data-residency endpoints add a 10% uplift, and fast mode isn't available for EU residency at all.
+
+## Leak #1: an effort level you never measured
+
+This is the biggest one, and it's the one nobody checks because the parameter *sounds* like a quality dial.
+
+Someone ran the experiment properly — eleven tasks with locally verified answer keys, seven `reasoning_effort` values, three runs each, measuring reasoning tokens and cost per *correct* answer rather than cost per call. The results:
+
+| Effort | Accuracy | Reasoning tokens | Cost per correct answer |
+|---|---|---|---|
+| `none` | 20% | 0 | $0.0043 |
+| `low` | 100% | 151 | **$0.0085** |
+| `medium` | 100% | 159 | $0.0089 |
+| `high` | 100% | 203 | $0.0111 |
+| `xhigh` | 100% | 279 | $0.0149 |
+| `max` | 100% | 370 | $0.0195 |
+| `disabled` | 100% | 243 | $0.0131 |
+
+Read that column again. From `low` to `max`, accuracy does not move. Cost per correct answer goes up **129%**.
+
+Three things fall out of this:
+
+**There's no gradual degradation to tune against.** `none` failed 17 of 33 runs. Reasoning is either on, or the model is guessing. So the honest choice isn't a spectrum — it's `low`, and then a justification for anything higher.
+
+**`disabled` is a trap.** It's an undocumented value that only works on Astra, it sounds like it should be the cheap one, and it spends **243 reasoning tokens against `low`'s 151** — 54% more cost per correct answer for identical accuracy. If someone on your team found it in a validation error message and assumed it meant "off," you're paying for that assumption.
+
+**The docs and the API disagree.** The validation layer advertises seven values; the model page lists five; `minimal` is rejected; `none` is documented as unsupported but accepted in practice. Don't reason from the error message. Measure.
+
+There's a cost-comparison wrinkle too. Against GPT-5.6 Sol, Astra at `low` is **1.57x** the cost. At `max` it's **2.57x**. The famous "2.5x more expensive" headline is a `max`-effort number that most workloads have no reason to pay.
+
+```python
+# Default low. Raise a specific call site only when an eval on YOUR
+# tasks shows a higher rung changing the outcome.
+EFFORT_BY_ROUTE = {
+    "extract":        "low",
+    "classify":       "low",
+    "code_edit":      "medium",
+    "architecture":   "xhigh",   # justified by an eval, not a hunch
+}
+```
+
+One more effort-related gotcha: structured outputs interact with this. At `low`, adding a JSON schema or a forced tool call costs almost nothing — 0 to 4 extra reasoning tokens. At `medium` and above, the same schema triggers substantial extra reasoning, with reasoning making up **57–73% of output tokens**. If you're doing schema-constrained extraction at `medium`, you're paying a premium twice over.
+
+## Leak #2: the 272,000-token cliff
+
+Astra's window is 1,050,000 tokens. The part of it priced at $10/M ends at **272,000**.
+
+Cross that line by one token and the **entire request** reprices — 2x input and cache, 1.5x output. Not the overage. Everything, including the 272,000 tokens that were under the threshold.
+
+```text
+272,000 in + 8,000 out  →  $2.72 + $0.40  =  $3.12
+280,000 in + 8,000 out  →  $5.60 + $0.60  =  $6.20
+
+8,000 extra tokens of context: +99% on the bill.
+```
+
+Eight thousand tokens is one medium source file. That is the entire distance between the two price tables.
+
+Treat 272K as a budget boundary enforced in code, not a capability limit you drift across:
+
+```python
+LONG_CONTEXT_LIMIT = 272_000
+
+def guard_context(estimated_input: int, *, allow_long: bool = False) -> None:
+    if estimated_input > LONG_CONTEXT_LIMIT and not allow_long:
+        raise ValueError(
+            f"{estimated_input:,} input tokens crosses the long-context boundary. "
+            f"This reprices the WHOLE request at 2x input / 1.5x output "
+            f"(~{estimated_input * 10 / 1_000_000:.2f} -> "
+            f"~{estimated_input * 20 / 1_000_000:.2f} on input alone). "
+            f"Compact the context or pass allow_long=True deliberately."
+        )
+```
+
+In Codex CLI the same boundary lives in `auto_compact_token_limit`, and the popular `850000` value walks straight over it — which is why I argue for [configuring less, not more, in Codex](/blog/gpt-6-astra-codex-cli-setup-guide).
+
+## Leak #3: a cache that isn't actually caching
+
+Cached input is **$1/M against $10/M standard**. That's a 10x discount on your largest token bucket, and on Astra it's not a nice-to-have — it's the difference between viable and not.
+
+Two ways it silently doesn't happen.
+
+**The config key renamed.** `prompt_cache_retention` became `prompt_cache_options.ttl`. The old key doesn't error. It's accepted, ignored, and you get billed full rate on everything you believed was cached. I covered this and six other silent breakages in [the Astra API migration checklist](/blog/gpt-6-astra-api-migration-checklist).
+
+**Your prefix isn't stable.** Caching keys off an exact prefix match. A timestamp in your system prompt, a session ID at the top of the context, tool definitions serialized from an unordered dict — any of these invalidate the cache on every single call while looking completely fine in code review.
+
+```python
+# Cache-hostile: prefix changes every call
+system = f"You are an assistant. Current time: {datetime.now()}\n{RULES}"
+
+# Cache-friendly: stable prefix, volatile data at the end
+system = RULES                              # never changes -> cached
+user_input = f"[time: {datetime.now()}]\n{prompt}"   # volatile -> suffix
+tools = sorted(tool_defs, key=lambda t: t["name"])   # deterministic order
+```
+
+Never trust the config. Assert on what the API reports back:
+
+```python
+cached = resp.usage.input_tokens_details.cached_tokens
+ratio = cached / max(resp.usage.input_tokens, 1)
+metrics.gauge("llm.cache_hit_ratio", ratio, tags=[f"route:{route}"])
+
+if ratio < 0.3 and resp.usage.input_tokens > 5_000:
+    logger.warning("cache_hit_ratio=%.2f on %s — check prefix stability", ratio, route)
+```
+
+One caveat on the write side: cache writes bill at **$12.50/M**, 1.25x the standard input rate. Caching content you use exactly once is a 25% loss. It wins from the first reuse onward — and TTL is 30 minutes, so agent sessions with long idle gaps re-pay that write more often than you'd expect.
+
+## Leak #4: paying sync prices for async work
+
+**Batch and Flex are 50% off.** $5/M input, $25/M output.
+
+Most teams route everything through the standard tier because that's what the SDK does by default, and then discover that a meaningful share of their spend was never latency-sensitive:
+
+- nightly summarization and report generation
+- backfills and re-embedding runs
+- evaluation suites
+- documentation and changelog generation
+- anything triggered by a cron rather than a human
+
+Half price, for work where nobody is watching a spinner. If a quarter of your volume is async, that's a 12.5% cut to the whole bill for a routing change.
+
+The mirror image is **fast mode**, which is 2x the price for 2.5x the speed. That is a legitimate trade when a human is actively blocked — an interactive session, a user-facing request. It is money set on fire when it's left on in a background job. Fast mode belongs in a per-task flag, never in a config file.
+
+## Leak #5: sending everything to the frontier model
+
+The most expensive line in most Astra bills isn't a setting. It's the assumption that the newest model should handle everything.
+
+Astra's advantage is concentrated in long-horizon, tool-heavy, multi-step work. On general coding it lands roughly where Sol did — the Artificial Analysis Coding Agent Index has it at 67 against Fable 5.1's 70. For classification, extraction, summarization, and routing, you're paying frontier rates for a job a much cheaper model does identically well:
+
+| Model | Input | Output |
+|---|---|---|
+| GPT-6 Astra | $10 | $50 |
+| Claude Fable 5.1 | $10 | $50 |
+| GPT-5.6 Sol (promo) | $4 | $20 |
+| GPT-5.6 Terra | $2 | $12 |
+| Gemini 3.8 Flash | $0.75 | $3.75 |
+
+Gemini 3.8 Flash is **13x cheaper on input and 13x on output**. For "is this ticket a bug or a feature request," it is not 13x worse. It is not worse at all.
+
+The routing discipline is the same one I described in [big agent vs micro-agents](/blog/big-agent-vs-micro-agents-model-tiering-guide): send roughly 90% of volume to a mid or small tier and reserve the frontier for work that demonstrably needs it. That single decision moves more money than every other item in this post combined.
+
+## The counterintuitive part: per-token is the wrong unit
+
+Everything above is about not overpaying. This section is about not underestimating Astra, because the naive comparison is also wrong in the other direction.
+
+Astra uses roughly **one third the tokens of Sol (max)** in the Codex harness and **one fifth of Claude Opus 5 (xhigh)** for comparable results. OpenAI reports about **57% lower cost per completed task** on DeepSWE coding work, driven by finishing in ~40 minutes where Sol took ~75.
+
+So the per-million rate says 2.5x worse and the per-task number says 57% better. Both are computed correctly. They measure different things, and only one of them is your invoice.
+
+```python
+# The only cost metric that answers the question you're asking.
+metrics.histogram("llm.cost_per_completed_task", cost_usd, tags=[
+    f"model:{model}", f"route:{route}", f"effort:{effort}",
+])
+metrics.histogram("llm.wall_clock_per_completed_task", seconds, tags=[...])
+```
+
+Track spend at the **workflow** level, not the account level. An account-level dashboard tells you the bill went up. A workflow-level one tells you which route caused it, which is the only version you can act on. That's the same argument as [agent observability](/blog/ai-agent-observability-production-failure-modes) — aggregate numbers hide exactly the failure you need to see.
+
+## The deadline nobody mentions
+
+GPT-5.6 Sol's $4/$20 pricing is **promotional, and it ends November 21, 2026.**
+
+That matters for anyone whose migration plan is "stay on Sol, it's cheaper." That plan has an expiry date roughly ten weeks out. When Sol reprices, every per-token comparison in every blog post written this month — including the ones in this post — shifts.
+
+So do the evaluation now, while you still have a cheap baseline to measure against. Waiting until November means benchmarking against a moving price.
+
+## A budget that survives contact
+
+Six things, in the order I'd do them:
+
+1. **Default `reasoning.effort` to `low`.** Raise individual call sites only when an eval on your own tasks shows a higher rung changing outcomes. Never use `disabled`.
+2. **Guard 272,000 input tokens in code** with an explicit opt-out. Assume you'll cross it accidentally, because you will.
+3. **Assert on `cached_tokens`**, don't trust the cache config. Stabilize the prefix; volatile data goes at the end.
+4. **Route async work to Batch/Flex** for 50% off. Keep fast mode as a per-task flag.
+5. **Tier your traffic.** Frontier rates for long-horizon agentic work; cheap models for everything else.
+6. **Instrument cost per completed task**, per workflow. Per-token dashboards will tell you the wrong story in both directions.
+
+Do one of these and it's the first. Effort is the setting that's most likely to be wrong, costs the most when it is, and takes ten minutes to change — and the evidence says the expensive rungs are buying you nothing on most tasks.
+
+## References
+
+### Sources
+
+- [GPT-6 Astra Reasoning Effort: max Costs 2.3x low for the Same Answers — DEV](https://dev.to/synthorai/gpt-6-astra-reasoning-effort-max-costs-23x-low-for-the-same-answers-5bjh) — the eleven-task effort study, the `disabled` trap, and cost per correct answer
+- [GPT-6 Astra pricing: what OpenAI's new flagship costs in 2026 — CloudZero](https://www.cloudzero.com/blog/gpt-6-pricing/) — full rate card, Batch/Flex and fast-mode multipliers, the Sol promo deadline, and per-task economics
+- [GPT-6 Astra Model — OpenAI API docs](https://developers.openai.com/api/docs/models/gpt-6-astra) — official pricing tables and the 272K repricing rule
+- [Benchmarking GPT-6 Astra — Artificial Analysis](https://artificialanalysis.ai/articles/benchmarking-gpt-6-astra) — token-efficiency measurements and the Coding Agent Index placement
+- [GPT-6 Astra Pricing: $10 In, $50 Out per Million, and ChatGPT Plans — Yotta Labs](https://www.yottalabs.ai/post/gpt-6-astra-pricing-api-cost-2026) — cache-write rates and plan-level limits
+
+### Further Reading
+
+- [OpenAI API Pricing (September 2026)](https://www.aipricing.guru/openai-pricing/) — current cross-model rate comparison if you're building a routing table
+- [GPT-6 Astra Pricing: Costs, Rates, and Your Real Bill — Emergent](https://emergent.sh/learn/gpt-6-astra-pricing) — a second take on per-workflow cost modelling
+- [Ask HN: Initial thoughts on GPT-6 Astra?](https://news.ycombinator.com/item?id=49571621) — first-week burn-rate reports from people who did not read this post first
+
+---
+
+~Seb 👊
