@@ -1,0 +1,216 @@
+---
+title: 'GPT-6 Astra Code Review: Pay Only for Cross-File'
+date: '2026-09-12'
+category: 'AI'
+tags: ['code-review', 'gpt-6', 'ai-tooling', 'ci-cd', 'devsecops']
+featured: false
+author: 'Sebastian'
+draft: false
+excerpt: "On overall code review, GPT-6 Astra beats GPT-5.6 Sol 61.3% to 59.0% — noise, at 2.5x the price. On cross-file reviews it's 57.1% to 47.6%. That single split is the entire business case, and it turns model choice into a routing decision your CI can make automatically."
+---
+
+CodeRabbit ran GPT-6 Astra against GPT-5.6 Sol and Claude Opus 5 on actionable bug coverage. Two numbers came back:
+
+**Overall: Astra 61.3%, Sol 59.0%.** A 2.3-point gain for 2.5x the price. That's a bad trade.
+
+**Cross-file: Astra 57.1%, Sol 47.6%, Opus 5 42.9%.** A ten-point gap — 20% better than Sol, 33% better than Opus 5.
+
+Same model, same evaluation, opposite conclusions. Which means "should we use Astra for code review" is the wrong question. The right one is **which reviews**, and that's something your CI can decide from the diff before it spends a cent.
+
+## What the numbers actually say
+
+| Evaluation | Astra | GPT-5.6 Sol | Opus 5 |
+|---|---|---|---|
+| Actionable bug coverage, overall | 61.3% | 59.0% | 50.2% |
+| Actionable bug coverage, cross-file | **57.1%** | 47.6% | 42.9% |
+
+"Actionable bug coverage" is the share of real, worth-fixing bugs the reviewer surfaces. Not style nits, not maybes — findings a human would act on.
+
+CodeRabbit are refreshingly careful about scope, and it's worth repeating their caveat rather than burying it: these results describe *one part* of review performance. They don't establish an overall ranking of review quality, predict your defect rate, or promise the same gain on every pull request.
+
+But the shape of the split is robust enough to build on, because it maps onto something real about how the two review types work.
+
+## Why cross-file is the split that matters
+
+A single-file review is largely pattern recognition. Null dereference, off-by-one, unhandled promise rejection, missing error branch — the evidence is all in the diff. Models have been decent at this for two years, and the ceiling is low enough that the gap between a good model and a great one is small. Hence 61.3 versus 59.0.
+
+A cross-file review is a reasoning problem. The bug exists **because** of the relationship between the change and something else: a caller three modules away that assumed the old return shape, a migration that lands before the code depending on it, a lock ordering that's only wrong when two files' assumptions are combined.
+
+The relevant information is *distributed*. That's precisely the task shape where Astra's gains cluster — long-horizon, multi-step, evidence spread across sources. It's the same signature that shows up in [Terminal-Bench 4.0 jumping from 37.3% to 57.7%](/blog/gpt-6-astra-developer-review-what-changed) and in the model's strong deep-context retrieval.
+
+So: pay the premium where the task is distributed reasoning. Don't pay it for pattern matching you were already getting.
+
+## The routing rule
+
+The good news is that "is this a cross-file review" is answerable from the diff, cheaply, before any model runs.
+
+```python
+def review_model_for(diff: Diff) -> str:
+    """Route by review shape, not by PR size. Cross-file reasoning is where
+    the expensive model earns its price; everything else is pattern matching."""
+
+    # Genuine cross-file signal: the change spans modules AND touches
+    # something other files depend on.
+    touched_modules = {p.split("/")[1] for p in diff.paths if "/" in p}
+    exported_symbols_changed = diff.changed_exports or diff.changed_signatures
+    schema_or_migration = any(
+        p.startswith(("migrations/", "schema/")) or p.endswith(".sql")
+        for p in diff.paths
+    )
+
+    if schema_or_migration or (len(touched_modules) > 1 and exported_symbols_changed):
+        return "gpt-6-astra"          # distributed reasoning — pay for it
+
+    if len(diff.paths) > 12:
+        return "gpt-6-astra"          # broad change, assume coupling
+
+    return "gpt-5.6-terra"            # single-concern diff — pattern matching
+```
+
+Two details that make this work in practice.
+
+**File count alone is a bad proxy.** A twenty-file rename is not a cross-file reasoning problem. A two-file change where one alters a function signature and the other is its only caller absolutely is. Route on *changed exports and signatures*, not on diff size.
+
+**Migrations always route up.** Schema changes are the canonical distributed bug: the code that breaks is usually not in the diff at all. This is the single highest-value rule in the whole function.
+
+## The cost math
+
+At a fixed 100,000 input and 10,000 output tokens per review:
+
+| Model | Cost per review |
+|---|---|
+| GPT-6 Astra | **$1.50** |
+| GPT-5.6 Sol | $0.60 |
+| GPT-5.6 Terra | $0.32 |
+| GPT-5.6 Luna | $0.032 |
+
+Astra is 2.5x Sol and **47x Luna**.
+
+Run the routing against a realistic PR mix — say 15% of pull requests are genuinely cross-file:
+
+```text
+All-Astra:        1,000 reviews x $1.50               = $1,500/mo
+Routed:  150 x $1.50  +  850 x $0.32                  =   $497/mo
+
+Same coverage on the reviews that need it. 67% cheaper.
+```
+
+And you *gain* coverage relative to an all-cheap-model setup on exactly the reviews where bugs are most expensive to find later. This is the [big-agent vs micro-agents tiering argument](/blog/big-agent-vs-micro-agents-model-tiering-guide) applied to a domain with an unusually clean routing signal.
+
+## 61.3% means 39% gets through
+
+Now the part that matters more than any of the above.
+
+The best model in this evaluation surfaces **61.3% of actionable bugs**. Nearly two in five get through. On cross-file — the hard ones, the expensive ones — it's 57.1%, so **43% get through**.
+
+An AI reviewer is a filter, not a gate. Treating it as a gate produces two specific failure modes I've watched happen:
+
+**Reviewer atrophy.** Humans start skimming because the bot "already checked." Coverage drops below what you had before you added the tool, because the bot catches 61% and the human now catches 30% of what they used to.
+
+**False confidence in the clean run.** "No findings" gets read as "no bugs." It means the model didn't find any, on a benchmark where it misses two in five.
+
+Concretely, keep human review mandatory and make the bot's output explicitly non-authoritative:
+
+```yaml
+# The bot comments. It does not approve, and it does not block.
+- name: AI review
+  run: ai-review --diff "$DIFF" --model "$(route-model)" --post-comment
+  continue-on-error: true    # a review failure never blocks a merge
+```
+
+The bot's job is to make the human's twenty minutes better, not to replace them. I've written the longer version of this argument in [why verification is the bottleneck in agentic development](/blog/test-driven-agentic-development-guide), and it applies double when the thing being verified is a review.
+
+## Guard the reviewer's attention
+
+There's a resource that matters more than the API bill: **how many findings a human will read before they stop reading.**
+
+That budget is small — realistically five to eight items on a normal PR. Blow through it with plausible-but-wrong findings and the whole tool gets muted, permanently. I've seen a team disable a review bot entirely over a fortnight of noise, and no amount of coverage improvement gets that trust back cheaply.
+
+Two things help. First, Astra measures better on this dimension than its predecessor — roughly **one third as many misleading claims about its own capabilities** as Sol, and it's markedly more willing to say it isn't sure rather than assert. Second, make that willingness explicit in the prompt:
+
+```markdown
+Report only findings you would defend in review.
+
+For each finding state: the file and line, the concrete failure scenario
+(inputs → wrong behaviour), and your confidence.
+
+If a finding depends on code you could not see, say so and mark it
+uncertain rather than asserting it.
+
+Do not report style, formatting, or preference. A linter handles those.
+Report nothing rather than padding the list.
+```
+
+"Report nothing rather than padding the list" is the highest-leverage sentence in that prompt. Most review-bot noise comes from a model that believes an empty response is a failure.
+
+If you want a comparison point, [what the Claude multi-agent security scanner actually catches](/blog/claude-security-plugin-multi-agent-scanner-guide) is the same problem from the security side — coverage is easy, signal-to-noise is the hard part.
+
+## Retention, before you send it your source
+
+Code review means sending proprietary source to a third party. Check this before the pilot, not after.
+
+- **GPT-6 Astra** supports **zero data retention** for eligible customers.
+- **Claude Fable 5.1** defaults to **30-day retention**, with ZDR available under Enterprise Frontier Safeguards.
+
+If you're under a contractual zero-retention obligation, that difference decides the model regardless of benchmark scores. It's the same class of constraint as [Astra being off by default in enterprise workspaces](/blog/gpt-6-astra-critical-cyber-capability-what-it-means) — a policy gate that arrives before the capability question.
+
+Also worth confirming: whether your review vendor trains on customer code. CodeRabbit don't. Not everyone in this space has been as clear.
+
+## What I'd actually ship
+
+```yaml
+name: AI review
+on: pull_request
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+
+      - name: Classify the diff
+        id: route
+        run: echo "model=$(python scripts/route_review.py)" >> "$GITHUB_OUTPUT"
+
+      - name: Review
+        run: |
+          ai-review \
+            --model "${{ steps.route.outputs.model }}" \
+            --effort medium \
+            --max-findings 8 \
+            --post-comment
+        continue-on-error: true
+```
+
+Four decisions embedded in that:
+
+**Route the model from the diff.** Cross-file and migrations get Astra; everything else gets a cheap model.
+
+**`--effort medium`.** Review is bounded reasoning over a bounded diff. There's [measured evidence that `max` costs 2.3x `low` for identical answers](/blog/gpt-6-astra-pricing-cost-control-guide) on tasks that don't need the depth, and review is mostly one of them.
+
+**`--max-findings 8`.** Protect the attention budget. Force ranking.
+
+**`continue-on-error: true`.** The bot never blocks a merge. A model outage is not a deploy freeze.
+
+The measurement to run before you commit to any of this: take fifty merged PRs where a bug was found later, and check which model class would have caught it. That's a real signal about your codebase, and it beats every benchmark number in this post — including the ones I opened with.
+
+## References
+
+### Sources
+
+- [GPT-6 Astra review: code review gains, privacy, and cost — CodeRabbit](https://www.coderabbit.ai/blog/gpt-6-astra-code-review-evaluation) — the actionable bug coverage evaluation, cross-file split, per-review cost table, and retention comparison
+- [Benchmarking GPT-6 Astra — Artificial Analysis](https://artificialanalysis.ai/articles/benchmarking-gpt-6-astra) — token efficiency and Coding Agent Index context for the cost math
+- [GPT-6 Astra Model — OpenAI API docs](https://developers.openai.com/api/docs/models/gpt-6-astra) — pricing and effort levels used in the routing example
+- [What We Learned Previewing GPT-6 Astra in Production — Kilo](https://blog.kilo.ai/p/gpt-6-astra-what-we-learned-previewing) — the reduction in misleading self-assessment that makes the low-noise prompt viable
+- [GPT-6 Astra in code review: gains, privacy, and cost — Hacker News](https://news.ycombinator.com/item?id=49572875) — practitioner discussion of the evaluation and its limits
+
+### Further Reading
+
+- [eyeballvul: a future-proof benchmark for vulnerability detection in the wild](https://arxiv.org/pdf/2407.08708) — how hard honest bug-detection evaluation actually is
+- [Learning to Reduce False Positives in Analytic Bug Detectors](https://arxiv.org/pdf/2203.09907) — the precision problem that predates LLM reviewers and hasn't gone away
+- [GPT-6 Astra vs Claude Opus 5: Tested — ComputingForGeeks](https://computingforgeeks.com/gpt-6-astra-vs-claude-opus-5/) — a second hands-on comparison if you want to sanity-check the routing thresholds
+
+---
+
+~Seb 👊
