@@ -1,0 +1,330 @@
+---
+title: 'GPT-6 Astra API Migration: 7 Things That Break'
+date: '2026-09-05'
+category: 'AI'
+tags: ['gpt-6', 'openai-api', 'migration', 'responses-api', 'llm']
+featured: false
+author: 'Sebastian'
+draft: false
+excerpt: "Swapping the model string to gpt-6-astra breaks more than you think. Sampling params now 400. Your cache config fails silently. One extra token reprices the entire request. Here's the GPT-6 Astra migration checklist I wish I'd had on day one."
+---
+
+I changed one string — `gpt-5.6-sol` to `gpt-6-astra` — and watched a service that had been green for four months start returning 400s on every request.
+
+The GPT-6 Astra API migration is not a model-string swap. OpenAI removed parameters that most SDK wrappers set by default, renamed a cache key in a way that fails *silently*, and moved an entire class of tool calling to a different endpoint. Below is the checklist, in the order the failures actually hit me, with the fix for each.
+
+Ground truth first, so nothing below is ambiguous:
+
+| Property | Value |
+|---|---|
+| Model ID | `gpt-6-astra` (no `gpt-6` alias) |
+| Context window | 1,050,000 tokens |
+| Max input / max output | 922,000 / 128,000 |
+| Knowledge cutoff | April 30, 2026 |
+| Modalities | text + image in, text out |
+| Endpoints | `v1/chat/completions`, `v1/responses`, `v1/batch` |
+| Pricing (≤272K input) | $10 in / $1 cached / $12.50 cache write / $50 out per 1M |
+| Pricing (>272K input) | $20 in / $75 out per 1M |
+
+Note what's missing from that endpoint list: **no Realtime, no Assistants, no fine-tuning, no embeddings, no audio, no moderation.** If any of those are in your Astra migration plan, stop — they aren't supported on this model.
+
+## 1. `temperature` and `top_p` now return 400
+
+This is the one that took my service down, and it will take yours down too, because half the LLM wrappers in existence set `temperature` by default.
+
+`temperature`, `top_p`, `logprobs`, and `top_logprobs` are **rejected**, not ignored. The request fails outright.
+
+```python
+# Breaks on gpt-6-astra — 400, "not supported with this model"
+resp = client.responses.create(
+    model="gpt-6-astra",
+    input=prompt,
+    temperature=0.2,
+    top_p=0.9,
+)
+```
+
+The fix isn't to find an equivalent knob — there isn't one. You move determinism into the prompt:
+
+```python
+# Determinism is now an instruction, not a parameter
+resp = client.responses.create(
+    model="gpt-6-astra",
+    instructions=(
+        "Answer precisely and literally. Do not speculate. "
+        "Return at most five bullets. If uncertain, say so explicitly."
+    ),
+    input=prompt,
+    reasoning={"effort": "low"},
+)
+```
+
+Before you touch anything else, grep your whole codebase — including config files and prompt templates, not just call sites:
+
+```bash
+grep -rnE '\b(temperature|top_p|logprobs|top_logprobs)\b' \
+  --include='*.py' --include='*.ts' --include='*.js' \
+  --include='*.json' --include='*.yaml' --include='*.yml' src/ config/
+```
+
+If you build model config from environment variables or a database row, that grep won't catch it. Log the outgoing request body once in staging and read it. That's the only reliable audit.
+
+## 2. `reasoning.effort` lost `none` and `minimal`
+
+Astra's effort ladder is **`low`, `medium`, `high`, `xhigh`, `max`**. The two cheapest rungs from the Sol era — `none` and `minimal` — are gone and return 400.
+
+There's a wrinkle worth knowing about: the API's generic validation layer still advertises `none` and `minimal`, and a second model-specific check rejects them. So a request can look valid against the schema and fail anyway. Don't trust the parameter enum; trust the model page.
+
+OpenAI suggests mapping `none` → `low`. Treat that as a starting point, not an equivalence. `low` on Astra still reasons, which means it costs more and takes longer than `none` did on Sol. If you had classification or extraction endpoints tuned to `none` for latency, they just got slower and pricier, and you'll want to re-measure rather than assume.
+
+```python
+EFFORT_MIGRATION = {
+    "none": "low",       # NOT equivalent — re-benchmark latency and cost
+    "minimal": "low",
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "xhigh": "xhigh",
+    "max": "max",
+}
+
+def effort_for(legacy: str) -> str:
+    return EFFORT_MIGRATION.get(legacy, "medium")
+```
+
+My working default: **`medium` for coding and agent work, `low` for extraction and classification.** Going straight to `max` because it sounds better is how the first surprise invoice happens — I'll get into that math in the cost post.
+
+## 3. The cache key renamed, and the old one fails silently
+
+`prompt_cache_retention` became `prompt_cache_options.ttl`.
+
+This is the nastiest item on the list, because unlike items 1 and 2, **it doesn't error**. Send the old key and the API accepts your request, ignores the field, and quietly bills you full price for every input token you thought was cached.
+
+```python
+# Silently broken — no error, no caching, full $10/M on every call
+resp = client.responses.create(
+    model="gpt-6-astra",
+    input=prompt,
+    prompt_cache_retention="30m",
+)
+
+# Correct
+resp = client.responses.create(
+    model="gpt-6-astra",
+    input=prompt,
+    prompt_cache_options={"ttl": "30m"},
+)
+```
+
+At $10/M uncached against $1/M cached, a silently disabled cache is a 10x overcharge on your biggest token bucket. Don't take the config's word for it — assert on the usage numbers the API returns:
+
+```python
+usage = resp.usage
+cached = getattr(usage.input_tokens_details, "cached_tokens", 0)
+ratio = cached / max(usage.input_tokens, 1)
+
+# On a stable system prompt, the second call onward should be well above zero.
+if ratio < 0.3:
+    logger.warning(
+        "cache_hit_ratio=%.2f cached=%d input=%d — check prompt prefix stability",
+        ratio, cached, usage.input_tokens,
+    )
+```
+
+Cache writes bill at 1.25x the input rate ($12.50/M), so caching is a net loss on content you use once and a large win from the first reuse onward. The prefix-stability discipline is the same one that drives [token optimization on the Claude side](/blog/claude-code-token-optimization-bill-cut-guide) — different vendor, identical failure mode. Also note the TTL is 30 minutes — long-lived agent sessions with idle gaps will re-pay the write cost more often than you'd guess.
+
+## 4. One extra token can double your bill for the whole request
+
+Astra has two price tables, and the boundary is **272,000 input tokens**.
+
+Cross it — by a single token — and the entire request reprices: **2x on input and cache, 1.5x on output**. Not just the tokens above the line. All of them, including the 272,000 that were under it.
+
+```text
+272,000 input + 8,000 output
+  = 272,000 x $10/M  + 8,000 x $50/M   = $2.72 + $0.40 = $3.12
+
+272,001 input + 8,000 output
+  = 272,001 x $20/M  + 8,000 x $75/M   = $5.44 + $0.60 = $6.04
+
+One token. 94% more expensive.
+```
+
+If you're anywhere near that line, guard it in code rather than hoping:
+
+```python
+LONG_CONTEXT_THRESHOLD = 272_000
+
+def assert_under_threshold(estimated_input_tokens: int, *, allow_long: bool = False):
+    """Fail loudly rather than silently doubling the bill."""
+    if estimated_input_tokens > LONG_CONTEXT_THRESHOLD and not allow_long:
+        raise ValueError(
+            f"{estimated_input_tokens} input tokens crosses the 272k long-context "
+            f"boundary — this reprices the ENTIRE request at 2x input / 1.5x output. "
+            f"Trim context or pass allow_long=True deliberately."
+        )
+```
+
+The 1.05M window is real. The affordable part of it ends at 272K. Treating the full window as a free-for-all is the single most expensive mistake available in this API, and it deserves its own post — which I'll write, because "just put the whole repo in context" is about to become very popular advice.
+
+## 5. Tool calling mostly moved to the Responses API
+
+Basic function calling still works on Chat Completions. Everything interesting does not.
+
+**Responses-only:** hosted tools (web search, file search, code interpreter, hosted shell, apply patch, computer use, MCP, tool search), async tools, and mid-turn steering. If your MCP servers are still on the old stateful assumptions, note that [the 2026-07-28 stateless spec](/blog/mcp-2026-07-28-stateless-spec-migration-guide) landed first — you may be migrating two protocols at once.
+
+There's also a live rough edge: sending function tools together with `reasoning_effort` through certain Chat Completions and Azure paths returns `400 — "Function tools with reasoning_effort are not supported"`. It's [an open issue in the wild](https://github.com/can1357/oh-my-pi/issues/11052), not a documented restriction, which is worse — you'll hit it in your own harness before you find it in the docs.
+
+Given that, my advice is to stop straddling and move tool paths to Responses now. The shape changes:
+
+| Concern | Chat Completions | Responses |
+|---|---|---|
+| Input | `messages` | `input` + optional `instructions` |
+| Continuation | full transcript | `previous_response_id` or item replay |
+| Tool definition | function nested in a tool wrapper | function fields directly on the tool item |
+| Tool result | tool message | `function_call_output` matched by `call_id` |
+| JSON output | `response_format` | `text.format` |
+| Streaming | `delta` chunks | typed events (`response.output_text.delta`) |
+
+A complete round trip, so you can see the correlation:
+
+```python
+tools = [{
+    "type": "function",
+    "name": "get_deploy_status",
+    "description": "Return the deploy status for a service.",
+    "parameters": {
+        "type": "object",
+        "properties": {"service": {"type": "string"}},
+        "required": ["service"],
+        "additionalProperties": False,
+    },
+}]
+
+resp = client.responses.create(
+    model="gpt-6-astra",
+    instructions=SYSTEM_PROMPT,
+    input="Is checkout-api healthy in prod?",
+    tools=tools,
+    reasoning={"effort": "medium"},
+)
+
+outputs = []
+for item in resp.output:
+    if item.type == "function_call":
+        result = dispatch(item.name, json.loads(item.arguments))
+        outputs.append({
+            "type": "function_call_output",
+            "call_id": item.call_id,        # correlation key — not the item id
+            "output": json.dumps(result),
+        })
+
+final = client.responses.create(
+    model="gpt-6-astra",
+    previous_response_id=resp.id,
+    instructions=SYSTEM_PROMPT,   # MUST be resent — see below
+    input=outputs,
+)
+```
+
+Two things in that snippet will bite you if you skim:
+
+**`call_id`, not the item id.** Results correlate by `call_id`. Get it wrong and the model sees an unanswered call and either retries or hallucinates the result.
+
+**`instructions` do not carry forward.** This is the same class of bug as losing your system prompt mid-session, and the reasoning in [context engineering: why prompt structure beats prompt wording](/blog/context-engineering-claude-code-guide) applies directly. Chaining with `previous_response_id` replays conversation items, not your top-level instructions. Omit them on the follow-up and the model finishes the turn with no system prompt — which manifests as a model that was perfectly well-behaved on turn one and goes off the rails on turn three. Resend them on every call.
+
+Streaming parsers need rewriting too. `chunk.choices[0].delta.content` becomes typed events:
+
+```python
+with client.responses.stream(model="gpt-6-astra", input=prompt) as stream:
+    for event in stream:
+        if event.type == "response.output_text.delta":
+            sys.stdout.write(event.delta)
+        elif event.type == "response.error":
+            logger.error("stream error: %s", event.error)
+```
+
+And structured outputs move from `response_format` to `text.format`:
+
+```python
+resp = client.responses.create(
+    model="gpt-6-astra",
+    input=doc,
+    text={"format": {
+        "type": "json_schema",
+        "name": "invoice",
+        "strict": True,
+        "schema": INVOICE_SCHEMA,
+    }},
+    reasoning={"effort": "low"},
+)
+```
+
+## 6. Async tools are new, and worth the rewrite
+
+This one isn't a break — it's the reason to be on Responses in the first place.
+
+Mark a tool `async` and the model keeps working while your background job runs, instead of blocking the turn:
+
+```python
+tools = [{
+    "type": "function",
+    "name": "run_integration_suite",
+    "async": True,                 # model continues while this runs
+    "parameters": {...},
+}]
+```
+
+For anything with a slow tool in the loop — CI runs, migrations, batch jobs — this changes the economics more than the model upgrade does. A 12-minute test suite used to be 12 minutes of a paid context sitting idle. Now it isn't. If you're running [long-horizon agent workloads](/blog/big-agent-vs-micro-agents-model-tiering-guide), this is where the wall-clock savings actually come from.
+
+Mid-turn steering is the other addition: a `response.steer` event over the Responses WebSocket redirects a run in flight. Two constraints — it can't undo output already delivered or cancel a tool that already started, and the WebSocket caps at 60 minutes. Design your long runs as resumable segments, not one heroic connection.
+
+## 7. Access is off by default, and that's not a rollout artifact
+
+Astra is the first model classified **Critical** for cybersecurity under OpenAI's Preparedness Framework. Enterprise and Business workspaces therefore have it **disabled by default** — an admin must explicitly turn it on.
+
+Plan for a conversation with your security team, not a checkbox. And put it at the *start* of your migration, because there is nothing more deflating than finishing the code changes and discovering your org can't call the model. I'll dig into what the Critical rating actually means for your threat model in a separate post; for migration purposes, treat it as a two-week lead item.
+
+## The checklist, condensed
+
+Run this top to bottom:
+
+```text
+[ ] Confirm workspace access is enabled (admin action — start here)
+[ ] grep out temperature / top_p / logprobs / top_logprobs, incl. config + env
+[ ] Map reasoning effort: none|minimal -> low, then re-benchmark
+[ ] Rename prompt_cache_retention -> prompt_cache_options.ttl
+[ ] Assert cache_hit_ratio in staging — the old key fails silently
+[ ] Sort tool definitions deterministically; move volatile data out of the prefix
+[ ] Add a 272,000-input-token guard with an explicit opt-out
+[ ] Move tool paths to Responses; correlate by call_id
+[ ] Resend `instructions` on every previous_response_id chain
+[ ] Rewrite streaming parsers for typed events
+[ ] Move response_format -> text.format
+[ ] Verify nothing depends on Realtime / Assistants / fine-tuning / audio
+[ ] Shadow-run 3 representative tasks; log tokens + wall clock per completed task
+```
+
+That last line is the one that actually decides the migration. Per-token, Astra is 2.5x Sol and looks like a downgrade. Per completed task it usually isn't, because it needs far fewer tokens to finish — I broke that comparison down in [what actually changed in GPT-6 Astra](/blog/gpt-6-astra-developer-review-what-changed). But "usually" isn't "in your workload," and the only way to know is to measure yours.
+
+Do the shadow run before you flip production. Keep `gpt-5.6-sol` pinned as a fallback until the numbers come back — the same [fallback-model resilience pattern](/blog/claude-code-fallback-model-safe-mode-resilience-guide) that saves you during a provider incident is exactly what you want during a migration.
+
+## References
+
+### Sources
+
+- [GPT-6 Astra Model — OpenAI API docs](https://developers.openai.com/api/docs/models/gpt-6-astra) — supported parameters, endpoints, limits, and the official pricing tables
+- [GPT-6 Astra API: 4 Breaking Changes to Fix Before You Migrate — byteiota](https://byteiota.com/gpt-6-astra-api-migration/) — the silent cache-key rename and the sampling-parameter removals
+- [GPT-6 Astra Responses API Migration Guide — Omid Saffari](https://omidsaffari.com/blog/gpt-6-astra-responses-api-migration) — Responses schema mapping, `call_id` correlation, and the `instructions` chaining trap
+- [How to Use GPT-6 Astra API: Setup, Effort & Migration — EvoLink](https://evolink.ai/blog/gpt-6-astra-api-guide) — effort-level behavior and cache TTL details
+- [GPT-6 Astra pricing — CloudZero](https://www.cloudzero.com/blog/gpt-6-pricing/) — the 272K long-context repricing rule
+- [gpt-6-astra tool turns 400: "Function tools with reasoning_effort are not supported"](https://github.com/can1357/oh-my-pi/issues/11052) — the undocumented tool + effort conflict
+
+### Further Reading
+
+- [Model guidance — OpenAI API](https://developers.openai.com/api/docs/guides/latest-model) — OpenAI's own take on when to move to the newest model
+- [GPT-6 Astra on OpenRouter](https://openrouter.ai/openai/gpt-6-astra) — independent pricing and throughput data if you're routing through a gateway
+- [GPT-6 Astra System Card](https://deploymentsafety.openai.com/gpt-6-astra) — the evaluation detail behind the Critical classification that gates your access
+
+---
+
+~Seb 👊
