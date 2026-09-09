@@ -1,0 +1,206 @@
+---
+title: "GPT-6 Astra's 1M Context: Great Recall, Terrible Bill"
+date: '2026-09-11'
+category: 'AI'
+tags: ['gpt-6', 'long-context', 'rag', 'context-engineering', 'cost-optimization']
+featured: false
+author: 'Sebastian'
+draft: false
+excerpt: "Astra holds 100% retrieval accuracy to 512K tokens and 96.3% out to 1M — the best deep-context numbers any frontier model has published. So the reason not to fill the window isn't recall. It's an 83-second time to first token and a pricing cliff at 272K."
+---
+
+I went into this expecting to write the usual long-context takedown: big window, lousy recall, use RAG instead. Then I looked at the numbers.
+
+On MRCR v2 with 8 needles, GPT-6 Astra holds **100% accuracy up to 512K tokens** and **96.3% in the 512K–1M band**. That's the strongest deep-context retention any frontier model has published. The "lost in the middle" problem that made every previous million-token window a marketing number is, on this model, substantially solved.
+
+So the recall objection is dead. Two others took its place, and they're worse:
+
+**Time to first token at high effort: 83 seconds.** The median for reasoning models in the same price tier is 3.56 seconds.
+
+**Cross 272,000 input tokens and the entire request reprices** — 2x input, 1.5x output. Not the overage. Everything.
+
+The window works. Using it is the expensive part. Here's how I decide.
+
+## The recall numbers are real — and narrower than they look
+
+Give OpenAI credit: MRCR v2 at 8 needles is a hard benchmark, and 96.3% out to a million tokens is a genuine engineering result.
+
+But be precise about what it measures. MRCR is **retrieval**: can the model find specific planted information at arbitrary depth. It is not "can the model reason over a million tokens simultaneously."
+
+Those are different capabilities and they fail differently. Finding the one function that calls `deprecated_helper()` in 800K tokens of source — that's retrieval, and Astra is excellent at it. *Reasoning about how forty modules interact* across the same 800K tokens is not the same task, and no published benchmark tells you how well it goes.
+
+OpenAI's own guidance is unusually candid here: a one-million-token context does not guarantee perfect recall, and you should evaluate retrieval, source selection, and instruction handling on **your own corpus**. Test specifically whether the model identifies dependencies that cross module boundaries — that's the case where "found it" and "understood it" diverge.
+
+## The latency nobody mentions
+
+This is the finding that changed how I use the model, and I've seen it almost nowhere.
+
+| Metric | Astra (high effort) | Median, same price tier |
+|---|---|---|
+| Time to first token | **83.03s** | 3.56s |
+| Output speed | 48.7 tok/s | 66.0 tok/s |
+
+Eighty-three seconds before the first token, at high effort, **before you add a large context to prefill**. Push half a million tokens in and you're waiting longer still.
+
+Three consequences:
+
+**Astra is not an interactive model at high effort.** Anything user-facing and synchronous needs a lower effort setting or a different model. Fable 5.1 generates at roughly 68.6 tok/s against Astra's 57.8 at comparable settings, and that gap is felt in an editor loop far more than any benchmark difference.
+
+**Long context makes it worse, non-linearly.** Prefill is work. A 900K-token request isn't "the same request, slower" — it's a different latency class.
+
+**Timeouts are a design problem, not a config problem.** Your load balancer will kill this before it answers. Long-context work belongs in background jobs with `background=True` and a webhook, never in a request/response cycle. I covered that pattern in [building computer-use agents on Astra](/blog/gpt-6-astra-computer-use-browser-agents-guide) — it applies identically here.
+
+## The cost cliff, with real numbers
+
+Astra prices context in two bands, and the boundary is 272,000 input tokens:
+
+```text
+≤ 272K input:   $10/M input   ·   $1/M cached   ·   $50/M output
+>  272K input:  $20/M input   ·   $2/M cached   ·   $75/M output
+                ^ applies to the ENTIRE request
+```
+
+Worked:
+
+```text
+272,000 in + 10,000 out  →  $2.72 + $0.50  =  $3.22
+300,000 in + 10,000 out  →  $6.00 + $0.75  =  $6.75
+
+28,000 extra input tokens: +110% on the bill.
+```
+
+Twenty-eight thousand tokens is three or four source files. That's the whole distance between the price tables.
+
+Now compound it. A repository agent re-reading a 400K-token context across forty turns pays the premium forty times. And Astra's cached-read rate is $1/M against Claude Fable 5.1's $0.25/M, with no long-context surcharge on the Claude side at all — which is why a cache-heavy agent loop costs [$201 on Astra and $126 on Fable](/blog/gpt-6-astra-vs-fable-5-1-vs-opus-5-model-selection) at identical list prices.
+
+If your workload lives above 272K, you are on the wrong model for it. That's not a knock on Astra; it's a pricing structure telling you what it was designed for.
+
+## The decision I actually make
+
+**Default to retrieval. Reserve the window for cross-source reasoning where retrieval can't pre-select the evidence.**
+
+The rule I keep coming back to: *the goal is not the largest context, it's the smallest complete evidence set.* That's [context engineering](/blog/context-engineering-claude-code-guide) restated for a model whose window stopped being the constraint — structure and selection still beat volume.
+
+Retrieval-first, concretely:
+
+```python
+def build_context(question: str, corpus: Corpus, budget: int = 180_000) -> str:
+    """Select the smallest complete evidence set, not the biggest one.
+    Budget is deliberately well under the 272K boundary — leave headroom
+    for the system prompt, tool definitions, and the conversation itself."""
+    candidates = corpus.search(question, k=60)
+    selected, used = [], 0
+    for passage in rerank(question, candidates):
+        if used + passage.tokens > budget:
+            break
+        selected.append(passage)
+        used += passage.tokens
+    return format_evidence(selected)
+```
+
+That gets you a 90%+ reduction in token consumption with little or no quality loss on most tasks — a finding that predates Astra and hasn't been overturned by it. If you're building the retrieval layer itself, the [local-embeddings RAG setup](/blog/claude-code-obsidian-rag-knowledge-base-guide) covers the chunking and hybrid-search half of this.
+
+**Use the full window when** retrieval genuinely cannot select the evidence in advance:
+
+- Legal review across a chain of linked agreements where the relevant clause depends on definitions three documents away
+- Repository-wide dependency analysis where the question *is* the cross-module relationship
+- Reconciling many conflicting sources where the conflict is the finding
+- Any case where you'd have to run retrieval to know what to retrieve
+
+That's a real category, and it's the one place a million tokens beats a good retrieval layer. It is not most work.
+
+**Don't use it for** re-sending a knowledge base on every question, dumping a whole repo because the model "can handle it," or stuffing chat history you never prune. Those are the expensive habits the big window invites.
+
+## Cache before you widen
+
+Before reaching for more context, get the caching right. At $10/M uncached against $1/M cached, this is a 10x lever on the largest bucket in your bill.
+
+```python
+# Stable prefix -> cached. Volatile data at the end, always.
+SYSTEM = load_rules()                                # never changes
+tools  = sorted(tool_defs, key=lambda t: t["name"])  # deterministic order
+
+resp = client.responses.create(
+    model="gpt-6-astra",
+    instructions=SYSTEM,
+    input=f"{evidence}\n\n[asked at {now}]\n{question}",  # volatile last
+    tools=tools,
+    prompt_cache_options={"ttl": "30m"},
+)
+
+cached = resp.usage.input_tokens_details.cached_tokens
+metrics.gauge("llm.cache_hit_ratio", cached / max(resp.usage.input_tokens, 1))
+```
+
+Two traps worth repeating. The config key is `prompt_cache_options.ttl` — the old `prompt_cache_retention` is accepted, ignored, and silently bills you full rate, one of [seven things that break in the migration](/blog/gpt-6-astra-api-migration-checklist). And cache **writes** cost $12.50/M, so caching content you use once is a 25% loss; it pays from the first reuse onward.
+
+TTL is 30 minutes. Long agent sessions with idle gaps re-pay the write more often than you'd guess, which quietly erodes the case for holding a huge context resident.
+
+## Codex context notes: the third option
+
+There's a middle path worth knowing about, and it's the most interesting long-context feature in the release.
+
+Classic compaction is lossy summarization — earlier turns get squeezed into a summary and the specifics evaporate. The exact error from turn four, the approach you abandoned on turn nine: gone. So the agent re-tries the thing that already failed.
+
+Astra in Codex instead keeps **running, searchable notes across context windows**. Earlier context stays indexed and retrievable rather than compressed away, so a compacted session can go look up why a fix failed instead of rediscovering it.
+
+```toml
+[features.context_management]
+experimental_mode = true
+
+[model_settings]
+auto_compact_token_limit = 200000   # compact often; stay in the cheap band
+```
+
+That pairing is the point: **compaction gets cheaper to do often when the compacted material stays retrievable.** You get long-session continuity without holding 800K tokens resident and without paying the long-context premium.
+
+Two caveats — it's Codex-backend only, not available through direct API calls, and it's experimental, so measure completion rate on your own repo before rolling it out. The [broader Codex configuration argument](/blog/gpt-6-astra-codex-cli-setup-guide) covers where it fits.
+
+## A budget that works
+
+```text
+System prompt + tools        ~10K   (stable, cached)
+Retrieved evidence          ~180K   (the smallest complete set)
+Conversation history         ~50K   (pruned, not accumulated)
+Response headroom            ~30K
+                            ------
+Total                       ~270K   — just under the boundary, deliberately
+```
+
+Instrument three things and you'll catch every long-context regression before finance does:
+
+```python
+metrics.gauge("llm.input_tokens", resp.usage.input_tokens, tags=[f"route:{route}"])
+metrics.gauge("llm.cache_hit_ratio", ratio, tags=[f"route:{route}"])
+metrics.histogram("llm.ttft_seconds", ttft, tags=[f"route:{route}", f"effort:{effort}"])
+```
+
+Alert when input tokens cross 250,000 on any route. Not 272,000 — you want to hear about it before you're paying for it, not after.
+
+## The takeaway
+
+Astra's million-token window is the first one I'd call genuinely trustworthy on recall. That's a real achievement and it deserves the credit it's getting.
+
+It's also the most expensive way to answer most questions, and at 83 seconds to first token it's slow in a way benchmark tables don't show. The right default is still a good retrieval layer feeding a context you deliberately kept small — with the full window held in reserve for the genuine cross-source cases where nothing else works.
+
+Fill the window when the task needs it. Not because the spec sheet says you can.
+
+## References
+
+### Sources
+
+- [GPT-6 Astra 1 Million Token Context Window Explained — Elser AI](https://www.elser.ai/news/gpt-6-astra-one-million-token-context-window) — the retrieval-first guidance and the "smallest complete evidence set" framing
+- [GPT-6 Astra (high) — Artificial Analysis](https://artificialanalysis.ai/models/gpt-6-astra-high) — the 83.03s time-to-first-token and 48.7 tok/s throughput measurements
+- [GPT-6 Astra — OpenAI](https://openai.com/index/gpt-6-astra/) — MRCR v2 8-needle results and the Codex context-notes feature
+- [GPT-6 Astra Model — OpenAI API docs](https://developers.openai.com/api/docs/models/gpt-6-astra) — the two pricing bands and the 272K boundary
+- [GPT-6 Astra: Benchmarks, Pricing and API — ComputingForGeeks](https://computingforgeeks.com/gpt-6-astra-released-features-benchmarks/) — long-context retention figures and model architecture notes
+
+### Further Reading
+
+- [Evaluating Long-Term Memory for Long-Context Question Answering](https://arxiv.org/pdf/2510.23730) — why retrieval keeps beating brute-force context on most question shapes
+- [RAPID: Long-Context Inference with Retrieval-Augmented Speculative Decoding](https://arxiv.org/pdf/2502.20330) — the hybrid direction, if you want the research view rather than the pricing one
+- [GPT-6 Astra API Pricing, Context Window & Benchmarks — LLM Stats](https://llm-stats.com/models/gpt-6-astra) — independent tracking if you want to check these numbers as they move
+
+---
+
+~Seb 👊
