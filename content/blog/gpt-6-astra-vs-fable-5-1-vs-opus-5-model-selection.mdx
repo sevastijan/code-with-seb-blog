@@ -1,0 +1,176 @@
+---
+title: 'GPT-6 Astra vs Fable 5.1 vs Opus 5: Pick by Task'
+date: '2026-09-08'
+category: 'AI'
+tags: ['gpt-6', 'claude', 'model-selection', 'ai-models', 'cost-optimization']
+featured: false
+author: 'Sebastian'
+draft: false
+excerpt: "GPT-6 Astra and Claude Fable 5.1 have identical list prices — $10 in, $50 out. On a cache-heavy agent loop one costs $201 and the other $126. This is the first release where the leaderboard genuinely can't answer 'which model,' so here's the decision by task type."
+---
+
+GPT-6 Astra and Claude Fable 5.1 both cost $10 per million input tokens and $50 per million output. Identical list price, to the cent.
+
+Now run a cache-heavy agent loop — a 100K-token prefix, a thousand reads. **Astra: $201. Fable 5.1: $126.** Run a large retrieval job, 10M in and 1M out, and it's **$275 against $150**. Same list price, 60–80% apart on the invoice.
+
+That gap is the whole reason this post exists. September 2026 is the first month where "which model should I use" genuinely has no leaderboard answer. Astra wins ten of the twelve capability benchmarks I'll show you and *loses* both independent composite indices. It's cheaper per task on one index and more expensive on the other. The right pick now depends on the shape of your workload — cache reuse, context size, tool depth — more than on any score.
+
+So let's do it by task, with the numbers.
+
+## The list price is a decoy
+
+Three places the real cost diverges, none of which appear on a pricing page comparison:
+
+**Cache reads: $1.00 vs $0.25 per million.** Fable 5.1 reads cached tokens at a quarter of Astra's rate. On an append-only agent loop where a big stable prefix gets re-read on every turn — which describes most repository agents — this is the dominant term in the bill. It's why the cache-heavy example above lands 60% apart.
+
+**The 272K surcharge is Astra-only.** Cross 272,000 input tokens on Astra and the *entire* request reprices at 2x input and 1.5x output. Fable 5.1 has no such cliff. If your workload routinely sits above a quarter-million tokens of context, Astra's headline 1.05M window is the more expensive million.
+
+**Cost per completed task runs the other way.** On Artificial Analysis's Intelligence Index at max effort, Astra costs **$1.67 per task** against Fable 5.1's **$3.76** — because Astra needs far fewer tokens to get there. One third of GPT-5.6 Sol's tokens in the Codex harness; one fifth of Claude Opus 5's at xhigh.
+
+Read those three together and the pattern is clear: **Astra is cheaper when it's thinking, Fable is cheaper when it's remembering.** Short prompts and deep reasoning favor Astra. Huge stable contexts re-read many times favor Fable.
+
+```text
+Balanced (1M in / 250K out)          Astra $22.50   Fable $22.50
+Cache-heavy loop (100K x 1,000)      Astra $201     Fable $126
+Over-threshold retrieval (10M/1M)    Astra $275     Fable $150
+Intelligence Index task (max)        Astra $1.67    Fable $3.76
+```
+
+Four workloads. Astra wins one decisively, loses two decisively, ties one. There is no "cheaper model" here — only a cheaper model *for a shape of work*.
+
+## Where each one actually wins
+
+The capability picture, head to head:
+
+| Benchmark | Astra | Fable 5.1 | Winner |
+|---|---|---|---|
+| FrontierMath Tier 4 v2 | 97.6% | 87.8% | Astra |
+| GPQA Diamond | 96.0% | 93.7% | Astra |
+| DeepSWE v1.1 | 74.1% | 67.4% | Astra |
+| Terminal-Bench 4.0 | 57.7% | 55.8% | Astra |
+| FrontierCode 1.1 Main | 53.3% | 50.9% | Astra |
+| Terminal-Bench Science 0.1 | 64.6% | 52.6% | Astra |
+| ScreenSpot-Pro | 92.7% | 87.3% | Astra |
+| OSWorld 2.0 | 72.6% | 70.2% | Astra |
+| BenchCAD | 95.9% | 84.3% | Astra |
+| AutomationBench | 41.4% | 31.4% | Astra |
+| ExploitBench | 100% | 70% | Astra |
+| Humanity's Last Exam (tools) | 57.2% | **65.0%** | Fable 5.1 |
+| AA Intelligence Index (max) | 61 | **66** | Fable 5.1 |
+| AA Coding Agent Index | 67 (Codex) | **70** (Claude Code) | Fable 5.1 |
+
+Astra takes eleven of fourteen — and loses all three of the ones that aggregate across many tasks.
+
+That's not a contradiction, it's a signal. The individual benchmarks are narrow and mostly tool-executed: math, science, computer use, terminal work, CAD. The composites measure breadth and end-to-end agentic coding. **Astra is stronger at reasoning that gets executed through tools. Fable is stronger at reasoning that spans domains.**
+
+There's a sharper version of this in the same data. Astra gained about **80 Elo points on AA-Briefcase** and *lost* about **80 Elo on GDPval-AA v2**. Same model, same week, opposite directions on two evaluations. If you're picking a model from a single number, you're picking from a coin flip about which number someone showed you.
+
+For the general case against trusting these numbers too literally, [Terminal-Bench 2.1 and why the coding agent leaderboard lies to you](/blog/terminal-bench-2-1-coding-agent-leaderboard-reality) covers the methodology problems — the short version is that the harness contributes as much as the weights, which is exactly why the Coding Agent Index reports "Astra in Codex" and "Fable in Claude Code" rather than bare model scores.
+
+## The decision, by task
+
+Here's how I actually route work now.
+
+### Interactive coding in an editor → Fable 5.1
+
+Coding Agent Index 70 against 67, and the everyday feel matches. Astra on general coding lands about where GPT-5.6 Sol did — good, not a generational step. Fable also generates faster (~68.6 tok/s against ~57.8), which you notice in an interactive loop far more than in a background job.
+
+Opus 5 remains the sane default *inside* the Claude family for routine edits and simple refactors, with Fable reserved for work where planning quality is the bottleneck. That split is unchanged by Astra's arrival; I laid it out in the [Claude 5 family model-selection guide](/blog/claude-5-family-model-selection-guide) and none of it has moved.
+
+### Computer use and browser automation → Astra, not close
+
+ScreenSpot-Pro 92.7% vs 87.3%. OSWorld 2.0 72.6% vs 70.2%. AutomationBench 41.4% vs 31.4% — a ten-point gap on multi-step automation chains.
+
+More importantly, Astra completes OSWorld tasks in roughly **40 minutes where Sol took 75**. For anything driving a real GUI, that time-per-task cut changes what's schedulable. This is Astra's clearest win and the one I'd migrate for on its own.
+
+### Long-running repository agents → Fable 5.1
+
+This is the cache-read argument. A repo agent holds a large stable prefix — file tree, conventions, key modules — and re-reads it every turn. At $0.25/M against $1.00/M, plus no 272K surcharge, Fable is structurally cheaper at exactly the thing repo agents do.
+
+Astra's token efficiency doesn't rescue this case, because the cost isn't in generation, it's in re-reading context you already sent.
+
+### Math, science, and technical reasoning through tools → Astra
+
+FrontierMath Tier 4 v2 at 97.6% against 87.8% is not a rounding difference. Terminal-Bench Science 64.6% vs 52.6% likewise. If your work is quantitative and executes through a tool loop, this is the model.
+
+### Cross-domain research and synthesis → Fable 5.1
+
+Humanity's Last Exam with tools: 65.0% vs 57.2%. HLE is deliberately multidisciplinary, and it's the one benchmark specifically built to reward breadth. If the task is "read these forty conflicting sources and reconcile them," breadth is the capability you're buying.
+
+### Professional artifacts — CAD, slides, spreadsheets → Astra
+
+BenchCAD 95.9% vs 84.3%, and the computer-use scores back it up. Astra produces geometrically correct, aesthetically reasonable output in tools it drives. This is a genuinely new category and Astra owns it right now.
+
+### Defensive security work → Astra, with a caveat
+
+ExploitBench 100% vs 70%. Astra can find vulnerability classes Fable will not. The caveat is that Fable 5.1 is deliberately scoped to *discover* vulnerabilities without *developing* exploits, and reports 60% fewer cybersecurity false positives.
+
+Which you want depends on whether you have people who can triage findings. A model that finds more and cries wolf less often are different products. I'll write that comparison up properly once I've run both against the same codebase — for now, [what the Claude multi-agent security scanner actually catches](/blog/claude-security-plugin-multi-agent-scanner-guide) is the closest calibration I have.
+
+## The constraints that aren't capabilities
+
+Two of these have killed model choices for teams I've talked to this week, and neither is on any benchmark.
+
+**Astra is off by default in Enterprise and Business workspaces.** An admin has to enable it, because of the Critical cybersecurity classification. There's also additional misalignment monitoring that can pause or stop supported agent work mid-run — which is fine right up until it isn't, in an unattended pipeline.
+
+**Fable 5.1 requires 30-day data retention and isn't supported on Priority Tier.** If you're under a contractual zero-retention obligation, that's a hard no regardless of what the benchmarks say.
+
+Check both before you build anything. Discovering a policy blocker after the integration work is the most avoidable way to waste a sprint.
+
+## What I run
+
+```text
+Interactive coding, editor loop        → Fable 5.1 (Claude Code)
+Routine edits, simple refactors        → Opus 5
+Repo agents with big stable context    → Fable 5.1
+Computer use / browser automation      → Astra
+GUI-driven QA and smoke tests          → Astra
+Math / science / quantitative tools    → Astra
+Cross-domain research synthesis        → Fable 5.1
+CAD, slides, spreadsheet artifacts     → Astra
+Classification, extraction, routing    → cheapest model that passes eval
+```
+
+That last line does more for the bill than every choice above it. Neither frontier model should be handling "is this ticket a bug," and the [five places an Astra bill leaks](/blog/gpt-6-astra-pricing-cost-control-guide) all apply equally to over-routing to Fable.
+
+Running two vendors is also less painful than it was a year ago — [the multi-CLI stack](/blog/multi-cli-stack-claude-code-codex-gemini-orchestration-guide) is a solved problem now, and this is the release that finally makes the plumbing worth it.
+
+## Run your own eval, it takes an afternoon
+
+Every number in this post is someone else's benchmark on someone else's tasks. Here's the version that answers your question:
+
+1. Pick **three tasks that represent real work** — one interactive edit, one long agentic run, one whatever-your-weird-thing-is.
+2. Run each on Astra and Fable 5.1 with equivalent effort settings, three times each.
+3. Log four things per run: **completed (y/n), total cost, wall clock, cache hit ratio.**
+4. Compare **cost per accepted task**, not cost per token and not benchmark score.
+
+```python
+metrics.histogram("eval.cost_per_accepted_task", cost_usd,
+                  tags=[f"model:{model}", f"task:{task_id}"])
+metrics.histogram("eval.wall_clock", seconds, tags=[...])
+metrics.gauge("eval.cache_hit_ratio", ratio, tags=[...])
+```
+
+The rule I'd write on the wall: **pick the cheapest model that passes your quality, safety, and latency gates, measured per accepted task.** Not the highest score. Not the newest release. The cheapest one that clears the bar you actually care about.
+
+Right now that's Fable 5.1 for most of my coding and Astra for everything that touches a GUI. In two months it'll be something else, and the eval will still be three tasks and an afternoon.
+
+## References
+
+### Sources
+
+- [GPT-6 Astra vs Claude Fable 5.1: Benchmarks and Pricing — DataCamp](https://www.datacamp.com/blog/gpt-6-astra-vs-claude-fable-5-1) — the fourteen-benchmark head-to-head, cache-read rates, and the workload cost examples
+- [Benchmarking GPT-6 Astra — Artificial Analysis](https://artificialanalysis.ai/articles/benchmarking-gpt-6-astra) — Coding Agent and Intelligence Index scores, token efficiency, and the AA-Briefcase / GDPval-AA divergence
+- [Claude Fable 5.1 vs Opus 5 vs GPT-6 Astra: cost, speed, context, safeguards](https://chatgptaihub.com/claude-fable-5-1-vs-opus-5-vs-gpt-6-astra-cost-speed-context-safeguards-agentic-workloads) — the three-way framing, cache economics, and access constraints
+- [GPT-6 Astra (max) vs Claude Fable 5.1 — Artificial Analysis comparison](https://artificialanalysis.ai/models/comparisons/gpt-6-astra-vs-claude-fable-5-1) — throughput and per-task cost figures
+- [GPT-6 Astra — OpenAI](https://openai.com/index/gpt-6-astra/) — official capability claims and the computer-use timing data
+
+### Further Reading
+
+- [Claude Fable 5.1, GPT-6 Astra, and the New AI Model Stack — Pat McGuinness](https://patmcguinness.substack.com/p/claude-fable-51-gpt-6-astra-and-the) — the wider market view if you're planning further out than this quarter
+- [GPT-6 Astra or Claude Fable 5.1? A Practical Model Selection Guide — DEV](https://dev.to/dylanfoster1/gpt-6-astra-or-claude-fable-51-a-practical-model-selection-guide-1gen) — a second routing framework to sanity-check mine against
+- [GPT-6 Astra System Card](https://deploymentsafety.openai.com/gpt-6-astra) — the misalignment-monitoring behavior that can interrupt unattended runs
+
+---
+
+~Seb 👊
